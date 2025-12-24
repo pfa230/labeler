@@ -1,5 +1,5 @@
 use crate::errors::AppError;
-use crate::models::{Dimension, FontSize, Layout, LayoutItem, Point, TemplateFormat};
+use crate::models::{Dimension, FontSize, Layout, LayoutItem, Margins, Point, TemplateFormat};
 use crate::templates::TemplateDefinition;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
@@ -38,10 +38,12 @@ pub fn render_single_label(
         }
     };
 
+    let margins = template.margins.clone().unwrap_or_default();
     let source = build_typst_source(
         width_units,
         height_units,
         &template.unit,
+        &margins,
         items,
         data,
     )?;
@@ -72,6 +74,7 @@ fn build_typst_source(
     page_width_units: f32,
     page_height_units: f32,
     unit: &str,
+    margins: &Margins,
     items: &[LayoutItem],
     data: &HashMap<String, JsonValue>,
 ) -> Result<String, AppError> {
@@ -93,6 +96,7 @@ fn build_typst_source(
                 multiline,
                 ..
             } => {
+                let bounds = apply_margins_box(bounds, margins);
                 let FontSize::Fixed(size) = font_size else {
                     return Err(AppError::unsupported_layout_item(
                         "text font_size must be fixed",
@@ -135,12 +139,13 @@ fn build_typst_source(
                 })?;
             }
             LayoutItem::Qr { name, bounds, params } => {
+                let bounds = apply_margins_box(bounds, margins);
                 let payload = value_to_string(
                     data.get(name)
                         .ok_or_else(|| AppError::missing_field(name))?,
                 );
                 let (svg_xml, box_width, box_height, dx, dy) =
-                    build_qr_svg(payload.as_bytes(), params, bounds, unit, page_height_units)?;
+                    build_qr_svg(payload.as_bytes(), params, &bounds, unit, page_height_units)?;
                 let svg_xml = escape_typst_string(&svg_xml);
 
                 writeln!(
@@ -156,8 +161,10 @@ fn build_typst_source(
                 end,
                 thickness,
             } => {
-                let (start_x, start_y) = to_page_coords(start, page_height_units);
-                let (end_x, end_y) = to_page_coords(end, page_height_units);
+                let start = apply_margins_point(start, margins);
+                let end = apply_margins_point(end, margins);
+                let (start_x, start_y) = to_page_coords(&start, page_height_units);
+                let (end_x, end_y) = to_page_coords(&end, page_height_units);
                 let dx = end_x - start_x;
                 let dy = end_y - start_y;
                 let start_x = format_length(start_x, unit)?;
@@ -180,6 +187,7 @@ fn build_typst_source(
                 thickness,
                 rounded,
             } => {
+                let bounds = apply_margins_box(bounds, margins);
                 let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
                 let left = x1.min(x2);
                 let right = x1.max(x2);
@@ -338,6 +346,20 @@ fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32) {
     (point.x, page_height_units - point.y)
 }
 
+fn apply_margins_box(bounds: &crate::models::Box, margins: &Margins) -> crate::models::Box {
+    let left = margins.left();
+    let bottom = margins.bottom();
+    let [x1, y1, x2, y2] = bounds.0;
+    crate::models::Box([x1 + left, y1 + bottom, x2 + left, y2 + bottom])
+}
+
+fn apply_margins_point(point: &Point, margins: &Margins) -> Point {
+    Point {
+        x: point.x + margins.left(),
+        y: point.y + margins.bottom(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::render_single_label;
@@ -356,6 +378,7 @@ mod tests {
             description: "Test template".to_string(),
             unit: "mm".to_string(),
             dpi: 200,
+            margins: None,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(10.0),
@@ -390,6 +413,7 @@ mod tests {
             description: "Test template with qr".to_string(),
             unit: "mm".to_string(),
             dpi: 200,
+            margins: None,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(30.0),
                 height: Dimension::Fixed(20.0),
