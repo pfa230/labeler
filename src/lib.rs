@@ -2,6 +2,7 @@ pub mod api;
 pub mod errors;
 pub mod models;
 pub mod openapi;
+pub mod render;
 pub mod templates;
 
 pub use api::app;
