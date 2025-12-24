@@ -9,9 +9,10 @@ use axum::extract::rejection::{JsonRejection, PathRejection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, net::SocketAddr};
+use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 use utoipa::{OpenApi, ToSchema};
-use utoipa::openapi::OpenApi as OpenApiSpec;
+use utoipa_swagger_ui::SwaggerUi;
 
 const CODE_TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
 const CODE_INVALID_REQUEST: &str = "InvalidRequest";
@@ -61,7 +62,7 @@ async fn main() {
 
     let app = app();
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let addr: SocketAddr = format!("0.0.0.0:{}", port)
         .parse()
         .expect("invalid PORT");
@@ -80,11 +81,12 @@ async fn main() {
 fn app() -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/openapi.json", get(openapi_json))
         .route("/templates", get(list_templates))
-        .route("/templates/:id", get(get_template))
+        .route("/templates/{id}", get(get_template))
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
+        .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
+        .layer(TraceLayer::new_for_http())
 }
 
 #[utoipa::path(
@@ -162,10 +164,6 @@ async fn render_label(Json(_req): Json<RenderLabelRequest>) -> Result<Response, 
 )]
 async fn render_batch(Json(_req): Json<RenderBatchRequest>) -> Result<Response, AppError> {
     Err(AppError::not_implemented("render_batch"))
-}
-
-async fn openapi_json() -> Json<OpenApiSpec> {
-    Json(ApiDoc::openapi())
 }
 
 #[derive(Debug)]
@@ -451,5 +449,38 @@ fn template_detail(id: &str) -> Option<TemplateDetail> {
             version: None,
         }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::app;
+    use std::future::IntoFuture;
+    use std::time::Duration;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn server_starts_and_accepts_connections() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let server = axum::serve(listener, app()).with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        });
+
+        let handle = tokio::spawn(server.into_future());
+
+        let connect = TcpStream::connect(addr);
+        tokio::time::timeout(Duration::from_millis(250), connect)
+            .await
+            .expect("server did not accept connections in time")
+            .expect("failed to connect to server");
+
+        let _ = shutdown_tx.send(());
+        handle.await.expect("server task failed").expect("server error");
     }
 }
