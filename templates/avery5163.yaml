@@ -2,6 +2,7 @@ id: avery5163
 name: Avery 5163 2x4 Shipping Label
 description: Standard shipping labels on US Letter sheets
 unit: in
+dpi: 300
 options: [horizontal, vertical]
 format:
   type: sheet

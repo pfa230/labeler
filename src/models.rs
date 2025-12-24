@@ -32,6 +32,7 @@ pub struct TemplateSummary {
     pub name: String,
     pub description: String,
     pub unit: String,
+    pub dpi: u32,
     pub options: Vec<String>,
     pub format: TemplateFormat,
 }
@@ -42,6 +43,7 @@ pub struct TemplateDetail {
     pub name: String,
     pub description: String,
     pub unit: String,
+    pub dpi: u32,
     pub format: TemplateFormat,
     pub options: Options,
     pub layout: Layout,

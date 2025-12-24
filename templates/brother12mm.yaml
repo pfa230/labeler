@@ -2,32 +2,28 @@ id: brother12mm
 name: Brother 12mm Continuous Label
 description: Continuous label roll (12mm width)
 unit: mm
+dpi: 300
 options: [black, red]
 format:
   type: single
-  width: 12.0
-  height:
-    min: 5.0
-    max: 200.0
+  width: 
+    min: 10.0
+    max: 100.0
+  height: 12.0
 layout:
   black:
     - type: text
       name: message
-      box: [0.0, 0.0, 12.0, 5.0]
-      font_size:
-        min: 6.0
-        max: 12.0
-      multiline: true
+      box: [0.0, 0.0, 20.0, 12.0]
+      font_size: 10.0
       alignment:
-        horizontal: center
+        horizontal: left
         vertical: center
   red:
     - type: text
       name: message
       box: [0.0, 0.0, 12.0, 5.0]
-      font_size:
-        min: 6.0
-        max: 12.0
+      font_size: 10.0
       multiline: true
       alignment:
         horizontal: center

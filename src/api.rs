@@ -16,6 +16,7 @@ use crate::{
         TemplateList,
     },
     openapi::ApiDoc,
+    render::render_single_label,
     templates::TemplateRegistry,
 };
 
@@ -96,10 +97,37 @@ pub async fn render_label(
     State(registry): State<Arc<TemplateRegistry>>,
     Json(req): Json<RenderLabelRequest>,
 ) -> Result<Response, AppError> {
-    if registry.get(&req.template).is_none() {
-        return Err(AppError::template_not_found(req.template));
+    let template = registry
+        .get(&req.template)
+        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+
+    let option_value = req
+        .options
+        .get("option")
+        .and_then(|value| value.as_str())
+        .unwrap_or_else(|| template.options.0.first().map(|v| v.as_str()).unwrap_or(""));
+
+    let resolved_dpi = req.output.dpi.unwrap_or(template.dpi);
+    tracing::debug!(
+        template = %template.id,
+        option = %option_value,
+        dpi = resolved_dpi,
+        data_keys = req.data.len(),
+        "render label request"
+    );
+
+    if !template.options.0.iter().any(|opt| opt == option_value) {
+        return Err(AppError::invalid_option_value(option_value, &template.options.0));
     }
-    Err(AppError::not_implemented("render_label"))
+
+    let png = render_single_label(template, &req.data, option_value, req.output.dpi)?;
+
+    Ok((
+        axum::http::StatusCode::OK,
+        [("content-type", "image/png")],
+        png,
+    )
+        .into_response())
 }
 
 #[utoipa::path(
@@ -119,6 +147,12 @@ pub async fn render_batch(
     State(registry): State<Arc<TemplateRegistry>>,
     Json(req): Json<RenderBatchRequest>,
 ) -> Result<Response, AppError> {
+    tracing::debug!(
+        template = %req.template,
+        labels = req.labels.len(),
+        start_slot = req.start_slot,
+        "render batch request"
+    );
     if registry.get(&req.template).is_none() {
         return Err(AppError::template_not_found(req.template));
     }
