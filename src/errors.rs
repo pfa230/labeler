@@ -104,7 +104,7 @@ impl AppError {
         )
     }
 
-    fn invalid_request(message: impl Into<String>) -> Self {
+    pub fn invalid_request(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, CODE_INVALID_REQUEST, message, None)
     }
 

@@ -18,7 +18,8 @@ pub struct TemplateDefinition {
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
-    pub options: Options,
+    #[serde(default)]
+    pub options: Option<Options>,
     pub layout: Layout,
     #[serde(default)]
     pub version: Option<String>,
@@ -138,13 +139,15 @@ impl TemplateDefinition {
             return Err("dpi must be greater than 0".to_string());
         }
 
-        if self.options.0.is_empty() {
-            return Err("options must not be empty".to_string());
+        if let Some(options) = &self.options {
+            if options.0.is_empty() {
+                return Err("options must not be empty".to_string());
+            }
+            if options.0.iter().any(|opt| opt.trim().is_empty()) {
+                return Err("options must not contain empty values".to_string());
+            }
         }
-        if self.options.0.iter().any(|opt| opt.trim().is_empty()) {
-            return Err("options must not contain empty values".to_string());
-        }
-        validate_layout(&self.layout, &self.options)?;
+        validate_layout(&self.layout, self.options.as_ref())?;
 
         match &self.format {
             TemplateFormat::Sheet {
@@ -212,8 +215,10 @@ fn validate_dimension(name: &str, dimension: &Dimension) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_layout(layout: &Layout, options: &Options) -> Result<(), String> {
-    let option_values: HashSet<&str> = options.0.iter().map(|value| value.as_str()).collect();
+fn validate_layout(layout: &Layout, options: Option<&Options>) -> Result<(), String> {
+    let option_values: HashSet<&str> = options
+        .map(|options| options.0.iter().map(|value| value.as_str()).collect())
+        .unwrap_or_default();
     match layout {
         Layout::Items(items) => {
             if !option_values.is_empty() {
@@ -225,6 +230,9 @@ fn validate_layout(layout: &Layout, options: &Options) -> Result<(), String> {
             validate_layout_items(items)
         }
         Layout::OptionsLayout(map) => {
+            if option_values.is_empty() {
+                return Err("layout options require options list".to_string());
+            }
             for option in &option_values {
                 if !map.contains_key(*option) {
                     return Err(format!("layout missing option '{}'", option));
@@ -351,7 +359,7 @@ impl From<&TemplateDefinition> for TemplateSummary {
             description: template.description.clone(),
             unit: template.unit.clone(),
             dpi: template.dpi,
-            options: template.options.0.clone(),
+            options: template.options.as_ref().map(|opts| opts.0.clone()),
             format: template.format.clone(),
         }
     }
@@ -376,7 +384,9 @@ impl From<&TemplateDefinition> for TemplateDetail {
 #[cfg(test)]
 mod tests {
     use super::{TemplateDefinition, TemplateRegistry};
-    use crate::models::{Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateFormat};
+    use crate::models::{
+        Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateFormat,
+    };
     use std::{collections::HashMap, fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -407,7 +417,7 @@ mod tests {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: Options(vec!["default".to_string()]),
+            options: Some(Options(vec!["default".to_string()])),
             layout: Layout::OptionsLayout(HashMap::from([(
                 "default".to_string(),
                 Vec::new(),
@@ -430,7 +440,7 @@ mod tests {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: Options(vec!["".to_string()]),
+            options: Some(Options(vec!["".to_string()])),
             layout: Layout::OptionsLayout(HashMap::from([(
                 "horizontal".to_string(),
                 Vec::new(),
@@ -453,18 +463,16 @@ name: Sample
 description: Sample template
 unit: mm
 dpi: 300
-options: [default]
 format:
   type: single
   width: 12.0
   height: 25.0
 layout:
-  default:
-    - type: text
-      name: message
-      box: [0.0, 0.0, 10.0, 5.0]
-      font_size: 10.0
-      multiline: true
+  - type: text
+    name: message
+    box: [0.0, 0.0, 10.0, 5.0]
+    font_size: 10.0
+    multiline: true
 "#,
         );
 
@@ -487,13 +495,11 @@ name: B
 description: B
 unit: mm
 dpi: 300
-options: [default]
 format:
   type: single
   width: 12.0
   height: 25.0
-layout:
-  default: []
+layout: []
 "#,
         );
         write_template(
@@ -505,13 +511,11 @@ name: A
 description: A
 unit: mm
 dpi: 300
-options: [default]
 format:
   type: single
   width: 12.0
   height: 25.0
-layout:
-  default: []
+layout: []
 "#,
         );
 
@@ -536,7 +540,7 @@ layout:
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: Options(vec!["default".to_string()]),
+            options: Some(Options(vec!["default".to_string()])),
             layout: Layout::OptionsLayout(HashMap::from([(
                 "default".to_string(),
                 vec![
