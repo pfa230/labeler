@@ -1,5 +1,5 @@
 use crate::errors::AppError;
-use crate::models::{Dimension, FontSize, Layout, LayoutItem, TemplateFormat};
+use crate::models::{Dimension, FontSize, Layout, LayoutItem, Point, TemplateFormat};
 use crate::templates::TemplateDefinition;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
@@ -152,10 +152,60 @@ fn build_typst_source(
                     AppError::render_failed(format!("failed to build typst source: {err}"))
                 })?;
             }
-            _ => {
-                return Err(AppError::unsupported_layout_item(
-                    "only text and qr items are supported for now",
-                ));
+            LayoutItem::Line {
+                start,
+                end,
+                thickness,
+            } => {
+                let (start_x, start_y) = to_page_coords(start, page_height_units);
+                let (end_x, end_y) = to_page_coords(end, page_height_units);
+                let dx = end_x - start_x;
+                let dy = end_y - start_y;
+                let start_x = format_length(start_x, unit)?;
+                let start_y = format_length(start_y, unit)?;
+                let dx = format_length(dx, unit)?;
+                let dy = format_length(dy, unit)?;
+                let zero = format_length(0.0, unit)?;
+                let stroke = format_length(*thickness, unit)?;
+
+                writeln!(
+                    source,
+                    "#place(top + left, dx: {start_x}, dy: {start_y})[#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {stroke})]"
+                )
+                .map_err(|err| {
+                    AppError::render_failed(format!("failed to build typst source: {err}"))
+                })?;
+            }
+            LayoutItem::Rectangle {
+                bounds,
+                thickness,
+                rounded,
+            } => {
+                let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
+                let left = x1.min(x2);
+                let right = x1.max(x2);
+                let bottom = y1.min(y2);
+                let top = y1.max(y2);
+                let width = right - left;
+                let height = top - bottom;
+                let dx = format_length(left, unit)?;
+                let dy = format_length(page_height_units - top, unit)?;
+                let box_width = format_length(width, unit)?;
+                let box_height = format_length(height, unit)?;
+                let stroke = format_length(*thickness, unit)?;
+                let radius = if *rounded {
+                    format_length(thickness * 2.0, unit)?
+                } else {
+                    format_length(0.0, unit)?
+                };
+
+                writeln!(
+                    source,
+                    "#place(top + left, dx: {dx}, dy: {dy})[#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})]"
+                )
+                .map_err(|err| {
+                    AppError::render_failed(format!("failed to build typst source: {err}"))
+                })?;
             }
         }
     }
@@ -285,11 +335,15 @@ fn build_qr_svg(
     Ok((svg_xml, box_width, box_height, dx, dy))
 }
 
+fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32) {
+    (point.x, page_height_units - point.y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::render_single_label;
     use crate::models::{
-        Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateFormat,
+        Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, Point, TemplateFormat,
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
@@ -356,6 +410,16 @@ mod tests {
                         name: "code".to_string(),
                         bounds: Box([20.0, 0.0, 30.0, 10.0]),
                         params: None,
+                    },
+                    LayoutItem::Line {
+                        start: Point { x: 0.0, y: 1.0 },
+                        end: Point { x: 30.0, y: 1.0 },
+                        thickness: 0.2,
+                    },
+                    LayoutItem::Rectangle {
+                        bounds: Box([0.5, 1.5, 29.5, 19.5]),
+                        thickness: 0.2,
+                        rounded: true,
                     },
                 ],
             )])),
