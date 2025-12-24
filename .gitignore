@@ -14,4 +14,4 @@ venv/
 *.swp
 *.swo
 
-.pdf
+*.pdf
