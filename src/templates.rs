@@ -169,11 +169,28 @@ impl TemplateDefinition {
                     return Err("positions must not be empty".to_string());
                 }
                 for (idx, position) in positions.iter().enumerate() {
-                    if position.width <= 0.0 || position.height <= 0.0 {
+                    let (bottom_left, top_right) = position.bounds.corners();
+                    if (bottom_left.x - top_right.x).abs() < f32::EPSILON
+                        || (bottom_left.y - top_right.y).abs() < f32::EPSILON
+                    {
                         return Err(format!(
                             "position {} must have non-zero width and height",
                             idx
                         ));
+                    }
+                    if bottom_left.x > top_right.x || bottom_left.y > top_right.y {
+                        return Err(format!(
+                            "position {} must have x1 < x2 and y1 < y2",
+                            idx
+                        ));
+                    }
+                    if let Some(rotation) = position.rotation {
+                        if !matches!(rotation, 0 | 90 | 180 | 270) {
+                            return Err(format!(
+                                "position {} rotation must be 0, 90, 180, or 270",
+                                idx
+                            ));
+                        }
                     }
                 }
             }
@@ -425,8 +442,11 @@ fn layout_bounds(
             let mut min_width = f32::INFINITY;
             let mut min_height = f32::INFINITY;
             for position in positions {
-                min_width = min_width.min(position.width);
-                min_height = min_height.min(position.height);
+                let (bl, tr) = position.bounds.corners();
+                let width = tr.x - bl.x;
+                let height = tr.y - bl.y;
+                min_width = min_width.min(width);
+                min_height = min_height.min(height);
             }
             (min_width, min_height)
         }
