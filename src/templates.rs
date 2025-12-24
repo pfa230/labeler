@@ -16,6 +16,7 @@ pub struct TemplateDefinition {
     pub name: String,
     pub description: String,
     pub unit: String,
+    pub dpi: u32,
     pub format: TemplateFormat,
     pub options: Options,
     pub layout: Layout,
@@ -132,6 +133,9 @@ impl TemplateDefinition {
         match self.unit.as_str() {
             "mm" | "in" => {}
             _ => return Err("unit must be either \"mm\" or \"in\"".to_string()),
+        }
+        if self.dpi == 0 {
+            return Err("dpi must be greater than 0".to_string());
         }
 
         if self.options.0.is_empty() {
@@ -346,6 +350,7 @@ impl From<&TemplateDefinition> for TemplateSummary {
             name: template.name.clone(),
             description: template.description.clone(),
             unit: template.unit.clone(),
+            dpi: template.dpi,
             options: template.options.0.clone(),
             format: template.format.clone(),
         }
@@ -359,6 +364,7 @@ impl From<&TemplateDefinition> for TemplateDetail {
             name: template.name.clone(),
             description: template.description.clone(),
             unit: template.unit.clone(),
+            dpi: template.dpi,
             format: template.format.clone(),
             options: template.options.clone(),
             layout: template.layout.clone(),
@@ -396,6 +402,7 @@ mod tests {
             name: "Label".to_string(),
             description: "desc".to_string(),
             unit: "mm".to_string(),
+            dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
@@ -418,6 +425,7 @@ mod tests {
             name: "Label".to_string(),
             description: "desc".to_string(),
             unit: "mm".to_string(),
+            dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
@@ -444,6 +452,7 @@ id: sample
 name: Sample
 description: Sample template
 unit: mm
+dpi: 300
 options: [default]
 format:
   type: single
@@ -477,6 +486,7 @@ id: b
 name: B
 description: B
 unit: mm
+dpi: 300
 options: [default]
 format:
   type: single
@@ -494,6 +504,7 @@ id: a
 name: A
 description: A
 unit: mm
+dpi: 300
 options: [default]
 format:
   type: single
@@ -520,6 +531,7 @@ layout:
             name: "dup".to_string(),
             description: "dup".to_string(),
             unit: "mm".to_string(),
+            dpi: 300,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),

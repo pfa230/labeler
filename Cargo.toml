@@ -15,6 +15,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tower-http = { version = "0.6", features = ["trace"] }
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
+typst = "0.14"
+typst-as-lib = { version = "0.15", features = ["typst-kit-embed-fonts", "typst-kit-fonts"] }
+typst-render = "0.14"
 
 [dev-dependencies]
 http-body-util = "0.1"
