@@ -202,31 +202,21 @@ pub enum TemplateFormat {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RenderLabelRequest {
     pub template: String,
-    pub data: HashMap<String, Value>,
-    #[serde(default)]
-    pub options: HashMap<String, Value>,
-    #[serde(default)]
-    pub output: OutputOptions,
+    #[serde(flatten)]
+    pub label: LabelInput,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RenderBatchRequest {
     pub template: String,
-    pub labels: Vec<BatchLabel>,
+    pub labels: Vec<LabelInput>,
     #[serde(default)]
     pub start_slot: u32,
-    #[serde(default)]
-    pub output: OutputOptions,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct BatchLabel {
+pub struct LabelInput {
     pub data: HashMap<String, Value>,
     #[serde(default)]
-    pub options: HashMap<String, Value>,
-}
-
-#[derive(Debug, Deserialize, Default, ToSchema)]
-pub struct OutputOptions {
-    pub dpi: Option<u32>,
+    pub option: Option<String>,
 }
