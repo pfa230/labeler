@@ -213,6 +213,16 @@ pub enum LayoutItem {
         thickness: f32,
         rounded: bool,
     },
+    Container {
+        #[serde(rename = "box")]
+        #[schema(rename = "box")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bounds: Option<Box>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rotation: Option<u16>,
+        #[schema(no_recursion)]
+        items: Vec<LayoutItem>,
+    },
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
