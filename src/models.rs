@@ -33,7 +33,8 @@ pub struct TemplateSummary {
     pub description: String,
     pub unit: String,
     pub dpi: u32,
-    pub options: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<String>>,
     pub format: TemplateFormat,
 }
 
@@ -45,7 +46,8 @@ pub struct TemplateDetail {
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
-    pub options: Options,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub options: Option<Options>,
     pub layout: Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
