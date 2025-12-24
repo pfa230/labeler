@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use utoipa::ToSchema;
@@ -75,6 +75,53 @@ impl Box {
     pub fn corners(&self) -> (Point, Point) {
         let [x1, y1, x2, y2] = self.0;
         (Point { x: x1, y: y1 }, Point { x: x2, y: y2 })
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
+pub struct SheetPosition {
+    pub origin: Point,
+    pub width: f32,
+    pub height: f32,
+    #[schema(example = 0)]
+    pub rotation_deg: u16,
+}
+
+impl SheetPosition {
+    fn from_coords(coords: [f32; 4]) -> Result<Self, String> {
+        let [x1, y1, x2, y2] = coords;
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        if dx.abs() < f32::EPSILON || dy.abs() < f32::EPSILON {
+            return Err("sheet position must have non-zero width and height".to_string());
+        }
+
+        let (rotation_deg, width, height) = if dx > 0.0 && dy > 0.0 {
+            (0, dx.abs(), dy.abs())
+        } else if dx < 0.0 && dy < 0.0 {
+            (180, dx.abs(), dy.abs())
+        } else if dx < 0.0 && dy > 0.0 {
+            (90, dy.abs(), dx.abs())
+        } else {
+            (270, dy.abs(), dx.abs())
+        };
+
+        Ok(Self {
+            origin: Point { x: x1, y: y1 },
+            width,
+            height,
+            rotation_deg,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SheetPosition {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let coords = <[f32; 4]>::deserialize(deserializer)?;
+        Self::from_coords(coords).map_err(serde::de::Error::custom)
     }
 }
 
@@ -217,7 +264,7 @@ pub enum Layout {
 pub enum TemplateFormat {
     Sheet {
         paper_size: String,
-        positions: Vec<Box>,
+        positions: Vec<SheetPosition>,
     },
     Single {
         width: Dimension,
