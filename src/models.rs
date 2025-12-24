@@ -34,6 +34,8 @@ pub struct TemplateSummary {
     pub unit: String,
     pub dpi: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub margins: Option<Margins>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Vec<String>>,
     pub format: TemplateFormat,
 }
@@ -45,6 +47,8 @@ pub struct TemplateDetail {
     pub description: String,
     pub unit: String,
     pub dpi: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub margins: Option<Margins>,
     pub format: TemplateFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
@@ -71,6 +75,28 @@ impl Box {
     pub fn corners(&self) -> (Point, Point) {
         let [x1, y1, x2, y2] = self.0;
         (Point { x: x1, y: y1 }, Point { x: x2, y: y2 })
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, Default)]
+#[serde(transparent)]
+pub struct Margins(pub [f32; 4]);
+
+impl Margins {
+    pub fn left(&self) -> f32 {
+        self.0[0]
+    }
+
+    pub fn bottom(&self) -> f32 {
+        self.0[1]
+    }
+
+    pub fn right(&self) -> f32 {
+        self.0[2]
+    }
+
+    pub fn top(&self) -> f32 {
+        self.0[3]
     }
 }
 

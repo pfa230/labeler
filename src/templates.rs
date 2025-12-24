@@ -6,7 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::models::{
-    Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateDetail, TemplateFormat,
+    Box, Dimension, FontSize, Layout, LayoutItem, Margins, Options, TemplateDetail, TemplateFormat,
     TemplateSummary,
 };
 
@@ -17,6 +17,8 @@ pub struct TemplateDefinition {
     pub description: String,
     pub unit: String,
     pub dpi: u32,
+    #[serde(default)]
+    pub margins: Option<Margins>,
     pub format: TemplateFormat,
     #[serde(default)]
     pub options: Option<Options>,
@@ -138,6 +140,11 @@ impl TemplateDefinition {
         if self.dpi == 0 {
             return Err("dpi must be greater than 0".to_string());
         }
+        if let Some(margins) = &self.margins {
+            if margins.0.iter().any(|value| *value < 0.0) {
+                return Err("margins must be >= 0".to_string());
+            }
+        }
 
         if let Some(options) = &self.options {
             if options.0.is_empty() {
@@ -147,7 +154,8 @@ impl TemplateDefinition {
                 return Err("options must not contain empty values".to_string());
             }
         }
-        validate_layout(&self.layout, self.options.as_ref())?;
+        let bounds = layout_bounds(&self.format, self.margins.as_ref())?;
+        validate_layout(&self.layout, self.options.as_ref(), bounds.as_ref())?;
 
         match &self.format {
             TemplateFormat::Sheet {
@@ -215,7 +223,11 @@ fn validate_dimension(name: &str, dimension: &Dimension) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_layout(layout: &Layout, options: Option<&Options>) -> Result<(), String> {
+fn validate_layout(
+    layout: &Layout,
+    options: Option<&Options>,
+    bounds: Option<&LayoutBounds>,
+) -> Result<(), String> {
     let option_values: HashSet<&str> = options
         .map(|options| options.0.iter().map(|value| value.as_str()).collect())
         .unwrap_or_default();
@@ -227,7 +239,7 @@ fn validate_layout(layout: &Layout, options: Option<&Options>) -> Result<(), Str
                         .to_string(),
                 );
             }
-            validate_layout_items(items)
+            validate_layout_items(items, bounds)
         }
         Layout::OptionsLayout(map) => {
             if option_values.is_empty() {
@@ -244,7 +256,7 @@ fn validate_layout(layout: &Layout, options: Option<&Options>) -> Result<(), Str
                 }
             }
             for (option, items) in map {
-                validate_layout_items(items)
+                validate_layout_items(items, bounds)
                     .map_err(|err| format!("layout for option '{option}' invalid: {err}"))?;
             }
             Ok(())
@@ -252,7 +264,7 @@ fn validate_layout(layout: &Layout, options: Option<&Options>) -> Result<(), Str
     }
 }
 
-fn validate_layout_items(items: &[LayoutItem]) -> Result<(), String> {
+fn validate_layout_items(items: &[LayoutItem], bounds: Option<&LayoutBounds>) -> Result<(), String> {
     let mut seen_names = HashSet::new();
     for item in items {
         if let Some(name) = layout_item_name(item) {
@@ -263,7 +275,7 @@ fn validate_layout_items(items: &[LayoutItem]) -> Result<(), String> {
                 return Err(format!("duplicate layout item name '{}'", name));
             }
         }
-        validate_layout_item(item)?;
+        validate_layout_item(item, bounds)?;
     }
     Ok(())
 }
@@ -277,7 +289,10 @@ fn layout_item_name(item: &LayoutItem) -> Option<&str> {
     }
 }
 
-fn validate_layout_item(item: &LayoutItem) -> Result<(), String> {
+fn validate_layout_item(
+    item: &LayoutItem,
+    layout_bounds: Option<&LayoutBounds>,
+) -> Result<(), String> {
     match item {
         LayoutItem::Text {
             bounds,
@@ -285,10 +300,12 @@ fn validate_layout_item(item: &LayoutItem) -> Result<(), String> {
             ..
         } => {
             validate_box(bounds)?;
+            validate_box_within(bounds, layout_bounds)?;
             validate_font_size(font_size)?;
         }
         LayoutItem::Qr { bounds, params, .. } => {
             validate_box(bounds)?;
+            validate_box_within(bounds, layout_bounds)?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
                     if module_size <= 0.0 {
@@ -311,9 +328,14 @@ fn validate_layout_item(item: &LayoutItem) -> Result<(), String> {
             {
                 return Err("line start and end must differ".to_string());
             }
+            if let Some(layout_bounds) = layout_bounds {
+                validate_point_within(start, layout_bounds)?;
+                validate_point_within(end, layout_bounds)?;
+            }
         }
         LayoutItem::Rectangle { bounds, thickness, .. } => {
             validate_box(bounds)?;
+            validate_box_within(bounds, layout_bounds)?;
             if *thickness <= 0.0 {
                 return Err("rectangle thickness must be greater than 0".to_string());
             }
@@ -328,6 +350,34 @@ fn validate_box(bounds: &Box) -> Result<(), String> {
         || (bottom_left.y - top_right.y).abs() < f32::EPSILON
     {
         return Err("box must have non-zero width and height".to_string());
+    }
+    Ok(())
+}
+
+fn validate_box_within(bounds: &Box, layout_bounds: Option<&LayoutBounds>) -> Result<(), String> {
+    let Some(layout_bounds) = layout_bounds else {
+        return Ok(());
+    };
+    let (bottom_left, top_right) = bounds.corners();
+    let min_x = bottom_left.x.min(top_right.x);
+    let max_x = bottom_left.x.max(top_right.x);
+    let min_y = bottom_left.y.min(top_right.y);
+    let max_y = bottom_left.y.max(top_right.y);
+    if min_x < 0.0 || min_y < 0.0 {
+        return Err("box must not extend into margins".to_string());
+    }
+    if max_x > layout_bounds.width || max_y > layout_bounds.height {
+        return Err("box must fit within layout bounds".to_string());
+    }
+    Ok(())
+}
+
+fn validate_point_within(point: &crate::models::Point, bounds: &LayoutBounds) -> Result<(), String> {
+    if point.x < 0.0 || point.y < 0.0 {
+        return Err("point must not extend into margins".to_string());
+    }
+    if point.x > bounds.width || point.y > bounds.height {
+        return Err("point must fit within layout bounds".to_string());
     }
     Ok(())
 }
@@ -351,6 +401,58 @@ fn validate_font_size(font_size: &FontSize) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LayoutBounds {
+    width: f32,
+    height: f32,
+}
+
+fn layout_bounds(
+    format: &TemplateFormat,
+    margins: Option<&Margins>,
+) -> Result<Option<LayoutBounds>, String> {
+    let margins = margins.cloned().unwrap_or_default();
+    let left = margins.left();
+    let right = margins.right();
+    let top = margins.top();
+    let bottom = margins.bottom();
+
+    let (width, height) = match format {
+        TemplateFormat::Single { width, height } => {
+            (resolve_dimension(width), resolve_dimension(height))
+        }
+        TemplateFormat::Sheet { positions, .. } => {
+            if positions.is_empty() {
+                return Ok(None);
+            }
+            let mut min_width = f32::INFINITY;
+            let mut min_height = f32::INFINITY;
+            for position in positions {
+                let (bl, tr) = position.corners();
+                let width = (tr.x - bl.x).abs();
+                let height = (tr.y - bl.y).abs();
+                min_width = min_width.min(width);
+                min_height = min_height.min(height);
+            }
+            (min_width, min_height)
+        }
+    };
+
+    if width <= left + right || height <= top + bottom {
+        return Err("margins exceed available size".to_string());
+    }
+    let width = width - left - right;
+    let height = height - bottom - top;
+    Ok(Some(LayoutBounds { width, height }))
+}
+
+fn resolve_dimension(dimension: &Dimension) -> f32 {
+    match dimension {
+        Dimension::Fixed(value) => *value,
+        Dimension::Dynamic { min, max } => max.or(*min).unwrap_or(0.0),
+    }
+}
+
 impl From<&TemplateDefinition> for TemplateSummary {
     fn from(template: &TemplateDefinition) -> Self {
         Self {
@@ -359,6 +461,7 @@ impl From<&TemplateDefinition> for TemplateSummary {
             description: template.description.clone(),
             unit: template.unit.clone(),
             dpi: template.dpi,
+            margins: template.margins.clone(),
             options: template.options.as_ref().map(|opts| opts.0.clone()),
             format: template.format.clone(),
         }
@@ -373,6 +476,7 @@ impl From<&TemplateDefinition> for TemplateDetail {
             description: template.description.clone(),
             unit: template.unit.clone(),
             dpi: template.dpi,
+            margins: template.margins.clone(),
             format: template.format.clone(),
             options: template.options.clone(),
             layout: template.layout.clone(),
@@ -413,6 +517,7 @@ mod tests {
             description: "desc".to_string(),
             unit: "mm".to_string(),
             dpi: 300,
+            margins: None,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
@@ -436,6 +541,7 @@ mod tests {
             description: "desc".to_string(),
             unit: "mm".to_string(),
             dpi: 300,
+            margins: None,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
@@ -536,6 +642,7 @@ layout: []
             description: "dup".to_string(),
             unit: "mm".to_string(),
             dpi: 300,
+            margins: None,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
