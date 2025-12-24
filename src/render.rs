@@ -13,7 +13,6 @@ pub fn render_single_label(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&str>,
-    dpi_override: Option<u32>,
 ) -> Result<Vec<u8>, AppError> {
     let TemplateFormat::Single { width, height } = &template.format else {
         return Err(AppError::unsupported_format("render_label only supports single format"));
@@ -21,7 +20,7 @@ pub fn render_single_label(
 
     let width_units = resolve_dimension(width)?;
     let height_units = resolve_dimension(height)?;
-    let dpi = dpi_override.unwrap_or(template.dpi);
+    let dpi = template.dpi;
 
     let items = match &template.layout {
         Layout::Items(items) => items.as_slice(),
@@ -376,7 +375,7 @@ mod tests {
         };
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let png = render_single_label(&template, &data, Some("default"), None)
+        let png = render_single_label(&template, &data, Some("default"))
             .expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
@@ -430,7 +429,7 @@ mod tests {
             ("message".to_string(), json!("Hello")),
             ("code".to_string(), json!("QR-123")),
         ]);
-        let png = render_single_label(&template, &data, Some("default"), None)
+        let png = render_single_label(&template, &data, Some("default"))
             .expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");

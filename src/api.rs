@@ -101,17 +101,13 @@ pub async fn render_label(
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
 
-    let option_value = req
-        .options
-        .get("option")
-        .and_then(|value| value.as_str());
+    let option_value = req.label.option.as_deref();
 
-    let resolved_dpi = req.output.dpi.unwrap_or(template.dpi);
     tracing::debug!(
         template = %template.id,
         option = option_value.unwrap_or(""),
-        dpi = resolved_dpi,
-        data_keys = req.data.len(),
+        dpi = template.dpi,
+        data_keys = req.label.data.len(),
         "render label request"
     );
 
@@ -124,7 +120,7 @@ pub async fn render_label(
         }
     }
 
-    let png = render_single_label(template, &req.data, selected_option, req.output.dpi)?;
+    let png = render_single_label(template, &req.label.data, selected_option)?;
 
     Ok((
         axum::http::StatusCode::OK,
