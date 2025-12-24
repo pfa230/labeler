@@ -12,7 +12,7 @@ use typst_as_lib::TypstEngine;
 pub fn render_single_label(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
-    option: &str,
+    option: Option<&str>,
     dpi_override: Option<u32>,
 ) -> Result<Vec<u8>, AppError> {
     let TemplateFormat::Single { width, height } = &template.format else {
@@ -25,9 +25,18 @@ pub fn render_single_label(
 
     let items = match &template.layout {
         Layout::Items(items) => items.as_slice(),
-        Layout::OptionsLayout(map) => map
-            .get(option)
-            .ok_or_else(|| AppError::invalid_option_value(option, &template.options.0))?,
+        Layout::OptionsLayout(map) => {
+            let option = option.ok_or_else(|| {
+                AppError::invalid_request("missing option for optioned template")
+            })?;
+            let allowed = template
+                .options
+                .as_ref()
+                .map(|opts| opts.0.as_slice())
+                .unwrap_or(&[]);
+            map.get(option)
+                .ok_or_else(|| AppError::invalid_option_value(option, allowed))?
+        }
     };
 
     let source = build_typst_source(
@@ -298,7 +307,7 @@ mod tests {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(10.0),
             },
-            options: Options(vec!["default".to_string()]),
+            options: Some(Options(vec!["default".to_string()])),
             layout: Layout::OptionsLayout(HashMap::from([(
                 "default".to_string(),
                 vec![LayoutItem::Text {
@@ -313,7 +322,7 @@ mod tests {
         };
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let png = render_single_label(&template, &data, "default", None)
+        let png = render_single_label(&template, &data, Some("default"), None)
             .expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
@@ -332,7 +341,7 @@ mod tests {
                 width: Dimension::Fixed(30.0),
                 height: Dimension::Fixed(20.0),
             },
-            options: Options(vec!["default".to_string()]),
+            options: Some(Options(vec!["default".to_string()])),
             layout: Layout::OptionsLayout(HashMap::from([(
                 "default".to_string(),
                 vec![
@@ -357,7 +366,7 @@ mod tests {
             ("message".to_string(), json!("Hello")),
             ("code".to_string(), json!("QR-123")),
         ]);
-        let png = render_single_label(&template, &data, "default", None)
+        let png = render_single_label(&template, &data, Some("default"), None)
             .expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");

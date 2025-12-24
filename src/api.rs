@@ -104,23 +104,27 @@ pub async fn render_label(
     let option_value = req
         .options
         .get("option")
-        .and_then(|value| value.as_str())
-        .unwrap_or_else(|| template.options.0.first().map(|v| v.as_str()).unwrap_or(""));
+        .and_then(|value| value.as_str());
 
     let resolved_dpi = req.output.dpi.unwrap_or(template.dpi);
     tracing::debug!(
         template = %template.id,
-        option = %option_value,
+        option = option_value.unwrap_or(""),
         dpi = resolved_dpi,
         data_keys = req.data.len(),
         "render label request"
     );
 
-    if !template.options.0.iter().any(|opt| opt == option_value) {
-        return Err(AppError::invalid_option_value(option_value, &template.options.0));
+    let mut selected_option = option_value;
+    if let Some(options) = &template.options {
+        selected_option = selected_option.or_else(|| options.0.first().map(|v| v.as_str()));
+        let selected = selected_option.unwrap_or("");
+        if !options.0.iter().any(|opt| opt == selected) {
+            return Err(AppError::invalid_option_value(selected, &options.0));
+        }
     }
 
-    let png = render_single_label(template, &req.data, option_value, req.output.dpi)?;
+    let png = render_single_label(template, &req.data, selected_option, req.output.dpi)?;
 
     Ok((
         axum::http::StatusCode::OK,
