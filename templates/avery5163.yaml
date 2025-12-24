@@ -1,0 +1,23 @@
+id: avery5163
+name: Avery 5163 2x4 Shipping Label
+description: Standard shipping labels on US Letter sheets
+format:
+  type: sheet
+  labels_per_sheet: 10
+  paper_size: "8.5x11"
+  label_size: "2x4"
+options:
+  orientation:
+    values: ["horizontal", "vertical"]
+    default: "horizontal"
+fields:
+  - name: id
+    type: string
+    max_length: 10
+  - name: name
+    type: string
+    max_length: 50
+  - name: address
+    type: string
+    max_length: 100
+    multiline: true
