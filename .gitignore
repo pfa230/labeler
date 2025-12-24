@@ -1,0 +1,17 @@
+/target
+
+# Rust
+**/*.rs.bk
+
+# Python virtual envs
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+.pdf
