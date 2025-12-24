@@ -20,3 +20,11 @@ layout:
   - type: qr
     name: code
     box: [12.0, 0.0, 24.0, 12.0]
+  - type: line
+    start: { x: 0.5, y: 1.0 }
+    end: { x: 23.5, y: 1.0 }
+    thickness: 0.2
+  - type: rectangle
+    box: [0.5, 1.5, 23.5, 11.5]
+    thickness: 0.2
+    rounded: true
