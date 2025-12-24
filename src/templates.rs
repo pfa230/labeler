@@ -1,9 +1,10 @@
+use jsonschema::JSONSchema;
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
-    fmt,
     path::{Path as FsPath, PathBuf},
 };
+use thiserror::Error;
 
 use crate::models::{FieldSpec, OptionDetail, TemplateDetail, TemplateFormat, TemplateSummary};
 
@@ -31,6 +32,7 @@ impl TemplateRegistry {
         let dir = dir.as_ref();
         let mut templates = HashMap::new();
         let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
+        let schema = load_schema("schemas/template.schema.json")?;
 
         let entries = std::fs::read_dir(dir)
             .map_err(|source| TemplateRegistryError::Io {
@@ -58,12 +60,17 @@ impl TemplateRegistry {
                     source,
                 }
             })?;
-            let template: TemplateDefinition = serde_yaml::from_str(&contents).map_err(|source| {
-                TemplateRegistryError::Yaml {
+            let yaml_value: serde_yaml::Value =
+                serde_yaml::from_str(&contents).map_err(|source| TemplateRegistryError::Yaml {
                     path: path.clone(),
                     source,
-                }
-            })?;
+                })?;
+            validate_schema(&schema, &path, &yaml_value)?;
+            let template: TemplateDefinition =
+                serde_yaml::from_value(yaml_value).map_err(|source| TemplateRegistryError::Yaml {
+                    path: path.clone(),
+                    source,
+                })?;
             template
                 .validate()
                 .map_err(|message| TemplateRegistryError::Validation {
@@ -105,47 +112,68 @@ impl TemplateRegistry {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum TemplateRegistryError {
+    #[error("failed to read templates from {path}: {source}")]
     Io { path: PathBuf, source: std::io::Error },
+    #[error("failed to parse template {path}: {source}")]
     Yaml { path: PathBuf, source: serde_yaml::Error },
+    #[error("failed to load schema {path}: {message}")]
+    Schema { path: PathBuf, message: String },
+    #[error("template {path} failed schema validation: {errors}")]
+    SchemaValidation { path: PathBuf, errors: String },
+    #[error("template {path} failed validation: {message}")]
     Validation { path: PathBuf, message: String },
-    DuplicateId { id: String, first: PathBuf, second: PathBuf },
+    #[error("duplicate template id '{id}' found in {first} and {second}")]
+    DuplicateId {
+        id: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
 }
 
-impl fmt::Display for TemplateRegistryError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TemplateRegistryError::Io { path, source } => {
-                write!(f, "failed to read templates from {}: {source}", path.display())
-            }
-            TemplateRegistryError::Yaml { path, source } => {
-                write!(f, "failed to parse template {}: {source}", path.display())
-            }
-            TemplateRegistryError::Validation { path, message } => {
-                write!(f, "template {} failed validation: {message}", path.display())
-            }
-            TemplateRegistryError::DuplicateId { id, first, second } => {
-                write!(
-                    f,
-                    "duplicate template id '{}' found in {} and {}",
-                    id,
-                    first.display(),
-                    second.display()
-                )
-            }
+fn load_schema(path: &str) -> Result<JSONSchema, TemplateRegistryError> {
+    let schema_str = std::fs::read_to_string(path).map_err(|source| {
+        TemplateRegistryError::Io {
+            path: PathBuf::from(path),
+            source,
         }
-    }
+    })?;
+    let schema_value: serde_json::Value = serde_json::from_str(&schema_str).map_err(|source| {
+        TemplateRegistryError::Schema {
+            path: PathBuf::from(path),
+            message: source.to_string(),
+        }
+    })?;
+    JSONSchema::compile(&schema_value).map_err(|source| TemplateRegistryError::Schema {
+        path: PathBuf::from(path),
+        message: source.to_string(),
+    })
 }
 
-impl std::error::Error for TemplateRegistryError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            TemplateRegistryError::Io { source, .. } => Some(source),
-            TemplateRegistryError::Yaml { source, .. } => Some(source),
-            _ => None,
+fn validate_schema(
+    schema: &JSONSchema,
+    template_path: &PathBuf,
+    yaml_value: &serde_yaml::Value,
+) -> Result<(), TemplateRegistryError> {
+    let json_value = serde_json::to_value(yaml_value).map_err(|source| {
+        TemplateRegistryError::Schema {
+            path: template_path.clone(),
+            message: source.to_string(),
         }
+    })?;
+    let result = schema.validate(&json_value);
+    if let Err(errors) = result {
+        let messages = errors
+            .map(|err| err.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(TemplateRegistryError::SchemaValidation {
+            path: template_path.clone(),
+            errors: messages,
+        });
     }
+    Ok(())
 }
 
 impl TemplateDefinition {
