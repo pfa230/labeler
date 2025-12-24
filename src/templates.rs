@@ -154,8 +154,9 @@ impl TemplateDefinition {
                 return Err("options must not contain empty values".to_string());
             }
         }
-        let bounds = layout_bounds(&self.format, self.margins.as_ref())?;
-        validate_layout(&self.layout, self.options.as_ref(), bounds.as_ref())?;
+        let margins = self.margins.clone().unwrap_or_default();
+        let bounds = layout_bounds(&self.format, &margins)?;
+        validate_layout(&self.layout, self.options.as_ref(), bounds.as_ref(), &margins)?;
 
         match &self.format {
             TemplateFormat::Sheet {
@@ -241,6 +242,7 @@ fn validate_layout(
     layout: &Layout,
     options: Option<&Options>,
     bounds: Option<&LayoutBounds>,
+    margins: &Margins,
 ) -> Result<(), String> {
     let option_values: HashSet<&str> = options
         .map(|options| options.0.iter().map(|value| value.as_str()).collect())
@@ -253,7 +255,7 @@ fn validate_layout(
                         .to_string(),
                 );
             }
-            validate_layout_items(items, bounds)
+            validate_layout_items(items, bounds, margins)
         }
         Layout::OptionsLayout(map) => {
             if option_values.is_empty() {
@@ -270,7 +272,7 @@ fn validate_layout(
                 }
             }
             for (option, items) in map {
-                validate_layout_items(items, bounds)
+                validate_layout_items(items, bounds, margins)
                     .map_err(|err| format!("layout for option '{option}' invalid: {err}"))?;
             }
             Ok(())
@@ -278,7 +280,11 @@ fn validate_layout(
     }
 }
 
-fn validate_layout_items(items: &[LayoutItem], bounds: Option<&LayoutBounds>) -> Result<(), String> {
+fn validate_layout_items(
+    items: &[LayoutItem],
+    bounds: Option<&LayoutBounds>,
+    margins: &Margins,
+) -> Result<(), String> {
     let mut seen_names = HashSet::new();
     for item in items {
         if let Some(name) = layout_item_name(item) {
@@ -289,7 +295,7 @@ fn validate_layout_items(items: &[LayoutItem], bounds: Option<&LayoutBounds>) ->
                 return Err(format!("duplicate layout item name '{}'", name));
             }
         }
-        validate_layout_item(item, bounds)?;
+        validate_layout_item(item, bounds, margins)?;
     }
     Ok(())
 }
@@ -300,12 +306,14 @@ fn layout_item_name(item: &LayoutItem) -> Option<&str> {
         LayoutItem::Qr { name, .. } => Some(name.as_str()),
         LayoutItem::Line { .. } => None,
         LayoutItem::Rectangle { .. } => None,
+        LayoutItem::Container { .. } => None,
     }
 }
 
 fn validate_layout_item(
     item: &LayoutItem,
     layout_bounds: Option<&LayoutBounds>,
+    margins: &Margins,
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
@@ -353,6 +361,30 @@ fn validate_layout_item(
             if *thickness <= 0.0 {
                 return Err("rectangle thickness must be greater than 0".to_string());
             }
+        }
+        LayoutItem::Container { bounds, rotation, items } => {
+            let container_bounds = if let Some(bounds) = bounds {
+                validate_box(bounds)?;
+                validate_box_within(bounds, layout_bounds)?;
+                let (bl, tr) = bounds.corners();
+                let width = tr.x - bl.x;
+                let height = tr.y - bl.y;
+                Some(LayoutBounds { width, height })
+            } else {
+                layout_bounds.cloned()
+            };
+
+            if let Some(rotation) = rotation {
+                if !matches!(*rotation, 0 | 90 | 180 | 270) {
+                    return Err("container rotation must be 0, 90, 180, or 270".to_string());
+                }
+            }
+
+            let container_bounds = container_bounds
+                .map(|bounds| layout_bounds_from_size(bounds.width, bounds.height, margins))
+                .transpose()?;
+
+            validate_layout_items(items, container_bounds.as_ref(), margins)?;
         }
     }
     Ok(())
@@ -423,14 +455,8 @@ struct LayoutBounds {
 
 fn layout_bounds(
     format: &TemplateFormat,
-    margins: Option<&Margins>,
+    margins: &Margins,
 ) -> Result<Option<LayoutBounds>, String> {
-    let margins = margins.cloned().unwrap_or_default();
-    let left = margins.left();
-    let right = margins.right();
-    let top = margins.top();
-    let bottom = margins.bottom();
-
     let (width, height) = match format {
         TemplateFormat::Single { width, height } => {
             (resolve_dimension(width), resolve_dimension(height))
@@ -452,14 +478,25 @@ fn layout_bounds(
         }
     };
 
+    layout_bounds_from_size(width, height, margins).map(Some)
+}
+
+fn layout_bounds_from_size(
+    width: f32,
+    height: f32,
+    margins: &Margins,
+) -> Result<LayoutBounds, String> {
+    let left = margins.left();
+    let right = margins.right();
+    let top = margins.top();
+    let bottom = margins.bottom();
     if width <= left + right || height <= top + bottom {
         return Err("margins exceed available size".to_string());
     }
     let width = width - left - right;
     let height = height - bottom - top;
-    Ok(Some(LayoutBounds { width, height }))
+    Ok(LayoutBounds { width, height })
 }
-
 fn resolve_dimension(dimension: &Dimension) -> f32 {
     match dimension {
         Dimension::Fixed(value) => *value,

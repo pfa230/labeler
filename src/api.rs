@@ -17,6 +17,7 @@ use crate::{
     },
     openapi::ApiDoc,
     render::render_single_label,
+    render::render_sheet_labels,
     templates::TemplateRegistry,
 };
 
@@ -153,8 +154,16 @@ pub async fn render_batch(
         start_slot = req.start_slot,
         "render batch request"
     );
-    if registry.get(&req.template).is_none() {
-        return Err(AppError::template_not_found(req.template));
-    }
-    Err(AppError::not_implemented("render_batch"))
+    let template = registry
+        .get(&req.template)
+        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+
+    let pdf = render_sheet_labels(template, &req.labels, req.start_slot)?;
+
+    Ok((
+        axum::http::StatusCode::OK,
+        [("content-type", "application/pdf")],
+        pdf,
+    )
+        .into_response())
 }
