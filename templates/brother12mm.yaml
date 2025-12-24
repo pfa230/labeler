@@ -1,9 +1,13 @@
 id: brother12mm
 name: Brother 12mm Continuous Label
 description: Continuous label roll (12mm width)
+unit: mm
 format:
-  type: continuous
-  width_mm: 12.0
+  type: single
+  width: 12.0
+  height:
+    min: 5.0
+    max: 200.0
 options:
   color:
     values: ["black", "red"]
