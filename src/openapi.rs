@@ -3,9 +3,10 @@ use utoipa::OpenApi;
 use crate::{
     api,
     models::{
-        BatchLabel, ErrorBody, ErrorResponse, FieldSpec, HealthResponse, OptionDetail,
-        OutputOptions, RenderBatchRequest, RenderLabelRequest, TemplateDetail, TemplateFormat,
-        TemplateList, TemplateSummary,
+        BatchLabel, Box, Dimension, ErrorBody, ErrorResponse, FontSize, HealthResponse,
+        HorizontalAlign, Layout, LayoutItem, Options, OutputOptions, Point, QrParams,
+        RenderBatchRequest, VerticalAlign,
+        RenderLabelRequest, TemplateDetail, TemplateFormat, TemplateList, TemplateSummary,
     },
 };
 
@@ -25,8 +26,16 @@ use crate::{
             TemplateSummary,
             TemplateFormat,
             TemplateDetail,
-            OptionDetail,
-            FieldSpec,
+            Options,
+            LayoutItem,
+            Layout,
+            Box,
+            Point,
+            Dimension,
+            FontSize,
+            QrParams,
+            HorizontalAlign,
+            VerticalAlign,
             RenderLabelRequest,
             RenderBatchRequest,
             BatchLabel,

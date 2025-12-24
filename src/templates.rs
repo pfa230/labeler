@@ -6,7 +6,8 @@ use std::{
 use thiserror::Error;
 
 use crate::models::{
-    Dimension, FieldSpec, OptionDetail, TemplateDetail, TemplateFormat, TemplateSummary,
+    Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateDetail, TemplateFormat,
+    TemplateSummary,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -16,10 +17,8 @@ pub struct TemplateDefinition {
     pub description: String,
     pub unit: String,
     pub format: TemplateFormat,
-    #[serde(default)]
-    pub options: HashMap<String, OptionDetail>,
-    #[serde(default)]
-    pub fields: Vec<FieldSpec>,
+    pub options: Options,
+    pub layout: Layout,
     #[serde(default)]
     pub version: Option<String>,
 }
@@ -135,30 +134,13 @@ impl TemplateDefinition {
             _ => return Err("unit must be either \"mm\" or \"in\"".to_string()),
         }
 
-        let mut seen_fields = HashSet::new();
-        for field in &self.fields {
-            if field.name.trim().is_empty() {
-                return Err("field name must not be empty".to_string());
-            }
-            if !seen_fields.insert(field.name.as_str()) {
-                return Err(format!("duplicate field name '{}'", field.name));
-            }
+        if self.options.0.is_empty() {
+            return Err("options must not be empty".to_string());
         }
-
-        for (name, option) in &self.options {
-            if name.trim().is_empty() {
-                return Err("option name must not be empty".to_string());
-            }
-            if option.values.is_empty() {
-                return Err(format!("option '{}' must define values", name));
-            }
-            if !option.values.contains(&option.default) {
-                return Err(format!(
-                    "option '{}' default '{}' not in values",
-                    name, option.default
-                ));
-            }
+        if self.options.0.iter().any(|opt| opt.trim().is_empty()) {
+            return Err("options must not contain empty values".to_string());
         }
+        validate_layout(&self.layout, &self.options)?;
 
         match &self.format {
             TemplateFormat::Sheet {
@@ -226,19 +208,145 @@ fn validate_dimension(name: &str, dimension: &Dimension) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_layout(layout: &Layout, options: &Options) -> Result<(), String> {
+    let option_values: HashSet<&str> = options.0.iter().map(|value| value.as_str()).collect();
+    match layout {
+        Layout::Items(items) => {
+            if !option_values.is_empty() {
+                return Err(
+                    "layout must define entries for each option when options are present"
+                        .to_string(),
+                );
+            }
+            validate_layout_items(items)
+        }
+        Layout::OptionsLayout(map) => {
+            for option in &option_values {
+                if !map.contains_key(*option) {
+                    return Err(format!("layout missing option '{}'", option));
+                }
+            }
+            for key in map.keys() {
+                if !option_values.contains(key.as_str()) {
+                    return Err(format!("layout contains unknown option '{}'", key));
+                }
+            }
+            for (option, items) in map {
+                validate_layout_items(items)
+                    .map_err(|err| format!("layout for option '{option}' invalid: {err}"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_layout_items(items: &[LayoutItem]) -> Result<(), String> {
+    let mut seen_names = HashSet::new();
+    for item in items {
+        if let Some(name) = layout_item_name(item) {
+            if name.trim().is_empty() {
+                return Err("layout item name must not be empty".to_string());
+            }
+            if !seen_names.insert(name.to_string()) {
+                return Err(format!("duplicate layout item name '{}'", name));
+            }
+        }
+        validate_layout_item(item)?;
+    }
+    Ok(())
+}
+
+fn layout_item_name(item: &LayoutItem) -> Option<&str> {
+    match item {
+        LayoutItem::Text { name, .. } => Some(name.as_str()),
+        LayoutItem::Qr { name, .. } => Some(name.as_str()),
+        LayoutItem::Line { .. } => None,
+        LayoutItem::Rectangle { .. } => None,
+    }
+}
+
+fn validate_layout_item(item: &LayoutItem) -> Result<(), String> {
+    match item {
+        LayoutItem::Text {
+            bounds,
+            font_size,
+            ..
+        } => {
+            validate_box(bounds)?;
+            validate_font_size(font_size)?;
+        }
+        LayoutItem::Qr { bounds, params, .. } => {
+            validate_box(bounds)?;
+            if let Some(params) = params {
+                if let Some(module_size) = params.module_size {
+                    if module_size <= 0.0 {
+                        return Err("qr module_size must be greater than 0".to_string());
+                    }
+                }
+                if let Some(quiet_zone) = params.quiet_zone {
+                    if quiet_zone < 0.0 {
+                        return Err("qr quiet_zone must be >= 0".to_string());
+                    }
+                }
+            }
+        }
+        LayoutItem::Line { start, end, thickness } => {
+            if *thickness <= 0.0 {
+                return Err("line thickness must be greater than 0".to_string());
+            }
+            if (start.x - end.x).abs() < f32::EPSILON
+                && (start.y - end.y).abs() < f32::EPSILON
+            {
+                return Err("line start and end must differ".to_string());
+            }
+        }
+        LayoutItem::Rectangle { bounds, thickness, .. } => {
+            validate_box(bounds)?;
+            if *thickness <= 0.0 {
+                return Err("rectangle thickness must be greater than 0".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_box(bounds: &Box) -> Result<(), String> {
+    let (bottom_left, top_right) = bounds.corners();
+    if (bottom_left.x - top_right.x).abs() < f32::EPSILON
+        || (bottom_left.y - top_right.y).abs() < f32::EPSILON
+    {
+        return Err("box must have non-zero width and height".to_string());
+    }
+    Ok(())
+}
+
+fn validate_font_size(font_size: &FontSize) -> Result<(), String> {
+    match font_size {
+        FontSize::Fixed(value) => {
+            if *value <= 0.0 {
+                return Err("font_size must be greater than 0".to_string());
+            }
+        }
+        FontSize::Range { min, max } => {
+            if *min <= 0.0 || *max <= 0.0 {
+                return Err("font_size min/max must be greater than 0".to_string());
+            }
+            if min > max {
+                return Err("font_size min must be <= max".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 impl From<&TemplateDefinition> for TemplateSummary {
     fn from(template: &TemplateDefinition) -> Self {
-        let options = template
-            .options
-            .iter()
-            .map(|(name, option)| (name.clone(), option.values.clone()))
-            .collect();
         Self {
             id: template.id.clone(),
             name: template.name.clone(),
             description: template.description.clone(),
             unit: template.unit.clone(),
-            options,
+            options: template.options.0.clone(),
             format: template.format.clone(),
         }
     }
@@ -253,7 +361,7 @@ impl From<&TemplateDefinition> for TemplateDetail {
             unit: template.unit.clone(),
             format: template.format.clone(),
             options: template.options.clone(),
-            fields: template.fields.clone(),
+            layout: template.layout.clone(),
             version: template.version.clone(),
         }
     }
@@ -262,7 +370,7 @@ impl From<&TemplateDefinition> for TemplateDetail {
 #[cfg(test)]
 mod tests {
     use super::{TemplateDefinition, TemplateRegistry};
-    use crate::models::{Dimension, FieldSpec, OptionDetail, TemplateFormat};
+    use crate::models::{Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateFormat};
     use std::{collections::HashMap, fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -292,8 +400,11 @@ mod tests {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: HashMap::new(),
-            fields: Vec::new(),
+            options: Options(vec!["default".to_string()]),
+            layout: Layout::OptionsLayout(HashMap::from([(
+                "default".to_string(),
+                Vec::new(),
+            )])),
             version: None,
         };
         let err = template.validate().expect_err("expected error");
@@ -301,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_invalid_option_default() {
+    fn validate_rejects_empty_option_value() {
         let template = TemplateDefinition {
             id: "test".to_string(),
             name: "Label".to_string(),
@@ -311,18 +422,15 @@ mod tests {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: HashMap::from([(
-                "color".to_string(),
-                OptionDetail {
-                    values: vec!["red".to_string()],
-                    default: "blue".to_string(),
-                },
-            )]),
-            fields: Vec::new(),
+            options: Options(vec!["".to_string()]),
+            layout: Layout::OptionsLayout(HashMap::from([(
+                "horizontal".to_string(),
+                Vec::new(),
+            )])),
             version: None,
         };
         let err = template.validate().expect_err("expected error");
-        assert!(err.contains("default"));
+        assert!(err.contains("options must not contain empty values"));
     }
 
     #[test]
@@ -336,14 +444,18 @@ id: sample
 name: Sample
 description: Sample template
 unit: mm
+options: [default]
 format:
   type: single
   width: 12.0
   height: 25.0
-fields:
-  - name: message
-    type: string
-    max_length: 50
+layout:
+  default:
+    - type: text
+      name: message
+      box: [0.0, 0.0, 10.0, 5.0]
+      font_size: 10.0
+      multiline: true
 "#,
         );
 
@@ -365,11 +477,13 @@ id: b
 name: B
 description: B
 unit: mm
+options: [default]
 format:
   type: single
   width: 12.0
   height: 25.0
-fields: []
+layout:
+  default: []
 "#,
         );
         write_template(
@@ -380,11 +494,13 @@ id: a
 name: A
 description: A
 unit: mm
+options: [default]
 format:
   type: single
   width: 12.0
   height: 25.0
-fields: []
+layout:
+  default: []
 "#,
         );
 
@@ -408,24 +524,29 @@ fields: []
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: HashMap::new(),
-            fields: vec![
-                FieldSpec {
+            options: Options(vec!["default".to_string()]),
+            layout: Layout::OptionsLayout(HashMap::from([(
+                "default".to_string(),
+                vec![
+                LayoutItem::Text {
                     name: "value".to_string(),
-                    field_type: "string".to_string(),
-                    max_length: None,
-                    multiline: None,
+                    bounds: Box([0.0, 0.0, 1.0, 1.0]),
+                    font_size: FontSize::Fixed(10.0),
+                    multiline: false,
+                    alignment: Alignment::default(),
                 },
-                FieldSpec {
+                LayoutItem::Text {
                     name: "value".to_string(),
-                    field_type: "string".to_string(),
-                    max_length: None,
-                    multiline: None,
+                    bounds: Box([0.0, 0.0, 1.0, 1.0]),
+                    font_size: FontSize::Fixed(10.0),
+                    multiline: false,
+                    alignment: Alignment::default(),
                 },
             ],
+            )])),
             version: None,
         };
         let err = template.validate().expect_err("expected error");
-        assert!(err.contains("duplicate field name"));
+        assert!(err.contains("duplicate layout item name"));
     }
 }
