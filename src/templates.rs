@@ -169,10 +169,7 @@ impl TemplateDefinition {
                     return Err("positions must not be empty".to_string());
                 }
                 for (idx, position) in positions.iter().enumerate() {
-                    let (bottom_left, top_right) = position.corners();
-                    if (bottom_left.x - top_right.x).abs() < f32::EPSILON
-                        || (bottom_left.y - top_right.y).abs() < f32::EPSILON
-                    {
+                    if position.width <= 0.0 || position.height <= 0.0 {
                         return Err(format!(
                             "position {} must have non-zero width and height",
                             idx
@@ -428,11 +425,8 @@ fn layout_bounds(
             let mut min_width = f32::INFINITY;
             let mut min_height = f32::INFINITY;
             for position in positions {
-                let (bl, tr) = position.corners();
-                let width = (tr.x - bl.x).abs();
-                let height = (tr.y - bl.y).abs();
-                min_width = min_width.min(width);
-                min_height = min_height.min(height);
+                min_width = min_width.min(position.width);
+                min_height = min_height.min(position.height);
             }
             (min_width, min_height)
         }
