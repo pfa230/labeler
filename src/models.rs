@@ -31,6 +31,7 @@ pub struct TemplateSummary {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub unit: String,
     pub options: HashMap<String, Vec<String>>,
     pub format: TemplateFormat,
 }
@@ -40,6 +41,7 @@ pub struct TemplateDetail {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub unit: String,
     pub format: TemplateFormat,
     pub options: HashMap<String, OptionDetail>,
     pub fields: Vec<FieldSpec>,
@@ -66,15 +68,39 @@ pub struct FieldSpec {
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+pub struct Point {
+    pub x: f32,
+    pub y: f32,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct LabelPosition(pub [f32; 4]);
+
+impl LabelPosition {
+    pub fn corners(&self) -> (Point, Point) {
+        let [x1, y1, x2, y2] = self.0;
+        (Point { x: x1, y: y1 }, Point { x: x2, y: y2 })
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Dimension {
+    Fixed(f32),
+    Dynamic { min: Option<f32>, max: Option<f32> },
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TemplateFormat {
     Sheet {
-        labels_per_sheet: u32,
         paper_size: String,
-        label_size: String,
+        positions: Vec<LabelPosition>,
     },
-    Continuous {
-        width_mm: f32,
+    Single {
+        width: Dimension,
+        height: Dimension,
     },
 }
 

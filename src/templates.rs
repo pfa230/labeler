@@ -5,13 +5,16 @@ use std::{
 };
 use thiserror::Error;
 
-use crate::models::{FieldSpec, OptionDetail, TemplateDetail, TemplateFormat, TemplateSummary};
+use crate::models::{
+    Dimension, FieldSpec, OptionDetail, TemplateDetail, TemplateFormat, TemplateSummary,
+};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct TemplateDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub unit: String,
     pub format: TemplateFormat,
     #[serde(default)]
     pub options: HashMap<String, OptionDetail>,
@@ -127,6 +130,10 @@ impl TemplateDefinition {
         if self.name.trim().is_empty() {
             return Err("name must not be empty".to_string());
         }
+        match self.unit.as_str() {
+            "mm" | "in" => {}
+            _ => return Err("unit must be either \"mm\" or \"in\"".to_string()),
+        }
 
         let mut seen_fields = HashSet::new();
         for field in &self.fields {
@@ -153,20 +160,70 @@ impl TemplateDefinition {
             }
         }
 
-        match self.format {
+        match &self.format {
             TemplateFormat::Sheet {
-                labels_per_sheet, ..
-            } if labels_per_sheet == 0 => {
-                return Err("labels_per_sheet must be greater than 0".to_string());
+                paper_size,
+                positions,
+            } => {
+                if paper_size.trim().is_empty() {
+                    return Err("paper_size must not be empty".to_string());
+                }
+                if positions.is_empty() {
+                    return Err("positions must not be empty".to_string());
+                }
+                for (idx, position) in positions.iter().enumerate() {
+                    let (bottom_left, top_right) = position.corners();
+                    if (bottom_left.x - top_right.x).abs() < f32::EPSILON
+                        || (bottom_left.y - top_right.y).abs() < f32::EPSILON
+                    {
+                        return Err(format!(
+                            "position {} must have non-zero width and height",
+                            idx
+                        ));
+                    }
+                }
             }
-            TemplateFormat::Continuous { width_mm } if width_mm <= 0.0 => {
-                return Err("width_mm must be greater than 0".to_string());
+            TemplateFormat::Single { width, height } => {
+                validate_dimension("width", width)?;
+                validate_dimension("height", height)?;
             }
-            _ => {}
         }
 
         Ok(())
     }
+}
+
+fn validate_dimension(name: &str, dimension: &Dimension) -> Result<(), String> {
+    match dimension {
+        Dimension::Fixed(value) => {
+            if *value <= 0.0 {
+                return Err(format!("{name} must be greater than 0"));
+            }
+        }
+        Dimension::Dynamic { min, max } => {
+            if min.is_none() && max.is_none() {
+                return Err(format!(
+                    "{name} dynamic must specify min, max, or both"
+                ));
+            }
+            if let Some(min) = min {
+                if *min <= 0.0 {
+                    return Err(format!("min_{name} must be greater than 0"));
+                }
+            }
+            if let Some(max) = max {
+                if *max <= 0.0 {
+                    return Err(format!("max_{name} must be greater than 0"));
+                }
+            }
+            if let (Some(min), Some(max)) = (min, max) {
+                if min > max {
+                    return Err(format!("min_{name} must be <= max_{name}"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl From<&TemplateDefinition> for TemplateSummary {
@@ -180,6 +237,7 @@ impl From<&TemplateDefinition> for TemplateSummary {
             id: template.id.clone(),
             name: template.name.clone(),
             description: template.description.clone(),
+            unit: template.unit.clone(),
             options,
             format: template.format.clone(),
         }
@@ -192,6 +250,7 @@ impl From<&TemplateDefinition> for TemplateDetail {
             id: template.id.clone(),
             name: template.name.clone(),
             description: template.description.clone(),
+            unit: template.unit.clone(),
             format: template.format.clone(),
             options: template.options.clone(),
             fields: template.fields.clone(),
@@ -203,7 +262,7 @@ impl From<&TemplateDefinition> for TemplateDetail {
 #[cfg(test)]
 mod tests {
     use super::{TemplateDefinition, TemplateRegistry};
-    use crate::models::{FieldSpec, OptionDetail, TemplateFormat};
+    use crate::models::{Dimension, FieldSpec, OptionDetail, TemplateFormat};
     use std::{collections::HashMap, fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
 
     fn temp_dir(label: &str) -> PathBuf {
@@ -228,7 +287,11 @@ mod tests {
             id: " ".to_string(),
             name: "Label".to_string(),
             description: "desc".to_string(),
-            format: TemplateFormat::Continuous { width_mm: 12.0 },
+            unit: "mm".to_string(),
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(12.0),
+                height: Dimension::Fixed(25.0),
+            },
             options: HashMap::new(),
             fields: Vec::new(),
             version: None,
@@ -243,7 +306,11 @@ mod tests {
             id: "test".to_string(),
             name: "Label".to_string(),
             description: "desc".to_string(),
-            format: TemplateFormat::Continuous { width_mm: 12.0 },
+            unit: "mm".to_string(),
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(12.0),
+                height: Dimension::Fixed(25.0),
+            },
             options: HashMap::from([(
                 "color".to_string(),
                 OptionDetail {
@@ -268,9 +335,11 @@ mod tests {
 id: sample
 name: Sample
 description: Sample template
+unit: mm
 format:
-  type: continuous
-  width_mm: 12.0
+  type: single
+  width: 12.0
+  height: 25.0
 fields:
   - name: message
     type: string
@@ -295,9 +364,11 @@ fields:
 id: b
 name: B
 description: B
+unit: mm
 format:
-  type: continuous
-  width_mm: 12.0
+  type: single
+  width: 12.0
+  height: 25.0
 fields: []
 "#,
         );
@@ -308,9 +379,11 @@ fields: []
 id: a
 name: A
 description: A
+unit: mm
 format:
-  type: continuous
-  width_mm: 12.0
+  type: single
+  width: 12.0
+  height: 25.0
 fields: []
 "#,
         );
@@ -330,7 +403,11 @@ fields: []
             id: "dup".to_string(),
             name: "dup".to_string(),
             description: "dup".to_string(),
-            format: TemplateFormat::Continuous { width_mm: 12.0 },
+            unit: "mm".to_string(),
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(12.0),
+                height: Dimension::Fixed(25.0),
+            },
             options: HashMap::new(),
             fields: vec![
                 FieldSpec {
