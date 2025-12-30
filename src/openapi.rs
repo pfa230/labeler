@@ -4,7 +4,7 @@ use crate::{
     api,
     models::{
         Box, Dimension, ErrorBody, ErrorResponse, FontSize, HealthResponse, HorizontalAlign,
-        LabelInput, Layout, LayoutItem, Margins, Options, Point, QrParams, RenderBatchRequest,
+        LabelInput, Layout, LayoutItem, Options, Point, QrParams, RenderBatchRequest,
         RenderLabelRequest, SheetPosition, TemplateDetail, TemplateFormat, TemplateList,
         TemplateSummary, VerticalAlign,
     },
@@ -31,7 +31,6 @@ use crate::{
             Layout,
             Box,
             Point,
-            Margins,
             SheetPosition,
             Dimension,
             FontSize,

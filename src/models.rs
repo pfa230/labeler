@@ -34,8 +34,6 @@ pub struct TemplateSummary {
     pub unit: String,
     pub dpi: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub margins: Option<Margins>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
     pub format: TemplateFormat,
 }
@@ -47,8 +45,6 @@ pub struct TemplateDetail {
     pub description: String,
     pub unit: String,
     pub dpi: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub margins: Option<Margins>,
     pub format: TemplateFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
@@ -63,21 +59,31 @@ pub struct Options(pub BTreeMap<String, Vec<String>>);
 
 impl Options {
     pub fn contains_value(&self, value: &str) -> bool {
+        let (name, choice) = match value.split_once(':') {
+            Some((name, choice)) => (name.trim(), choice.trim()),
+            None => return false,
+        };
+        if name.is_empty() || choice.is_empty() {
+            return false;
+        }
         self.0
-            .values()
-            .any(|values| values.iter().any(|entry| entry == value))
+            .get(name)
+            .map(|values| values.iter().any(|entry| entry == choice))
+            .unwrap_or(false)
     }
 
-    pub fn default_value(&self) -> Option<&str> {
+    pub fn default_value(&self) -> Option<String> {
         self.0
             .iter()
-            .find_map(|(_, values)| values.first().map(|value| value.as_str()))
+            .find_map(|(name, values)| values.first().map(|value| format!("{name}:{value}")))
     }
 
     pub fn allowed_values(&self) -> Vec<String> {
         let mut values = std::collections::BTreeSet::new();
-        for entry in self.0.values().flatten() {
-            values.insert(entry.clone());
+        for (name, entries) in &self.0 {
+            for entry in entries {
+                values.insert(format!("{name}:{entry}"));
+            }
         }
         values.into_iter().collect()
     }
@@ -110,28 +116,6 @@ impl SheetPosition {
             x: self.0[0],
             y: self.0[1],
         }
-    }
-}
-
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, Default)]
-#[serde(transparent)]
-pub struct Margins(pub [f32; 4]);
-
-impl Margins {
-    pub fn left(&self) -> f32 {
-        self.0[0]
-    }
-
-    pub fn bottom(&self) -> f32 {
-        self.0[1]
-    }
-
-    pub fn right(&self) -> f32 {
-        self.0[2]
-    }
-
-    pub fn top(&self) -> f32 {
-        self.0[3]
     }
 }
 
@@ -243,6 +227,8 @@ pub enum LayoutItem {
         #[schema(rename = "box")]
         #[serde(skip_serializing_if = "Option::is_none")]
         bounds: Option<Box>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        option: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         rotation: Option<u16>,
         #[schema(no_recursion)]
