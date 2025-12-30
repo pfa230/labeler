@@ -1,7 +1,5 @@
 use crate::errors::AppError;
-use crate::models::{
-    Dimension, FontSize, LabelInput, Layout, LayoutItem, Margins, Point, TemplateFormat,
-};
+use crate::models::{Dimension, FontSize, LabelInput, Layout, LayoutItem, Point, TemplateFormat};
 use crate::templates::TemplateDefinition;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
@@ -26,17 +24,16 @@ pub fn render_single_label(
     let height_units = resolve_dimension(height)?;
     let dpi = template.dpi;
 
-    let _ = normalize_option(template, option)?;
+    let selected_option = normalize_option(template, option)?;
     let items = select_layout_items(template)?;
 
-    let margins = template.margins.clone().unwrap_or_default();
     let source = build_typst_source(
         width_units,
         height_units,
         &template.unit,
-        &margins,
         items,
         data,
+        selected_option.as_deref(),
     )?;
 
     let engine = TypstEngine::builder()
@@ -80,7 +77,6 @@ pub fn render_sheet_labels(
         ));
     };
 
-    let margins = template.margins.clone().unwrap_or_default();
     let page_width_units = *paper_width;
     let page_height_units = *paper_height;
 
@@ -111,15 +107,15 @@ pub fn render_sheet_labels(
         let height = *label_height;
         let top = bottom + height;
 
-        let _ = normalize_option(template, label.option.as_deref())?;
+        let selected_option = normalize_option(template, label.option.as_deref())?;
         let items = select_layout_items(template)?;
         let content = render_items(
             items,
             width,
             height,
             &template.unit,
-            &margins,
             &label.data,
+            selected_option.as_deref(),
             0,
         )?;
 
@@ -155,9 +151,9 @@ fn build_typst_source(
     page_width_units: f32,
     page_height_units: f32,
     unit: &str,
-    margins: &Margins,
     items: &[LayoutItem],
     data: &HashMap<String, JsonValue>,
+    selected_option: Option<&str>,
 ) -> Result<String, AppError> {
     let mut source = String::new();
     let page_width = format_length(page_width_units, unit)?;
@@ -173,8 +169,8 @@ fn build_typst_source(
         page_width_units,
         page_height_units,
         unit,
-        margins,
         data,
+        selected_option,
         0,
     )?;
     source.push_str(&items_source);
@@ -188,10 +184,10 @@ fn select_layout_items(template: &TemplateDefinition) -> Result<&[LayoutItem], A
     }
 }
 
-fn normalize_option<'a>(
-    template: &'a TemplateDefinition,
-    option: Option<&'a str>,
-) -> Result<Option<&'a str>, AppError> {
+fn normalize_option(
+    template: &TemplateDefinition,
+    option: Option<&str>,
+) -> Result<Option<String>, AppError> {
     match &template.options {
         Some(options) => {
             if let Some(selected) = option {
@@ -200,7 +196,9 @@ fn normalize_option<'a>(
                     return Err(AppError::invalid_option_value(selected, &allowed));
                 }
             }
-            Ok(option.or_else(|| options.default_value()))
+            Ok(option
+                .map(|value| value.to_string())
+                .or_else(|| options.default_value()))
         }
         None => {
             if option.is_some() {
@@ -219,8 +217,8 @@ fn render_items(
     frame_width_units: f32,
     frame_height_units: f32,
     unit: &str,
-    margins: &Margins,
     data: &HashMap<String, JsonValue>,
+    selected_option: Option<&str>,
     parent_rotation: u16,
 ) -> Result<String, AppError> {
     let mut out = String::new();
@@ -234,7 +232,6 @@ fn render_items(
                 multiline,
                 ..
             } => {
-                let bounds = apply_margins_box(bounds, margins);
                 let size = match font_size {
                     FontSize::Fixed(size) => *size,
                     FontSize::Range { min: _, max } => *max,
@@ -280,18 +277,12 @@ fn render_items(
                 bounds,
                 params,
             } => {
-                let bounds = apply_margins_box(bounds, margins);
                 let payload = value_to_string(
                     data.get(name)
                         .ok_or_else(|| AppError::missing_field(name))?,
                 );
-                let (svg_xml, box_width, box_height, dx, dy) = build_qr_svg(
-                    payload.as_bytes(),
-                    params,
-                    &bounds,
-                    unit,
-                    frame_height_units,
-                )?;
+                let (svg_xml, box_width, box_height, dx, dy) =
+                    build_qr_svg(payload.as_bytes(), params, bounds, unit, frame_height_units)?;
                 let svg_xml = escape_typst_string(&svg_xml);
 
                 writeln!(
@@ -307,10 +298,8 @@ fn render_items(
                 end,
                 thickness,
             } => {
-                let start = apply_margins_point(start, margins);
-                let end = apply_margins_point(end, margins);
-                let (start_x, start_y) = to_page_coords(&start, frame_height_units);
-                let (end_x, end_y) = to_page_coords(&end, frame_height_units);
+                let (start_x, start_y) = to_page_coords(start, frame_height_units);
+                let (end_x, end_y) = to_page_coords(end, frame_height_units);
                 let dx = end_x - start_x;
                 let dy = end_y - start_y;
                 let start_x = format_length(start_x, unit)?;
@@ -333,7 +322,6 @@ fn render_items(
                 thickness,
                 rounded,
             } => {
-                let bounds = apply_margins_box(bounds, margins);
                 let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
                 let left = x1.min(x2);
                 let right = x1.max(x2);
@@ -362,11 +350,16 @@ fn render_items(
             }
             LayoutItem::Container {
                 bounds,
+                option,
                 rotation,
                 items,
             } => {
+                if let Some(option) = option.as_deref() {
+                    if selected_option != Some(option) {
+                        continue;
+                    }
+                }
                 let (left, bottom, right, top) = if let Some(bounds) = bounds {
-                    let bounds = apply_margins_box(bounds, margins);
                     let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
                     (x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2))
                 } else {
@@ -384,8 +377,8 @@ fn render_items(
                     width,
                     height,
                     unit,
-                    margins,
                     data,
+                    selected_option,
                     effective_rotation,
                 )?;
                 let mut content = child_source;
@@ -538,20 +531,6 @@ fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32) {
     (point.x, page_height_units - point.y)
 }
 
-fn apply_margins_box(bounds: &crate::models::Box, margins: &Margins) -> crate::models::Box {
-    let left = margins.left();
-    let bottom = margins.bottom();
-    let [x1, y1, x2, y2] = bounds.0;
-    crate::models::Box([x1 + left, y1 + bottom, x2 + left, y2 + bottom])
-}
-
-fn apply_margins_point(point: &Point, margins: &Margins) -> Point {
-    Point {
-        x: point.x + margins.left(),
-        y: point.y + margins.bottom(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{render_sheet_labels, render_single_label};
@@ -571,7 +550,6 @@ mod tests {
             description: "Test template".to_string(),
             unit: "mm".to_string(),
             dpi: 200,
-            margins: None,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(10.0),
@@ -591,7 +569,8 @@ mod tests {
         };
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let png = render_single_label(&template, &data, Some("default")).expect("render label");
+        let png =
+            render_single_label(&template, &data, Some("variant:default")).expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -605,7 +584,6 @@ mod tests {
             description: "Test template with qr".to_string(),
             unit: "mm".to_string(),
             dpi: 200,
-            margins: None,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(30.0),
                 height: Dimension::Fixed(20.0),
@@ -645,8 +623,8 @@ mod tests {
             ("message".to_string(), json!("Hello")),
             ("code".to_string(), json!("QR-123")),
         ]);
-        let png =
-            render_single_label(&template, &data, Some("default")).expect("render label with qr");
+        let png = render_single_label(&template, &data, Some("variant:default"))
+            .expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -660,7 +638,6 @@ mod tests {
             description: "Sheet template".to_string(),
             unit: "mm".to_string(),
             dpi: 200,
-            margins: None,
             format: TemplateFormat::Sheet {
                 paper_width: 10.0,
                 paper_height: 5.0,

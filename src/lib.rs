@@ -224,8 +224,8 @@ mod http_tests {
                 {
                     "data": {
                         "id": "A1",
-                        "name": "Test Name",
-                        "address": "123 Main St\nCity, ST 00000"
+                        "url": "https://example.com/A1",
+                        "description": "Test description"
                     }
                 }
             ]

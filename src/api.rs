@@ -110,17 +110,19 @@ pub async fn render_label(
         "render label request"
     );
 
-    let mut selected_option = option_value;
+    let mut selected_option = option_value.map(|value| value.to_string());
     if let Some(options) = &template.options {
-        selected_option = selected_option.or_else(|| options.default_value());
-        let selected = selected_option.unwrap_or("");
+        if selected_option.is_none() {
+            selected_option = options.default_value();
+        }
+        let selected = selected_option.as_deref().unwrap_or("");
         if !options.contains_value(selected) {
             let allowed = options.allowed_values();
             return Err(AppError::invalid_option_value(selected, &allowed));
         }
     }
 
-    let png = render_single_label(template, &req.label.data, selected_option)?;
+    let png = render_single_label(template, &req.label.data, selected_option.as_deref())?;
 
     Ok((
         axum::http::StatusCode::OK,
