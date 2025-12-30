@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use utoipa::ToSchema;
 
 #[derive(Serialize, ToSchema)]
@@ -36,7 +36,7 @@ pub struct TemplateSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub margins: Option<Margins>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<String>>,
+    pub options: Option<Options>,
     pub format: TemplateFormat,
 }
 
@@ -59,7 +59,29 @@ pub struct TemplateDetail {
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(transparent)]
-pub struct Options(pub Vec<String>);
+pub struct Options(pub BTreeMap<String, Vec<String>>);
+
+impl Options {
+    pub fn contains_value(&self, value: &str) -> bool {
+        self.0
+            .values()
+            .any(|values| values.iter().any(|entry| entry == value))
+    }
+
+    pub fn default_value(&self) -> Option<&str> {
+        self.0
+            .iter()
+            .find_map(|(_, values)| values.first().map(|value| value.as_str()))
+    }
+
+    pub fn allowed_values(&self) -> Vec<String> {
+        let mut values = std::collections::BTreeSet::new();
+        for entry in self.0.values().flatten() {
+            values.insert(entry.clone());
+        }
+        values.into_iter().collect()
+    }
+}
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 pub struct Point {

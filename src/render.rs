@@ -195,11 +195,12 @@ fn normalize_option<'a>(
     match &template.options {
         Some(options) => {
             if let Some(selected) = option {
-                if !options.0.iter().any(|opt| opt == selected) {
-                    return Err(AppError::invalid_option_value(selected, &options.0));
+                if !options.contains_value(selected) {
+                    let allowed = options.allowed_values();
+                    return Err(AppError::invalid_option_value(selected, &allowed));
                 }
             }
-            Ok(option.or_else(|| options.0.first().map(|v| v.as_str())))
+            Ok(option.or_else(|| options.default_value()))
         }
         None => {
             if option.is_some() {
@@ -560,7 +561,7 @@ mod tests {
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     #[test]
     fn render_single_label_produces_png() {
@@ -575,7 +576,10 @@ mod tests {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(10.0),
             },
-            options: Some(Options(vec!["default".to_string()])),
+            options: Some(Options(BTreeMap::from([(
+                "variant".to_string(),
+                vec!["default".to_string()],
+            )]))),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: "message".to_string(),
                 bounds: Box([0.0, 0.0, 20.0, 5.0]),
@@ -606,7 +610,10 @@ mod tests {
                 width: Dimension::Fixed(30.0),
                 height: Dimension::Fixed(20.0),
             },
-            options: Some(Options(vec!["default".to_string()])),
+            options: Some(Options(BTreeMap::from([(
+                "variant".to_string(),
+                vec!["default".to_string()],
+            )]))),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: "message".to_string(),
