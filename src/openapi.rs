@@ -3,10 +3,10 @@ use utoipa::OpenApi;
 use crate::{
     api,
     models::{
-        Box, Dimension, ErrorBody, ErrorResponse, FontSize, HealthResponse, Margins, SheetPosition,
-        HorizontalAlign, Layout, LayoutItem, Options, Point, QrParams,
-        RenderBatchRequest, VerticalAlign, LabelInput,
-        RenderLabelRequest, TemplateDetail, TemplateFormat, TemplateList, TemplateSummary,
+        Box, Dimension, ErrorBody, ErrorResponse, FontSize, HealthResponse, HorizontalAlign,
+        LabelInput, Layout, LayoutItem, Margins, Options, Point, QrParams, RenderBatchRequest,
+        RenderLabelRequest, SheetPosition, TemplateDetail, TemplateFormat, TemplateList,
+        TemplateSummary, VerticalAlign,
     },
 };
 

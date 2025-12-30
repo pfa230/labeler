@@ -1,7 +1,6 @@
 use crate::errors::AppError;
 use crate::models::{
-    Dimension, FontSize, LabelInput, Layout, LayoutItem, Margins, Point, SheetPosition,
-    TemplateFormat,
+    Dimension, FontSize, LabelInput, Layout, LayoutItem, Margins, Point, TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use qrcode::render::svg;
@@ -18,14 +17,17 @@ pub fn render_single_label(
     option: Option<&str>,
 ) -> Result<Vec<u8>, AppError> {
     let TemplateFormat::Single { width, height } = &template.format else {
-        return Err(AppError::unsupported_format("render_label only supports single format"));
+        return Err(AppError::unsupported_format(
+            "render_label only supports single format",
+        ));
     };
 
     let width_units = resolve_dimension(width)?;
     let height_units = resolve_dimension(height)?;
     let dpi = template.dpi;
 
-    let items = select_layout_items(template, option)?;
+    let _ = normalize_option(template, option)?;
+    let items = select_layout_items(template)?;
 
     let margins = template.margins.clone().unwrap_or_default();
     let source = build_typst_source(
@@ -47,9 +49,10 @@ pub fn render_single_label(
         .output
         .map_err(|err| AppError::render_failed(format!("typst compile failed: {err}")))?;
 
-    let page = doc.pages.first().ok_or_else(|| {
-        AppError::render_failed("typst did not produce any pages")
-    })?;
+    let page = doc
+        .pages
+        .first()
+        .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
 
     let pixmap = typst_render::render(page, dpi as f32 / 72.0);
     let png = pixmap
@@ -65,7 +68,10 @@ pub fn render_sheet_labels(
     start_slot: u32,
 ) -> Result<Vec<u8>, AppError> {
     let TemplateFormat::Sheet {
-        paper_size,
+        paper_width,
+        paper_height,
+        label_width,
+        label_height,
         positions,
     } = &template.format
     else {
@@ -75,9 +81,8 @@ pub fn render_sheet_labels(
     };
 
     let margins = template.margins.clone().unwrap_or_default();
-    let (page_width_units, page_height_units) = parse_paper_size(paper_size)
-        .or_else(|| sheet_size_from_positions(positions))
-        .ok_or_else(|| AppError::unsupported_format("invalid sheet size"))?;
+    let page_width_units = *paper_width;
+    let page_height_units = *paper_height;
 
     let start_slot = start_slot as usize;
     if start_slot > positions.len() {
@@ -99,17 +104,16 @@ pub fn render_sheet_labels(
 
     for (idx, label) in labels.iter().enumerate() {
         let position = &positions[start_slot + idx];
-        let (bottom_left, top_right) = position.bounds.corners();
-        let left = bottom_left.x;
-        let bottom = bottom_left.y;
-        let right = top_right.x;
-        let top = top_right.y;
-        let width = right - left;
-        let height = top - bottom;
+        let point = position.point();
+        let left = point.x;
+        let bottom = point.y;
+        let width = *label_width;
+        let height = *label_height;
+        let top = bottom + height;
 
-        let option = normalize_option(template, label.option.as_deref())?;
-        let items = select_layout_items(template, option)?;
-        let mut content = render_items(
+        let _ = normalize_option(template, label.option.as_deref())?;
+        let items = select_layout_items(template)?;
+        let content = render_items(
             items,
             width,
             height,
@@ -118,14 +122,6 @@ pub fn render_sheet_labels(
             &label.data,
             0,
         )?;
-
-        if let Some(rotation) = position.rotation {
-            if rotation % 360 != 0 {
-                content = format!(
-                    "#rotate({rotation}deg, origin: bottom + left)[{content}]"
-                );
-            }
-        }
 
         let dx = format_length(left, &template.unit)?;
         let dy = format_length(page_height_units - top, &template.unit)?;
@@ -186,25 +182,9 @@ fn build_typst_source(
     Ok(source)
 }
 
-fn select_layout_items<'a>(
-    template: &'a TemplateDefinition,
-    option: Option<&str>,
-) -> Result<&'a [LayoutItem], AppError> {
+fn select_layout_items(template: &TemplateDefinition) -> Result<&[LayoutItem], AppError> {
     match &template.layout {
         Layout::Items(items) => Ok(items.as_slice()),
-        Layout::OptionsLayout(map) => {
-            let option = option.ok_or_else(|| {
-                AppError::invalid_request("missing option for optioned template")
-            })?;
-            let allowed = template
-                .options
-                .as_ref()
-                .map(|opts| opts.0.as_slice())
-                .unwrap_or(&[]);
-            map.get(option)
-                .ok_or_else(|| AppError::invalid_option_value(option, allowed))
-                .map(|items| items.as_slice())
-        }
     }
 }
 
@@ -213,10 +193,19 @@ fn normalize_option<'a>(
     option: Option<&'a str>,
 ) -> Result<Option<&'a str>, AppError> {
     match &template.options {
-        Some(options) => Ok(option.or_else(|| options.0.first().map(|v| v.as_str()))),
+        Some(options) => {
+            if let Some(selected) = option {
+                if !options.0.iter().any(|opt| opt == selected) {
+                    return Err(AppError::invalid_option_value(selected, &options.0));
+                }
+            }
+            Ok(option.or_else(|| options.0.first().map(|v| v.as_str())))
+        }
         None => {
             if option.is_some() {
-                Err(AppError::invalid_request("template does not support options"))
+                Err(AppError::invalid_request(
+                    "template does not support options",
+                ))
             } else {
                 Ok(None)
             }
@@ -286,14 +275,23 @@ fn render_items(
                     AppError::render_failed(format!("failed to build typst source: {err}"))
                 })?;
             }
-            LayoutItem::Qr { name, bounds, params } => {
+            LayoutItem::Qr {
+                name,
+                bounds,
+                params,
+            } => {
                 let bounds = apply_margins_box(bounds, margins);
                 let payload = value_to_string(
                     data.get(name)
                         .ok_or_else(|| AppError::missing_field(name))?,
                 );
-                let (svg_xml, box_width, box_height, dx, dy) =
-                    build_qr_svg(payload.as_bytes(), params, &bounds, unit, frame_height_units)?;
+                let (svg_xml, box_width, box_height, dx, dy) = build_qr_svg(
+                    payload.as_bytes(),
+                    params,
+                    &bounds,
+                    unit,
+                    frame_height_units,
+                )?;
                 let svg_xml = escape_typst_string(&svg_xml);
 
                 writeln!(
@@ -362,11 +360,14 @@ fn render_items(
                     AppError::render_failed(format!("failed to build typst source: {err}"))
                 })?;
             }
-            LayoutItem::Container { bounds, rotation, items } => {
+            LayoutItem::Container {
+                bounds,
+                rotation,
+                items,
+            } => {
                 let (left, bottom, right, top) = if let Some(bounds) = bounds {
                     let bounds = apply_margins_box(bounds, margins);
-                    let (x1, y1, x2, y2) =
-                        (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
+                    let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
                     (x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2))
                 } else {
                     (0.0, 0.0, frame_width_units, frame_height_units)
@@ -375,11 +376,18 @@ fn render_items(
                 let height = top - bottom;
 
                 let effective_rotation = rotation.unwrap_or(parent_rotation);
-                let delta_rotation = ((effective_rotation as i32 - parent_rotation as i32)
-                    .rem_euclid(360)) as u16;
+                let delta_rotation =
+                    ((effective_rotation as i32 - parent_rotation as i32).rem_euclid(360)) as u16;
 
-                let child_source =
-                    render_items(items, width, height, unit, margins, data, effective_rotation)?;
+                let child_source = render_items(
+                    items,
+                    width,
+                    height,
+                    unit,
+                    margins,
+                    data,
+                    effective_rotation,
+                )?;
                 let mut content = child_source;
                 if delta_rotation != 0 {
                     content = format!("#rotate({delta_rotation}deg)[{content}]");
@@ -402,33 +410,6 @@ fn render_items(
     }
 
     Ok(out)
-}
-
-fn parse_paper_size(paper_size: &str) -> Option<(f32, f32)> {
-    let cleaned = paper_size.trim().to_lowercase();
-    let mut parts = cleaned.split('x');
-    let w = parts.next()?.trim().parse::<f32>().ok()?;
-    let h = parts.next()?.trim().parse::<f32>().ok()?;
-    if w > 0.0 && h > 0.0 {
-        Some((w, h))
-    } else {
-        None
-    }
-}
-
-fn sheet_size_from_positions(positions: &[SheetPosition]) -> Option<(f32, f32)> {
-    let mut max_x = 0.0f32;
-    let mut max_y = 0.0f32;
-    for position in positions {
-        let (bl, tr) = position.bounds.corners();
-        max_x = max_x.max(bl.x).max(tr.x);
-        max_y = max_y.max(bl.y).max(tr.y);
-    }
-    if max_x > 0.0 && max_y > 0.0 {
-        Some((max_x, max_y))
-    } else {
-        None
-    }
 }
 
 fn value_to_string(value: &JsonValue) -> String {
@@ -596,22 +577,18 @@ mod tests {
                 height: Dimension::Fixed(10.0),
             },
             options: Some(Options(vec!["default".to_string()])),
-            layout: Layout::OptionsLayout(HashMap::from([(
-                "default".to_string(),
-                vec![LayoutItem::Text {
-                    name: "message".to_string(),
-                    bounds: Box([0.0, 0.0, 20.0, 5.0]),
-                    font_size: FontSize::Fixed(10.0),
-                    multiline: false,
-                    alignment: Alignment::default(),
-                }],
-            )])),
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: "message".to_string(),
+                bounds: Box([0.0, 0.0, 20.0, 5.0]),
+                font_size: FontSize::Fixed(10.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
             version: None,
         };
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let png = render_single_label(&template, &data, Some("default"))
-            .expect("render label");
+        let png = render_single_label(&template, &data, Some("default")).expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -631,33 +608,30 @@ mod tests {
                 height: Dimension::Fixed(20.0),
             },
             options: Some(Options(vec!["default".to_string()])),
-            layout: Layout::OptionsLayout(HashMap::from([(
-                "default".to_string(),
-                vec![
-                    LayoutItem::Text {
-                        name: "message".to_string(),
-                        bounds: Box([0.0, 0.0, 20.0, 20.0]),
-                        font_size: FontSize::Fixed(10.0),
-                        multiline: false,
-                        alignment: Alignment::default(),
-                    },
-                    LayoutItem::Qr {
-                        name: "code".to_string(),
-                        bounds: Box([20.0, 0.0, 30.0, 10.0]),
-                        params: None,
-                    },
-                    LayoutItem::Line {
-                        start: Point { x: 0.0, y: 1.0 },
-                        end: Point { x: 30.0, y: 1.0 },
-                        thickness: 0.2,
-                    },
-                    LayoutItem::Rectangle {
-                        bounds: Box([0.5, 1.5, 29.5, 19.5]),
-                        thickness: 0.2,
-                        rounded: true,
-                    },
-                ],
-            )])),
+            layout: Layout::Items(vec![
+                LayoutItem::Text {
+                    name: "message".to_string(),
+                    bounds: Box([0.0, 0.0, 20.0, 20.0]),
+                    font_size: FontSize::Fixed(10.0),
+                    multiline: false,
+                    alignment: Alignment::default(),
+                },
+                LayoutItem::Qr {
+                    name: "code".to_string(),
+                    bounds: Box([20.0, 0.0, 30.0, 10.0]),
+                    params: None,
+                },
+                LayoutItem::Line {
+                    start: Point { x: 0.0, y: 1.0 },
+                    end: Point { x: 30.0, y: 1.0 },
+                    thickness: 0.2,
+                },
+                LayoutItem::Rectangle {
+                    bounds: Box([0.5, 1.5, 29.5, 19.5]),
+                    thickness: 0.2,
+                    rounded: true,
+                },
+            ]),
             version: None,
         };
 
@@ -665,8 +639,8 @@ mod tests {
             ("message".to_string(), json!("Hello")),
             ("code".to_string(), json!("QR-123")),
         ]);
-        let png = render_single_label(&template, &data, Some("default"))
-            .expect("render label with qr");
+        let png =
+            render_single_label(&template, &data, Some("default")).expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -682,11 +656,11 @@ mod tests {
             dpi: 200,
             margins: None,
             format: TemplateFormat::Sheet {
-                paper_size: "10x5".to_string(),
-                positions: vec![SheetPosition {
-                    bounds: Box([0.0, 0.0, 10.0, 5.0]),
-                    rotation: None,
-                }],
+                paper_width: 10.0,
+                paper_height: 5.0,
+                label_width: 10.0,
+                label_height: 5.0,
+                positions: vec![SheetPosition([0.0, 0.0])],
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -704,8 +678,7 @@ mod tests {
             option: None,
         }];
 
-        let pdf = render_sheet_labels(&template, &labels, 0)
-            .expect("render sheet");
+        let pdf = render_sheet_labels(&template, &labels, 0).expect("render sheet");
 
         assert!(!pdf.is_empty(), "rendered PDF is empty");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
