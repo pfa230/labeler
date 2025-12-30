@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State, Json},
+    extract::{Json, Path, State},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -16,8 +16,8 @@ use crate::{
         TemplateList,
     },
     openapi::ApiDoc,
-    render::render_single_label,
     render::render_sheet_labels,
+    render::render_single_label,
     templates::TemplateRegistry,
 };
 
@@ -53,9 +53,7 @@ pub async fn health() -> impl IntoResponse {
         (status = 200, description = "List templates", body = TemplateList)
     )
 )]
-pub async fn list_templates(
-    State(registry): State<Arc<TemplateRegistry>>,
-) -> impl IntoResponse {
+pub async fn list_templates(State(registry): State<Arc<TemplateRegistry>>) -> impl IntoResponse {
     let templates = registry.summaries();
     Json(TemplateList { templates })
 }
