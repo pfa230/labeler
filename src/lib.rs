@@ -74,6 +74,16 @@ mod http_tests {
         serde_json::from_slice(&body).expect("parse json")
     }
 
+    async fn bytes_response(response: axum::response::Response) -> Vec<u8> {
+        response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes()
+            .to_vec()
+    }
+
     #[tokio::test]
     async fn health_returns_ok() {
         let app = build_app();
@@ -170,5 +180,76 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "TemplateNotFound");
+    }
+
+    #[tokio::test]
+    async fn render_png() {
+        let app = build_app();
+        let label_payload = json!({
+            "template": "brother12mm",
+            "data": {
+                "message": "Hello",
+                "code": "QR-123"
+            }
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/render/label")
+                    .header("content-type", "application/json")
+                    .body(Body::from(label_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.starts_with("image/png"));
+        let body = bytes_response(response).await;
+        assert!(!body.is_empty(), "rendered PNG is empty");
+        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[tokio::test]
+    async fn render_pdf() {
+        let app = build_app();
+        let sheet_payload = json!({
+            "template": "avery5163",
+            "labels": [
+                {
+                    "data": {
+                        "id": "A1",
+                        "name": "Test Name",
+                        "address": "123 Main St\nCity, ST 00000"
+                    }
+                }
+            ]
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/render/batch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(sheet_payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.starts_with("application/pdf"));
+        let body = bytes_response(response).await;
+        assert!(!body.is_empty(), "rendered PDF is empty");
+        assert!(body.starts_with(b"%PDF"), "missing PDF header");
     }
 }
