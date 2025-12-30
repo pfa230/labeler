@@ -158,8 +158,16 @@ impl TemplateDefinition {
             if options.0.is_empty() {
                 return Err("options must not be empty".to_string());
             }
-            if options.0.iter().any(|opt| opt.trim().is_empty()) {
-                return Err("options must not contain empty values".to_string());
+            for (name, values) in &options.0 {
+                if name.trim().is_empty() {
+                    return Err("options must not contain empty names".to_string());
+                }
+                if values.is_empty() {
+                    return Err(format!("options for '{name}' must not be empty"));
+                }
+                if values.iter().any(|opt| opt.trim().is_empty()) {
+                    return Err("options must not contain empty values".to_string());
+                }
             }
         }
         let margins = self.margins.clone().unwrap_or_default();
@@ -482,7 +490,7 @@ impl From<&TemplateDefinition> for TemplateSummary {
             unit: template.unit.clone(),
             dpi: template.dpi,
             margins: template.margins.clone(),
-            options: template.options.as_ref().map(|opts| opts.0.clone()),
+            options: template.options.clone(),
             format: template.format.clone(),
         }
     }
@@ -511,6 +519,7 @@ mod tests {
     use crate::models::{
         Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateFormat,
     };
+    use std::collections::BTreeMap;
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -546,7 +555,10 @@ mod tests {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: Some(Options(vec!["default".to_string()])),
+            options: Some(Options(BTreeMap::from([(
+                "variant".to_string(),
+                vec!["default".to_string()],
+            )]))),
             layout: Layout::Items(Vec::new()),
             version: None,
         };
@@ -567,7 +579,10 @@ mod tests {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: Some(Options(vec!["".to_string()])),
+            options: Some(Options(BTreeMap::from([(
+                "variant".to_string(),
+                vec!["".to_string()],
+            )]))),
             layout: Layout::Items(Vec::new()),
             version: None,
         };
@@ -665,7 +680,10 @@ layout: []
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
             },
-            options: Some(Options(vec!["default".to_string()])),
+            options: Some(Options(BTreeMap::from([(
+                "variant".to_string(),
+                vec!["default".to_string()],
+            )]))),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: "value".to_string(),
