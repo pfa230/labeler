@@ -234,10 +234,9 @@ fn render_items(
                 ..
             } => {
                 let bounds = apply_margins_box(bounds, margins);
-                let FontSize::Fixed(size) = font_size else {
-                    return Err(AppError::unsupported_layout_item(
-                        "text font_size must be fixed",
-                    ));
+                let size = match font_size {
+                    FontSize::Fixed(size) => *size,
+                    FontSize::Range { min: _, max } => *max,
                 };
                 let raw_text = value_to_string(
                     data.get(name)
