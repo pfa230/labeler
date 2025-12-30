@@ -112,10 +112,11 @@ pub async fn render_label(
 
     let mut selected_option = option_value;
     if let Some(options) = &template.options {
-        selected_option = selected_option.or_else(|| options.0.first().map(|v| v.as_str()));
+        selected_option = selected_option.or_else(|| options.default_value());
         let selected = selected_option.unwrap_or("");
-        if !options.0.iter().any(|opt| opt == selected) {
-            return Err(AppError::invalid_option_value(selected, &options.0));
+        if !options.contains_value(selected) {
+            let allowed = options.allowed_values();
+            return Err(AppError::invalid_option_value(selected, &allowed));
         }
     }
 
