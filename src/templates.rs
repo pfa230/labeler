@@ -37,11 +37,10 @@ impl TemplateRegistry {
         let dir = dir.as_ref();
         let mut templates = HashMap::new();
         let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
-        let entries = std::fs::read_dir(dir)
-            .map_err(|source| TemplateRegistryError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })?;
+        let entries = std::fs::read_dir(dir).map_err(|source| TemplateRegistryError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
 
         for entry in entries {
             let entry = entry.map_err(|source| TemplateRegistryError::Io {
@@ -57,12 +56,11 @@ impl TemplateRegistry {
                 continue;
             }
 
-            let contents = std::fs::read_to_string(&path).map_err(|source| {
-                TemplateRegistryError::Io {
+            let contents =
+                std::fs::read_to_string(&path).map_err(|source| TemplateRegistryError::Io {
                     path: path.clone(),
                     source,
-                }
-            })?;
+                })?;
             let template: TemplateDefinition =
                 serde_yaml::from_str(&contents).map_err(|source| TemplateRegistryError::Yaml {
                     path: path.clone(),
@@ -94,6 +92,10 @@ impl TemplateRegistry {
         self.templates.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.templates.is_empty()
+    }
+
     pub fn get(&self, id: &str) -> Option<&TemplateDefinition> {
         self.templates.get(id)
     }
@@ -112,9 +114,15 @@ impl TemplateRegistry {
 #[derive(Debug, Error)]
 pub enum TemplateRegistryError {
     #[error("failed to read templates from {path}: {source}")]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to parse template {path}: {source}")]
-    Yaml { path: PathBuf, source: serde_yaml::Error },
+    Yaml {
+        path: PathBuf,
+        source: serde_yaml::Error,
+    },
     #[error("template {path} failed validation: {message}")]
     Validation { path: PathBuf, message: String },
     #[error("duplicate template id '{id}' found in {first} and {second}")]
@@ -156,42 +164,38 @@ impl TemplateDefinition {
         }
         let margins = self.margins.clone().unwrap_or_default();
         let bounds = layout_bounds(&self.format, &margins)?;
-        validate_layout(&self.layout, self.options.as_ref(), bounds.as_ref(), &margins)?;
+        validate_layout(&self.layout, bounds.as_ref(), &margins)?;
 
         match &self.format {
             TemplateFormat::Sheet {
-                paper_size,
+                paper_width,
+                paper_height,
+                label_width,
+                label_height,
                 positions,
             } => {
-                if paper_size.trim().is_empty() {
-                    return Err("paper_size must not be empty".to_string());
+                if *paper_width <= 0.0 {
+                    return Err("paper_width must be greater than 0".to_string());
+                }
+                if *paper_height <= 0.0 {
+                    return Err("paper_height must be greater than 0".to_string());
+                }
+                if *label_width <= 0.0 {
+                    return Err("label_width must be greater than 0".to_string());
+                }
+                if *label_height <= 0.0 {
+                    return Err("label_height must be greater than 0".to_string());
                 }
                 if positions.is_empty() {
                     return Err("positions must not be empty".to_string());
                 }
                 for (idx, position) in positions.iter().enumerate() {
-                    let (bottom_left, top_right) = position.bounds.corners();
-                    if (bottom_left.x - top_right.x).abs() < f32::EPSILON
-                        || (bottom_left.y - top_right.y).abs() < f32::EPSILON
-                    {
+                    let point = position.point();
+                    if point.x < 0.0 || point.y < 0.0 {
                         return Err(format!(
-                            "position {} must have non-zero width and height",
+                            "position {} must have non-negative coordinates",
                             idx
                         ));
-                    }
-                    if bottom_left.x > top_right.x || bottom_left.y > top_right.y {
-                        return Err(format!(
-                            "position {} must have x1 < x2 and y1 < y2",
-                            idx
-                        ));
-                    }
-                    if let Some(rotation) = position.rotation {
-                        if !matches!(rotation, 0 | 90 | 180 | 270) {
-                            return Err(format!(
-                                "position {} rotation must be 0, 90, 180, or 270",
-                                idx
-                            ));
-                        }
                     }
                 }
             }
@@ -214,9 +218,7 @@ fn validate_dimension(name: &str, dimension: &Dimension) -> Result<(), String> {
         }
         Dimension::Dynamic { min, max } => {
             if min.is_none() && max.is_none() {
-                return Err(format!(
-                    "{name} dynamic must specify min, max, or both"
-                ));
+                return Err(format!("{name} dynamic must specify min, max, or both"));
             }
             if let Some(min) = min {
                 if *min <= 0.0 {
@@ -240,43 +242,11 @@ fn validate_dimension(name: &str, dimension: &Dimension) -> Result<(), String> {
 
 fn validate_layout(
     layout: &Layout,
-    options: Option<&Options>,
     bounds: Option<&LayoutBounds>,
     margins: &Margins,
 ) -> Result<(), String> {
-    let option_values: HashSet<&str> = options
-        .map(|options| options.0.iter().map(|value| value.as_str()).collect())
-        .unwrap_or_default();
     match layout {
-        Layout::Items(items) => {
-            if !option_values.is_empty() {
-                return Err(
-                    "layout must define entries for each option when options are present"
-                        .to_string(),
-                );
-            }
-            validate_layout_items(items, bounds, margins)
-        }
-        Layout::OptionsLayout(map) => {
-            if option_values.is_empty() {
-                return Err("layout options require options list".to_string());
-            }
-            for option in &option_values {
-                if !map.contains_key(*option) {
-                    return Err(format!("layout missing option '{}'", option));
-                }
-            }
-            for key in map.keys() {
-                if !option_values.contains(key.as_str()) {
-                    return Err(format!("layout contains unknown option '{}'", key));
-                }
-            }
-            for (option, items) in map {
-                validate_layout_items(items, bounds, margins)
-                    .map_err(|err| format!("layout for option '{option}' invalid: {err}"))?;
-            }
-            Ok(())
-        }
+        Layout::Items(items) => validate_layout_items(items, bounds, margins),
     }
 }
 
@@ -317,9 +287,7 @@ fn validate_layout_item(
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
-            bounds,
-            font_size,
-            ..
+            bounds, font_size, ..
         } => {
             validate_box(bounds)?;
             validate_box_within(bounds, layout_bounds)?;
@@ -341,13 +309,15 @@ fn validate_layout_item(
                 }
             }
         }
-        LayoutItem::Line { start, end, thickness } => {
+        LayoutItem::Line {
+            start,
+            end,
+            thickness,
+        } => {
             if *thickness <= 0.0 {
                 return Err("line thickness must be greater than 0".to_string());
             }
-            if (start.x - end.x).abs() < f32::EPSILON
-                && (start.y - end.y).abs() < f32::EPSILON
-            {
+            if (start.x - end.x).abs() < f32::EPSILON && (start.y - end.y).abs() < f32::EPSILON {
                 return Err("line start and end must differ".to_string());
             }
             if let Some(layout_bounds) = layout_bounds {
@@ -355,14 +325,20 @@ fn validate_layout_item(
                 validate_point_within(end, layout_bounds)?;
             }
         }
-        LayoutItem::Rectangle { bounds, thickness, .. } => {
+        LayoutItem::Rectangle {
+            bounds, thickness, ..
+        } => {
             validate_box(bounds)?;
             validate_box_within(bounds, layout_bounds)?;
             if *thickness <= 0.0 {
                 return Err("rectangle thickness must be greater than 0".to_string());
             }
         }
-        LayoutItem::Container { bounds, rotation, items } => {
+        LayoutItem::Container {
+            bounds,
+            rotation,
+            items,
+        } => {
             let container_bounds = if let Some(bounds) = bounds {
                 validate_box(bounds)?;
                 validate_box_within(bounds, layout_bounds)?;
@@ -418,7 +394,10 @@ fn validate_box_within(bounds: &Box, layout_bounds: Option<&LayoutBounds>) -> Re
     Ok(())
 }
 
-fn validate_point_within(point: &crate::models::Point, bounds: &LayoutBounds) -> Result<(), String> {
+fn validate_point_within(
+    point: &crate::models::Point,
+    bounds: &LayoutBounds,
+) -> Result<(), String> {
     if point.x < 0.0 || point.y < 0.0 {
         return Err("point must not extend into margins".to_string());
     }
@@ -461,21 +440,11 @@ fn layout_bounds(
         TemplateFormat::Single { width, height } => {
             (resolve_dimension(width), resolve_dimension(height))
         }
-        TemplateFormat::Sheet { positions, .. } => {
-            if positions.is_empty() {
-                return Ok(None);
-            }
-            let mut min_width = f32::INFINITY;
-            let mut min_height = f32::INFINITY;
-            for position in positions {
-                let (bl, tr) = position.bounds.corners();
-                let width = tr.x - bl.x;
-                let height = tr.y - bl.y;
-                min_width = min_width.min(width);
-                min_height = min_height.min(height);
-            }
-            (min_width, min_height)
-        }
+        TemplateFormat::Sheet {
+            label_width,
+            label_height,
+            ..
+        } => (*label_width, *label_height),
     };
 
     layout_bounds_from_size(width, height, margins).map(Some)
@@ -542,7 +511,11 @@ mod tests {
     use crate::models::{
         Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateFormat,
     };
-    use std::{collections::HashMap, fs, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn temp_dir(label: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
@@ -555,7 +528,7 @@ mod tests {
         dir
     }
 
-    fn write_template(dir: &PathBuf, name: &str, contents: &str) {
+    fn write_template(dir: &Path, name: &str, contents: &str) {
         let path = dir.join(name);
         fs::write(&path, contents).expect("write template");
     }
@@ -574,10 +547,7 @@ mod tests {
                 height: Dimension::Fixed(25.0),
             },
             options: Some(Options(vec!["default".to_string()])),
-            layout: Layout::OptionsLayout(HashMap::from([(
-                "default".to_string(),
-                Vec::new(),
-            )])),
+            layout: Layout::Items(Vec::new()),
             version: None,
         };
         let err = template.validate().expect_err("expected error");
@@ -598,10 +568,7 @@ mod tests {
                 height: Dimension::Fixed(25.0),
             },
             options: Some(Options(vec!["".to_string()])),
-            layout: Layout::OptionsLayout(HashMap::from([(
-                "horizontal".to_string(),
-                Vec::new(),
-            )])),
+            layout: Layout::Items(Vec::new()),
             version: None,
         };
         let err = template.validate().expect_err("expected error");
@@ -699,9 +666,7 @@ layout: []
                 height: Dimension::Fixed(25.0),
             },
             options: Some(Options(vec!["default".to_string()])),
-            layout: Layout::OptionsLayout(HashMap::from([(
-                "default".to_string(),
-                vec![
+            layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: "value".to_string(),
                     bounds: Box([0.0, 0.0, 1.0, 1.0]),
@@ -716,8 +681,7 @@ layout: []
                     multiline: false,
                     alignment: Alignment::default(),
                 },
-            ],
-            )])),
+            ]),
             version: None,
         };
         let err = template.validate().expect_err("expected error");

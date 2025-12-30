@@ -18,9 +18,7 @@ async fn main() {
     let app = app(Arc::new(templates));
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let addr: SocketAddr = format!("0.0.0.0:{}", port)
-        .parse()
-        .expect("invalid PORT");
+    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().expect("invalid PORT");
 
     tracing::info!(%addr, "labeler service listening");
 
@@ -28,7 +26,5 @@ async fn main() {
         .await
         .expect("failed to bind listener");
 
-    axum::serve(listener, app)
-        .await
-        .expect("server error");
+    axum::serve(listener, app).await.expect("server error");
 }

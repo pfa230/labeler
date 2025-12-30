@@ -25,11 +25,11 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let templates = TemplateRegistry::load_from_dir("templates")
-            .expect("load templates");
-        let server = axum::serve(listener, app(Arc::new(templates))).with_graceful_shutdown(async {
-            let _ = shutdown_rx.await;
-        });
+        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let server =
+            axum::serve(listener, app(Arc::new(templates))).with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            });
 
         let handle = tokio::spawn(server.into_future());
 
@@ -40,27 +40,37 @@ mod tests {
             .expect("failed to connect to server");
 
         let _ = shutdown_tx.send(());
-        handle.await.expect("server task failed").expect("server error");
+        handle
+            .await
+            .expect("server task failed")
+            .expect("server error");
     }
 }
 
 #[cfg(test)]
 mod http_tests {
     use super::{app, TemplateRegistry};
-    use axum::{body::Body, http::{Request, StatusCode}};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
     use http_body_util::BodyExt;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
 
     fn build_app() -> axum::Router {
-        let templates = TemplateRegistry::load_from_dir("templates")
-            .expect("load templates");
+        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
         app(Arc::new(templates))
     }
 
     async fn json_response(response: axum::response::Response) -> Value {
-        let body = response.into_body().collect().await.expect("collect body").to_bytes();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
         serde_json::from_slice(&body).expect("parse json")
     }
 
@@ -68,7 +78,12 @@ mod http_tests {
     async fn health_returns_ok() {
         let app = build_app();
         let response = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -80,7 +95,12 @@ mod http_tests {
     async fn templates_lists_available_templates() {
         let app = build_app();
         let response = app
-            .oneshot(Request::builder().uri("/templates").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -99,7 +119,12 @@ mod http_tests {
     async fn template_detail_unknown_returns_404() {
         let app = build_app();
         let response = app
-            .oneshot(Request::builder().uri("/templates/missing").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);

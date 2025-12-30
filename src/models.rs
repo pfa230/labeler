@@ -79,13 +79,16 @@ impl Box {
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
-pub struct SheetPosition {
-    #[serde(rename = "box")]
-    #[schema(rename = "box")]
-    pub bounds: Box,
-    #[serde(default)]
-    #[schema(example = 0)]
-    pub rotation: Option<u16>,
+#[serde(transparent)]
+pub struct SheetPosition(pub [f32; 2]);
+
+impl SheetPosition {
+    pub fn point(&self) -> Point {
+        Point {
+            x: self.0[0],
+            y: self.0[1],
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize, Default)]
@@ -229,14 +232,16 @@ pub enum LayoutItem {
 #[serde(untagged)]
 pub enum Layout {
     Items(Vec<LayoutItem>),
-    OptionsLayout(HashMap<String, Vec<LayoutItem>>),
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TemplateFormat {
     Sheet {
-        paper_size: String,
+        paper_width: f32,
+        paper_height: f32,
+        label_width: f32,
+        label_height: f32,
         positions: Vec<SheetPosition>,
     },
     Single {

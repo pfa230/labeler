@@ -159,9 +159,7 @@ impl From<JsonRejection> for AppError {
             JsonRejection::JsonSyntaxError(_) | JsonRejection::JsonDataError(_) => {
                 AppError::invalid_request("Malformed JSON body")
             }
-            JsonRejection::BytesRejection(_) => {
-                AppError::invalid_request("Invalid request body")
-            }
+            JsonRejection::BytesRejection(_) => AppError::invalid_request("Invalid request body"),
             _ => AppError::invalid_request("Invalid JSON request"),
         }
     }
