@@ -20,6 +20,7 @@ typst-as-lib = { version = "0.15", features = ["typst-kit-embed-fonts", "typst-k
 typst-render = "0.14"
 typst-pdf = "0.14"
 qrcode = "0.14"
+fontdue = "0.9"
 
 [dev-dependencies]
 http-body-util = "0.1"
