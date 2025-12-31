@@ -98,7 +98,7 @@ pub fn render_sheet_labels(
         unit = template.unit
     )
     .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: \"Inter\")")
+    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     for (idx, label) in labels.iter().enumerate() {
@@ -166,7 +166,7 @@ fn build_typst_source(
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
     )
     .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: \"Inter\")")
+    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     let items_source = render_items(
