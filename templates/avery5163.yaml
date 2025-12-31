@@ -44,40 +44,44 @@ layout:
     items:
       - type: qr
         name: url
-        box: [0.05, 0.45, 1.65, 1.75]
+        box: [0.0, 0.35, 1.45, 1.8]
         params:
           quiet_zone: 0.0
       - type: text
         name: id
-        box: [0.0, 0.05, 1.7, 0.4]
+        box: [0.0, 0.0, 1.45, 0.35]
         font_size: 12.0
         alignment:
           horizontal: center
           vertical: center
+      - type: line
+        start: { x: 1.45, y: 0.0 }
+        end: { x: 1.45, y: 1.8 }
+        thickness: 0.02
       - type: container
-        box: [1.7, 0.0, 3.8, 1.8]
+        box: [1.45, 0.0, 3.8, 1.8]
         items:
           - type: text
             name: name
-            box: [0.0, 1.45, 2.1, 1.8]
+            box: [0.0, 1.45, 2.35, 1.8]
             font_size: 17.0
             alignment:
               horizontal: left
               vertical: center
           - type: line
             start: { x: 0.0, y: 1.35 }
-            end: { x: 2.1, y: 1.35 }
+            end: { x: 2.35, y: 1.35 }
             thickness: 0.025
           - type: text
             name: tags
-            box: [0.0, 0.95, 2.1, 1.25]
+            box: [0.0, 0.95, 2.35, 1.25]
             font_size: 10.5
             alignment:
               horizontal: left
               vertical: center
           - type: text
             name: description
-            box: [0.0, 0.0, 2.1, 0.95]
+            box: [0.0, 0.0, 2.35, 0.95]
             font_size: 9.5
             multiline: true
             alignment:

@@ -133,7 +133,7 @@ impl IntoResponse for AppError {
                 "request failed"
             );
         } else {
-            tracing::debug!(
+            tracing::warn!(
                 status = %status,
                 code = self.code,
                 message = %self.message,
@@ -155,13 +155,18 @@ impl IntoResponse for AppError {
 
 impl From<JsonRejection> for AppError {
     fn from(rejection: JsonRejection) -> Self {
+        let message = rejection.body_text();
+        tracing::warn!(message = %message, "json request rejected");
         match rejection {
             JsonRejection::MissingJsonContentType(_) => {
                 AppError::unsupported_media_type("Content-Type must be application/json")
             }
-            JsonRejection::JsonSyntaxError(_) | JsonRejection::JsonDataError(_) => {
-                AppError::invalid_request("Malformed JSON body")
-            }
+            JsonRejection::JsonSyntaxError(_) | JsonRejection::JsonDataError(_) => AppError::new(
+                StatusCode::BAD_REQUEST,
+                CODE_INVALID_REQUEST,
+                "Malformed JSON body",
+                Some(json!({ "error": message })),
+            ),
             JsonRejection::BytesRejection(_) => AppError::invalid_request("Invalid request body"),
             _ => AppError::invalid_request("Invalid JSON request"),
         }

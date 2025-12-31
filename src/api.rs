@@ -1,4 +1,5 @@
 use axum::{
+    extract::rejection::JsonRejection,
     extract::{Json, Path, State},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -94,8 +95,9 @@ pub async fn get_template(
 )]
 pub async fn render_label(
     State(registry): State<Arc<TemplateRegistry>>,
-    Json(req): Json<RenderLabelRequest>,
+    payload: Result<Json<RenderLabelRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
+    let Json(req) = payload.map_err(AppError::from)?;
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
@@ -147,8 +149,9 @@ pub async fn render_label(
 )]
 pub async fn render_batch(
     State(registry): State<Arc<TemplateRegistry>>,
-    Json(req): Json<RenderBatchRequest>,
+    payload: Result<Json<RenderBatchRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
+    let Json(req) = payload.map_err(AppError::from)?;
     tracing::debug!(
         template = %req.template,
         labels = req.labels.len(),
