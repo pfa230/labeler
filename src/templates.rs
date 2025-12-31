@@ -60,7 +60,7 @@ impl TemplateRegistry {
                     source,
                 })?;
             let template: TemplateDefinition =
-                serde_yaml::from_str(&contents).map_err(|source| TemplateRegistryError::Yaml {
+                serde_yml::from_str(&contents).map_err(|source| TemplateRegistryError::Yaml {
                     path: path.clone(),
                     source,
                 })?;
@@ -119,7 +119,7 @@ pub enum TemplateRegistryError {
     #[error("failed to parse template {path}: {source}")]
     Yaml {
         path: PathBuf,
-        source: serde_yaml::Error,
+        source: serde_yml::Error,
     },
     #[error("template {path} failed validation: {message}")]
     Validation { path: PathBuf, message: String },
