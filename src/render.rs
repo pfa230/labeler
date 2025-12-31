@@ -7,6 +7,7 @@ use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use typst::layout::PagedDocument;
+use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 use typst_as_lib::TypstEngine;
 
 pub fn render_single_label(
@@ -38,7 +39,7 @@ pub fn render_single_label(
 
     let engine = TypstEngine::builder()
         .main_file(source)
-        .search_fonts_with(Default::default())
+        .search_fonts_with(typst_font_options())
         .build();
 
     let warned = engine.compile::<PagedDocument>();
@@ -97,6 +98,8 @@ pub fn render_sheet_labels(
         unit = template.unit
     )
     .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+    writeln!(source, "#set text(font: \"Inter\")")
+        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     for (idx, label) in labels.iter().enumerate() {
         let position = &positions[start_slot + idx];
@@ -133,7 +136,7 @@ pub fn render_sheet_labels(
 
     let engine = TypstEngine::builder()
         .main_file(source)
-        .search_fonts_with(Default::default())
+        .search_fonts_with(typst_font_options())
         .build();
 
     let warned = engine.compile::<PagedDocument>();
@@ -163,6 +166,8 @@ fn build_typst_source(
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
     )
     .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+    writeln!(source, "#set text(font: \"Inter\")")
+        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     let items_source = render_items(
         items,
@@ -227,6 +232,7 @@ fn render_items(
                 bounds,
                 font_size,
                 multiline,
+                alignment,
                 ..
             } => {
                 let size = match font_size {
@@ -261,9 +267,10 @@ fn render_items(
                 let box_width = format_length(width, unit)?;
                 let box_height = format_length(box_height_units, unit)?;
 
+                let align = typst_alignment(alignment);
                 writeln!(
                     out,
-                    "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[#text(\"{text}\", size: {size}pt)]]"
+                    "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[#align({align})[#text(\"{text}\", size: {size}pt)]]]"
                 )
                 .map_err(|err| {
                     AppError::render_failed(format!("failed to build typst source: {err}"))
@@ -499,6 +506,7 @@ fn build_qr_svg(
         .map_err(|err| AppError::render_failed(format!("qr generation failed: {err}")))?;
 
     let mut renderer = code.render::<svg::Color>();
+    renderer.quiet_zone(false);
     if let Some(params) = params {
         if let Some(module_size) = params.module_size {
             if module_size > 0.0 {
@@ -531,6 +539,25 @@ fn build_qr_svg(
 
 fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32) {
     (point.x, page_height_units - point.y)
+}
+
+fn typst_font_options() -> TypstKitFontOptions {
+    TypstKitFontOptions::default().include_dirs(["fonts"])
+}
+
+fn typst_alignment(alignment: &crate::models::Alignment) -> String {
+    use crate::models::{HorizontalAlign, VerticalAlign};
+    let horizontal = match alignment.horizontal {
+        HorizontalAlign::Left => "left",
+        HorizontalAlign::Center => "center",
+        HorizontalAlign::Right => "right",
+    };
+    let vertical = match alignment.vertical {
+        VerticalAlign::Top => "top",
+        VerticalAlign::Center => "horizon",
+        VerticalAlign::Bottom => "bottom",
+    };
+    format!("{vertical} + {horizontal}")
 }
 
 #[cfg(test)]

@@ -229,7 +229,9 @@ mod http_tests {
                     "data": {
                         "id": "A1",
                         "url": "https://example.com/A1",
-                        "description": "Test description"
+                        "name": "Floor Grinder",
+                        "tags": "Power tools",
+                        "description": "Angle grinder with floor grinding attachment and dust shroud"
                     }
                 }
             ]
