@@ -58,34 +58,17 @@ pub struct TemplateDetail {
 pub struct Options(pub BTreeMap<String, Vec<String>>);
 
 impl Options {
-    pub fn contains_value(&self, value: &str) -> bool {
-        let (name, choice) = match value.split_once(':') {
-            Some((name, choice)) => (name.trim(), choice.trim()),
-            None => return false,
-        };
-        if name.is_empty() || choice.is_empty() {
-            return false;
-        }
-        self.0
-            .get(name)
-            .map(|values| values.iter().any(|entry| entry == choice))
-            .unwrap_or(false)
+    pub fn is_valid_selection(&self, selection: &BTreeMap<String, String>) -> bool {
+        selection.iter().all(|(name, choice)| {
+            self.0
+                .get(name)
+                .map(|values| values.iter().any(|entry| entry == choice))
+                .unwrap_or(false)
+        })
     }
 
-    pub fn default_value(&self) -> Option<String> {
-        self.0
-            .iter()
-            .find_map(|(name, values)| values.first().map(|value| format!("{name}:{value}")))
-    }
-
-    pub fn allowed_values(&self) -> Vec<String> {
-        let mut values = std::collections::BTreeSet::new();
-        for (name, entries) in &self.0 {
-            for entry in entries {
-                values.insert(format!("{name}:{entry}"));
-            }
-        }
-        values.into_iter().collect()
+    pub fn allowed(&self) -> &BTreeMap<String, Vec<String>> {
+        &self.0
     }
 }
 
@@ -228,7 +211,7 @@ pub enum LayoutItem {
         #[serde(skip_serializing_if = "Option::is_none")]
         bounds: Option<Box>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        option: Option<String>,
+        option: Option<BTreeMap<String, String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         rotation: Option<u16>,
         #[schema(no_recursion)]
@@ -277,5 +260,5 @@ pub struct RenderBatchRequest {
 pub struct LabelInput {
     pub data: HashMap<String, Value>,
     #[serde(default)]
-    pub option: Option<String>,
+    pub option: Option<BTreeMap<String, String>>,
 }

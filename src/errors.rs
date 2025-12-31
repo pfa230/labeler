@@ -59,12 +59,15 @@ impl AppError {
         )
     }
 
-    pub fn invalid_option_value(option: &str, allowed: &[String]) -> Self {
+    pub fn invalid_option_value(
+        selection: &std::collections::BTreeMap<String, String>,
+        allowed: &std::collections::BTreeMap<String, Vec<String>>,
+    ) -> Self {
         Self::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             CODE_INVALID_OPTION_VALUE,
-            format!("Invalid option value '{option}'"),
-            Some(json!({ "allowed": allowed })),
+            "Invalid option selection".to_string(),
+            Some(json!({ "selection": selection, "allowed": allowed })),
         )
     }
 

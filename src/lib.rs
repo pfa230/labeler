@@ -222,6 +222,10 @@ mod http_tests {
             "template": "avery5163",
             "labels": [
                 {
+                    "option": {
+                        "orientation": "horizontal",
+                        "outline": "yes"
+                    },
                     "data": {
                         "id": "A1",
                         "url": "https://example.com/A1",
