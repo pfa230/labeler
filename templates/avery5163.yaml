@@ -44,26 +44,45 @@ layout:
     items:
       - type: qr
         name: url
-        box: [0.0, 0.4, 1.9, 1.8]
+        box: [0.05, 0.45, 1.65, 1.75]
+        params:
+          quiet_zone: 0.0
       - type: text
         name: id
-        box: [0.0, 0.0, 1.9, 0.4]
-        font_size: 8.0
+        box: [0.0, 0.05, 1.7, 0.4]
+        font_size: 12.0
         alignment:
           horizontal: center
           vertical: center
       - type: container
-        box: [1.9, 0.0, 3.8, 1.8]
-        rotation: 90
+        box: [1.7, 0.0, 3.8, 1.8]
         items:
           - type: text
+            name: name
+            box: [0.0, 1.45, 2.1, 1.8]
+            font_size: 17.0
+            alignment:
+              horizontal: left
+              vertical: center
+          - type: line
+            start: { x: 0.0, y: 1.35 }
+            end: { x: 2.1, y: 1.35 }
+            thickness: 0.025
+          - type: text
+            name: tags
+            box: [0.0, 0.95, 2.1, 1.25]
+            font_size: 10.5
+            alignment:
+              horizontal: left
+              vertical: center
+          - type: text
             name: description
-            box: [0.0, 0.0, 1.9, 1.8]
-            font_size: 10.0
+            box: [0.0, 0.0, 2.1, 0.95]
+            font_size: 9.5
             multiline: true
             alignment:
-              horizontal: center
-              vertical: center
+              horizontal: left
+              vertical: top
   - type: container
     option:
       orientation: vertical
@@ -72,6 +91,8 @@ layout:
       - type: qr
         name: url
         box: [1.3, 0.6, 2.5, 1.8]
+        params:
+          quiet_zone: 0.0
       - type: text
         name: id
         box: [0.0, 0.3, 3.8, 0.6]
