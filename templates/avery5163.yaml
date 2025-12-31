@@ -29,7 +29,8 @@ format:
     - [4.32, 0.5]
 layout:
   - type: container
-    option: outline:yes
+    option:
+      outline: yes
     box: [0.0, 0.0, 4.0, 2.0]
     items:
       - type: rectangle
@@ -37,7 +38,8 @@ layout:
         thickness: 0.02
         rounded: false
   - type: container
-    option: orientation:horizontal
+    option:
+      orientation: horizontal
     box: [0.1, 0.1, 3.9, 1.9]
     items:
       - type: qr
@@ -63,7 +65,8 @@ layout:
               horizontal: center
               vertical: center
   - type: container
-    option: orientation:vertical
+    option:
+      orientation: vertical
     box: [0.1, 0.1, 3.9, 1.9]
     items:
       - type: qr

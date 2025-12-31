@@ -357,26 +357,26 @@ fn validate_layout_item(
             }
 
             if let Some(option) = option {
-                let (name, value) = option
-                    .split_once(':')
-                    .ok_or_else(|| "container option must be in name:value format".to_string())?;
-                let name = name.trim();
-                let value = value.trim();
-                if name.is_empty() || value.is_empty() {
-                    return Err("container option must be in name:value format".to_string());
-                }
                 let Some(options) = options else {
                     return Err("container option requires template options".to_string());
                 };
-                let matches = options
-                    .0
-                    .get(name)
-                    .map(|values| values.iter().any(|entry| entry == value))
-                    .unwrap_or(false);
-                if !matches {
-                    return Err(format!(
-                        "container option '{option}' must match template options"
-                    ));
+                if option.is_empty() {
+                    return Err("container option must not be empty".to_string());
+                }
+                for (name, value) in option {
+                    if name.trim().is_empty() || value.trim().is_empty() {
+                        return Err("container option must not contain empty values".to_string());
+                    }
+                    let matches = options
+                        .0
+                        .get(name)
+                        .map(|values| values.iter().any(|entry| entry == value))
+                        .unwrap_or(false);
+                    if !matches {
+                        return Err(format!(
+                            "container option '{name}' must match template options"
+                        ));
+                    }
                 }
             }
 

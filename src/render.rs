@@ -4,7 +4,7 @@ use crate::templates::TemplateDefinition;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
@@ -12,7 +12,7 @@ use typst_as_lib::TypstEngine;
 pub fn render_single_label(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
-    option: Option<&str>,
+    option: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<u8>, AppError> {
     let TemplateFormat::Single { width, height } = &template.format else {
         return Err(AppError::unsupported_format(
@@ -33,7 +33,7 @@ pub fn render_single_label(
         &template.unit,
         items,
         data,
-        selected_option.as_deref(),
+        selected_option,
     )?;
 
     let engine = TypstEngine::builder()
@@ -107,7 +107,7 @@ pub fn render_sheet_labels(
         let height = *label_height;
         let top = bottom + height;
 
-        let selected_option = normalize_option(template, label.option.as_deref())?;
+        let selected_option = normalize_option(template, label.option.as_ref())?;
         let items = select_layout_items(template)?;
         let content = render_items(
             items,
@@ -115,7 +115,7 @@ pub fn render_sheet_labels(
             height,
             &template.unit,
             &label.data,
-            selected_option.as_deref(),
+            selected_option,
             0,
         )?;
 
@@ -153,7 +153,7 @@ fn build_typst_source(
     unit: &str,
     items: &[LayoutItem],
     data: &HashMap<String, JsonValue>,
-    selected_option: Option<&str>,
+    selected_option: Option<&BTreeMap<String, String>>,
 ) -> Result<String, AppError> {
     let mut source = String::new();
     let page_width = format_length(page_width_units, unit)?;
@@ -184,21 +184,18 @@ fn select_layout_items(template: &TemplateDefinition) -> Result<&[LayoutItem], A
     }
 }
 
-fn normalize_option(
+fn normalize_option<'a>(
     template: &TemplateDefinition,
-    option: Option<&str>,
-) -> Result<Option<String>, AppError> {
+    option: Option<&'a BTreeMap<String, String>>,
+) -> Result<Option<&'a BTreeMap<String, String>>, AppError> {
     match &template.options {
         Some(options) => {
-            if let Some(selected) = option {
-                if !options.contains_value(selected) {
-                    let allowed = options.allowed_values();
-                    return Err(AppError::invalid_option_value(selected, &allowed));
+            if let Some(selection) = option {
+                if !options.is_valid_selection(selection) {
+                    return Err(AppError::invalid_option_value(selection, options.allowed()));
                 }
             }
-            Ok(option
-                .map(|value| value.to_string())
-                .or_else(|| options.default_value()))
+            Ok(option)
         }
         None => {
             if option.is_some() {
@@ -218,7 +215,7 @@ fn render_items(
     frame_height_units: f32,
     unit: &str,
     data: &HashMap<String, JsonValue>,
-    selected_option: Option<&str>,
+    selected_option: Option<&BTreeMap<String, String>>,
     parent_rotation: u16,
 ) -> Result<String, AppError> {
     let mut out = String::new();
@@ -354,9 +351,14 @@ fn render_items(
                 rotation,
                 items,
             } => {
-                if let Some(option) = option.as_deref() {
-                    if selected_option != Some(option) {
-                        continue;
+                if let Some(option) = option {
+                    if let Some(selected_option) = selected_option {
+                        let matches = option
+                            .iter()
+                            .all(|(name, value)| selected_option.get(name) == Some(value));
+                        if !matches {
+                            continue;
+                        }
                     }
                 }
                 let (left, bottom, right, top) = if let Some(bounds) = bounds {
@@ -569,8 +571,8 @@ mod tests {
         };
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let png =
-            render_single_label(&template, &data, Some("variant:default")).expect("render label");
+        let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
+        let png = render_single_label(&template, &data, Some(&selection)).expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -623,8 +625,9 @@ mod tests {
             ("message".to_string(), json!("Hello")),
             ("code".to_string(), json!("QR-123")),
         ]);
-        let png = render_single_label(&template, &data, Some("variant:default"))
-            .expect("render label with qr");
+        let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
+        let png =
+            render_single_label(&template, &data, Some(&selection)).expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");

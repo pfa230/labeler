@@ -100,29 +100,29 @@ pub async fn render_label(
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
 
-    let option_value = req.label.option.as_deref();
+    let option_value = req.label.option.as_ref();
 
     tracing::debug!(
         template = %template.id,
-        option = option_value.unwrap_or(""),
+        option_count = option_value.map(|selection| selection.len()).unwrap_or(0),
         dpi = template.dpi,
         data_keys = req.label.data.len(),
         "render label request"
     );
 
-    let mut selected_option = option_value.map(|value| value.to_string());
     if let Some(options) = &template.options {
-        if selected_option.is_none() {
-            selected_option = options.default_value();
+        if let Some(selection) = option_value {
+            if !options.is_valid_selection(selection) {
+                return Err(AppError::invalid_option_value(selection, options.allowed()));
+            }
         }
-        let selected = selected_option.as_deref().unwrap_or("");
-        if !options.contains_value(selected) {
-            let allowed = options.allowed_values();
-            return Err(AppError::invalid_option_value(selected, &allowed));
-        }
+    } else if option_value.is_some() {
+        return Err(AppError::invalid_request(
+            "template does not support options",
+        ));
     }
 
-    let png = render_single_label(template, &req.label.data, selected_option.as_deref())?;
+    let png = render_single_label(template, &req.label.data, option_value)?;
 
     Ok((
         axum::http::StatusCode::OK,
