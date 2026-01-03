@@ -2,7 +2,7 @@ mod helpers;
 
 use crate::errors::AppError;
 use crate::models::{
-    FontSize, LabelInput, Layout, LayoutItem, Point, Position, Size, SizeValue, TemplateFormat,
+    FontSize, LabelInput, Layout, LayoutItem, Placement, Point, Size, SizeValue, TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
@@ -222,15 +222,6 @@ struct RenderContext<'a> {
     selected_option: Option<&'a BTreeMap<String, String>>,
 }
 
-#[derive(Clone, Copy)]
-struct ItemPlacement<'a> {
-    at: &'a Position,
-    size: &'a Size,
-    max_w: Option<f32>,
-    max_h: Option<f32>,
-    rotate: Option<f32>,
-}
-
 impl<'a> RenderContext<'a> {
     fn new(
         frame_width_units: f32,
@@ -255,95 +246,40 @@ impl<'a> RenderContext<'a> {
             match item {
                 LayoutItem::Text {
                     name,
-                    at,
-                    size,
-                    max_w,
-                    max_h,
-                    rotate,
+                    placement,
                     font_size,
                     multiline,
                     alignment,
                 } => {
-                    let placement = ItemPlacement {
-                        at,
-                        size,
-                        max_w: *max_w,
-                        max_h: *max_h,
-                        rotate: *rotate,
-                    };
                     self.render_text_item(
                         &mut out, name, placement, font_size, *multiline, alignment,
                     )?;
                 }
                 LayoutItem::Qr {
                     name,
-                    at,
-                    size,
-                    max_w,
-                    max_h,
-                    rotate,
+                    placement,
                     params,
                 } => {
-                    let placement = ItemPlacement {
-                        at,
-                        size,
-                        max_w: *max_w,
-                        max_h: *max_h,
-                        rotate: *rotate,
-                    };
                     self.render_qr_item(&mut out, name, placement, params)?;
                 }
                 LayoutItem::Line {
-                    at,
-                    size,
-                    max_w,
-                    max_h,
-                    rotate,
+                    placement,
                     thickness,
                 } => {
-                    let placement = ItemPlacement {
-                        at,
-                        size,
-                        max_w: *max_w,
-                        max_h: *max_h,
-                        rotate: *rotate,
-                    };
                     self.render_line_item(&mut out, placement, *thickness)?;
                 }
                 LayoutItem::Rectangle {
-                    at,
-                    size,
-                    max_w,
-                    max_h,
-                    rotate,
+                    placement,
                     thickness,
                     rounded,
                 } => {
-                    let placement = ItemPlacement {
-                        at,
-                        size,
-                        max_w: *max_w,
-                        max_h: *max_h,
-                        rotate: *rotate,
-                    };
                     self.render_rectangle_item(&mut out, placement, *thickness, *rounded)?;
                 }
                 LayoutItem::Container {
-                    at,
-                    size,
-                    max_w,
-                    max_h,
-                    rotate,
+                    placement,
                     option,
                     items,
                 } => {
-                    let placement = ItemPlacement {
-                        at,
-                        size,
-                        max_w: *max_w,
-                        max_h: *max_h,
-                        rotate: *rotate,
-                    };
                     self.render_container_item(&mut out, placement, option, items)?;
                 }
             }
@@ -356,7 +292,7 @@ impl<'a> RenderContext<'a> {
         &self,
         out: &mut String,
         name: &str,
-        placement: ItemPlacement<'_>,
+        placement: &Placement,
         font_size: &FontSize,
         multiline: bool,
         alignment: &crate::models::Alignment,
@@ -378,7 +314,7 @@ impl<'a> RenderContext<'a> {
         };
 
         let (width, box_height_units) =
-            self.resolve_size(placement.size, placement.max_w, placement.max_h, false)?;
+            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let point = placement.at.point();
         let left = point.x;
         let bottom = point.y;
@@ -417,7 +353,7 @@ impl<'a> RenderContext<'a> {
         &self,
         out: &mut String,
         name: &str,
-        placement: ItemPlacement<'_>,
+        placement: &Placement,
         params: &Option<crate::models::QrParams>,
     ) -> Result<(), AppError> {
         let payload = value_to_string(
@@ -426,7 +362,7 @@ impl<'a> RenderContext<'a> {
                 .ok_or_else(|| AppError::missing_field(name))?,
         );
         let (width, height) =
-            self.resolve_size(placement.size, placement.max_w, placement.max_h, false)?;
+            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let point = placement.at.point();
         let left = point.x;
         let bottom = point.y;
@@ -454,11 +390,11 @@ impl<'a> RenderContext<'a> {
     fn render_line_item(
         &self,
         out: &mut String,
-        placement: ItemPlacement<'_>,
+        placement: &Placement,
         thickness: f32,
     ) -> Result<(), AppError> {
         let (dx_units, dy_units) =
-            self.resolve_line_delta(placement.size, placement.max_w, placement.max_h)?;
+            self.resolve_line_delta(&placement.size, placement.max_w, placement.max_h)?;
         let start_point = placement.at.point();
         let end_point = Point {
             x: start_point.x + dx_units,
@@ -490,12 +426,12 @@ impl<'a> RenderContext<'a> {
     fn render_rectangle_item(
         &self,
         out: &mut String,
-        placement: ItemPlacement<'_>,
+        placement: &Placement,
         thickness: f32,
         rounded: bool,
     ) -> Result<(), AppError> {
         let (width, height) =
-            self.resolve_size(placement.size, placement.max_w, placement.max_h, false)?;
+            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let point = placement.at.point();
         let left = point.x;
         let bottom = point.y;
@@ -525,7 +461,7 @@ impl<'a> RenderContext<'a> {
     fn render_container_item(
         &self,
         out: &mut String,
-        placement: ItemPlacement<'_>,
+        placement: &Placement,
         option: &Option<BTreeMap<String, String>>,
         items: &[LayoutItem],
     ) -> Result<(), AppError> {
@@ -540,7 +476,7 @@ impl<'a> RenderContext<'a> {
             }
         }
         let (width, height) =
-            self.resolve_size(placement.size, placement.max_w, placement.max_h, true)?;
+            self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?;
         let point = placement.at.point();
         let left = point.x;
         let bottom = point.y;
@@ -667,8 +603,8 @@ impl<'a> RenderContext<'a> {
 mod tests {
     use super::{render_sheet_labels, render_single_label};
     use crate::models::{
-        Alignment, Dimension, FontSize, LabelInput, Layout, LayoutItem, Options, Position,
-        SheetPosition, Size, SizeValue, TemplateFormat,
+        Alignment, Dimension, FontSize, LabelInput, Layout, LayoutItem, Options, Placement,
+        Position, SheetPosition, Size, SizeValue, TemplateFormat,
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
@@ -692,11 +628,13 @@ mod tests {
             )]))),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: "message".to_string(),
-                at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
                 font_size: FontSize::Fixed(10.0),
                 multiline: false,
                 alignment: Alignment::default(),
@@ -731,38 +669,46 @@ mod tests {
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: "message".to_string(),
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
                     font_size: FontSize::Fixed(10.0),
                     multiline: false,
                     alignment: Alignment::default(),
                 },
                 LayoutItem::Qr {
                     name: "code".to_string(),
-                    at: Position([20.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
+                    placement: Placement {
+                        at: Position([20.0, 0.0]),
+                        size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
                     params: None,
                 },
                 LayoutItem::Line {
-                    at: Position([0.0, 1.0]),
-                    size: Size([SizeValue::Value(30.0), SizeValue::Value(0.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
+                    placement: Placement {
+                        at: Position([0.0, 1.0]),
+                        size: Size([SizeValue::Value(30.0), SizeValue::Value(0.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
                     thickness: 0.2,
                 },
                 LayoutItem::Rectangle {
-                    at: Position([0.5, 1.5]),
-                    size: Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
+                    placement: Placement {
+                        at: Position([0.5, 1.5]),
+                        size: Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
                     thickness: 0.2,
                     rounded: true,
                 },
@@ -800,11 +746,13 @@ mod tests {
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: "message".to_string(),
-                at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
                 font_size: FontSize::Fixed(10.0),
                 multiline: false,
                 alignment: Alignment::default(),
