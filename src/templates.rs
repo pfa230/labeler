@@ -286,33 +286,35 @@ fn validate_layout_item(
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
-            at,
-            size,
-            max_w,
-            max_h,
-            rotate,
+            placement,
             font_size,
             ..
         } => {
-            validate_position(at)?;
-            validate_rotation(rotate)?;
-            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, false)?;
-            validate_bounds(at, width, height, layout_bounds)?;
+            validate_position(&placement.at)?;
+            validate_rotation(&placement.rotate)?;
+            let (width, height) = resolve_size(
+                &placement.size,
+                placement.max_w,
+                placement.max_h,
+                layout_bounds,
+                false,
+            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
             validate_font_size(font_size)?;
         }
         LayoutItem::Qr {
-            at,
-            size,
-            max_w,
-            max_h,
-            rotate,
-            params,
-            ..
+            placement, params, ..
         } => {
-            validate_position(at)?;
-            validate_rotation(rotate)?;
-            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, false)?;
-            validate_bounds(at, width, height, layout_bounds)?;
+            validate_position(&placement.at)?;
+            validate_rotation(&placement.rotate)?;
+            let (width, height) = resolve_size(
+                &placement.size,
+                placement.max_w,
+                placement.max_h,
+                layout_bounds,
+                false,
+            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
                     if module_size <= 0.0 {
@@ -327,54 +329,59 @@ fn validate_layout_item(
             }
         }
         LayoutItem::Line {
-            at,
-            size,
-            max_w,
-            max_h,
-            rotate,
+            placement,
             thickness,
         } => {
-            validate_position(at)?;
-            validate_rotation(rotate)?;
+            validate_position(&placement.at)?;
+            validate_rotation(&placement.rotate)?;
             if *thickness <= 0.0 {
                 return Err("line thickness must be greater than 0".to_string());
             }
-            let (dx, dy) = resolve_line_delta(size, *max_w, *max_h, layout_bounds)?;
+            let (dx, dy) = resolve_line_delta(
+                &placement.size,
+                placement.max_w,
+                placement.max_h,
+                layout_bounds,
+            )?;
             if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
                 return Err("line start and end must differ".to_string());
             }
-            validate_line_bounds(at, dx, dy, layout_bounds)?;
+            validate_line_bounds(&placement.at, dx, dy, layout_bounds)?;
         }
         LayoutItem::Rectangle {
-            at,
-            size,
-            max_w,
-            max_h,
-            rotate,
+            placement,
             thickness,
             ..
         } => {
-            validate_position(at)?;
-            validate_rotation(rotate)?;
-            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, false)?;
-            validate_bounds(at, width, height, layout_bounds)?;
+            validate_position(&placement.at)?;
+            validate_rotation(&placement.rotate)?;
+            let (width, height) = resolve_size(
+                &placement.size,
+                placement.max_w,
+                placement.max_h,
+                layout_bounds,
+                false,
+            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
             if *thickness <= 0.0 {
                 return Err("rectangle thickness must be greater than 0".to_string());
             }
         }
         LayoutItem::Container {
-            at,
-            size,
-            max_w,
-            max_h,
-            rotate,
+            placement,
             option,
             items,
         } => {
-            validate_position(at)?;
-            validate_rotation(rotate)?;
-            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, true)?;
-            validate_bounds(at, width, height, layout_bounds)?;
+            validate_position(&placement.at)?;
+            validate_rotation(&placement.rotate)?;
+            let (width, height) = resolve_size(
+                &placement.size,
+                placement.max_w,
+                placement.max_h,
+                layout_bounds,
+                true,
+            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
 
             if let Some(option) = option {
                 let Some(options) = options else {
@@ -819,22 +826,26 @@ layout: []
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: "value".to_string(),
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
+                    placement: crate::models::Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
                     font_size: FontSize::Fixed(10.0),
                     multiline: false,
                     alignment: Alignment::default(),
                 },
                 LayoutItem::Text {
                     name: "value".to_string(),
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
+                    placement: crate::models::Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
                     font_size: FontSize::Fixed(10.0),
                     multiline: false,
                     alignment: Alignment::default(),

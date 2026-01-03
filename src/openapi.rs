@@ -4,9 +4,9 @@ use crate::{
     api,
     models::{
         AutoSize, Dimension, ErrorBody, ErrorResponse, FontSize, HealthResponse, HorizontalAlign,
-        LabelInput, Layout, LayoutItem, Options, Point, Position, QrParams, RenderBatchRequest,
-        RenderLabelRequest, SheetPosition, Size, SizeValue, TemplateDetail, TemplateFormat,
-        TemplateList, TemplateSummary, VerticalAlign,
+        LabelInput, Layout, LayoutItem, Options, Placement, Point, Position, QrParams,
+        RenderBatchRequest, RenderLabelRequest, SheetPosition, Size, SizeValue, TemplateDetail,
+        TemplateFormat, TemplateList, TemplateSummary, VerticalAlign,
     },
 };
 
@@ -31,6 +31,7 @@ use crate::{
             Layout,
             Point,
             Position,
+            Placement,
             SheetPosition,
             Dimension,
             Size,

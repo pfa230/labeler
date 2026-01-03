@@ -134,6 +134,19 @@ impl SizeValue {
 pub struct Size(pub [SizeValue; 2]);
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+pub struct Placement {
+    #[serde(default)]
+    pub at: Position,
+    pub size: Size,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_w: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_h: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotate: Option<f32>,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(transparent)]
 pub struct SheetPosition(pub [f32; 2]);
 
@@ -220,15 +233,8 @@ impl Default for Alignment {
 pub enum LayoutItem {
     Text {
         name: String,
-        #[serde(default)]
-        at: Position,
-        size: Size,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_w: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_h: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rotate: Option<f32>,
+        #[serde(flatten)]
+        placement: Placement,
         font_size: FontSize,
         #[serde(default)]
         multiline: bool,
@@ -237,53 +243,25 @@ pub enum LayoutItem {
     },
     Qr {
         name: String,
-        #[serde(default)]
-        at: Position,
-        size: Size,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_w: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_h: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rotate: Option<f32>,
+        #[serde(flatten)]
+        placement: Placement,
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<QrParams>,
     },
     Line {
-        #[serde(default)]
-        at: Position,
-        size: Size,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_w: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_h: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rotate: Option<f32>,
+        #[serde(flatten)]
+        placement: Placement,
         thickness: f32,
     },
     Rectangle {
-        #[serde(default)]
-        at: Position,
-        size: Size,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_w: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_h: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rotate: Option<f32>,
+        #[serde(flatten)]
+        placement: Placement,
         thickness: f32,
         rounded: bool,
     },
     Container {
-        #[serde(default)]
-        at: Position,
-        size: Size,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_w: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        max_h: Option<f32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        rotate: Option<f32>,
+        #[serde(flatten)]
+        placement: Placement,
         #[serde(skip_serializing_if = "Option::is_none")]
         option: Option<BTreeMap<String, String>>,
         #[schema(no_recursion)]
