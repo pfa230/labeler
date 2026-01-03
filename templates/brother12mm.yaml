@@ -5,26 +5,29 @@ unit: mm
 dpi: 300
 format:
   type: single
-  width: 
+  width:
     min: 10.0
     max: 100.0
   height: 12.0
 layout:
   - type: text
     name: message
-    box: [0.0, 0.0, 12.0, 12.0]
+    at: [0.0, 0.0]
+    size: [12.0, 12.0]
     font_size: 10.0
     alignment:
       horizontal: left
       vertical: center
   - type: qr
     name: code
-    box: [12.0, 0.0, 24.0, 12.0]
+    at: [12.0, 0.0]
+    size: [12.0, 12.0]
   - type: line
-    start: { x: 0.5, y: 1.0 }
-    end: { x: 23.5, y: 1.0 }
+    at: [0.5, 1.0]
+    size: [23.0, 0.0]
     thickness: 0.2
   - type: rectangle
-    box: [0.5, 1.5, 23.5, 11.5]
+    at: [0.5, 1.5]
+    size: [23.0, 10.0]
     thickness: 0.2
     rounded: true

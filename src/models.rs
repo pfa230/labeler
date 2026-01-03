@@ -78,16 +78,60 @@ pub struct Point {
     pub y: f32,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
-#[serde(transparent)]
-pub struct Box(pub [f32; 4]);
-
-impl Box {
-    pub fn corners(&self) -> (Point, Point) {
-        let [x1, y1, x2, y2] = self.0;
-        (Point { x: x1, y: y1 }, Point { x: x2, y: y2 })
+impl Default for Point {
+    fn default() -> Self {
+        Self { x: 0.0, y: 0.0 }
     }
 }
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct Position(pub [f32; 2]);
+
+impl Default for Position {
+    fn default() -> Self {
+        Self([0.0, 0.0])
+    }
+}
+
+impl Position {
+    pub fn point(&self) -> Point {
+        Point {
+            x: self.0[0],
+            y: self.0[1],
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoSize {
+    Auto,
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum SizeValue {
+    Value(f32),
+    Auto(AutoSize),
+}
+
+impl SizeValue {
+    pub fn value(&self) -> Option<f32> {
+        match self {
+            SizeValue::Value(value) => Some(*value),
+            SizeValue::Auto(_) => None,
+        }
+    }
+
+    pub fn is_auto(&self) -> bool {
+        matches!(self, SizeValue::Auto(_))
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[serde(transparent)]
+pub struct Size(pub [SizeValue; 2]);
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(transparent)]
@@ -176,9 +220,15 @@ impl Default for Alignment {
 pub enum LayoutItem {
     Text {
         name: String,
-        #[serde(rename = "box")]
-        #[schema(rename = "box")]
-        bounds: Box,
+        #[serde(default)]
+        at: Position,
+        size: Size,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_w: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_h: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotate: Option<f32>,
         font_size: FontSize,
         #[serde(default)]
         multiline: bool,
@@ -187,33 +237,55 @@ pub enum LayoutItem {
     },
     Qr {
         name: String,
-        #[serde(rename = "box")]
-        #[schema(rename = "box")]
-        bounds: Box,
+        #[serde(default)]
+        at: Position,
+        size: Size,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_w: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_h: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotate: Option<f32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<QrParams>,
     },
     Line {
-        start: Point,
-        end: Point,
+        #[serde(default)]
+        at: Position,
+        size: Size,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_w: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_h: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotate: Option<f32>,
         thickness: f32,
     },
     Rectangle {
-        #[serde(rename = "box")]
-        #[schema(rename = "box")]
-        bounds: Box,
+        #[serde(default)]
+        at: Position,
+        size: Size,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_w: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_h: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotate: Option<f32>,
         thickness: f32,
         rounded: bool,
     },
     Container {
-        #[serde(rename = "box")]
-        #[schema(rename = "box")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        bounds: Option<Box>,
+        #[serde(default)]
+        at: Position,
+        size: Size,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_w: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_h: Option<f32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rotate: Option<f32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         option: Option<BTreeMap<String, String>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        rotation: Option<u16>,
         #[schema(no_recursion)]
         items: Vec<LayoutItem>,
     },
