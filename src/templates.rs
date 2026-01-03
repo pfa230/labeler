@@ -6,8 +6,8 @@ use std::{
 use thiserror::Error;
 
 use crate::models::{
-    Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateDetail, TemplateFormat,
-    TemplateSummary,
+    Dimension, FontSize, Layout, LayoutItem, Options, Position, Size, SizeValue, TemplateDetail,
+    TemplateFormat, TemplateSummary,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -286,15 +286,33 @@ fn validate_layout_item(
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
-            bounds, font_size, ..
+            at,
+            size,
+            max_w,
+            max_h,
+            rotate,
+            font_size,
+            ..
         } => {
-            validate_box(bounds)?;
-            validate_box_within(bounds, layout_bounds)?;
+            validate_position(at)?;
+            validate_rotation(rotate)?;
+            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, false)?;
+            validate_bounds(at, width, height, layout_bounds)?;
             validate_font_size(font_size)?;
         }
-        LayoutItem::Qr { bounds, params, .. } => {
-            validate_box(bounds)?;
-            validate_box_within(bounds, layout_bounds)?;
+        LayoutItem::Qr {
+            at,
+            size,
+            max_w,
+            max_h,
+            rotate,
+            params,
+            ..
+        } => {
+            validate_position(at)?;
+            validate_rotation(rotate)?;
+            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, false)?;
+            validate_bounds(at, width, height, layout_bounds)?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
                     if module_size <= 0.0 {
@@ -309,52 +327,54 @@ fn validate_layout_item(
             }
         }
         LayoutItem::Line {
-            start,
-            end,
+            at,
+            size,
+            max_w,
+            max_h,
+            rotate,
             thickness,
         } => {
+            validate_position(at)?;
+            validate_rotation(rotate)?;
             if *thickness <= 0.0 {
                 return Err("line thickness must be greater than 0".to_string());
             }
-            if (start.x - end.x).abs() < f32::EPSILON && (start.y - end.y).abs() < f32::EPSILON {
+            let (dx, dy) = resolve_line_delta(size, *max_w, *max_h, layout_bounds)?;
+            if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
                 return Err("line start and end must differ".to_string());
             }
-            if let Some(layout_bounds) = layout_bounds {
-                validate_point_within(start, layout_bounds)?;
-                validate_point_within(end, layout_bounds)?;
-            }
+            validate_line_bounds(at, dx, dy, layout_bounds)?;
         }
         LayoutItem::Rectangle {
-            bounds, thickness, ..
+            at,
+            size,
+            max_w,
+            max_h,
+            rotate,
+            thickness,
+            ..
         } => {
-            validate_box(bounds)?;
-            validate_box_within(bounds, layout_bounds)?;
+            validate_position(at)?;
+            validate_rotation(rotate)?;
+            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, false)?;
+            validate_bounds(at, width, height, layout_bounds)?;
             if *thickness <= 0.0 {
                 return Err("rectangle thickness must be greater than 0".to_string());
             }
         }
         LayoutItem::Container {
-            bounds,
+            at,
+            size,
+            max_w,
+            max_h,
+            rotate,
             option,
-            rotation,
             items,
         } => {
-            let container_bounds = if let Some(bounds) = bounds {
-                validate_box(bounds)?;
-                validate_box_within(bounds, layout_bounds)?;
-                let (bl, tr) = bounds.corners();
-                let width = tr.x - bl.x;
-                let height = tr.y - bl.y;
-                Some(LayoutBounds { width, height })
-            } else {
-                layout_bounds.cloned()
-            };
-
-            if let Some(rotation) = rotation {
-                if !matches!(*rotation, 0 | 90 | 180 | 270) {
-                    return Err("container rotation must be 0, 90, 180, or 270".to_string());
-                }
-            }
+            validate_position(at)?;
+            validate_rotation(rotate)?;
+            let (width, height) = resolve_size(size, *max_w, *max_h, layout_bounds, true)?;
+            validate_bounds(at, width, height, layout_bounds)?;
 
             if let Some(option) = option {
                 let Some(options) = options else {
@@ -380,53 +400,168 @@ fn validate_layout_item(
                 }
             }
 
-            let container_bounds = container_bounds
-                .map(|bounds| layout_bounds_from_size(bounds.width, bounds.height))
-                .transpose()?;
-
-            validate_layout_items(items, container_bounds.as_ref(), options)?;
+            let container_bounds = layout_bounds_from_size(width, height)?;
+            validate_layout_items(items, Some(&container_bounds), options)?;
         }
     }
     Ok(())
 }
 
-fn validate_box(bounds: &Box) -> Result<(), String> {
-    let (bottom_left, top_right) = bounds.corners();
-    if (bottom_left.x - top_right.x).abs() < f32::EPSILON
-        || (bottom_left.y - top_right.y).abs() < f32::EPSILON
-    {
-        return Err("box must have non-zero width and height".to_string());
+fn validate_position(at: &Position) -> Result<(), String> {
+    const BOUNDS_EPSILON: f32 = 1.0e-4;
+    let point = at.point();
+    if point.x < -BOUNDS_EPSILON || point.y < -BOUNDS_EPSILON {
+        return Err("at must not extend into negative coordinates".to_string());
     }
     Ok(())
 }
 
-fn validate_box_within(bounds: &Box, layout_bounds: Option<&LayoutBounds>) -> Result<(), String> {
+fn validate_rotation(rotate: &Option<f32>) -> Result<(), String> {
+    if let Some(rotate) = rotate {
+        if !rotate.is_finite() {
+            return Err("rotate must be a finite number".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn resolve_size(
+    size: &Size,
+    max_w: Option<f32>,
+    max_h: Option<f32>,
+    layout_bounds: Option<&LayoutBounds>,
+    allow_auto_fill: bool,
+) -> Result<(f32, f32), String> {
+    if let Some(max_w) = max_w {
+        if max_w <= 0.0 {
+            return Err("max_w must be greater than 0".to_string());
+        }
+    }
+    if let Some(max_h) = max_h {
+        if max_h <= 0.0 {
+            return Err("max_h must be greater than 0".to_string());
+        }
+    }
+    let fallback = if allow_auto_fill {
+        layout_bounds.map(|bounds| (bounds.width, bounds.height))
+    } else {
+        None
+    };
+    let width = resolve_size_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
+    let height = resolve_size_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
+    Ok((width, height))
+}
+
+fn resolve_size_value(
+    value: &SizeValue,
+    max: Option<f32>,
+    fallback: Option<f32>,
+    label: &str,
+) -> Result<f32, String> {
+    match value {
+        SizeValue::Value(value) => {
+            if *value <= 0.0 {
+                return Err(format!("size {label} must be greater than 0"));
+            }
+            Ok(*value)
+        }
+        SizeValue::Auto(_) => {
+            let resolved = max
+                .or(fallback)
+                .ok_or_else(|| format!("size {label} is auto but no max_{label} provided"))?;
+            if resolved <= 0.0 {
+                return Err(format!("max_{label} must be greater than 0"));
+            }
+            Ok(resolved)
+        }
+    }
+}
+
+fn resolve_line_delta(
+    size: &Size,
+    max_w: Option<f32>,
+    max_h: Option<f32>,
+    layout_bounds: Option<&LayoutBounds>,
+) -> Result<(f32, f32), String> {
+    if let Some(max_w) = max_w {
+        if max_w <= 0.0 {
+            return Err("max_w must be greater than 0".to_string());
+        }
+    }
+    if let Some(max_h) = max_h {
+        if max_h <= 0.0 {
+            return Err("max_h must be greater than 0".to_string());
+        }
+    }
+    let fallback = layout_bounds.map(|bounds| (bounds.width, bounds.height));
+    let dx = resolve_line_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
+    let dy = resolve_line_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
+    Ok((dx, dy))
+}
+
+fn resolve_line_value(
+    value: &SizeValue,
+    max: Option<f32>,
+    fallback: Option<f32>,
+    label: &str,
+) -> Result<f32, String> {
+    match value {
+        SizeValue::Value(value) => Ok(*value),
+        SizeValue::Auto(_) => {
+            let resolved = max
+                .or(fallback)
+                .ok_or_else(|| format!("size {label} is auto but no max_{label} provided"))?;
+            if resolved <= 0.0 {
+                return Err(format!("max_{label} must be greater than 0"));
+            }
+            Ok(resolved)
+        }
+    }
+}
+
+fn validate_bounds(
+    at: &Position,
+    width: f32,
+    height: f32,
+    layout_bounds: Option<&LayoutBounds>,
+) -> Result<(), String> {
+    const BOUNDS_EPSILON: f32 = 1.0e-4;
     let Some(layout_bounds) = layout_bounds else {
         return Ok(());
     };
-    let (bottom_left, top_right) = bounds.corners();
-    let min_x = bottom_left.x.min(top_right.x);
-    let max_x = bottom_left.x.max(top_right.x);
-    let min_y = bottom_left.y.min(top_right.y);
-    let max_y = bottom_left.y.max(top_right.y);
-    if min_x < 0.0 || min_y < 0.0 {
-        return Err("box must not extend into negative coordinates".to_string());
-    }
-    if max_x > layout_bounds.width || max_y > layout_bounds.height {
-        return Err("box must fit within layout bounds".to_string());
+    let point = at.point();
+    let max_x = point.x + width;
+    let max_y = point.y + height;
+    if max_x > layout_bounds.width + BOUNDS_EPSILON || max_y > layout_bounds.height + BOUNDS_EPSILON
+    {
+        return Err("item must fit within layout bounds".to_string());
     }
     Ok(())
 }
 
-fn validate_point_within(
-    point: &crate::models::Point,
-    bounds: &LayoutBounds,
+fn validate_line_bounds(
+    at: &Position,
+    dx: f32,
+    dy: f32,
+    layout_bounds: Option<&LayoutBounds>,
 ) -> Result<(), String> {
-    if point.x < 0.0 || point.y < 0.0 {
-        return Err("point must not extend into negative coordinates".to_string());
+    const BOUNDS_EPSILON: f32 = 1.0e-4;
+    let Some(layout_bounds) = layout_bounds else {
+        return Ok(());
+    };
+    let point = at.point();
+    let end_x = point.x + dx;
+    let end_y = point.y + dy;
+    let min_x = point.x.min(end_x);
+    let max_x = point.x.max(end_x);
+    let min_y = point.y.min(end_y);
+    let max_y = point.y.max(end_y);
+    if min_x < -BOUNDS_EPSILON || min_y < -BOUNDS_EPSILON {
+        return Err("line must not extend into negative coordinates".to_string());
     }
-    if point.x > bounds.width || point.y > bounds.height {
-        return Err("point must fit within layout bounds".to_string());
+    if max_x > layout_bounds.width + BOUNDS_EPSILON || max_y > layout_bounds.height + BOUNDS_EPSILON
+    {
+        return Err("line must fit within layout bounds".to_string());
     }
     Ok(())
 }
@@ -515,7 +650,8 @@ impl From<&TemplateDefinition> for TemplateDetail {
 mod tests {
     use super::{TemplateDefinition, TemplateRegistry};
     use crate::models::{
-        Alignment, Box, Dimension, FontSize, Layout, LayoutItem, Options, TemplateFormat,
+        Alignment, Dimension, FontSize, Layout, LayoutItem, Options, Position, Size, SizeValue,
+        TemplateFormat,
     };
     use std::collections::BTreeMap;
     use std::{
@@ -605,7 +741,8 @@ format:
 layout:
   - type: text
     name: message
-    box: [0.0, 0.0, 10.0, 5.0]
+    at: [0.0, 0.0]
+    size: [10.0, 5.0]
     font_size: 10.0
     multiline: true
 "#,
@@ -682,14 +819,22 @@ layout: []
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: "value".to_string(),
-                    bounds: Box([0.0, 0.0, 1.0, 1.0]),
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
                     font_size: FontSize::Fixed(10.0),
                     multiline: false,
                     alignment: Alignment::default(),
                 },
                 LayoutItem::Text {
                     name: "value".to_string(),
-                    bounds: Box([0.0, 0.0, 1.0, 1.0]),
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
                     font_size: FontSize::Fixed(10.0),
                     multiline: false,
                     alignment: Alignment::default(),

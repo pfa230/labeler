@@ -70,13 +70,7 @@ pub(super) fn to_nonbreaking(value: &str) -> String {
     value.replace(' ', "\u{00A0}")
 }
 
-pub(super) fn build_qr_svg(
-    payload: &[u8],
-    params: &Option<QrParams>,
-    bounds: &crate::models::Box,
-    unit: &str,
-    page_height_units: f32,
-) -> Result<(String, String, String, String, String), AppError> {
+pub(super) fn build_qr_svg(payload: &[u8], params: &Option<QrParams>) -> Result<String, AppError> {
     let ecc = params
         .as_ref()
         .and_then(|params| params.error_correction.as_deref())
@@ -112,22 +106,7 @@ pub(super) fn build_qr_svg(
         }
     }
 
-    let svg_xml = renderer.build();
-
-    let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
-    let left = x1.min(x2);
-    let right = x1.max(x2);
-    let bottom = y1.min(y2);
-    let top = y1.max(y2);
-    let width = right - left;
-    let height = top - bottom;
-
-    let dx = format_length(left, unit)?;
-    let dy = format_length(page_height_units - top, unit)?;
-    let box_width = format_length(width, unit)?;
-    let box_height = format_length(height, unit)?;
-
-    Ok((svg_xml, box_width, box_height, dx, dy))
+    Ok(renderer.build())
 }
 
 pub(super) fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32) {

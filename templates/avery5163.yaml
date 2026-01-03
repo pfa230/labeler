@@ -31,57 +31,66 @@ layout:
   - type: container
     option:
       outline: yes
-    box: [0.0, 0.0, 4.0, 2.0]
+    at: [0.0, 0.0]
+    size: [4.0, 2.0]
     items:
       - type: rectangle
-        box: [0.0, 0.0, 4.0, 2.0]
+        at: [0.0, 0.0]
+        size: [4.0, 2.0]
         thickness: 0.02
         rounded: false
   - type: container
     option:
       orientation: horizontal
-    box: [0.1, 0.1, 3.9, 1.9]
+    at: [0.1, 0.1]
+    size: [3.8, 1.8]
     items:
       - type: qr
         name: url
-        box: [0.0, 0.35, 1.45, 1.8]
+        at: [0.0, 0.35]
+        size: [1.45, 1.45]
         params:
           quiet_zone: 0.0
       - type: text
         name: id
-        box: [0.0, 0.0, 1.45, 0.35]
+        at: [0.0, 0.0]
+        size: [1.45, 0.35]
         font_size: 12.0
         alignment:
           horizontal: center
           vertical: center
       - type: line
-        start: { x: 1.45, y: 0.0 }
-        end: { x: 1.45, y: 1.8 }
+        at: [1.45, 0.0]
+        size: [0.0, 1.8]
         thickness: 0.02
       - type: container
-        box: [1.45, 0.0, 3.8, 1.8]
+        at: [1.45, 0.0]
+        size: [2.35, 1.8]
         items:
           - type: text
             name: name
-            box: [0.0, 1.45, 2.35, 1.8]
+            at: [0.0, 1.45]
+            size: [2.35, 0.35]
             font_size: 17.0
             alignment:
               horizontal: left
               vertical: center
           - type: line
-            start: { x: 0.0, y: 1.35 }
-            end: { x: 2.35, y: 1.35 }
+            at: [0.0, 1.35]
+            size: [2.35, 0.0]
             thickness: 0.025
           - type: text
             name: tags
-            box: [0.0, 0.95, 2.35, 1.25]
+            at: [0.0, 0.95]
+            size: [2.35, 0.3]
             font_size: 10.5
             alignment:
               horizontal: left
               vertical: center
           - type: text
             name: description
-            box: [0.0, 0.0, 2.35, 0.95]
+            at: [0.0, 0.0]
+            size: [2.35, 0.95]
             font_size: 9.5
             multiline: true
             alignment:
@@ -90,23 +99,27 @@ layout:
   - type: container
     option:
       orientation: vertical
-    box: [0.1, 0.1, 3.9, 1.9]
+    at: [0.1, 0.1]
+    size: [3.8, 1.8]
     items:
       - type: qr
         name: url
-        box: [1.3, 0.6, 2.5, 1.8]
+        at: [1.3, 0.6]
+        size: [1.2, 1.2]
         params:
           quiet_zone: 0.0
       - type: text
         name: id
-        box: [0.0, 0.3, 3.8, 0.6]
+        at: [0.0, 0.3]
+        size: [3.8, 0.3]
         font_size: 8.0
         alignment:
           horizontal: center
           vertical: center
       - type: text
         name: description
-        box: [0.0, 0.0, 3.8, 0.3]
+        at: [0.0, 0.0]
+        size: [3.8, 0.3]
         font_size: 8.0
         multiline: true
         alignment:

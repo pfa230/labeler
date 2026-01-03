@@ -1,7 +1,9 @@
 mod helpers;
 
 use crate::errors::AppError;
-use crate::models::{FontSize, LabelInput, Layout, LayoutItem, Point, TemplateFormat};
+use crate::models::{
+    FontSize, LabelInput, Layout, LayoutItem, Point, Position, Size, SizeValue, TemplateFormat,
+};
 use crate::templates::TemplateDefinition;
 use helpers::{
     build_qr_svg, escape_typst_string, fit_text_to_box, format_length, resolve_dimension,
@@ -116,14 +118,8 @@ pub fn render_sheet_labels(
 
         let selected_option = normalize_option(template, label.option.as_ref())?;
         let items = select_layout_items(template)?;
-        let context = RenderContext::new(
-            width,
-            height,
-            &template.unit,
-            &label.data,
-            selected_option,
-            0,
-        );
+        let context =
+            RenderContext::new(width, height, &template.unit, &label.data, selected_option);
         let content = context.render_items(items)?;
 
         let dx = format_length(left, &template.unit)?;
@@ -180,7 +176,6 @@ fn build_typst_source(
         unit,
         data,
         selected_option,
-        0,
     );
     let items_source = context.render_items(items)?;
     source.push_str(&items_source);
@@ -225,7 +220,15 @@ struct RenderContext<'a> {
     unit: &'a str,
     data: &'a HashMap<String, JsonValue>,
     selected_option: Option<&'a BTreeMap<String, String>>,
-    parent_rotation: u16,
+}
+
+#[derive(Clone, Copy)]
+struct ItemPlacement<'a> {
+    at: &'a Position,
+    size: &'a Size,
+    max_w: Option<f32>,
+    max_h: Option<f32>,
+    rotate: Option<f32>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -235,7 +238,6 @@ impl<'a> RenderContext<'a> {
         unit: &'a str,
         data: &'a HashMap<String, JsonValue>,
         selected_option: Option<&'a BTreeMap<String, String>>,
-        parent_rotation: u16,
     ) -> Self {
         Self {
             frame_width_units,
@@ -243,7 +245,6 @@ impl<'a> RenderContext<'a> {
             unit,
             data,
             selected_option,
-            parent_rotation,
         }
     }
 
@@ -254,43 +255,96 @@ impl<'a> RenderContext<'a> {
             match item {
                 LayoutItem::Text {
                     name,
-                    bounds,
+                    at,
+                    size,
+                    max_w,
+                    max_h,
+                    rotate,
                     font_size,
                     multiline,
                     alignment,
                 } => {
+                    let placement = ItemPlacement {
+                        at,
+                        size,
+                        max_w: *max_w,
+                        max_h: *max_h,
+                        rotate: *rotate,
+                    };
                     self.render_text_item(
-                        &mut out, name, bounds, font_size, *multiline, alignment,
+                        &mut out, name, placement, font_size, *multiline, alignment,
                     )?;
                 }
                 LayoutItem::Qr {
                     name,
-                    bounds,
+                    at,
+                    size,
+                    max_w,
+                    max_h,
+                    rotate,
                     params,
                 } => {
-                    self.render_qr_item(&mut out, name, bounds, params)?;
+                    let placement = ItemPlacement {
+                        at,
+                        size,
+                        max_w: *max_w,
+                        max_h: *max_h,
+                        rotate: *rotate,
+                    };
+                    self.render_qr_item(&mut out, name, placement, params)?;
                 }
                 LayoutItem::Line {
-                    start,
-                    end,
+                    at,
+                    size,
+                    max_w,
+                    max_h,
+                    rotate,
                     thickness,
                 } => {
-                    self.render_line_item(&mut out, start, end, *thickness)?;
+                    let placement = ItemPlacement {
+                        at,
+                        size,
+                        max_w: *max_w,
+                        max_h: *max_h,
+                        rotate: *rotate,
+                    };
+                    self.render_line_item(&mut out, placement, *thickness)?;
                 }
                 LayoutItem::Rectangle {
-                    bounds,
+                    at,
+                    size,
+                    max_w,
+                    max_h,
+                    rotate,
                     thickness,
                     rounded,
                 } => {
-                    self.render_rectangle_item(&mut out, bounds, *thickness, *rounded)?;
+                    let placement = ItemPlacement {
+                        at,
+                        size,
+                        max_w: *max_w,
+                        max_h: *max_h,
+                        rotate: *rotate,
+                    };
+                    self.render_rectangle_item(&mut out, placement, *thickness, *rounded)?;
                 }
                 LayoutItem::Container {
-                    bounds,
+                    at,
+                    size,
+                    max_w,
+                    max_h,
+                    rotate,
                     option,
-                    rotation,
                     items,
                 } => {
-                    self.render_container_item(&mut out, bounds, option, rotation, items)?;
+                    let placement = ItemPlacement {
+                        at,
+                        size,
+                        max_w: *max_w,
+                        max_h: *max_h,
+                        rotate: *rotate,
+                    };
+                    self.render_container_item(&mut out, placement, option, items)?;
                 }
             }
         }
@@ -302,7 +356,7 @@ impl<'a> RenderContext<'a> {
         &self,
         out: &mut String,
         name: &str,
-        bounds: &crate::models::Box,
+        placement: ItemPlacement<'_>,
         font_size: &FontSize,
         multiline: bool,
         alignment: &crate::models::Alignment,
@@ -323,13 +377,12 @@ impl<'a> RenderContext<'a> {
             to_nonbreaking(&text)
         };
 
-        let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
-        let left = x1.min(x2);
-        let right = x1.max(x2);
-        let bottom = y1.min(y2);
-        let top = y1.max(y2);
-        let width = right - left;
-        let box_height_units = top - bottom;
+        let (width, box_height_units) =
+            self.resolve_size(placement.size, placement.max_w, placement.max_h, false)?;
+        let point = placement.at.point();
+        let left = point.x;
+        let bottom = point.y;
+        let top = bottom + box_height_units;
         let (size, text) = match font_size {
             FontSize::Fixed(size) => (*size, text),
             FontSize::Range { min, max } => fit_text_to_box(
@@ -349,9 +402,11 @@ impl<'a> RenderContext<'a> {
         let box_height = format_length(box_height_units, self.unit)?;
 
         let align = typst_alignment(alignment);
+        let content = format!("#align({align})[#text(\"{text}\", size: {size}pt)]");
+        let content = self.wrap_rotation(content, placement.rotate);
         writeln!(
             out,
-            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[#align({align})[#text(\"{text}\", size: {size}pt)]]]"
+            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
@@ -362,7 +417,7 @@ impl<'a> RenderContext<'a> {
         &self,
         out: &mut String,
         name: &str,
-        bounds: &crate::models::Box,
+        placement: ItemPlacement<'_>,
         params: &Option<crate::models::QrParams>,
     ) -> Result<(), AppError> {
         let payload = value_to_string(
@@ -370,18 +425,26 @@ impl<'a> RenderContext<'a> {
                 .get(name)
                 .ok_or_else(|| AppError::missing_field(name))?,
         );
-        let (svg_xml, box_width, box_height, dx, dy) = build_qr_svg(
-            payload.as_bytes(),
-            params,
-            bounds,
-            self.unit,
-            self.frame_height_units,
-        )?;
+        let (width, height) =
+            self.resolve_size(placement.size, placement.max_w, placement.max_h, false)?;
+        let point = placement.at.point();
+        let left = point.x;
+        let bottom = point.y;
+        let top = bottom + height;
+        let dx = format_length(left, self.unit)?;
+        let dy = format_length(self.frame_height_units - top, self.unit)?;
+        let box_width = format_length(width, self.unit)?;
+        let box_height = format_length(height, self.unit)?;
+        let svg_xml = build_qr_svg(payload.as_bytes(), params)?;
         let svg_xml = escape_typst_string(&svg_xml);
 
+        let content = format!(
+            "#image(bytes(\"{svg_xml}\"), format: \"svg\", width: {box_width}, height: {box_height}, fit: \"contain\")"
+        );
+        let content = self.wrap_rotation(content, placement.rotate);
         writeln!(
             out,
-            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[#image(bytes(\"{svg_xml}\"), format: \"svg\", width: {box_width}, height: {box_height}, fit: \"contain\")]]"
+            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
@@ -391,12 +454,18 @@ impl<'a> RenderContext<'a> {
     fn render_line_item(
         &self,
         out: &mut String,
-        start: &Point,
-        end: &Point,
+        placement: ItemPlacement<'_>,
         thickness: f32,
     ) -> Result<(), AppError> {
-        let (start_x, start_y) = to_page_coords(start, self.frame_height_units);
-        let (end_x, end_y) = to_page_coords(end, self.frame_height_units);
+        let (dx_units, dy_units) =
+            self.resolve_line_delta(placement.size, placement.max_w, placement.max_h)?;
+        let start_point = placement.at.point();
+        let end_point = Point {
+            x: start_point.x + dx_units,
+            y: start_point.y + dy_units,
+        };
+        let (start_x, start_y) = to_page_coords(&start_point, self.frame_height_units);
+        let (end_x, end_y) = to_page_coords(&end_point, self.frame_height_units);
         let dx = end_x - start_x;
         let dy = end_y - start_y;
         let start_x = format_length(start_x, self.unit)?;
@@ -406,9 +475,12 @@ impl<'a> RenderContext<'a> {
         let zero = format_length(0.0, self.unit)?;
         let stroke = format_length(thickness, self.unit)?;
 
+        let content =
+            format!("#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {stroke})");
+        let content = self.wrap_rotation(content, placement.rotate);
         writeln!(
             out,
-            "#place(top + left, dx: {start_x}, dy: {start_y})[#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {stroke})]"
+            "#place(top + left, dx: {start_x}, dy: {start_y})[{content}]"
         )
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
@@ -418,17 +490,16 @@ impl<'a> RenderContext<'a> {
     fn render_rectangle_item(
         &self,
         out: &mut String,
-        bounds: &crate::models::Box,
+        placement: ItemPlacement<'_>,
         thickness: f32,
         rounded: bool,
     ) -> Result<(), AppError> {
-        let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
-        let left = x1.min(x2);
-        let right = x1.max(x2);
-        let bottom = y1.min(y2);
-        let top = y1.max(y2);
-        let width = right - left;
-        let height = top - bottom;
+        let (width, height) =
+            self.resolve_size(placement.size, placement.max_w, placement.max_h, false)?;
+        let point = placement.at.point();
+        let left = point.x;
+        let bottom = point.y;
+        let top = bottom + height;
         let dx = format_length(left, self.unit)?;
         let dy = format_length(self.frame_height_units - top, self.unit)?;
         let box_width = format_length(width, self.unit)?;
@@ -440,11 +511,13 @@ impl<'a> RenderContext<'a> {
             format_length(0.0, self.unit)?
         };
 
-        writeln!(
-            out,
-            "#place(top + left, dx: {dx}, dy: {dy})[#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})]"
-        )
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+        let content = format!(
+            "#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})"
+        );
+        let content = self.wrap_rotation(content, placement.rotate);
+        writeln!(out, "#place(top + left, dx: {dx}, dy: {dy})[{content}]").map_err(|err| {
+            AppError::render_failed(format!("failed to build typst source: {err}"))
+        })?;
 
         Ok(())
     }
@@ -452,9 +525,8 @@ impl<'a> RenderContext<'a> {
     fn render_container_item(
         &self,
         out: &mut String,
-        bounds: &Option<crate::models::Box>,
+        placement: ItemPlacement<'_>,
         option: &Option<BTreeMap<String, String>>,
-        rotation: &Option<u16>,
         items: &[LayoutItem],
     ) -> Result<(), AppError> {
         if let Some(option) = option {
@@ -467,32 +539,16 @@ impl<'a> RenderContext<'a> {
                 }
             }
         }
-        let (left, bottom, right, top) = if let Some(bounds) = bounds {
-            let (x1, y1, x2, y2) = (bounds.0[0], bounds.0[1], bounds.0[2], bounds.0[3]);
-            (x1.min(x2), y1.min(y2), x1.max(x2), y1.max(y2))
-        } else {
-            (0.0, 0.0, self.frame_width_units, self.frame_height_units)
-        };
-        let width = right - left;
-        let height = top - bottom;
+        let (width, height) =
+            self.resolve_size(placement.size, placement.max_w, placement.max_h, true)?;
+        let point = placement.at.point();
+        let left = point.x;
+        let bottom = point.y;
+        let top = bottom + height;
 
-        let effective_rotation = rotation.unwrap_or(self.parent_rotation);
-        let delta_rotation =
-            ((effective_rotation as i32 - self.parent_rotation as i32).rem_euclid(360)) as u16;
-
-        let context = RenderContext::new(
-            width,
-            height,
-            self.unit,
-            self.data,
-            self.selected_option,
-            effective_rotation,
-        );
+        let context = RenderContext::new(width, height, self.unit, self.data, self.selected_option);
         let child_source = context.render_items(items)?;
-        let mut content = child_source;
-        if delta_rotation != 0 {
-            content = format!("#rotate({delta_rotation}deg)[{content}]");
-        }
+        let content = self.wrap_rotation(child_source, placement.rotate);
 
         let dx = format_length(left, self.unit)?;
         let dy = format_length(self.frame_height_units - top, self.unit)?;
@@ -507,14 +563,112 @@ impl<'a> RenderContext<'a> {
 
         Ok(())
     }
+
+    fn resolve_size(
+        &self,
+        size: &Size,
+        max_w: Option<f32>,
+        max_h: Option<f32>,
+        allow_auto_fill: bool,
+    ) -> Result<(f32, f32), AppError> {
+        let fallback = if allow_auto_fill {
+            Some((self.frame_width_units, self.frame_height_units))
+        } else {
+            None
+        };
+        let width =
+            self.resolve_size_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
+        let height =
+            self.resolve_size_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
+        Ok((width, height))
+    }
+
+    fn resolve_size_value(
+        &self,
+        value: &SizeValue,
+        max: Option<f32>,
+        fallback: Option<f32>,
+        label: &str,
+    ) -> Result<f32, AppError> {
+        match value {
+            SizeValue::Value(value) => {
+                if *value <= 0.0 {
+                    return Err(AppError::unsupported_layout_item(format!(
+                        "size {label} must be greater than 0"
+                    )));
+                }
+                Ok(*value)
+            }
+            SizeValue::Auto(_) => {
+                let resolved = max.or(fallback).ok_or_else(|| {
+                    AppError::unsupported_layout_item(format!(
+                        "size {label} is auto but no max_{label} provided"
+                    ))
+                })?;
+                if resolved <= 0.0 {
+                    return Err(AppError::unsupported_layout_item(format!(
+                        "max_{label} must be greater than 0"
+                    )));
+                }
+                Ok(resolved)
+            }
+        }
+    }
+
+    fn resolve_line_delta(
+        &self,
+        size: &Size,
+        max_w: Option<f32>,
+        max_h: Option<f32>,
+    ) -> Result<(f32, f32), AppError> {
+        let fallback = Some((self.frame_width_units, self.frame_height_units));
+        let dx =
+            self.resolve_line_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
+        let dy =
+            self.resolve_line_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
+        Ok((dx, dy))
+    }
+
+    fn resolve_line_value(
+        &self,
+        value: &SizeValue,
+        max: Option<f32>,
+        fallback: Option<f32>,
+        label: &str,
+    ) -> Result<f32, AppError> {
+        match value {
+            SizeValue::Value(value) => Ok(*value),
+            SizeValue::Auto(_) => {
+                let resolved = max.or(fallback).ok_or_else(|| {
+                    AppError::unsupported_layout_item(format!(
+                        "size {label} is auto but no max_{label} provided"
+                    ))
+                })?;
+                if resolved <= 0.0 {
+                    return Err(AppError::unsupported_layout_item(format!(
+                        "max_{label} must be greater than 0"
+                    )));
+                }
+                Ok(resolved)
+            }
+        }
+    }
+
+    fn wrap_rotation(&self, content: String, rotate: Option<f32>) -> String {
+        if let Some(rotate) = rotate {
+            format!("#rotate({rotate}deg)[{content}]")
+        } else {
+            content
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{render_sheet_labels, render_single_label};
     use crate::models::{
-        Alignment, Box, Dimension, FontSize, LabelInput, Layout, LayoutItem, Options, Point,
-        SheetPosition, TemplateFormat,
+        Alignment, Dimension, FontSize, LabelInput, Layout, LayoutItem, Options, Position,
+        SheetPosition, Size, SizeValue, TemplateFormat,
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
@@ -538,7 +692,11 @@ mod tests {
             )]))),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: "message".to_string(),
-                bounds: Box([0.0, 0.0, 20.0, 5.0]),
+                at: Position([0.0, 0.0]),
+                size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                max_w: None,
+                max_h: None,
+                rotate: None,
                 font_size: FontSize::Fixed(10.0),
                 multiline: false,
                 alignment: Alignment::default(),
@@ -573,23 +731,38 @@ mod tests {
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: "message".to_string(),
-                    bounds: Box([0.0, 0.0, 20.0, 20.0]),
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
                     font_size: FontSize::Fixed(10.0),
                     multiline: false,
                     alignment: Alignment::default(),
                 },
                 LayoutItem::Qr {
                     name: "code".to_string(),
-                    bounds: Box([20.0, 0.0, 30.0, 10.0]),
+                    at: Position([20.0, 0.0]),
+                    size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
                     params: None,
                 },
                 LayoutItem::Line {
-                    start: Point { x: 0.0, y: 1.0 },
-                    end: Point { x: 30.0, y: 1.0 },
+                    at: Position([0.0, 1.0]),
+                    size: Size([SizeValue::Value(30.0), SizeValue::Value(0.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
                     thickness: 0.2,
                 },
                 LayoutItem::Rectangle {
-                    bounds: Box([0.5, 1.5, 29.5, 19.5]),
+                    at: Position([0.5, 1.5]),
+                    size: Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
                     thickness: 0.2,
                     rounded: true,
                 },
@@ -627,7 +800,11 @@ mod tests {
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: "message".to_string(),
-                bounds: Box([0.0, 0.0, 10.0, 5.0]),
+                at: Position([0.0, 0.0]),
+                size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                max_w: None,
+                max_h: None,
+                rotate: None,
                 font_size: FontSize::Fixed(10.0),
                 multiline: false,
                 alignment: Alignment::default(),
