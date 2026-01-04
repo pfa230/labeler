@@ -370,6 +370,7 @@ fn validate_layout_item(
         LayoutItem::Container {
             placement,
             option,
+            frame,
             items,
         } => {
             validate_position(&placement.at)?;
@@ -382,6 +383,12 @@ fn validate_layout_item(
                 true,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
+
+            if let Some(frame) = frame {
+                if frame.thickness <= 0.0 {
+                    return Err("container frame thickness must be greater than 0".to_string());
+                }
+            }
 
             if let Some(option) = option {
                 let Some(options) = options else {

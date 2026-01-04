@@ -264,9 +264,18 @@ pub enum LayoutItem {
         placement: Placement,
         #[serde(skip_serializing_if = "Option::is_none")]
         option: Option<BTreeMap<String, String>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        frame: Option<Frame>,
         #[schema(no_recursion)]
         items: Vec<LayoutItem>,
     },
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+pub struct Frame {
+    pub thickness: f32,
+    #[serde(default)]
+    pub rounded: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
