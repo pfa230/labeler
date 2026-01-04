@@ -26,8 +26,10 @@ layout:
     at: [0.5, 1.0]
     size: [23.0, 0.0]
     thickness: 0.2
-  - type: rectangle
+  - type: container
     at: [0.5, 1.5]
     size: [23.0, 10.0]
-    thickness: 0.2
-    rounded: true
+    frame:
+      thickness: 0.2
+      rounded: true
+    items: []
