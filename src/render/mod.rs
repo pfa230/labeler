@@ -279,9 +279,10 @@ impl<'a> RenderContext<'a> {
                     placement,
                     option,
                     frame,
+                    padding,
                     items,
                 } => {
-                    self.render_container_item(&mut out, placement, option, frame, items)?;
+                    self.render_container_item(&mut out, placement, option, frame, padding, items)?;
                 }
             }
         }
@@ -465,6 +466,7 @@ impl<'a> RenderContext<'a> {
         placement: &Placement,
         option: &Option<BTreeMap<String, String>>,
         frame: &Option<crate::models::Frame>,
+        padding: &crate::models::Padding,
         items: &[LayoutItem],
     ) -> Result<(), AppError> {
         if let Some(option) = option {
@@ -484,9 +486,24 @@ impl<'a> RenderContext<'a> {
         let bottom = point.y;
         let top = bottom + height;
 
-        let context = RenderContext::new(width, height, self.unit, self.data, self.selected_option);
+        let inner_width = width - padding.left - padding.right;
+        let inner_height = height - padding.top - padding.bottom;
+        let context = RenderContext::new(
+            inner_width,
+            inner_height,
+            self.unit,
+            self.data,
+            self.selected_option,
+        );
         let child_source = context.render_items(items)?;
-        let content = self.wrap_rotation(child_source, placement.rotate);
+        let content = if padding == &crate::models::Padding::ZERO {
+            child_source
+        } else {
+            let pad_left = format_length(padding.left, self.unit)?;
+            let pad_top = format_length(padding.top, self.unit)?;
+            format!("#place(top + left, dx: {pad_left}, dy: {pad_top})[{child_source}]")
+        };
+        let content = self.wrap_rotation(content, placement.rotate);
 
         let dx = format_length(left, self.unit)?;
         let dy = format_length(self.frame_height_units - top, self.unit)?;

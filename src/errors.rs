@@ -178,3 +178,74 @@ impl From<PathRejection> for AppError {
         AppError::invalid_request("Invalid path parameter")
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum TemplateError {
+    Yaml { path: String, msg: String },
+    Validation { path: String, msg: String },
+}
+
+impl TemplateError {
+    pub fn with_prefix(self, prefix: &str) -> Self {
+        match self {
+            TemplateError::Yaml { path, msg } => TemplateError::Yaml {
+                path: join_path(prefix, &path),
+                msg,
+            },
+            TemplateError::Validation { path, msg } => TemplateError::Validation {
+                path: join_path(prefix, &path),
+                msg,
+            },
+        }
+    }
+
+    pub fn at(self, segment: &str) -> Self {
+        match self {
+            TemplateError::Yaml { path, msg } => TemplateError::Yaml {
+                path: join_path(&path, segment),
+                msg,
+            },
+            TemplateError::Validation { path, msg } => TemplateError::Validation {
+                path: join_path(&path, segment),
+                msg,
+            },
+        }
+    }
+}
+
+fn join_path(prefix: &str, suffix: &str) -> String {
+    if prefix.is_empty() {
+        return suffix.to_string();
+    }
+    if suffix.is_empty() {
+        return prefix.to_string();
+    }
+    if suffix.starts_with('[') {
+        format!("{prefix}{suffix}")
+    } else {
+        format!("{prefix}.{suffix}")
+    }
+}
+
+impl std::fmt::Display for TemplateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TemplateError::Yaml { path, msg } => {
+                if path.is_empty() {
+                    write!(f, "yaml error: {msg}")
+                } else {
+                    write!(f, "yaml error at {path}: {msg}")
+                }
+            }
+            TemplateError::Validation { path, msg } => {
+                if path.is_empty() {
+                    write!(f, "validation error: {msg}")
+                } else {
+                    write!(f, "validation error at {path}: {msg}")
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for TemplateError {}
