@@ -98,11 +98,6 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 placement: raw.placement,
                 thickness: raw.thickness,
             }),
-            LayoutItemRaw::Rectangle(raw) => Ok(LayoutItem::Rectangle {
-                placement: raw.placement,
-                thickness: raw.thickness,
-                rounded: raw.rounded,
-            }),
             LayoutItemRaw::Container(raw) => LayoutItem::try_from(raw),
         }
     }

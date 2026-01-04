@@ -268,13 +268,6 @@ impl<'a> RenderContext<'a> {
                 } => {
                     self.render_line_item(&mut out, placement, *thickness)?;
                 }
-                LayoutItem::Rectangle {
-                    placement,
-                    thickness,
-                    rounded,
-                } => {
-                    self.render_rectangle_item(&mut out, placement, *thickness, *rounded)?;
-                }
                 LayoutItem::Container {
                     placement,
                     option,
@@ -421,41 +414,6 @@ impl<'a> RenderContext<'a> {
             "#place(top + left, dx: {start_x}, dy: {start_y})[{content}]"
         )
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-
-        Ok(())
-    }
-
-    fn render_rectangle_item(
-        &self,
-        out: &mut String,
-        placement: &Placement,
-        thickness: f32,
-        rounded: bool,
-    ) -> Result<(), AppError> {
-        let (width, height) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
-        let point = placement.at.point();
-        let left = point.x;
-        let bottom = point.y;
-        let top = bottom + height;
-        let dx = format_length(left, self.unit)?;
-        let dy = format_length(self.frame_height_units - top, self.unit)?;
-        let box_width = format_length(width, self.unit)?;
-        let box_height = format_length(height, self.unit)?;
-        let stroke = format_length(thickness, self.unit)?;
-        let radius = if rounded {
-            format_length(thickness * 2.0, self.unit)?
-        } else {
-            format_length(0.0, self.unit)?
-        };
-
-        let content = format!(
-            "#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})"
-        );
-        let content = self.wrap_rotation(content, placement.rotate);
-        writeln!(out, "#place(top + left, dx: {dx}, dy: {dy})[{content}]").map_err(|err| {
-            AppError::render_failed(format!("failed to build typst source: {err}"))
-        })?;
 
         Ok(())
     }
@@ -642,8 +600,8 @@ impl<'a> RenderContext<'a> {
 mod tests {
     use super::{render_sheet_labels, render_single_label};
     use crate::models::{
-        Alignment, Dimension, FontSize, LabelInput, Layout, LayoutItem, Options, Placement,
-        Position, SheetPosition, Size, SizeValue, TemplateFormat,
+        Alignment, Dimension, FontSize, Frame, LabelInput, Layout, LayoutItem, Options, Padding,
+        Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat,
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
@@ -740,7 +698,7 @@ mod tests {
                     },
                     thickness: 0.2,
                 },
-                LayoutItem::Rectangle {
+                LayoutItem::Container {
                     placement: Placement {
                         at: Position([0.5, 1.5]),
                         size: Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
@@ -748,8 +706,13 @@ mod tests {
                         max_h: None,
                         rotate: None,
                     },
-                    thickness: 0.2,
-                    rounded: true,
+                    option: None,
+                    frame: Some(Frame {
+                        thickness: 0.2,
+                        rounded: true,
+                    }),
+                    padding: Padding::ZERO,
+                    items: Vec::new(),
                 },
             ]),
             version: None,

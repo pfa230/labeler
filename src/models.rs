@@ -253,12 +253,6 @@ pub enum LayoutItem {
         placement: Placement,
         thickness: f32,
     },
-    Rectangle {
-        #[serde(flatten)]
-        placement: Placement,
-        thickness: f32,
-        rounded: bool,
-    },
     Container {
         #[serde(flatten)]
         placement: Placement,

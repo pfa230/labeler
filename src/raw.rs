@@ -28,7 +28,6 @@ pub enum LayoutItemRaw {
     Text(TextRaw),
     Qr(QrRaw),
     Line(LineRaw),
-    Rectangle(RectangleRaw),
     Container(ContainerRaw),
 }
 
@@ -61,15 +60,6 @@ pub struct LineRaw {
     #[serde(flatten)]
     pub placement: Placement,
     pub thickness: f32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RectangleRaw {
-    #[serde(flatten)]
-    pub placement: Placement,
-    pub thickness: f32,
-    pub rounded: bool,
 }
 
 #[derive(Debug, Deserialize)]
