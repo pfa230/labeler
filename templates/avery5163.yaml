@@ -33,12 +33,10 @@ layout:
       outline: yes
     at: [0.0, 0.0]
     size: [4.0, 2.0]
-    items:
-      - type: rectangle
-        at: [0.0, 0.0]
-        size: [4.0, 2.0]
-        thickness: 0.02
-        rounded: false
+    frame:
+      thickness: 0.02
+      rounded: false
+    items: []
   - type: container
     option:
       orientation: horizontal

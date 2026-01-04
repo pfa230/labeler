@@ -278,9 +278,10 @@ impl<'a> RenderContext<'a> {
                 LayoutItem::Container {
                     placement,
                     option,
+                    frame,
                     items,
                 } => {
-                    self.render_container_item(&mut out, placement, option, items)?;
+                    self.render_container_item(&mut out, placement, option, frame, items)?;
                 }
             }
         }
@@ -463,6 +464,7 @@ impl<'a> RenderContext<'a> {
         out: &mut String,
         placement: &Placement,
         option: &Option<BTreeMap<String, String>>,
+        frame: &Option<crate::models::Frame>,
         items: &[LayoutItem],
     ) -> Result<(), AppError> {
         if let Some(option) = option {
@@ -490,6 +492,26 @@ impl<'a> RenderContext<'a> {
         let dy = format_length(self.frame_height_units - top, self.unit)?;
         let box_width = format_length(width, self.unit)?;
         let box_height = format_length(height, self.unit)?;
+
+        if let Some(frame) = frame {
+            let stroke = format_length(frame.thickness, self.unit)?;
+            let radius = if frame.rounded {
+                format_length(frame.thickness * 2.0, self.unit)?
+            } else {
+                format_length(0.0, self.unit)?
+            };
+            let frame_content = format!(
+                "#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})"
+            );
+            let frame_content = self.wrap_rotation(frame_content, placement.rotate);
+            writeln!(
+                out,
+                "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
+            )
+            .map_err(|err| {
+                AppError::render_failed(format!("failed to build typst source: {err}"))
+            })?;
+        }
 
         writeln!(
             out,
