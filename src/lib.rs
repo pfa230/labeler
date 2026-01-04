@@ -1,7 +1,10 @@
 pub mod api;
+mod convert;
 pub mod errors;
 pub mod models;
 pub mod openapi;
+pub mod parse;
+mod raw;
 pub mod render;
 pub mod templates;
 
