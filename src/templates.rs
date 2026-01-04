@@ -273,7 +273,6 @@ fn layout_item_name(item: &LayoutItem) -> Option<&str> {
         LayoutItem::Text { name, .. } => Some(name.as_str()),
         LayoutItem::Qr { name, .. } => Some(name.as_str()),
         LayoutItem::Line { .. } => None,
-        LayoutItem::Rectangle { .. } => None,
         LayoutItem::Container { .. } => None,
     }
 }
@@ -346,25 +345,6 @@ fn validate_layout_item(
                 return Err("line start and end must differ".to_string());
             }
             validate_line_bounds(&placement.at, dx, dy, layout_bounds)?;
-        }
-        LayoutItem::Rectangle {
-            placement,
-            thickness,
-            ..
-        } => {
-            validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
-            let (width, height) = resolve_size(
-                &placement.size,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                false,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
-            if *thickness <= 0.0 {
-                return Err("rectangle thickness must be greater than 0".to_string());
-            }
         }
         LayoutItem::Container {
             placement,
