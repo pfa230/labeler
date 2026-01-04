@@ -266,9 +266,34 @@ pub enum LayoutItem {
         option: Option<BTreeMap<String, String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         frame: Option<Frame>,
+        #[serde(default)]
+        padding: Padding,
         #[schema(no_recursion)]
         items: Vec<LayoutItem>,
     },
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Copy, PartialEq, Deserialize)]
+pub struct Padding {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+
+impl Padding {
+    pub const ZERO: Padding = Padding {
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+        left: 0.0,
+    };
+}
+
+impl Default for Padding {
+    fn default() -> Self {
+        Padding::ZERO
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]

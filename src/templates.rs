@@ -1,16 +1,17 @@
-use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path as FsPath, PathBuf},
 };
 use thiserror::Error;
 
+use crate::errors::TemplateError;
 use crate::models::{
     Dimension, FontSize, Layout, LayoutItem, Options, Position, Size, SizeValue, TemplateDetail,
     TemplateFormat, TemplateSummary,
 };
+use crate::parse::parse_template;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct TemplateDefinition {
     pub id: String,
     pub name: String,
@@ -18,10 +19,8 @@ pub struct TemplateDefinition {
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
-    #[serde(default)]
     pub options: Option<Options>,
     pub layout: Layout,
-    #[serde(default)]
     pub version: Option<String>,
 }
 
@@ -59,8 +58,8 @@ impl TemplateRegistry {
                     path: path.clone(),
                     source,
                 })?;
-            let template: TemplateDefinition =
-                serde_yml::from_str(&contents).map_err(|source| TemplateRegistryError::Yaml {
+            let template =
+                parse_template(&contents).map_err(|source| TemplateRegistryError::Parse {
                     path: path.clone(),
                     source,
                 })?;
@@ -117,9 +116,9 @@ pub enum TemplateRegistryError {
         source: std::io::Error,
     },
     #[error("failed to parse template {path}: {source}")]
-    Yaml {
+    Parse {
         path: PathBuf,
-        source: serde_yml::Error,
+        source: TemplateError,
     },
     #[error("template {path} failed validation: {message}")]
     Validation { path: PathBuf, message: String },
@@ -371,6 +370,7 @@ fn validate_layout_item(
             placement,
             option,
             frame,
+            padding,
             items,
         } => {
             validate_position(&placement.at)?;
@@ -414,7 +414,9 @@ fn validate_layout_item(
                 }
             }
 
-            let container_bounds = layout_bounds_from_size(width, height)?;
+            let inner_width = width - padding.left - padding.right;
+            let inner_height = height - padding.top - padding.bottom;
+            let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
             validate_layout_items(items, Some(&container_bounds), options)?;
         }
     }
