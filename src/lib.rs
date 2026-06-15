@@ -588,4 +588,23 @@ layout:
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    // A valid write persists even if an unrelated invalid file makes the post-write reload fail (422).
+    #[tokio::test]
+    async fn create_persists_but_reload_reports_invalid_sibling() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+        std::fs::write(dir.join("broken.yaml"), "id: broken\nunit: nope\n").unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/templates", "POST", template_yaml("new1")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(dir.join("new1.yaml").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
