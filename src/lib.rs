@@ -1,5 +1,6 @@
 pub mod api;
 mod convert;
+pub mod driver;
 pub mod errors;
 pub mod models;
 pub mod openapi;
