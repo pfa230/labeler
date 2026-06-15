@@ -8,6 +8,7 @@ use crate::{
         QrParams, ReloadResponse, RenderBatchRequest, RenderLabelRequest, SheetPosition, Size,
         SizeValue, TemplateDetail, TemplateFormat, TemplateList, TemplateSummary, VerticalAlign,
     },
+    store::Printer,
 };
 
 #[derive(OpenApi)]
@@ -20,6 +21,11 @@ use crate::{
         api::get_template,
         api::replace_template,
         api::delete_template,
+        api::list_printers,
+        api::create_printer,
+        api::get_printer,
+        api::replace_printer,
+        api::delete_printer,
         api::render_label,
         api::render_batch
     ),
@@ -27,6 +33,7 @@ use crate::{
         schemas(
             HealthResponse,
             ReloadResponse,
+            Printer,
             TemplateList,
             TemplateSummary,
             TemplateFormat,
