@@ -24,7 +24,7 @@ use crate::{
     render::render_sheet_labels,
     render::render_single_label,
     render::render_single_label_pdf,
-    store::Store,
+    store::{Printer, Store},
     templates::{TemplateDefinition, TemplateRegistry, TemplateRegistryError},
 };
 
@@ -75,6 +75,11 @@ pub fn app(state: Arc<AppState>) -> Router {
             get(get_template)
                 .put(replace_template)
                 .delete(delete_template),
+        )
+        .route("/printers", get(list_printers).post(create_printer))
+        .route(
+            "/printers/{id}",
+            get(get_printer).put(replace_printer).delete(delete_printer),
         )
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
@@ -279,6 +284,144 @@ pub async fn get_template(
         .detail(&id)
         .map(Json)
         .ok_or_else(|| AppError::template_not_found(id))
+}
+
+const KNOWN_PRINTER_KINDS: &[&str] = &["cups"];
+
+fn validate_printer(printer: &Printer) -> Result<(), AppError> {
+    if printer.id.is_empty()
+        || !printer
+            .id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(AppError::invalid_request(format!(
+            "printer id '{}' must be non-empty and contain only letters, digits, '-' or '_'",
+            printer.id
+        )));
+    }
+    if printer.name.trim().is_empty() {
+        return Err(AppError::printer_invalid("printer name must not be empty"));
+    }
+    if !KNOWN_PRINTER_KINDS.contains(&printer.kind.as_str()) {
+        return Err(AppError::printer_invalid(format!(
+            "unknown printer kind '{}'",
+            printer.kind
+        )));
+    }
+    if !printer.config.is_object() {
+        return Err(AppError::printer_invalid(
+            "printer config must be a JSON object",
+        ));
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    get,
+    path = "/printers",
+    responses((status = 200, description = "List printers", body = [Printer]))
+)]
+pub async fn list_printers(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<Printer>>, AppError> {
+    Ok(Json(state.store().list_printers().await?))
+}
+
+#[utoipa::path(
+    post,
+    path = "/printers",
+    request_body = Printer,
+    responses(
+        (status = 201, description = "Printer created", body = Printer),
+        (status = 409, description = "Printer id already exists", body = ErrorResponse),
+        (status = 422, description = "Invalid printer", body = ErrorResponse)
+    )
+)]
+pub async fn create_printer(
+    State(state): State<Arc<AppState>>,
+    Json(printer): Json<Printer>,
+) -> Result<Response, AppError> {
+    validate_printer(&printer)?;
+    let _guard = state.write_lock.lock().await;
+    if state.store().get_printer(&printer.id).await?.is_some() {
+        return Err(AppError::printer_exists(&printer.id));
+    }
+    state.store().upsert_printer(&printer).await?;
+    Ok((axum::http::StatusCode::CREATED, Json(printer)).into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/printers/{id}",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses(
+        (status = 200, description = "Printer", body = Printer),
+        (status = 404, description = "Printer not found", body = ErrorResponse)
+    )
+)]
+pub async fn get_printer(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Printer>, AppError> {
+    state
+        .store()
+        .get_printer(&id)
+        .await?
+        .map(Json)
+        .ok_or_else(|| AppError::printer_not_found(id))
+}
+
+#[utoipa::path(
+    put,
+    path = "/printers/{id}",
+    params(("id" = String, Path, description = "Printer ID")),
+    request_body = Printer,
+    responses(
+        (status = 200, description = "Printer replaced", body = Printer),
+        (status = 400, description = "Body id does not match path id", body = ErrorResponse),
+        (status = 404, description = "Printer not found", body = ErrorResponse),
+        (status = 422, description = "Invalid printer", body = ErrorResponse)
+    )
+)]
+pub async fn replace_printer(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(printer): Json<Printer>,
+) -> Result<Response, AppError> {
+    if printer.id != id {
+        return Err(AppError::invalid_request(format!(
+            "printer id in body ('{}') must match path id ('{id}')",
+            printer.id
+        )));
+    }
+    validate_printer(&printer)?;
+    let _guard = state.write_lock.lock().await;
+    if state.store().get_printer(&id).await?.is_none() {
+        return Err(AppError::printer_not_found(id));
+    }
+    state.store().upsert_printer(&printer).await?;
+    Ok((axum::http::StatusCode::OK, Json(printer)).into_response())
+}
+
+#[utoipa::path(
+    delete,
+    path = "/printers/{id}",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses(
+        (status = 204, description = "Printer deleted"),
+        (status = 404, description = "Printer not found", body = ErrorResponse)
+    )
+)]
+pub async fn delete_printer(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    if state.store().delete_printer(&id).await? {
+        Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(AppError::printer_not_found(id))
+    }
 }
 
 #[utoipa::path(

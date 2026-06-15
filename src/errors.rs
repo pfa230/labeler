@@ -7,6 +7,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::models::{ErrorBody, ErrorResponse};
+use crate::store::StoreError;
 use crate::templates::TemplateRegistryError;
 
 const CODE_TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
@@ -20,6 +21,11 @@ const CODE_UNSUPPORTED_FORMAT: &str = "UnsupportedFormat";
 const CODE_RENDER_FAILED: &str = "RenderFailed";
 const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
 const CODE_TEMPLATE_EXISTS: &str = "TemplateExists";
+const CODE_PRINTER_NOT_FOUND: &str = "PrinterNotFound";
+const CODE_PRINTER_EXISTS: &str = "PrinterExists";
+const CODE_PRINTER_INVALID: &str = "PrinterInvalid";
+const CODE_PRINT_FAILED: &str = "PrintFailed";
+const CODE_INTERNAL: &str = "Internal";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -132,6 +138,46 @@ impl AppError {
         )
     }
 
+    pub fn printer_not_found(id: String) -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            CODE_PRINTER_NOT_FOUND,
+            format!("No printer with id '{id}' was found"),
+            Some(json!({ "printer": id })),
+        )
+    }
+
+    pub fn printer_exists(id: &str) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            CODE_PRINTER_EXISTS,
+            format!("A printer with id '{id}' already exists"),
+            Some(json!({ "printer": id })),
+        )
+    }
+
+    pub fn printer_invalid(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            CODE_PRINTER_INVALID,
+            message,
+            None,
+        )
+    }
+
+    pub fn print_failed(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, CODE_PRINT_FAILED, message, None)
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            CODE_INTERNAL,
+            message,
+            None,
+        )
+    }
+
     fn unsupported_media_type(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -207,6 +253,12 @@ impl From<TemplateRegistryError> for AppError {
             TemplateRegistryError::Io { .. } => AppError::render_failed(message),
             _ => AppError::template_invalid(message),
         }
+    }
+}
+
+impl From<StoreError> for AppError {
+    fn from(err: StoreError) -> Self {
+        AppError::internal(err.to_string())
     }
 }
 

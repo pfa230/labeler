@@ -617,4 +617,147 @@ layout:
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    fn json_req(method: &str, uri: &str, body: String) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn printer_json(id: &str) -> String {
+        json!({
+            "id": id,
+            "name": id,
+            "kind": "cups",
+            "config": { "uri": format!("ipp://host/printers/{id}") }
+        })
+        .to_string()
+    }
+
+    async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .expect("request");
+        let status = response.status();
+        (status, json_response(response).await)
+    }
+
+    #[tokio::test]
+    async fn printer_crud_roundtrip() {
+        let app = build_app();
+
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/printers", printer_json("office")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let (_, list) = get_json(&app, "/printers").await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+
+        let (status, detail) = get_json(&app, "/printers/office").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["kind"], "cups");
+
+        let replace = json!({
+            "id": "office", "name": "Front Desk", "kind": "cups",
+            "config": { "uri": "ipp://h/p" }
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/printers/office", replace))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (_, detail) = get_json(&app, "/printers/office").await;
+        assert_eq!(detail["name"], "Front Desk");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/printers/office")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let (status, _) = get_json(&app, "/printers/office").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn printer_create_duplicate_returns_409() {
+        let app = build_app();
+        app.clone()
+            .oneshot(json_req("POST", "/printers", printer_json("p")))
+            .await
+            .expect("request");
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/printers", printer_json("p")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(json_response(resp).await["error"]["code"], "PrinterExists");
+    }
+
+    #[tokio::test]
+    async fn printer_create_invalid_kind_returns_422() {
+        let app = build_app();
+        let body = json!({ "id": "p", "name": "P", "kind": "zebra", "config": {} }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/printers", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json_response(resp).await["error"]["code"], "PrinterInvalid");
+    }
+
+    #[tokio::test]
+    async fn printer_create_unsafe_id_returns_400() {
+        let app = build_app();
+        let body =
+            json!({ "id": "../evil", "name": "P", "kind": "cups", "config": { "uri": "x" } })
+                .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/printers", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn printer_get_unknown_returns_404() {
+        let app = build_app();
+        let (status, body) = get_json(&app, "/printers/nope").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "PrinterNotFound");
+    }
+
+    #[tokio::test]
+    async fn printer_replace_id_mismatch_returns_400() {
+        let app = build_app();
+        app.clone()
+            .oneshot(json_req("POST", "/printers", printer_json("a")))
+            .await
+            .expect("request");
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/printers/a", printer_json("b")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
 }
