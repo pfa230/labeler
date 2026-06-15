@@ -247,8 +247,10 @@ HTML/CSS, gLabels XML).
 - *Auto-size / fit-to-box* (`font_size: {min,max}`, `auto` sizing) is present; table stakes.
 
 **Where we are behind:**
-- *No named-variable layer* (the biggest gap). Commercial engines bind objects to named variables, which
-  buys counters/serialization, date/time, defaults, and formulas. We bind directly to `data` keys.
+- *Limited variable layer*. A `value` field now gives text/qr items substitution interpolation
+  (`{field}` from data, `{settings.<key>}` from settings; ADR-0010), closing the QR-base-URL composition
+  gap. Still missing versus commercial engines: counters/serialization, date/time, defaults, and
+  formulas/conditionals, which remain out of scope.
 - *Few object types*: no image or 1D barcode yet, single style per text run.
 - *Static gating, not data-driven conditions*: option-gating keys off a selection, not field values.
 - *Absolute positioning only*: no flow/distribute; aligning N items with even spacing is manual.

@@ -1,0 +1,27 @@
+id: homebox-qr
+name: Homebox QR Asset Label
+description: Asset label whose QR links a configured base URL to an item id (settings interpolation demo)
+unit: mm
+dpi: 300
+format:
+  type: single
+  width:
+    min: 10.0
+    max: 120.0
+  height: 24.0
+layout:
+  - type: qr
+    value: "{settings.qr_base_url}/{id}"
+    at: [0.0, 0.0]
+    size: [24.0, 24.0]
+  - type: text
+    value: "{message}"
+    at: [27.0, 0.0]
+    size: [80.0, 24.0]
+    font_size:
+      min: 10.0
+      max: 28.0
+    multiline: true
+    alignment:
+      horizontal: left
+      vertical: center
