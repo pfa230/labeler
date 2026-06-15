@@ -67,6 +67,7 @@ fn migrations() -> Migrations<'static> {
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let mut conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         migrations().to_latest(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
