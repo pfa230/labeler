@@ -232,6 +232,44 @@ Strategy from research: easiest-first by transport, raster/PDF adapted per famil
   100+ symbologies, multi-site management. These are where BarTender/NiceLabel/TEKLYNX earn their
   license cost and where we stay lightweight.
 
+## 3.1 Template model assessment (intuitiveness, ease of use, expandability)
+
+How our layout model (options/orientations, recursive containers, bottom-left coords) stacks up against
+commercial engines (BarTender, NiceLabel, TEKLYNX, ZebraDesigner) and the open-source field (InvenTree
+HTML/CSS, gLabels XML).
+
+**Where we match or exceed:**
+- *Variant handling is genuinely stronger than most.* Orientation via option-gated recursive containers
+  expresses "one template, N layouts" cleanly and compositionally. Commercial tools do this with
+  separate templates or per-object conditional-visibility; gLabels effectively can't.
+- *Containers as coordinate frames* (children measured against the padded inner box) give true nested
+  composition, closer to CSS/Figma frames than to the flat object lists in gLabels or ZebraDesigner.
+- *Auto-size / fit-to-box* (`font_size: {min,max}`, `auto` sizing) is present; table stakes.
+
+**Where we are behind:**
+- *No named-variable layer* (the biggest gap). Commercial engines bind objects to named variables, which
+  buys counters/serialization, date/time, defaults, and formulas. We bind directly to `data` keys.
+- *Few object types*: no image or 1D barcode yet, single style per text run.
+- *Static gating, not data-driven conditions*: option-gating keys off a selection, not field values.
+- *Absolute positioning only*: no flow/distribute; aligning N items with even spacing is manual.
+
+**Ratings:**
+- *Intuitiveness (hand-authoring): 3.5/5.* Tree reads well and nesting mirrors grouping; but bottom-left
+  y-up surprises CSS users, `size` means a box for most items yet a delta for `line` (a wart), and the
+  `auto`/`max_*` rules need a mental model. Precise validation paths soften the curve.
+- *Ease of use: 3/5* for hand-authoring (the workflow until the GUI ships). Capable once learned; no
+  feedback loop without rendering, nothing dynamic without the caller supplying it. A GUI lifts this to
+  ~4.5.
+- *Expandability: 4.5/5* (strongest axis). Two-stage parse + tagged `LayoutItem` enum + recursive
+  containers make a new object type a mechanical three-file change (ADR-0002); Typst gives shaping and
+  PDF/PNG breadth for free. An "element type registry" (co-locate schema + render + serialize per type)
+  would raise this further and keep the future GUI in sync.
+
+**Verdict:** structurally ahead of the open-source field and competitive with commercial engines on
+layout composition; clearly behind on the data/variable model and object-type breadth. The gaps are
+additive, not architectural dead-ends. Independent of features, fix the `line` `size`-means-delta
+inconsistency (tracked in the plan).
+
 ## 4. Proposed phasing (to be refined in the plan)
 
 - **MVP:** template CRUD + persistence; starter library; image object; render PNG/PDF + preview;
