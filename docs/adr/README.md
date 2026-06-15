@@ -18,7 +18,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0005](0005-recursive-containers-with-option-gating.md) | Recursive containers with option gating | Accepted |
 | [0006](0006-template-edit-ownership.md) | Template edit ownership: manual vs GUI | Accepted |
 | [0007](0007-printer-architecture-and-transport-model.md) | Printer architecture and transport model | Accepted |
-| 0008 | Web UI delivery (reserved — issue #2) | Proposed |
+| [0008](0008-ui-delivery.md) | Web UI delivery | Accepted |
 | [0009](0009-image-source-model.md) | Image source model | Accepted |
 
 ## Adding an ADR

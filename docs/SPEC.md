@@ -35,6 +35,10 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 
 The server binds `0.0.0.0:$PORT` (default `8080`).
 
+> **Planned (ADR-0008):** when the web UI lands (M5), the REST API moves under an `/api` prefix
+> (`/api/templates`, `/api/render/label`, …) and the root serves a React SPA. The paths in this section
+> describe the current root-mounted API.
+
 ### 2.0 Template management
 
 Templates are hand-authored YAML in the templates dir and may also be managed over the API. The
@@ -263,6 +267,8 @@ new drivers. See M3 (#12/#13/#16/#19) for the implementation.
 
 ## Changelog
 
+- **Unreleased** — Accepted ADR-0008 (web UI delivery: React SPA served by axum, API to move under
+  `/api`); implementation is M5.
 - **Unreleased** — Accepted ADR-0007 (printer architecture and transport model); implementation is M3.
 - **Unreleased** — Added the `brother18mm` and `brother24mm` continuous-tape starter templates (#11).
 - **Unreleased** — Template management API: `POST /templates/reload` (#7) and raw-YAML
