@@ -1,28 +1,30 @@
-# Labeler (scaffold)
+# Labeler
 
-Dummy REST service skeleton for the label rendering project. It exposes the planned API surface and
-returns structured errors while the rendering pipeline is not yet implemented.
+A REST service that renders labels from declarative YAML templates. It produces a single label as PNG
+(for continuous-roll printers) or a sheet of labels as PDF (for pre-cut label sheets), by generating
+[Typst](https://typst.app/) source on the fly and compiling it in-process.
 
 ## Run
 
 ```bash
-cargo run
+cargo run            # serves on 0.0.0.0:$PORT (default 8080)
 ```
+
+YAML templates are loaded from `templates/` at startup; an invalid template stops the service from
+starting.
 
 ## Endpoints
 
 - `GET /health` → `{ "status": "ok" }`
-- `GET /openapi.json` → OpenAPI document
-- `GET /docs` → Swagger UI
 - `GET /templates` → list of template summaries
 - `GET /templates/{id}` → detailed template schema
-- `POST /render/label` → returns `501 Not Implemented`
-- `POST /render/batch` → returns `501 Not Implemented`
+- `POST /render/label` → rendered PNG (templates with `format.type: single`)
+- `POST /render/batch` → rendered PDF (templates with `format.type: sheet`)
+- `GET /openapi.json` → OpenAPI document
+- `GET /docs` → Swagger UI
 
-## Templates
-
-YAML templates are loaded from the `templates/` directory on startup. Invalid templates will stop the
-service from starting.
+`scripts/render_test.sh` and `scripts/render_avery_horizontal.sh` post sample requests to a running
+server and write a PDF.
 
 ## Error model
 
@@ -37,3 +39,21 @@ All errors are JSON with a stable schema:
   }
 }
 ```
+
+## Documentation
+
+- [`docs/SPEC.md`](docs/SPEC.md) — full, living specification (API, template schema, layout model,
+  coordinate system, options, errors).
+- [`docs/adr/`](docs/adr/) — architecture decision records.
+
+Work items are tracked as GitHub issues.
+
+## Development
+
+```bash
+cargo fmt
+cargo clippy --all-targets --all-features
+cargo test
+```
+
+See [`CLAUDE.md`](CLAUDE.md) for architecture notes and contribution conventions.
