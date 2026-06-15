@@ -15,8 +15,11 @@ use crate::{
     paths(
         api::health,
         api::list_templates,
+        api::create_template,
         api::reload_templates,
         api::get_template,
+        api::replace_template,
+        api::delete_template,
         api::render_label,
         api::render_batch
     ),

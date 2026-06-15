@@ -8,6 +8,7 @@ use axum::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -19,10 +20,11 @@ use crate::{
         TemplateDetail, TemplateList,
     },
     openapi::ApiDoc,
+    parse::parse_template,
     render::render_sheet_labels,
     render::render_single_label,
     render::render_single_label_pdf,
-    templates::{TemplateRegistry, TemplateRegistryError},
+    templates::{TemplateDefinition, TemplateRegistry, TemplateRegistryError},
 };
 
 #[derive(serde::Deserialize)]
@@ -33,6 +35,7 @@ pub struct RenderQuery {
 pub struct AppState {
     templates: ArcSwap<TemplateRegistry>,
     templates_dir: PathBuf,
+    write_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -40,6 +43,7 @@ impl AppState {
         Self {
             templates: ArcSwap::from_pointee(registry),
             templates_dir,
+            write_lock: Mutex::new(()),
         }
     }
 
@@ -54,9 +58,14 @@ impl AppState {
 pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
-        .route("/templates", get(list_templates))
+        .route("/templates", get(list_templates).post(create_template))
         .route("/templates/reload", post(reload_templates))
-        .route("/templates/{id}", get(get_template))
+        .route(
+            "/templates/{id}",
+            get(get_template)
+                .put(replace_template)
+                .delete(delete_template),
+        )
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
@@ -102,6 +111,136 @@ pub async fn reload_templates(
 ) -> Result<Json<ReloadResponse>, AppError> {
     let count = state.reload()?;
     Ok(Json(ReloadResponse { count }))
+}
+
+fn template_file_path(dir: &std::path::Path, id: &str) -> Result<PathBuf, AppError> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(AppError::invalid_request(format!(
+            "template id '{id}' must be non-empty and contain only letters, digits, '-' or '_'"
+        )));
+    }
+    Ok(dir.join(format!("{id}.yaml")))
+}
+
+fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
+    let template =
+        parse_template(body).map_err(|err| AppError::template_invalid(err.to_string()))?;
+    template.validate().map_err(AppError::template_invalid)?;
+    Ok(template)
+}
+
+fn write_template_file(path: &std::path::Path, body: &str) -> Result<(), AppError> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| AppError::render_failed("invalid template path"))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| AppError::render_failed("invalid template path"))?;
+    let tmp = dir.join(format!(".{file_name}.tmp"));
+    std::fs::write(&tmp, body)
+        .map_err(|err| AppError::render_failed(format!("failed to write template: {err}")))?;
+    std::fs::rename(&tmp, path)
+        .map_err(|err| AppError::render_failed(format!("failed to persist template: {err}")))?;
+    Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/templates",
+    request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
+    responses(
+        (status = 201, description = "Template created", body = TemplateDetail),
+        (status = 409, description = "Template id already exists", body = ErrorResponse),
+        (status = 422, description = "Invalid template", body = ErrorResponse)
+    )
+)]
+pub async fn create_template(
+    State(state): State<Arc<AppState>>,
+    body: String,
+) -> Result<Response, AppError> {
+    let template = parse_and_validate(&body)?;
+    let id = template.id.clone();
+    let path = template_file_path(&state.templates_dir, &id)?;
+    let _guard = state.write_lock.lock().await;
+    if state.templates.load().get(&id).is_some() {
+        return Err(AppError::template_exists(&id));
+    }
+    write_template_file(&path, &body)?;
+    state.reload()?;
+    let detail = state
+        .templates
+        .load_full()
+        .detail(&id)
+        .ok_or_else(|| AppError::render_failed("template missing after write"))?;
+    Ok((axum::http::StatusCode::CREATED, Json(detail)).into_response())
+}
+
+#[utoipa::path(
+    put,
+    path = "/templates/{id}",
+    params(("id" = String, Path, description = "Template ID")),
+    request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
+    responses(
+        (status = 200, description = "Template replaced", body = TemplateDetail),
+        (status = 400, description = "Body id does not match path id", body = ErrorResponse),
+        (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 422, description = "Invalid template", body = ErrorResponse)
+    )
+)]
+pub async fn replace_template(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: String,
+) -> Result<Response, AppError> {
+    let template = parse_and_validate(&body)?;
+    if template.id != id {
+        return Err(AppError::invalid_request(format!(
+            "template id in body ('{}') must match path id ('{id}')",
+            template.id
+        )));
+    }
+    let path = template_file_path(&state.templates_dir, &id)?;
+    let _guard = state.write_lock.lock().await;
+    if state.templates.load().get(&id).is_none() {
+        return Err(AppError::template_not_found(id));
+    }
+    write_template_file(&path, &body)?;
+    state.reload()?;
+    let detail = state
+        .templates
+        .load_full()
+        .detail(&id)
+        .ok_or_else(|| AppError::render_failed("template missing after write"))?;
+    Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
+}
+
+#[utoipa::path(
+    delete,
+    path = "/templates/{id}",
+    params(("id" = String, Path, description = "Template ID")),
+    responses(
+        (status = 204, description = "Template deleted"),
+        (status = 404, description = "Template not found", body = ErrorResponse)
+    )
+)]
+pub async fn delete_template(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let path = template_file_path(&state.templates_dir, &id)?;
+    let _guard = state.write_lock.lock().await;
+    if !path.exists() {
+        return Err(AppError::template_not_found(id));
+    }
+    std::fs::remove_file(&path)
+        .map_err(|err| AppError::render_failed(format!("failed to delete template: {err}")))?;
+    state.reload()?;
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 #[utoipa::path(
