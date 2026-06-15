@@ -1,6 +1,6 @@
 use axum::{
     extract::rejection::JsonRejection,
-    extract::{Json, Path, State},
+    extract::{Json, Path, Query, State},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
@@ -19,8 +19,14 @@ use crate::{
     openapi::ApiDoc,
     render::render_sheet_labels,
     render::render_single_label,
+    render::render_single_label_pdf,
     templates::TemplateRegistry,
 };
+
+#[derive(serde::Deserialize)]
+pub struct RenderQuery {
+    pub format: Option<String>,
+}
 
 pub fn app(state: Arc<TemplateRegistry>) -> Router {
     Router::new()
@@ -83,6 +89,9 @@ pub async fn get_template(
 #[utoipa::path(
     post,
     path = "/render/label",
+    params(
+        ("format" = Option<String>, Query, description = "Output format: png (default) or pdf")
+    ),
     request_body = RenderLabelRequest,
     responses(
         (status = 200, description = "Rendered PNG bytes", content_type = "image/png", body = Vec<u8>),
@@ -95,6 +104,7 @@ pub async fn get_template(
 )]
 pub async fn render_label(
     State(registry): State<Arc<TemplateRegistry>>,
+    Query(query): Query<RenderQuery>,
     payload: Result<Json<RenderLabelRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(req) = payload.map_err(AppError::from)?;
@@ -124,12 +134,26 @@ pub async fn render_label(
         ));
     }
 
-    let png = render_single_label(template, &req.label.data, option_value)?;
+    let (bytes, content_type) = match query.format.as_deref() {
+        None | Some("png") => (
+            render_single_label(template, &req.label.data, option_value)?,
+            "image/png",
+        ),
+        Some("pdf") => (
+            render_single_label_pdf(template, &req.label.data, option_value)?,
+            "application/pdf",
+        ),
+        Some(other) => {
+            return Err(AppError::invalid_request(format!(
+                "unknown format '{other}'; use png or pdf"
+            )))
+        }
+    };
 
     Ok((
         axum::http::StatusCode::OK,
-        [("content-type", "image/png")],
-        png,
+        [("content-type", content_type)],
+        bytes,
     )
         .into_response())
 }

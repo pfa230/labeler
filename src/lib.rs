@@ -261,4 +261,56 @@ mod http_tests {
         assert!(!body.is_empty(), "rendered PDF is empty");
         assert!(body.starts_with(b"%PDF"), "missing PDF header");
     }
+
+    #[tokio::test]
+    async fn render_label_pdf() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hello", "code": "QR-123" }
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/render/label?format=pdf")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.starts_with("application/pdf"));
+        let body = bytes_response(response).await;
+        assert!(body.starts_with(b"%PDF"), "missing PDF header");
+    }
+
+    #[tokio::test]
+    async fn render_label_unknown_format_returns_400() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hello", "code": "QR-123" }
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/render/label?format=xml")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+    }
 }

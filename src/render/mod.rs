@@ -46,11 +46,11 @@ fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedD
         .map_err(|err| AppError::render_failed(format!("typst compile failed: {err}")))
 }
 
-pub fn render_single_label(
+fn compile_single_doc(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
-) -> Result<Vec<u8>, AppError> {
+) -> Result<PagedDocument, AppError> {
     let TemplateFormat::Single { width, height } = &template.format else {
         return Err(AppError::unsupported_format(
             "render_label only supports single format",
@@ -59,7 +59,6 @@ pub fn render_single_label(
 
     let width_units = resolve_dimension(width)?;
     let height_units = resolve_dimension(height)?;
-    let dpi = template.dpi;
 
     let selected_option = normalize_option(template, option)?;
     let items = select_layout_items(template)?;
@@ -76,19 +75,34 @@ pub fn render_single_label(
     )?;
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
 
-    let doc = compile_paged(source, images.into_inner().files)?;
+    compile_paged(source, images.into_inner().files)
+}
 
+pub fn render_single_label(
+    template: &TemplateDefinition,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+) -> Result<Vec<u8>, AppError> {
+    let doc = compile_single_doc(template, data, option)?;
     let page = doc
         .pages
         .first()
         .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
 
-    let pixmap = typst_render::render(page, dpi as f32 / 72.0);
-    let png = pixmap
+    let pixmap = typst_render::render(page, template.dpi as f32 / 72.0);
+    pixmap
         .encode_png()
-        .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))?;
+        .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
+}
 
-    Ok(png)
+pub fn render_single_label_pdf(
+    template: &TemplateDefinition,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+) -> Result<Vec<u8>, AppError> {
+    let doc = compile_single_doc(template, data, option)?;
+    typst_pdf::pdf(&doc, &Default::default())
+        .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))
 }
 
 pub fn render_sheet_labels(
@@ -685,7 +699,7 @@ impl<'a> RenderContext<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_sheet_labels, render_single_label};
+    use super::{render_sheet_labels, render_single_label, render_single_label_pdf};
     use crate::models::{
         Alignment, Dimension, Fit, FontSize, Frame, LabelInput, Layout, LayoutItem, Options,
         Padding, Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat,
@@ -1021,5 +1035,38 @@ mod tests {
 
         std::env::remove_var("LABELER_ASSETS_DIR");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn render_single_label_produces_pdf() {
+        let template = TemplateDefinition {
+            id: "pdf".to_string(),
+            name: "Pdf".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(20.0),
+                height: Dimension::Fixed(10.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: "message".to_string(),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(10.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        let data = HashMap::from([("message".to_string(), json!("Hello"))]);
+        let pdf = render_single_label_pdf(&template, &data, None).expect("render pdf");
+        assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 }
