@@ -2,7 +2,7 @@ mod helpers;
 
 use crate::errors::AppError;
 use crate::models::{
-    Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Point, Size, SizeValue,
+    Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Size, SizeValue,
     TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
@@ -314,11 +314,8 @@ impl<'a> RenderContext<'a> {
                 } => {
                     self.render_image_item(&mut out, name, src, placement, fit)?;
                 }
-                LayoutItem::Line {
-                    placement,
-                    thickness,
-                } => {
-                    self.render_line_item(&mut out, placement, *thickness)?;
+                LayoutItem::Line { at, to, thickness } => {
+                    self.render_line_item(&mut out, at, to, *thickness)?;
                 }
                 LayoutItem::Container {
                     placement,
@@ -485,18 +482,12 @@ impl<'a> RenderContext<'a> {
     fn render_line_item(
         &self,
         out: &mut String,
-        placement: &Placement,
+        at: &Position,
+        to: &Position,
         thickness: f32,
     ) -> Result<(), AppError> {
-        let (dx_units, dy_units) =
-            self.resolve_line_delta(&placement.size, placement.max_w, placement.max_h)?;
-        let start_point = placement.at.point();
-        let end_point = Point {
-            x: start_point.x + dx_units,
-            y: start_point.y + dy_units,
-        };
-        let (start_x, start_y) = to_page_coords(&start_point, self.frame_height_units);
-        let (end_x, end_y) = to_page_coords(&end_point, self.frame_height_units);
+        let (start_x, start_y) = to_page_coords(&at.point(), self.frame_height_units);
+        let (end_x, end_y) = to_page_coords(&to.point(), self.frame_height_units);
         let dx = end_x - start_x;
         let dy = end_y - start_y;
         let start_x = format_length(start_x, self.unit)?;
@@ -508,7 +499,6 @@ impl<'a> RenderContext<'a> {
 
         let content =
             format!("#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {stroke})");
-        let content = self.wrap_rotation(content, placement.rotate);
         writeln!(
             out,
             "#place(top + left, dx: {start_x}, dy: {start_y})[{content}]"
@@ -649,45 +639,6 @@ impl<'a> RenderContext<'a> {
         }
     }
 
-    fn resolve_line_delta(
-        &self,
-        size: &Size,
-        max_w: Option<f32>,
-        max_h: Option<f32>,
-    ) -> Result<(f32, f32), AppError> {
-        let fallback = Some((self.frame_width_units, self.frame_height_units));
-        let dx =
-            self.resolve_line_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
-        let dy =
-            self.resolve_line_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
-        Ok((dx, dy))
-    }
-
-    fn resolve_line_value(
-        &self,
-        value: &SizeValue,
-        max: Option<f32>,
-        fallback: Option<f32>,
-        label: &str,
-    ) -> Result<f32, AppError> {
-        match value {
-            SizeValue::Value(value) => Ok(*value),
-            SizeValue::Auto(_) => {
-                let resolved = max.or(fallback).ok_or_else(|| {
-                    AppError::unsupported_layout_item(format!(
-                        "size {label} is auto but no max_{label} provided"
-                    ))
-                })?;
-                if resolved <= 0.0 {
-                    return Err(AppError::unsupported_layout_item(format!(
-                        "max_{label} must be greater than 0"
-                    )));
-                }
-                Ok(resolved)
-            }
-        }
-    }
-
     fn wrap_rotation(&self, content: String, rotate: Option<f32>) -> String {
         if let Some(rotate) = rotate {
             format!("#rotate({rotate}deg)[{content}]")
@@ -790,13 +741,8 @@ mod tests {
                     params: None,
                 },
                 LayoutItem::Line {
-                    placement: Placement {
-                        at: Position([0.0, 1.0]),
-                        size: Size([SizeValue::Value(30.0), SizeValue::Value(0.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    at: Position([0.0, 1.0]),
+                    to: Position([30.0, 1.0]),
                     thickness: 0.2,
                 },
                 LayoutItem::Container {

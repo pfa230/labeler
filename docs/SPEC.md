@@ -144,7 +144,9 @@ parent frame's dimension. A non-`auto` numeric size must be > 0 (lines may be 0 
   Bytes are decoded server-side and injected into Typst as a virtual file; there is no server-side URL
   fetching (see ADR-0009). The assets root is `LABELER_ASSETS_DIR` (default `assets/`). Missing data
   key → `MissingField`; bad base64 / unsupported format / asset path problems → `UnsupportedLayoutItem`.
-- **`line`** — placement where `size` is the delta `[dx, dy]` from `at`, plus `thickness` (> 0).
+- **`line`** — `at` (start, default `[0,0]`) and `to` (end), both absolute in frame coordinates, plus
+  `thickness` (> 0). Lines have no box `size`/`fit`/rotation. Endpoints must differ and lie within the
+  layout bounds.
 - **`container`** — a recursive group. Fields: placement (size defaults to `auto`/`auto` = fill parent),
   optional `option` gate (§5), optional `frame` (`thickness` > 0, `rounded` bool), `padding`, and
   `items` (nested layout). Children are positioned relative to the container's padded inner box.
@@ -228,6 +230,8 @@ All errors return JSON:
 
 ## Changelog
 
+- **Unreleased** — `line` now uses explicit `at`/`to` endpoints instead of `size` as a delta (breaking
+  template change). Issue #6.
 - **Unreleased** — `POST /render/label` gained `?format=png|pdf` (single-label PDF output). Issue #4.
 - **Unreleased** — Added the `image` layout item (static asset under the assets root, and data-bound
   base64 data URI; PNG/JPEG/SVG; injected into Typst as virtual files). See ADR-0009. Issue #3.
