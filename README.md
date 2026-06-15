@@ -11,7 +11,8 @@ cargo run            # serves on 0.0.0.0:$PORT (default 8080)
 ```
 
 YAML templates are loaded from `templates/` at startup; an invalid template stops the service from
-starting.
+starting. Starter templates: `avery5163` (US Letter sheet) and `brother12mm` / `brother18mm` /
+`brother24mm` (continuous tape).
 
 ## Endpoints
 

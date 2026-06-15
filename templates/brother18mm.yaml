@@ -1,0 +1,27 @@
+id: brother18mm
+name: Brother 18mm Continuous Label
+description: Continuous label roll (18mm width)
+unit: mm
+dpi: 300
+format:
+  type: single
+  width:
+    min: 10.0
+    max: 100.0
+  height: 18.0
+layout:
+  - type: qr
+    name: code
+    at: [0.0, 0.0]
+    size: [18.0, 18.0]
+  - type: text
+    name: message
+    at: [20.0, 0.0]
+    size: [60.0, 18.0]
+    font_size:
+      min: 8.0
+      max: 22.0
+    multiline: true
+    alignment:
+      horizontal: left
+      vertical: center

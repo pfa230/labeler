@@ -253,6 +253,7 @@ All errors return JSON:
 
 ## Changelog
 
+- **Unreleased** — Added the `brother18mm` and `brother24mm` continuous-tape starter templates (#11).
 - **Unreleased** — Template management API: `POST /templates/reload` (#7) and raw-YAML
   `POST`/`PUT /templates/{id}`/`DELETE /templates/{id}` (#10); registry is now runtime-mutable via
   arc-swap.
