@@ -135,7 +135,7 @@ pub async fn render_label(
     }
 
     let (bytes, content_type) = match query.format.as_deref() {
-        None | Some("png") => (
+        None | Some("") | Some("png") => (
             render_single_label(template, &req.label.data, option_value)?,
             "image/png",
         ),

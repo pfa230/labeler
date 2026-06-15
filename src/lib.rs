@@ -313,4 +313,24 @@ mod http_tests {
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
     }
+
+    #[tokio::test]
+    async fn render_label_pdf_on_sheet_template_returns_422() {
+        let app = build_app();
+        let payload = json!({ "template": "avery5163", "data": {} });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/render/label?format=pdf")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "UnsupportedFormat");
+    }
 }

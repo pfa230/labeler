@@ -340,6 +340,7 @@ fn validate_layout_item(
             validate_bounds(&placement.at, width, height, layout_bounds)?;
         }
         LayoutItem::Line { at, to, thickness } => {
+            const LINE_EPSILON: f32 = 1.0e-4;
             if *thickness <= 0.0 {
                 return Err("line thickness must be greater than 0".to_string());
             }
@@ -347,14 +348,13 @@ fn validate_layout_item(
             validate_position(to)?;
             let start = at.point();
             let end = to.point();
-            if (start.x - end.x).abs() < f32::EPSILON && (start.y - end.y).abs() < f32::EPSILON {
+            if (start.x - end.x).abs() < LINE_EPSILON && (start.y - end.y).abs() < LINE_EPSILON {
                 return Err("line start and end must differ".to_string());
             }
             if let Some(bounds) = layout_bounds {
-                const BOUNDS_EPSILON: f32 = 1.0e-4;
                 for point in [start, end] {
-                    if point.x > bounds.width + BOUNDS_EPSILON
-                        || point.y > bounds.height + BOUNDS_EPSILON
+                    if point.x > bounds.width + LINE_EPSILON
+                        || point.y > bounds.height + LINE_EPSILON
                     {
                         return Err("line must fit within layout bounds".to_string());
                     }
@@ -860,5 +860,40 @@ layout: []
         };
         let err = template.validate().expect_err("expected error");
         assert!(err.contains("line start and end must differ"));
+    }
+
+    fn single_line_template(at: Position, to: Position) -> TemplateDefinition {
+        TemplateDefinition {
+            id: "ln".to_string(),
+            name: "ln".to_string(),
+            description: "ln".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(20.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Line {
+                at,
+                to,
+                thickness: 0.2,
+            }]),
+            version: None,
+        }
+    }
+
+    #[test]
+    fn validate_rejects_out_of_bounds_line() {
+        let template = single_line_template(Position([0.0, 0.0]), Position([100.0, 0.0]));
+        let err = template.validate().expect_err("expected error");
+        assert!(err.contains("line must fit within layout bounds"));
+    }
+
+    #[test]
+    fn validate_rejects_negative_line_endpoint() {
+        let template = single_line_template(Position([0.0, 0.0]), Position([-1.0, 0.0]));
+        let err = template.validate().expect_err("expected error");
+        assert!(err.contains("negative coordinates"));
     }
 }
