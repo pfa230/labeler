@@ -9,9 +9,12 @@ Scope is the **MVP** tier of [CAPABILITIES.md](CAPABILITIES.md). The GUI editor 
 integration are **Phase 2**, not here.
 
 **Progress.** GitHub milestones M1–M6 hold live status; completed items are also marked **DONE** (with
-their commit) in the issue list below. Done so far: M1 — P1-11 / #3 (image), P1-12 / #4 (single-label PDF), P1-14 / #6 (line at/to); M2 —
-P1-21 / #7 (reload), P1-22 / #10 (CRUD), P1-23 / #11 (tape templates). P1-13 / #5 (copies) is deferred
-pending the per-label batch-composition ADR (#28); M1 fully closes once #5 lands.
+their commit) in the issue list below. Done so far: prerequisite ADRs P1-D1 / #1 (printer architecture, ADR-0007) and P1-D2 / #2 (UI delivery,
+ADR-0008); M1 — P1-11 / #3 (image), P1-12 / #4 (single-label PDF), P1-14 / #6 (line at/to); M2 —
+P1-21 / #7 (reload), P1-22 / #10 (CRUD), P1-23 / #11 (tape templates); M3 — P1-31 / #8 (store),
+P1-32 / #12 (printer CRUD), P1-33 / #16 (CUPS/IPP), P1-34 / #13 (download), P1-35 / #19 (/print).
+P1-13 / #5 (copies) is deferred pending the per-label batch-composition ADR (#28); M1 fully closes once
+#5 lands. Remaining: M4 (integrations), M5 (UI), M6 (packaging).
 
 ## 1. Phase 1 goal
 
@@ -106,32 +109,32 @@ Bundle ready-to-use templates (e.g. Avery 5160, Avery 5163, Brother 12mm, Dymo 3
 
 ### M3 — State and printing
 
-#### P1-31 App-state store (SQLite) · GH #8
+#### P1-31 App-state store (SQLite) · GH #8 · DONE (f7a6641)
 Introduce a persistent store for app state: printers, settings, and a minimal job record.
 - **Depends on:** none.
 - **AC:** SQLite file created/migrated on startup under a configurable data dir; survives restart;
   templates remain files (ADR-0006), only app state is in SQLite; tested.
 
-#### P1-32 Printer configuration CRUD · GH #12
+#### P1-32 Printer configuration CRUD · GH #12 · DONE (e786ac7)
 Model printers as configured "machine" instances (name, type, transport, options) and CRUD them.
 - **Depends on:** P1-31, P1-D1.
 - **AC:** create/list/update/delete printers via API; persisted; a CUPS printer can be registered by
   queue name; validated; tested.
 
-#### P1-33 CUPS / IPP output backend · GH #16
+#### P1-33 CUPS / IPP output backend · GH #16 · DONE (31fdb49)
 Send a rendered PDF to a CUPS print queue.
 - **Depends on:** P1-32, P1-12.
 - **AC:** given a reachable CUPS queue, a single and a sheet job both print (verified against a CUPS
   instance or a mock/IPP capture); media/copies options passed through; failures surface as a clear
   error.
 
-#### P1-34 File-download output · GH #13
+#### P1-34 File-download output · GH #13 · DONE (9fd67da)
 Return the rendered artifact (PNG/PDF) as a download when no printer is selected.
 - **Depends on:** P1-12.
 - **AC:** endpoint returns the artifact with correct `Content-Type` and filename headers; works for
   both formats; tested.
 
-#### P1-35 Unified `/print` dispatch endpoint · GH #19
+#### P1-35 Unified `/print` dispatch endpoint · GH #19 · DONE (e147439)
 One endpoint that renders `template` + `data` (+`copies`) and either routes to a chosen printer or
 returns the file.
 - **Depends on:** P1-32, P1-33, P1-34, P1-13.
