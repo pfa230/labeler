@@ -348,6 +348,8 @@ pub struct PrintRequest {
     #[serde(flatten)]
     pub label: LabelInput,
     #[serde(default)]
+    pub printer: Option<String>,
+    #[serde(default)]
     pub format: Option<String>,
 }
 

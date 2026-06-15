@@ -50,6 +50,8 @@ pub trait PrinterDriver: Send + Sync {
 pub fn validate_config(kind: &str, config: &JsonValue) -> Result<(), DriverError> {
     match kind {
         "cups" => CupsConfig::from_value(config).map(|_| ()),
+        #[cfg(test)]
+        "fake" => Ok(()),
         other => Err(DriverError::UnknownKind(other.to_string())),
     }
 }
@@ -58,6 +60,8 @@ pub fn validate_config(kind: &str, config: &JsonValue) -> Result<(), DriverError
 pub fn build_driver(kind: &str, config: &JsonValue) -> Result<Box<dyn PrinterDriver>, DriverError> {
     match kind {
         "cups" => Ok(Box::new(CupsDriver::from_value(config)?)),
+        #[cfg(test)]
+        "fake" => Ok(Box::new(FakeDriver::from_value(config))),
         other => Err(DriverError::UnknownKind(other.to_string())),
     }
 }
@@ -114,6 +118,40 @@ impl PrinterDriver for CupsDriver {
                 "printer returned IPP status {:?}",
                 response.header().status_code()
             )))
+        }
+    }
+}
+
+/// Test-only driver that records nothing and either succeeds or fails, for exercising the `/print`
+/// dispatch without a real printer.
+#[cfg(test)]
+struct FakeDriver {
+    fail: bool,
+}
+
+#[cfg(test)]
+impl FakeDriver {
+    fn from_value(config: &JsonValue) -> Self {
+        let fail = config
+            .get("fail")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        Self { fail }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl PrinterDriver for FakeDriver {
+    fn accepted_format(&self) -> ArtifactFormat {
+        ArtifactFormat::Pdf
+    }
+
+    async fn send(&self, _artifact: &[u8], _opts: &PrintOptions) -> Result<(), PrintError> {
+        if self.fail {
+            Err(PrintError::Transport("fake failure".to_string()))
+        } else {
+            Ok(())
         }
     }
 }
