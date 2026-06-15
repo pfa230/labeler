@@ -23,13 +23,36 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 | --- | --- | --- | --- |
 | GET | `/health` | Liveness check | `200 {"status":"ok"}` |
 | GET | `/templates` | List template summaries (sorted by id) | `200 {"templates":[…]}` |
+| POST | `/templates` | Create a template (raw YAML body) | `201` / `409` / `422` |
+| POST | `/templates/reload` | Re-scan the templates dir | `200 {"count":N}` / `422` |
 | GET | `/templates/{id}` | Full template detail incl. layout | `200` / `404` |
+| PUT | `/templates/{id}` | Replace a template (raw YAML body) | `200` / `400` / `404` / `422` |
+| DELETE | `/templates/{id}` | Delete a template | `204` / `404` |
 | POST | `/render/label` | Render one label (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
 | POST | `/render/batch` | Render a label sheet | `200 application/pdf` |
 | GET | `/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/docs` | Swagger UI | `200` |
 
 The server binds `0.0.0.0:$PORT` (default `8080`).
+
+### 2.0 Template management
+
+Templates are hand-authored YAML in the templates dir and may also be managed over the API. The
+registry is held in an `ArcSwap` for lock-free reads; `reload` and every mutation rebuild it from disk
+and swap atomically. A reload that fails (an invalid file on disk) returns `422` and keeps the
+previously-loaded set, so a bad file never takes the service down.
+
+- `POST /templates/reload` re-scans the dir and returns `{ "count": N }`.
+- `POST /templates` creates from a raw YAML body; the `id` comes from the body; `409 Conflict` if it
+  already exists.
+- `PUT /templates/{id}` replaces from a raw YAML body; the body `id` must equal the path `{id}` (else
+  `400`); `404` if it does not exist.
+- `DELETE /templates/{id}` removes the template.
+
+API-managed templates are written as `<id>.yaml` under the templates dir (atomic temp-then-rename), and
+`id` must contain only letters, digits, `-`, or `_` (path-traversal guard). Parse errors and validation
+failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned store is Phase 2
+(ADR-0006).
 
 ### 2.1 `POST /render/label`
 
@@ -230,6 +253,9 @@ All errors return JSON:
 
 ## Changelog
 
+- **Unreleased** — Template management API: `POST /templates/reload` (#7) and raw-YAML
+  `POST`/`PUT /templates/{id}`/`DELETE /templates/{id}` (#10); registry is now runtime-mutable via
+  arc-swap.
 - **Unreleased** — `line` now uses explicit `at`/`to` endpoints instead of `size` as a delta (breaking
   template change). Issue #6.
 - **Unreleased** — `POST /render/label` gained `?format=png|pdf` (single-label PDF output). Issue #4.

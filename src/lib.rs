@@ -438,4 +438,154 @@ layout:
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    fn yaml_post(uri: &str, method: &str, body: String) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "text/yaml")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn template_create_get_replace_delete_roundtrip() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/templates", "POST", template_yaml("new1")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(template_count(&app).await, 2);
+
+        // Replace with a changed dpi and confirm it took.
+        let body200 = template_yaml("new1").replace("dpi: 300", "dpi: 200");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/templates/new1", "PUT", body200))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/new1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let detail = json_response(resp).await;
+        assert_eq!(detail["dpi"], 200);
+
+        // Delete and confirm it's gone.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/templates/new1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/new1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_create_duplicate_returns_409() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("dup.yaml"), template_yaml("dup")).unwrap();
+        let app = build_app_in(&dir);
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/templates", "POST", template_yaml("dup")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateExists");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_create_invalid_yaml_returns_422() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/templates",
+                "POST",
+                "id: x\nunit: nope\n".to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_create_unsafe_id_returns_400() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let body = template_yaml("ok").replace("id: ok", "id: ../evil");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/templates", "POST", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // No file escaped the templates dir.
+        assert!(!dir.parent().unwrap().join("evil.yaml").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_replace_id_mismatch_returns_400() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("a.yaml"), template_yaml("a")).unwrap();
+        let app = build_app_in(&dir);
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/templates/a", "PUT", template_yaml("b")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_replace_missing_returns_404() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/templates/ghost", "PUT", template_yaml("ghost")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }
