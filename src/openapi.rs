@@ -31,7 +31,8 @@ use crate::{
         api::put_setting,
         api::render_label,
         api::render_batch,
-        api::print
+        api::print,
+        api::import_csv
     ),
     components(
         schemas(
