@@ -59,7 +59,7 @@ layout:
           vertical: center
       - type: line
         at: [1.45, 0.0]
-        size: [0.0, 1.8]
+        to: [1.45, 1.8]
         thickness: 0.02
       - type: container
         at: [1.45, 0.0]
@@ -75,7 +75,7 @@ layout:
               vertical: center
           - type: line
             at: [0.0, 1.35]
-            size: [2.35, 0.0]
+            to: [2.35, 1.35]
             thickness: 0.025
           - type: text
             name: tags

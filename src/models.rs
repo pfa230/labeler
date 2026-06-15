@@ -259,8 +259,9 @@ pub enum LayoutItem {
         fit: Fit,
     },
     Line {
-        #[serde(flatten)]
-        placement: Placement,
+        #[serde(default)]
+        at: Position,
+        to: Position,
         thickness: f32,
     },
     Container {

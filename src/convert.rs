@@ -111,7 +111,8 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 }),
             },
             LayoutItemRaw::Line(raw) => Ok(LayoutItem::Line {
-                placement: raw.placement,
+                at: raw.at,
+                to: raw.to,
                 thickness: raw.thickness,
             }),
             LayoutItemRaw::Container(raw) => LayoutItem::try_from(raw),

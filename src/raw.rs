@@ -71,8 +71,9 @@ pub struct ImageRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LineRaw {
-    #[serde(flatten)]
-    pub placement: Placement,
+    #[serde(default)]
+    pub at: Position,
+    pub to: Position,
     pub thickness: f32,
 }
 

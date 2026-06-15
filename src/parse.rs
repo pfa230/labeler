@@ -196,4 +196,28 @@ mod tests {
         let err = parse_nodes(src).expect_err("expected error");
         assert!(matches!(err, TemplateError::Validation { .. }));
     }
+
+    #[test]
+    fn parse_nodes_line_uses_at_and_to() {
+        let src = r#"
+- type: line
+  at: [0.0, 0.0]
+  to: [10.0, 0.0]
+  thickness: 0.2
+"#;
+        let items = parse_nodes(src).expect("parse nodes");
+        assert!(matches!(items[0], LayoutItem::Line { .. }));
+    }
+
+    #[test]
+    fn parse_nodes_line_rejects_legacy_size() {
+        let src = r#"
+- type: line
+  at: [0.0, 0.0]
+  size: [10.0, 0.0]
+  thickness: 0.2
+"#;
+        // `size` is no longer a line field (deny_unknown_fields); `to` is required.
+        assert!(parse_nodes(src).is_err());
+    }
 }
