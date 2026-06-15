@@ -33,6 +33,14 @@ pub struct RenderQuery {
     pub format: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct ImportCsvQuery {
+    pub template: String,
+    pub mode: Option<String>,
+    pub printer: Option<String>,
+    pub format: Option<String>,
+}
+
 pub struct AppState {
     templates: ArcSwap<TemplateRegistry>,
     templates_dir: PathBuf,
@@ -86,6 +94,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
         .route("/print", post(print))
+        .route("/import/csv", post(import_csv))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -481,6 +490,33 @@ fn render_to_format(
     }
 }
 
+fn parse_csv_rows(
+    body: &str,
+) -> Result<Vec<std::collections::HashMap<String, serde_json::Value>>, AppError> {
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_reader(body.as_bytes());
+    let headers = reader
+        .headers()
+        .map_err(|err| AppError::invalid_request(format!("invalid CSV header: {err}")))?
+        .clone();
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let record =
+            record.map_err(|err| AppError::invalid_request(format!("invalid CSV row: {err}")))?;
+        let mut data = std::collections::HashMap::new();
+        for (key, val) in headers.iter().zip(record.iter()) {
+            data.insert(key.to_string(), serde_json::Value::String(val.to_string()));
+        }
+        rows.push(data);
+    }
+    if rows.is_empty() {
+        return Err(AppError::invalid_request("CSV has no data rows"));
+    }
+    Ok(rows)
+}
+
 fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
     (
         axum::http::StatusCode::OK,
@@ -716,4 +752,68 @@ pub async fn render_batch(
         pdf,
     )
         .into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/import/csv",
+    params(
+        ("template" = String, Query, description = "Template id"),
+        ("mode" = Option<String>, Query, description = "download (default) or print"),
+        ("printer" = Option<String>, Query, description = "Printer id (required when mode=print)"),
+        ("format" = Option<String>, Query, description = "Download format: png (default) or pdf")
+    ),
+    request_body(content = String, description = "CSV (header row + one row per label)", content_type = "text/csv"),
+    responses(
+        (status = 200, description = "ZIP of rendered labels (download) or per-row summary (print)"),
+        (status = 400, description = "Invalid CSV or request", body = ErrorResponse),
+        (status = 404, description = "Template or printer not found", body = ErrorResponse),
+        (status = 422, description = "Render/validation error (download is atomic)", body = ErrorResponse),
+        (status = 502, description = "Printer/transport failure", body = ErrorResponse)
+    )
+)]
+pub async fn import_csv(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ImportCsvQuery>,
+    body: String,
+) -> Result<Response, AppError> {
+    let registry = state.templates.load_full();
+    let template = registry
+        .get(&params.template)
+        .ok_or_else(|| AppError::template_not_found(params.template.clone()))?;
+    let rows = parse_csv_rows(&body)?;
+    let settings = state.store().all_settings().await?;
+
+    match params.mode.as_deref().unwrap_or("download") {
+        "download" => {
+            let width = rows.len().to_string().len();
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            use std::io::Write as _;
+            for (idx, data) in rows.iter().enumerate() {
+                let (bytes, _ct, ext) =
+                    render_to_format(template, data, None, params.format.as_deref(), &settings)
+                        .map_err(|err| err.with_row(idx + 1))?;
+                let name = format!("{:0width$}.{ext}", idx + 1, width = width);
+                zip.start_file(name, opts)
+                    .map_err(|err| AppError::render_failed(format!("zip error: {err}")))?;
+                zip.write_all(&bytes)
+                    .map_err(|err| AppError::render_failed(format!("zip error: {err}")))?;
+            }
+            zip.finish()
+                .map_err(|err| AppError::render_failed(format!("zip error: {err}")))?;
+            let bytes = cursor.into_inner();
+            Ok(download_response(
+                bytes,
+                "application/zip",
+                &format!("{}.zip", template.id),
+            ))
+        }
+        "print" => Err(AppError::invalid_request("print mode added in next task")),
+        other => Err(AppError::invalid_request(format!(
+            "unknown mode '{other}'; use download or print"
+        ))),
+    }
 }

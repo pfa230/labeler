@@ -344,6 +344,57 @@ mod http_tests {
         assert_eq!(body["error"]["code"], "UnsupportedFormat");
     }
 
+    #[tokio::test]
+    async fn import_csv_download_zips_rows() {
+        let app = build_app();
+        let csv = "message,code\nHello,QR-1\nWorld,QR-2\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "application/zip");
+        let body = bytes_response(response).await;
+        assert!(body.len() > 4, "zip body too small");
+        assert_eq!(&body[..4], b"PK\x03\x04");
+    }
+
+    #[tokio::test]
+    async fn import_csv_missing_field_is_atomic() {
+        let app = build_app();
+        // brother24mm needs `message` and `code`. The CSV omits the `code` column, so the very
+        // first row fails to render and the atomic download aborts at row 1.
+        let csv = "message\nHello\nWorld\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "code");
+        assert_eq!(body["error"]["details"]["row"], 1);
+    }
+
     fn temp_templates_dir() -> std::path::PathBuf {
         let mut dir = std::env::temp_dir();
         let n = std::time::SystemTime::now()
