@@ -3,7 +3,7 @@ use axum::{
     extract::rejection::JsonRejection,
     extract::{Json, Path, Query, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use crate::{
     errors::AppError,
     models::{
         ErrorResponse, HealthResponse, PrintRequest, ReloadResponse, RenderBatchRequest,
-        RenderLabelRequest, TemplateDetail, TemplateList,
+        RenderLabelRequest, SettingValue, TemplateDetail, TemplateList,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -81,6 +81,8 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
         )
+        .route("/settings", get(get_settings))
+        .route("/settings/{key}", put(put_setting))
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
         .route("/print", post(print))
@@ -360,6 +362,46 @@ pub async fn get_printer(
         .await?
         .map(Json)
         .ok_or_else(|| AppError::printer_not_found(id))
+}
+
+#[utoipa::path(
+    get,
+    path = "/settings",
+    responses((status = 200, description = "All settings", body = std::collections::BTreeMap<String, String>))
+)]
+pub async fn get_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<std::collections::BTreeMap<String, String>>, AppError> {
+    Ok(Json(state.store().all_settings().await?))
+}
+
+#[utoipa::path(
+    put,
+    path = "/settings/{key}",
+    params(("key" = String, Path, description = "Setting key")),
+    request_body = SettingValue,
+    responses(
+        (status = 200, description = "Setting stored", body = SettingValue),
+        (status = 400, description = "Invalid key", body = ErrorResponse)
+    )
+)]
+pub async fn put_setting(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<SettingValue>,
+) -> Result<Json<SettingValue>, AppError> {
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(AppError::invalid_request(format!(
+            "setting key '{key}' must be non-empty and contain only letters, digits, '_', '-' or '.'"
+        )));
+    }
+    let _guard = state.write_lock.lock().await;
+    state.store().set_setting(&key, &body.value).await?;
+    Ok(Json(body))
 }
 
 #[utoipa::path(

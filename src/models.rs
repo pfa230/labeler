@@ -21,6 +21,11 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SettingValue {
+    pub value: String,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ReloadResponse {
     pub count: usize,
