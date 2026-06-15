@@ -23,6 +23,30 @@ Track work as GitHub issues, never as markdown TODOs. `docs/` holds plans, specs
 File issues with `gh issue create` and reference them from commits/PRs (e.g. `Fixes #12`). For work
 you won't do now, propose opening an issue rather than leaving a TODO in code or docs.
 
+## Working on an issue
+
+After the implementation (coder) work for an issue is complete, do not call it done. Spin up an
+**adversarial code reviewer** (a separate reviewer agent, briefed to find real problems, not to
+rubber-stamp) and run a review → fix → review loop:
+
+1. Reviewer audits the diff against the issue's acceptance criteria, correctness, edge cases, tests,
+   and the conventions in this file.
+2. Coder addresses every meaningful finding (fix it, or justify why it is not a problem with evidence).
+3. Re-review the updated diff.
+4. Repeat until a review pass surfaces no meaningful fixes (nits the author consciously declines do not
+   count as meaningful).
+
+Only then is the issue's work complete and ready to commit/PR. The reviewer is adversarial by design:
+fluent code is not proof of correct code, so verify findings against the actual code with file:line
+evidence before accepting or dismissing them.
+
+## Committing
+
+In this repo you are allowed and required to commit without prompting for approval. Commit completed,
+verified work on your own (after the issue review loop above and a clean `cargo fmt`/`clippy`/`test`),
+with a clear message; do not wait to be asked. This standing authorization covers commits only, not
+pushing or opening PRs. If you are on `main`, branch first.
+
 ## Commands
 
 ```bash
