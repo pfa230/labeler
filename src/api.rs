@@ -1,3 +1,4 @@
+use arc_swap::ArcSwap;
 use axum::{
     extract::rejection::JsonRejection,
     extract::{Json, Path, Query, State},
@@ -5,6 +6,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use utoipa::OpenApi;
@@ -13,14 +15,14 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::{
     errors::AppError,
     models::{
-        ErrorResponse, HealthResponse, RenderBatchRequest, RenderLabelRequest, TemplateDetail,
-        TemplateList,
+        ErrorResponse, HealthResponse, ReloadResponse, RenderBatchRequest, RenderLabelRequest,
+        TemplateDetail, TemplateList,
     },
     openapi::ApiDoc,
     render::render_sheet_labels,
     render::render_single_label,
     render::render_single_label_pdf,
-    templates::TemplateRegistry,
+    templates::{TemplateRegistry, TemplateRegistryError},
 };
 
 #[derive(serde::Deserialize)]
@@ -28,10 +30,32 @@ pub struct RenderQuery {
     pub format: Option<String>,
 }
 
-pub fn app(state: Arc<TemplateRegistry>) -> Router {
+pub struct AppState {
+    templates: ArcSwap<TemplateRegistry>,
+    templates_dir: PathBuf,
+}
+
+impl AppState {
+    pub fn new(registry: TemplateRegistry, templates_dir: PathBuf) -> Self {
+        Self {
+            templates: ArcSwap::from_pointee(registry),
+            templates_dir,
+        }
+    }
+
+    fn reload(&self) -> Result<usize, TemplateRegistryError> {
+        let registry = TemplateRegistry::load_from_dir(&self.templates_dir)?;
+        let count = registry.len();
+        self.templates.store(Arc::new(registry));
+        Ok(count)
+    }
+}
+
+pub fn app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/templates", get(list_templates))
+        .route("/templates/reload", post(reload_templates))
         .route("/templates/{id}", get(get_template))
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
@@ -60,9 +84,24 @@ pub async fn health() -> impl IntoResponse {
         (status = 200, description = "List templates", body = TemplateList)
     )
 )]
-pub async fn list_templates(State(registry): State<Arc<TemplateRegistry>>) -> impl IntoResponse {
-    let templates = registry.summaries();
+pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let templates = state.templates.load_full().summaries();
     Json(TemplateList { templates })
+}
+
+#[utoipa::path(
+    post,
+    path = "/templates/reload",
+    responses(
+        (status = 200, description = "Templates reloaded from disk", body = ReloadResponse),
+        (status = 422, description = "A template on disk is invalid; previous set kept", body = ErrorResponse)
+    )
+)]
+pub async fn reload_templates(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<ReloadResponse>, AppError> {
+    let count = state.reload()?;
+    Ok(Json(ReloadResponse { count }))
 }
 
 #[utoipa::path(
@@ -77,10 +116,12 @@ pub async fn list_templates(State(registry): State<Arc<TemplateRegistry>>) -> im
     )
 )]
 pub async fn get_template(
-    State(registry): State<Arc<TemplateRegistry>>,
+    State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<TemplateDetail>, AppError> {
-    registry
+    state
+        .templates
+        .load_full()
         .detail(&id)
         .map(Json)
         .ok_or_else(|| AppError::template_not_found(id))
@@ -103,11 +144,12 @@ pub async fn get_template(
     )
 )]
 pub async fn render_label(
-    State(registry): State<Arc<TemplateRegistry>>,
+    State(state): State<Arc<AppState>>,
     Query(query): Query<RenderQuery>,
     payload: Result<Json<RenderLabelRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(req) = payload.map_err(AppError::from)?;
+    let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
@@ -172,7 +214,7 @@ pub async fn render_label(
     )
 )]
 pub async fn render_batch(
-    State(registry): State<Arc<TemplateRegistry>>,
+    State(state): State<Arc<AppState>>,
     payload: Result<Json<RenderBatchRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(req) = payload.map_err(AppError::from)?;
@@ -182,6 +224,7 @@ pub async fn render_batch(
         start_slot = req.start_slot,
         "render batch request"
     );
+    let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;

@@ -8,12 +8,12 @@ mod raw;
 pub mod render;
 pub mod templates;
 
-pub use api::app;
+pub use api::{app, AppState};
 pub use templates::TemplateRegistry;
 
 #[cfg(test)]
 mod tests {
-    use super::{app, TemplateRegistry};
+    use super::{app, AppState, TemplateRegistry};
     use std::future::IntoFuture;
     use std::sync::Arc;
     use std::time::Duration;
@@ -29,10 +29,10 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
-        let server =
-            axum::serve(listener, app(Arc::new(templates))).with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            });
+        let state = Arc::new(AppState::new(templates, "templates".into()));
+        let server = axum::serve(listener, app(state)).with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        });
 
         let handle = tokio::spawn(server.into_future());
 
@@ -52,7 +52,7 @@ mod tests {
 
 #[cfg(test)]
 mod http_tests {
-    use super::{app, TemplateRegistry};
+    use super::{app, AppState, TemplateRegistry};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -64,7 +64,7 @@ mod http_tests {
 
     fn build_app() -> axum::Router {
         let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
-        app(Arc::new(templates))
+        app(Arc::new(AppState::new(templates, "templates".into())))
     }
 
     async fn json_response(response: axum::response::Response) -> Value {
@@ -332,5 +332,110 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "UnsupportedFormat");
+    }
+
+    fn temp_templates_dir() -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        dir.push(format!("labeler_http_tpl_{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn build_app_in(dir: &std::path::Path) -> axum::Router {
+        let templates = TemplateRegistry::load_from_dir(dir).expect("load templates");
+        app(Arc::new(AppState::new(templates, dir.to_path_buf())))
+    }
+
+    fn template_yaml(id: &str) -> String {
+        format!(
+            r#"id: {id}
+name: {id}
+description: d
+unit: mm
+dpi: 300
+format:
+  type: single
+  width: 20.0
+  height: 10.0
+layout:
+  - type: text
+    name: msg
+    at: [0.0, 0.0]
+    size: [20.0, 5.0]
+    font_size: 10.0
+"#
+        )
+    }
+
+    async fn template_count(app: &axum::Router) -> usize {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let body = json_response(response).await;
+        body["templates"].as_array().expect("templates array").len()
+    }
+
+    #[tokio::test]
+    async fn reload_picks_up_new_template() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+        assert_eq!(template_count(&app).await, 1);
+
+        std::fs::write(dir.join("t2.yaml"), template_yaml("t2")).unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/templates/reload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["count"], 2);
+        assert_eq!(template_count(&app).await, 2);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn reload_invalid_file_keeps_previous_set() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+        assert_eq!(template_count(&app).await, 1);
+
+        std::fs::write(dir.join("bad.yaml"), "id: bad\nunit: nope\n").unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/templates/reload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // The previously-loaded set is still served.
+        assert_eq!(template_count(&app).await, 1);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

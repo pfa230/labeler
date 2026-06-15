@@ -1,6 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use labeler::{app, TemplateRegistry};
+use labeler::{app, AppState, TemplateRegistry};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -15,7 +15,7 @@ async fn main() {
     let templates = TemplateRegistry::load_from_dir("templates")
         .unwrap_or_else(|err| panic!("failed to load templates: {err}"));
     tracing::info!(count = templates.len(), "templates loaded");
-    let app = app(Arc::new(templates));
+    let app = app(Arc::new(AppState::new(templates, "templates".into())));
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
     let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().expect("invalid PORT");
