@@ -9,7 +9,8 @@ Scope is the **MVP** tier of [CAPABILITIES.md](CAPABILITIES.md). The GUI editor 
 integration are **Phase 2**, not here.
 
 **Progress.** GitHub milestones M1–M6 hold live status; completed items are also marked **DONE** (with
-their commit) in the issue list below. Done so far: P1-11 / #3 (image layout item).
+their commit) in the issue list below. Done so far: P1-11 / #3 (image layout item). P1-13 / #5 (copies)
+is deferred pending the per-label batch-composition ADR (#28), so the M1 pass delivers #4 and #6 now.
 
 ## 1. Phase 1 goal
 
@@ -63,11 +64,12 @@ Render `format: single` templates to PDF in addition to PNG (needed for office p
 - **AC:** the render path returns PDF for single-format templates (via format selector or content
   negotiation); PNG path unchanged; test asserts a valid `%PDF` for a single template.
 
-#### P1-13 Copies / quantity · GH #5
-Support a `copies` count on render and batch requests.
-- **Depends on:** none.
-- **AC:** `copies: N` yields N labels (N pages or N raster copies as appropriate); default 1; validated
-  as ≥ 1; tested.
+#### P1-13 Copies / quantity · GH #5 · BLOCKED (needs #28)
+Support per-label quantities. **Deferred from the initial M1 pass:** copies is one facet of per-label
+batch composition, which needs a design decision first (single-label physical copies are already handled
+by the printer/CUPS/browser, so app-level copies is really a sheet concern).
+- **Depends on:** #28 (ADR: per-label configuration and batch composition).
+- **AC:** defined by #28; implement against the decided batch model.
 
 #### P1-14 Fix `line` `size` semantics inconsistency · GH #6
 For most items `size` is a box `[w, h]`; for `line` it is a delta `[dx, dy]` from `at`. This is a
@@ -237,7 +239,8 @@ P1-31, P1-22 ─► P1-62
 P1-33 ─► P1-63
 ```
 
-Roots (no dependencies, can start immediately): P1-D1, P1-D2, P1-11, P1-12, P1-13, P1-14, P1-21, P1-31, P1-64.
+Roots (no dependencies, can start immediately): P1-D1, P1-D2, P1-11, P1-12, P1-14, P1-21, P1-31, P1-64.
+(P1-13 is blocked by #28.)
 
 ## 6. Critical path
 
