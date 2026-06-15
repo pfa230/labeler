@@ -251,8 +251,19 @@ All errors return JSON:
 
 `code` strings are part of the contract — keep them stable.
 
+## Printing (planned)
+
+Printing is not yet implemented; its architecture is fixed by
+[ADR-0007](adr/0007-printer-architecture-and-transport-model.md). Configured printers are "machine"
+instances `{ id, name, kind, config, enabled }` with an opaque kind-specific config; a `PrinterDriver`
+trait declares the artifact format it accepts and the dispatcher renders to that format before sending.
+Phase 1 ships one `cups` driver that sends PDF over IPP (pure-Rust `ipp` crate, no `lp` binary), plus a
+file-download sink for the no-printer case. Later families (Zebra ZPL, Brother raster, Dymo) drop in as
+new drivers. See M3 (#12/#13/#16/#19) for the implementation.
+
 ## Changelog
 
+- **Unreleased** — Accepted ADR-0007 (printer architecture and transport model); implementation is M3.
 - **Unreleased** — Added the `brother18mm` and `brother24mm` continuous-tape starter templates (#11).
 - **Unreleased** — Template management API: `POST /templates/reload` (#7) and raw-YAML
   `POST`/`PUT /templates/{id}`/`DELETE /templates/{id}` (#10); registry is now runtime-mutable via
