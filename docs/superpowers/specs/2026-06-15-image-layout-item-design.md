@@ -103,12 +103,14 @@ folded into the formal env-config work later (issue #9 / P1-64). The traversal g
 
 ## Validation and errors
 
-- **At template load** (`TemplateDefinition::validate`, fail-fast like duplicate-id): exactly-one-of
-  `src`/`name`; placement bounds fit the layout; `fit` valid; and for a static `src`, the file resolves
-  under the assets root, exists, and is a supported format. An invalid static template aborts startup,
-  consistent with current behavior.
-- **At render:** missing data key → `MissingField` (422); bad base64 / unsupported MIME / decode
-  failure → `UnsupportedLayoutItem` (422).
+- **At template load** (`TemplateDefinition::validate`): structural checks only — exactly-one-of
+  `src`/`name` (enforced in `convert.rs`), placement bounds fit the layout, `fit` valid.
+- **At render:** both sources are resolved and validated then, mirroring how a data-bound value is only
+  knowable at render. Static `src`: format from extension, path canonicalized and confined to the
+  assets root (traversal rejected), file read. Data-bound: missing data key → `MissingField` (422);
+  bad base64 / unsupported MIME / asset path or format problems → `UnsupportedLayoutItem` (422).
+- **Deferred:** load-time fail-fast for a bad static `src` (consistent with the duplicate-id check)
+  would be nicer but needs the assets resolver exposed outside the render module; left as a follow-up.
 
 ## Testing
 

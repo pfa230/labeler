@@ -1,9 +1,11 @@
 use crate::errors::AppError;
 use crate::models::{Alignment, Dimension, HorizontalAlign, Point, QrParams, VerticalAlign};
+use base64::Engine as _;
 use fontdue::Font;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
 use serde_json::Value as JsonValue;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 
@@ -329,4 +331,169 @@ pub(super) fn typst_alignment(alignment: &Alignment) -> String {
         VerticalAlign::Bottom => "bottom",
     };
     format!("{vertical} + {horizontal}")
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ImageFmt {
+    Png,
+    Jpg,
+    Svg,
+}
+
+impl ImageFmt {
+    pub(super) fn ext(&self) -> &'static str {
+        match self {
+            ImageFmt::Png => "png",
+            ImageFmt::Jpg => "jpg",
+            ImageFmt::Svg => "svg",
+        }
+    }
+
+    fn from_mime(mime: &str) -> Result<Self, AppError> {
+        match mime.trim() {
+            "image/png" => Ok(ImageFmt::Png),
+            "image/jpeg" | "image/jpg" => Ok(ImageFmt::Jpg),
+            "image/svg+xml" => Ok(ImageFmt::Svg),
+            other => Err(AppError::unsupported_layout_item(format!(
+                "unsupported image type '{other}'"
+            ))),
+        }
+    }
+
+    fn from_path(path: &str) -> Result<Self, AppError> {
+        let ext = path.rsplit('.').next().map(|e| e.to_ascii_lowercase());
+        match ext.as_deref() {
+            Some("png") => Ok(ImageFmt::Png),
+            Some("jpg") | Some("jpeg") => Ok(ImageFmt::Jpg),
+            Some("svg") => Ok(ImageFmt::Svg),
+            _ => Err(AppError::unsupported_layout_item(format!(
+                "unsupported image extension for '{path}'"
+            ))),
+        }
+    }
+}
+
+pub(super) fn assets_root() -> PathBuf {
+    std::env::var_os("LABELER_ASSETS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("assets"))
+}
+
+pub(super) fn parse_image_data_uri(value: &str) -> Result<(Vec<u8>, ImageFmt), AppError> {
+    let rest = value
+        .strip_prefix("data:")
+        .ok_or_else(|| AppError::unsupported_layout_item("image data must be a base64 data URI"))?;
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| AppError::unsupported_layout_item("malformed image data URI"))?;
+    let mut params = meta.split(';');
+    let mime = params.next().unwrap_or("");
+    if !params.any(|p| p.eq_ignore_ascii_case("base64")) {
+        return Err(AppError::unsupported_layout_item(
+            "image data URI must be base64-encoded",
+        ));
+    }
+    let fmt = ImageFmt::from_mime(mime)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|_| AppError::unsupported_layout_item("image data is not valid base64"))?;
+    Ok((bytes, fmt))
+}
+
+pub(super) fn resolve_image_asset(root: &Path, src: &str) -> Result<(Vec<u8>, ImageFmt), AppError> {
+    let fmt = ImageFmt::from_path(src)?;
+    let canon_root = root
+        .canonicalize()
+        .map_err(|_| AppError::unsupported_layout_item("assets directory is not available"))?;
+    let candidate = canon_root.join(src);
+    let canon = candidate
+        .canonicalize()
+        .map_err(|_| AppError::unsupported_layout_item(format!("image asset not found: {src}")))?;
+    if !canon.starts_with(&canon_root) {
+        return Err(AppError::unsupported_layout_item(
+            "image asset path escapes the assets directory",
+        ));
+    }
+    let bytes = std::fs::read(&canon).map_err(|_| {
+        AppError::unsupported_layout_item(format!("image asset not readable: {src}"))
+    })?;
+    Ok((bytes, fmt))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_image_data_uri, resolve_image_asset};
+    use base64::Engine as _;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const PNG_1X1_B64: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+    fn unique_dir(label: &str) -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        dir.push(format!("labeler_img_{label}_{n}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn parse_data_uri_accepts_png() {
+        let uri = format!("data:image/png;base64,{PNG_1X1_B64}");
+        let (bytes, fmt) = parse_image_data_uri(&uri).expect("parse");
+        assert!(!bytes.is_empty());
+        assert_eq!(fmt.ext(), "png");
+    }
+
+    #[test]
+    fn parse_data_uri_rejects_non_data_uri() {
+        assert!(parse_image_data_uri("not-a-data-uri").is_err());
+    }
+
+    #[test]
+    fn parse_data_uri_rejects_bad_base64() {
+        assert!(parse_image_data_uri("data:image/png;base64,@@@not base64@@@").is_err());
+    }
+
+    #[test]
+    fn parse_data_uri_rejects_unsupported_mime() {
+        let uri = format!("data:image/gif;base64,{PNG_1X1_B64}");
+        assert!(parse_image_data_uri(&uri).is_err());
+    }
+
+    #[test]
+    fn resolve_asset_reads_file_under_root() {
+        let dir = unique_dir("ok");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(PNG_1X1_B64)
+            .unwrap();
+        fs::write(dir.join("logo.png"), &bytes).unwrap();
+        let (got, fmt) = resolve_image_asset(&dir, "logo.png").expect("resolve");
+        assert_eq!(got, bytes);
+        assert_eq!(fmt.ext(), "png");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_asset_rejects_traversal() {
+        let root = unique_dir("escape");
+        let parent = root.parent().unwrap();
+        let secret = parent.join(format!("labeler_secret_{}.png", std::process::id()));
+        fs::write(&secret, b"x").unwrap();
+        let rel = format!("../{}", secret.file_name().unwrap().to_str().unwrap());
+        assert!(resolve_image_asset(&root, &rel).is_err());
+        fs::remove_file(&secret).ok();
+        fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn resolve_asset_missing_file_errors() {
+        let dir = unique_dir("missing");
+        assert!(resolve_image_asset(&dir, "nope.png").is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
 }

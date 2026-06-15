@@ -2,18 +2,49 @@ mod helpers;
 
 use crate::errors::AppError;
 use crate::models::{
-    FontSize, LabelInput, Layout, LayoutItem, Placement, Point, Size, SizeValue, TemplateFormat,
+    Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Point, Size, SizeValue,
+    TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
-    build_qr_svg, escape_typst_string, fit_text_to_box, format_length, resolve_dimension,
-    to_nonbreaking, to_page_coords, typst_alignment, typst_font_options, value_to_string,
+    assets_root, build_qr_svg, escape_typst_string, fit_text_to_box, format_length,
+    parse_image_data_uri, resolve_dimension, resolve_image_asset, to_nonbreaking, to_page_coords,
+    typst_alignment, typst_font_options, value_to_string,
 };
 use serde_json::Value as JsonValue;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
+
+#[derive(Default)]
+struct ImageCollector {
+    files: Vec<(String, Vec<u8>)>,
+}
+
+impl ImageCollector {
+    fn add(&mut self, ext: &str, bytes: Vec<u8>) -> String {
+        let vpath = format!("/labeler-img-{}.{}", self.files.len(), ext);
+        self.files.push((vpath.clone(), bytes));
+        vpath
+    }
+}
+
+fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedDocument, AppError> {
+    let mut builder = TypstEngine::builder()
+        .main_file(source)
+        .search_fonts_with(typst_font_options());
+    if !files.is_empty() {
+        builder = builder
+            .with_static_file_resolver(files.iter().map(|(p, b)| (p.as_str(), b.as_slice())));
+    }
+    let engine = builder.build();
+    let warned = engine.compile::<PagedDocument>();
+    warned
+        .output
+        .map_err(|err| AppError::render_failed(format!("typst compile failed: {err}")))
+}
 
 pub fn render_single_label(
     template: &TemplateDefinition,
@@ -33,6 +64,7 @@ pub fn render_single_label(
     let selected_option = normalize_option(template, option)?;
     let items = select_layout_items(template)?;
 
+    let images = RefCell::new(ImageCollector::default());
     let source = build_typst_source(
         width_units,
         height_units,
@@ -40,18 +72,11 @@ pub fn render_single_label(
         items,
         data,
         selected_option,
+        &images,
     )?;
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
 
-    let engine = TypstEngine::builder()
-        .main_file(source)
-        .search_fonts_with(typst_font_options())
-        .build();
-
-    let warned = engine.compile::<PagedDocument>();
-    let doc = warned
-        .output
-        .map_err(|err| AppError::render_failed(format!("typst compile failed: {err}")))?;
+    let doc = compile_paged(source, images.into_inner().files)?;
 
     let page = doc
         .pages
@@ -107,6 +132,8 @@ pub fn render_sheet_labels(
     writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
+    let images = RefCell::new(ImageCollector::default());
+
     for (idx, label) in labels.iter().enumerate() {
         let position = &positions[start_slot + idx];
         let point = position.point();
@@ -118,8 +145,14 @@ pub fn render_sheet_labels(
 
         let selected_option = normalize_option(template, label.option.as_ref())?;
         let items = select_layout_items(template)?;
-        let context =
-            RenderContext::new(width, height, &template.unit, &label.data, selected_option);
+        let context = RenderContext::new(
+            width,
+            height,
+            &template.unit,
+            &label.data,
+            selected_option,
+            &images,
+        );
         let content = context.render_items(items)?;
 
         let dx = format_length(left, &template.unit)?;
@@ -135,15 +168,7 @@ pub fn render_sheet_labels(
     }
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
 
-    let engine = TypstEngine::builder()
-        .main_file(source)
-        .search_fonts_with(typst_font_options())
-        .build();
-
-    let warned = engine.compile::<PagedDocument>();
-    let doc = warned
-        .output
-        .map_err(|err| AppError::render_failed(format!("typst compile failed: {err}")))?;
+    let doc = compile_paged(source, images.into_inner().files)?;
 
     let pdf = typst_pdf::pdf(&doc, &Default::default())
         .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))?;
@@ -158,6 +183,7 @@ fn build_typst_source(
     items: &[LayoutItem],
     data: &HashMap<String, JsonValue>,
     selected_option: Option<&BTreeMap<String, String>>,
+    images: &RefCell<ImageCollector>,
 ) -> Result<String, AppError> {
     let mut source = String::new();
     let page_width = format_length(page_width_units, unit)?;
@@ -176,6 +202,7 @@ fn build_typst_source(
         unit,
         data,
         selected_option,
+        images,
     );
     let items_source = context.render_items(items)?;
     source.push_str(&items_source);
@@ -220,6 +247,7 @@ struct RenderContext<'a> {
     unit: &'a str,
     data: &'a HashMap<String, JsonValue>,
     selected_option: Option<&'a BTreeMap<String, String>>,
+    images: &'a RefCell<ImageCollector>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -229,6 +257,7 @@ impl<'a> RenderContext<'a> {
         unit: &'a str,
         data: &'a HashMap<String, JsonValue>,
         selected_option: Option<&'a BTreeMap<String, String>>,
+        images: &'a RefCell<ImageCollector>,
     ) -> Self {
         Self {
             frame_width_units,
@@ -236,6 +265,7 @@ impl<'a> RenderContext<'a> {
             unit,
             data,
             selected_option,
+            images,
         }
     }
 
@@ -261,6 +291,14 @@ impl<'a> RenderContext<'a> {
                     params,
                 } => {
                     self.render_qr_item(&mut out, name, placement, params)?;
+                }
+                LayoutItem::Image {
+                    name,
+                    src,
+                    placement,
+                    fit,
+                } => {
+                    self.render_image_item(&mut out, name, src, placement, fit)?;
                 }
                 LayoutItem::Line {
                     placement,
@@ -382,6 +420,54 @@ impl<'a> RenderContext<'a> {
         Ok(())
     }
 
+    fn render_image_item(
+        &self,
+        out: &mut String,
+        name: &Option<String>,
+        src: &Option<String>,
+        placement: &Placement,
+        fit: &Fit,
+    ) -> Result<(), AppError> {
+        let (bytes, fmt) = match (src, name) {
+            (Some(src), _) => resolve_image_asset(&assets_root(), src)?,
+            (_, Some(name)) => {
+                let value = self
+                    .data
+                    .get(name)
+                    .ok_or_else(|| AppError::missing_field(name))?;
+                parse_image_data_uri(&value_to_string(value))?
+            }
+            (None, None) => {
+                return Err(AppError::unsupported_layout_item(
+                    "image requires src or name",
+                ))
+            }
+        };
+        let (width, height) =
+            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
+        let point = placement.at.point();
+        let left = point.x;
+        let bottom = point.y;
+        let top = bottom + height;
+        let vpath = self.images.borrow_mut().add(fmt.ext(), bytes);
+        let dx = format_length(left, self.unit)?;
+        let dy = format_length(self.frame_height_units - top, self.unit)?;
+        let box_width = format_length(width, self.unit)?;
+        let box_height = format_length(height, self.unit)?;
+        let content = format!(
+            "#image(\"{vpath}\", width: {box_width}, height: {box_height}, fit: \"{fit}\")",
+            fit = fit.as_typst()
+        );
+        let content = self.wrap_rotation(content, placement.rotate);
+        writeln!(
+            out,
+            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
+        )
+        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+
+        Ok(())
+    }
+
     fn render_line_item(
         &self,
         out: &mut String,
@@ -452,6 +538,7 @@ impl<'a> RenderContext<'a> {
             self.unit,
             self.data,
             self.selected_option,
+            self.images,
         );
         let child_source = context.render_items(items)?;
         let content = if padding == &crate::models::Padding::ZERO {
@@ -600,8 +687,8 @@ impl<'a> RenderContext<'a> {
 mod tests {
     use super::{render_sheet_labels, render_single_label};
     use crate::models::{
-        Alignment, Dimension, FontSize, Frame, LabelInput, Layout, LayoutItem, Options, Padding,
-        Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat,
+        Alignment, Dimension, Fit, FontSize, Frame, LabelInput, Layout, LayoutItem, Options,
+        Padding, Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat,
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
@@ -771,5 +858,168 @@ mod tests {
 
         assert!(!pdf.is_empty(), "rendered PDF is empty");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
+    }
+
+    const PNG_1X1_B64: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+    fn image_single_template() -> TemplateDefinition {
+        TemplateDefinition {
+            id: "img".to_string(),
+            name: "Img".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(20.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Image {
+                name: Some("logo".to_string()),
+                src: None,
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                fit: Fit::Contain,
+            }]),
+            version: None,
+        }
+    }
+
+    #[test]
+    fn render_single_label_with_image_produces_png() {
+        let template = image_single_template();
+        let data = HashMap::from([(
+            "logo".to_string(),
+            json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
+        )]);
+        let png = render_single_label(&template, &data, None).expect("render image");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn render_image_missing_data_errors() {
+        let template = image_single_template();
+        let data = HashMap::new();
+        assert!(render_single_label(&template, &data, None).is_err());
+    }
+
+    #[test]
+    fn render_image_invalid_base64_errors() {
+        let template = image_single_template();
+        let data = HashMap::from([(
+            "logo".to_string(),
+            json!("data:image/png;base64,@@@not-base64@@@"),
+        )]);
+        assert!(render_single_label(&template, &data, None).is_err());
+    }
+
+    #[test]
+    fn render_sheet_labels_with_image_produces_pdf() {
+        let template = TemplateDefinition {
+            id: "sheetimg".to_string(),
+            name: "Sheet".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Sheet {
+                paper_width: 20.0,
+                paper_height: 20.0,
+                label_width: 20.0,
+                label_height: 20.0,
+                positions: vec![SheetPosition([0.0, 0.0])],
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Image {
+                name: Some("logo".to_string()),
+                src: None,
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                fit: Fit::Contain,
+            }]),
+            version: None,
+        };
+        let labels = vec![LabelInput {
+            data: HashMap::from([(
+                "logo".to_string(),
+                json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
+            )]),
+            option: None,
+        }];
+        let pdf = render_sheet_labels(&template, &labels, 0).expect("render sheet image");
+        assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
+    }
+
+    fn image_single_template_with_src(src: &str) -> TemplateDefinition {
+        let mut template = image_single_template();
+        template.layout = Layout::Items(vec![LayoutItem::Image {
+            name: None,
+            src: Some(src.to_string()),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            fit: Fit::Contain,
+        }]);
+        template
+    }
+
+    #[test]
+    fn render_single_label_with_svg_data_uri_produces_png() {
+        use base64::Engine as _;
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>";
+        let uri = format!(
+            "data:image/svg+xml;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(svg)
+        );
+        let template = image_single_template();
+        let data = HashMap::from([("logo".to_string(), json!(uri))]);
+        let png = render_single_label(&template, &data, None).expect("render svg");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn render_static_image_src() {
+        use base64::Engine as _;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let mut dir = std::env::temp_dir();
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        dir.push(format!("labeler_render_assets_{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(PNG_1X1_B64)
+            .unwrap();
+        std::fs::write(dir.join("logo.png"), &bytes).unwrap();
+        std::env::set_var("LABELER_ASSETS_DIR", &dir);
+
+        let data = HashMap::new();
+        let png = render_single_label(&image_single_template_with_src("logo.png"), &data, None)
+            .expect("render static src");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        // A missing asset is rejected at render time.
+        assert!(
+            render_single_label(&image_single_template_with_src("missing.png"), &data, None)
+                .is_err()
+        );
+
+        std::env::remove_var("LABELER_ASSETS_DIR");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
