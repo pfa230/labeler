@@ -9,8 +9,8 @@ Scope is the **MVP** tier of [CAPABILITIES.md](CAPABILITIES.md). The GUI editor 
 integration are **Phase 2**, not here.
 
 **Progress.** GitHub milestones M1–M6 hold live status; completed items are also marked **DONE** (with
-their commit) in the issue list below. Done so far: P1-11 / #3 (image layout item). P1-13 / #5 (copies)
-is deferred pending the per-label batch-composition ADR (#28), so the M1 pass delivers #4 and #6 now.
+their commit) in the issue list below. Done so far: P1-11 / #3 (image), P1-12 / #4 (single-label PDF), P1-14 / #6 (line at/to). P1-13 / #5
+(copies) is deferred pending the per-label batch-composition ADR (#28); M1 fully closes once #5 lands.
 
 ## 1. Phase 1 goal
 
@@ -58,7 +58,7 @@ Add an `image` layout item that embeds a raster/SVG into the rendered label via 
   PDF; schema added across `raw.rs`/`models.rs`/`convert.rs` (ADR-0002); bounds validated like other
   items; positive and negative tests pass.
 
-#### P1-12 Single-label PDF output · GH #4
+#### P1-12 Single-label PDF output · GH #4 · DONE (39ccd08)
 Render `format: single` templates to PDF in addition to PNG (needed for office printing of one label).
 - **Depends on:** none.
 - **AC:** the render path returns PDF for single-format templates (via format selector or content
@@ -71,7 +71,7 @@ by the printer/CUPS/browser, so app-level copies is really a sheet concern).
 - **Depends on:** #28 (ADR: per-label configuration and batch composition).
 - **AC:** defined by #28; implement against the decided batch model.
 
-#### P1-14 Fix `line` `size` semantics inconsistency · GH #6
+#### P1-14 Fix `line` `size` semantics inconsistency · GH #6 · DONE (b8c3cf2)
 For most items `size` is a box `[w, h]`; for `line` it is a delta `[dx, dy]` from `at`. This is a
 schema wart that hurts intuitiveness (see CAPABILITIES §3.1). Resolve it so `line` geometry reads
 consistently (e.g. explicit `to`/endpoint, or a documented dedicated field), updating schema, render,
