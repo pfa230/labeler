@@ -160,12 +160,14 @@ dimension. A non-`auto` numeric size must be > 0. (`line` does not use `size`; s
 
 ### 4.1 Item types
 
-- **`text`** — `name` (data key), placement, `font_size`, `multiline` (default `false`),
+- **`text`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
+  placement, `font_size`, `multiline` (default `false`),
   `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom).
   `font_size` is either a fixed number or a range `{ min, max }`. A range auto-shrinks the text to fit
   the box (0.5pt steps, `fontdue` metrics) and truncates with an ellipsis if it still overflows.
   Single-line text collapses spaces to non-breaking and renders only the first line.
-- **`qr`** — `name` (data key), placement, optional `params`:
+- **`qr`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
+  placement, optional `params`:
   `error_correction` (`L`/`M`/`Q`/`H`, default `M`), `module_size`, `quiet_zone`.
   Rendered as an SVG via the `qrcode` crate, embedded as a Typst image.
 - **`image`** — exactly one of `src` (a path to a bundled asset, resolved under the assets root with a
@@ -184,7 +186,7 @@ dimension. A non-`auto` numeric size must be > 0. (`line` does not use `size`; s
   default `0`.
 
 Layout item `name`s (text/qr, and a data-bound `image`) must be unique and non-empty within a sibling
-list.
+list. `value`-based text/qr items are anonymous and are exempt from this check.
 
 ## 5. Options
 
@@ -227,9 +229,16 @@ Sizing/bounds logic is intentionally duplicated between validation (compile time
 
 ## 8. Data binding
 
-`text` and `qr` items resolve their `name` against the request `data` map. A missing key is
-`422 MissingField`. JSON scalars are stringified (`value_to_string`): strings as-is, numbers/bools via
-their textual form, `null` as empty, other values via JSON.
+`text` and `qr` items bind in one of two ways (exactly one of `name` / `value`):
+
+- `name` resolves a single data key against the request `data` map.
+- `value` is an interpolated template string. `{field}` resolves from `data`, `{settings.<key>}`
+  resolves from the settings store, and `{{` / `}}` emit literal braces. There are no operators or
+  functions; this is substitution only (ADR-0010). Interpolation applies to text content and QR content.
+
+A missing key or unresolved token is `422 MissingField`. JSON scalars are stringified
+(`value_to_string`): strings as-is, numbers/bools via their textual form, `null` as empty, other values
+via JSON.
 
 ## 9. Fonts
 
@@ -278,6 +287,10 @@ settings, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, def
 
 ## Changelog
 
+- **2026-06-15** — Added a `value` field on `text`/`qr` items: a substitution interpolation string
+  (`{field}` from request data, `{settings.<key>}` from the settings store, `{{`/`}}` literal braces;
+  unresolved token → `422 MissingField`), as an exactly-one-of alternative to `name`. See ADR-0010 and
+  the `homebox-qr` demo template. Issue #14.
 - **Unreleased** — M3 state and printing: SQLite app-state store (#8), printer CRUD (#12), CUPS/IPP
   driver (#16), and `POST /print` with file download (#13) and printer dispatch (#19).
 - **Unreleased** — Accepted ADR-0008 (web UI delivery: React SPA served by axum, API to move under
