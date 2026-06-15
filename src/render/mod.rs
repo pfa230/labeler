@@ -1015,4 +1015,19 @@ mod tests {
         let pdf = render_single_label_pdf(&template, &data, None).expect("render pdf");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
+
+    #[test]
+    fn starter_tape_templates_render() {
+        let registry =
+            crate::templates::TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let data = HashMap::from([
+            ("message".to_string(), json!("Hello world")),
+            ("code".to_string(), json!("QR-1")),
+        ]);
+        for id in ["brother12mm", "brother18mm", "brother24mm"] {
+            let template = registry.get(id).unwrap_or_else(|| panic!("template {id}"));
+            let png = render_single_label(template, &data, None).expect("render tape");
+            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        }
+    }
 }
