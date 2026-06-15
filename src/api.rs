@@ -24,6 +24,7 @@ use crate::{
     render::render_sheet_labels,
     render::render_single_label,
     render::render_single_label_pdf,
+    store::Store,
     templates::{TemplateDefinition, TemplateRegistry, TemplateRegistryError},
 };
 
@@ -36,15 +37,21 @@ pub struct AppState {
     templates: ArcSwap<TemplateRegistry>,
     templates_dir: PathBuf,
     write_lock: Mutex<()>,
+    store: Store,
 }
 
 impl AppState {
-    pub fn new(registry: TemplateRegistry, templates_dir: PathBuf) -> Self {
+    pub fn new(registry: TemplateRegistry, templates_dir: PathBuf, store: Store) -> Self {
         Self {
             templates: ArcSwap::from_pointee(registry),
             templates_dir,
             write_lock: Mutex::new(()),
+            store,
         }
+    }
+
+    pub fn store(&self) -> &Store {
+        &self.store
     }
 
     // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and

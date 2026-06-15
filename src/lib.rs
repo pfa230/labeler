@@ -6,6 +6,7 @@ pub mod openapi;
 pub mod parse;
 mod raw;
 pub mod render;
+pub mod store;
 pub mod templates;
 
 pub use api::{app, AppState};
@@ -13,6 +14,7 @@ pub use templates::TemplateRegistry;
 
 #[cfg(test)]
 mod tests {
+    use super::store::Store;
     use super::{app, AppState, TemplateRegistry};
     use std::future::IntoFuture;
     use std::sync::Arc;
@@ -29,7 +31,8 @@ mod tests {
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
         let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
-        let state = Arc::new(AppState::new(templates, "templates".into()));
+        let store = Store::open_in_memory().expect("store");
+        let state = Arc::new(AppState::new(templates, "templates".into(), store));
         let server = axum::serve(listener, app(state)).with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
         });
@@ -52,6 +55,7 @@ mod tests {
 
 #[cfg(test)]
 mod http_tests {
+    use super::store::Store;
     use super::{app, AppState, TemplateRegistry};
     use axum::{
         body::Body,
@@ -64,7 +68,12 @@ mod http_tests {
 
     fn build_app() -> axum::Router {
         let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
-        app(Arc::new(AppState::new(templates, "templates".into())))
+        let store = Store::open_in_memory().expect("store");
+        app(Arc::new(AppState::new(
+            templates,
+            "templates".into(),
+            store,
+        )))
     }
 
     async fn json_response(response: axum::response::Response) -> Value {
@@ -347,7 +356,8 @@ mod http_tests {
 
     fn build_app_in(dir: &std::path::Path) -> axum::Router {
         let templates = TemplateRegistry::load_from_dir(dir).expect("load templates");
-        app(Arc::new(AppState::new(templates, dir.to_path_buf())))
+        let store = Store::open_in_memory().expect("store");
+        app(Arc::new(AppState::new(templates, dir.to_path_buf(), store)))
     }
 
     fn template_yaml(id: &str) -> String {
