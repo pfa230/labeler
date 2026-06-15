@@ -825,4 +825,73 @@ layout:
             .expect("request");
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
+
+    async fn create_fake_printer(app: &axum::Router, id: &str, fail: bool) {
+        let body =
+            json!({ "id": id, "name": id, "kind": "fake", "config": { "fail": fail } }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/printers", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn print_to_printer_dispatches_and_succeeds() {
+        let app = build_app();
+        create_fake_printer(&app, "fk", false).await;
+        let body = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hi", "code": "Q" },
+            "printer": "fk"
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn print_to_failing_printer_returns_502() {
+        let app = build_app();
+        create_fake_printer(&app, "fk", true).await;
+        let body = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hi", "code": "Q" },
+            "printer": "fk"
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(json_response(resp).await["error"]["code"], "PrintFailed");
+    }
+
+    #[tokio::test]
+    async fn print_to_unknown_printer_returns_404() {
+        let app = build_app();
+        let body = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hi", "code": "Q" },
+            "printer": "nope"
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            json_response(resp).await["error"]["code"],
+            "PrinterNotFound"
+        );
+    }
 }

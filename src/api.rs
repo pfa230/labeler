@@ -458,9 +458,11 @@ fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str)
     request_body = PrintRequest,
     responses(
         (status = 200, description = "Rendered label (download when no printer)", body = Vec<u8>),
+        (status = 204, description = "Sent to the printer"),
         (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 422, description = "Template is not single-format / validation error", body = ErrorResponse)
+        (status = 404, description = "Template or printer not found", body = ErrorResponse),
+        (status = 422, description = "Template is not single-format / validation error", body = ErrorResponse),
+        (status = 502, description = "Printer/transport failure", body = ErrorResponse)
     )
 )]
 pub async fn print(
@@ -473,13 +475,57 @@ pub async fn print(
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
     let option = req.label.option.as_ref();
-    let (bytes, content_type, ext) =
-        render_to_format(template, &req.label.data, option, req.format.as_deref())?;
-    Ok(download_response(
-        bytes,
-        content_type,
-        &format!("{}.{ext}", template.id),
-    ))
+
+    let Some(printer_id) = req.printer.as_deref() else {
+        let (bytes, content_type, ext) =
+            render_to_format(template, &req.label.data, option, req.format.as_deref())?;
+        return Ok(download_response(
+            bytes,
+            content_type,
+            &format!("{}.{ext}", template.id),
+        ));
+    };
+
+    let printer = state
+        .store()
+        .get_printer(printer_id)
+        .await?
+        .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
+    let driver = crate::driver::build_driver(&printer.kind, &printer.config)
+        .map_err(|err| AppError::printer_invalid(err.to_string()))?;
+    let artifact = match driver.accepted_format() {
+        crate::driver::ArtifactFormat::Pdf => {
+            render_single_label_pdf(template, &req.label.data, option)?
+        }
+        crate::driver::ArtifactFormat::Png => {
+            render_single_label(template, &req.label.data, option)?
+        }
+        fmt => {
+            return Err(AppError::print_failed(format!(
+                "no renderer for artifact format {fmt:?}"
+            )))
+        }
+    };
+    match driver
+        .send(&artifact, &crate::driver::PrintOptions::default())
+        .await
+    {
+        Ok(()) => {
+            let _ = state
+                .store()
+                .record_job(&req.template, Some(printer_id), "ok", None)
+                .await;
+            Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+        }
+        Err(err) => {
+            let message = err.to_string();
+            let _ = state
+                .store()
+                .record_job(&req.template, Some(printer_id), "failed", Some(&message))
+                .await;
+            Err(AppError::print_failed(message))
+        }
+    }
 }
 
 #[utoipa::path(
