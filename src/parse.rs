@@ -148,4 +148,52 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn parse_nodes_image_accepts_src() {
+        let src = r#"
+- type: image
+  src: logo.png
+  at: [0.0, 0.0]
+  size: [10.0, 10.0]
+"#;
+        let items = parse_nodes(src).expect("parse nodes");
+        assert!(matches!(items[0], LayoutItem::Image { .. }));
+    }
+
+    #[test]
+    fn parse_nodes_image_accepts_name() {
+        let src = r#"
+- type: image
+  name: photo
+  at: [0.0, 0.0]
+  size: [10.0, 10.0]
+"#;
+        let items = parse_nodes(src).expect("parse nodes");
+        assert!(matches!(items[0], LayoutItem::Image { .. }));
+    }
+
+    #[test]
+    fn parse_nodes_image_rejects_both_src_and_name() {
+        let src = r#"
+- type: image
+  src: logo.png
+  name: photo
+  at: [0.0, 0.0]
+  size: [10.0, 10.0]
+"#;
+        let err = parse_nodes(src).expect_err("expected error");
+        assert!(matches!(err, TemplateError::Validation { .. }));
+    }
+
+    #[test]
+    fn parse_nodes_image_rejects_neither_src_nor_name() {
+        let src = r#"
+- type: image
+  at: [0.0, 0.0]
+  size: [10.0, 10.0]
+"#;
+        let err = parse_nodes(src).expect_err("expected error");
+        assert!(matches!(err, TemplateError::Validation { .. }));
+    }
 }

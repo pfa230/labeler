@@ -3,10 +3,10 @@ use utoipa::OpenApi;
 use crate::{
     api,
     models::{
-        AutoSize, Dimension, ErrorBody, ErrorResponse, FontSize, HealthResponse, HorizontalAlign,
-        LabelInput, Layout, LayoutItem, Options, Placement, Point, Position, QrParams,
-        RenderBatchRequest, RenderLabelRequest, SheetPosition, Size, SizeValue, TemplateDetail,
-        TemplateFormat, TemplateList, TemplateSummary, VerticalAlign,
+        AutoSize, Dimension, ErrorBody, ErrorResponse, Fit, FontSize, HealthResponse,
+        HorizontalAlign, LabelInput, Layout, LayoutItem, Options, Placement, Point, Position,
+        QrParams, RenderBatchRequest, RenderLabelRequest, SheetPosition, Size, SizeValue,
+        TemplateDetail, TemplateFormat, TemplateList, TemplateSummary, VerticalAlign,
     },
 };
 
@@ -38,6 +38,7 @@ use crate::{
             SizeValue,
             AutoSize,
             FontSize,
+            Fit,
             QrParams,
             HorizontalAlign,
             VerticalAlign,

@@ -136,6 +136,12 @@ parent frame's dimension. A non-`auto` numeric size must be > 0 (lines may be 0 
 - **`qr`** — `name` (data key), placement, optional `params`:
   `error_correction` (`L`/`M`/`Q`/`H`, default `M`), `module_size`, `quiet_zone`.
   Rendered as an SVG via the `qrcode` crate, embedded as a Typst image.
+- **`image`** — exactly one of `src` (a path to a bundled asset, resolved under the assets root with a
+  traversal guard) or `name` (a data key whose value is a base64 data URI, `data:<mime>;base64,...`),
+  plus placement and optional `fit` (`contain` default, `cover`, `stretch`). Formats: PNG, JPEG, SVG.
+  Bytes are decoded server-side and injected into Typst as a virtual file; there is no server-side URL
+  fetching (see ADR-0009). The assets root is `LABELER_ASSETS_DIR` (default `assets/`). Missing data
+  key → `MissingField`; bad base64 / unsupported format / asset path problems → `UnsupportedLayoutItem`.
 - **`line`** — placement where `size` is the delta `[dx, dy]` from `at`, plus `thickness` (> 0).
 - **`container`** — a recursive group. Fields: placement (size defaults to `auto`/`auto` = fill parent),
   optional `option` gate (§5), optional `frame` (`thickness` > 0, `rounded` bool), `padding`, and
@@ -143,7 +149,8 @@ parent frame's dimension. A non-`auto` numeric size must be > 0 (lines may be 0 
   `padding` is either a single number (uniform) or `[top, right, bottom, left]`; values must be ≥ 0;
   default `0`.
 
-Layout item `name`s (text/qr) must be unique and non-empty within a sibling list.
+Layout item `name`s (text/qr, and a data-bound `image`) must be unique and non-empty within a sibling
+list.
 
 ## 5. Options
 
@@ -219,5 +226,7 @@ All errors return JSON:
 
 ## Changelog
 
+- **Unreleased** — Added the `image` layout item (static asset under the assets root, and data-bound
+  base64 data URI; PNG/JPEG/SVG; injected into Typst as virtual files). See ADR-0009. Issue #3.
 - **0.1.0** — Initial spec captured from the implemented service (single PNG + sheet PDF rendering,
   recursive containers, options gating, two-stage parsing). See ADRs 0001–0005.

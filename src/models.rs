@@ -183,35 +183,25 @@ pub struct QrParams {
     pub quiet_zone: Option<f32>,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HorizontalAlign {
+    #[default]
     Left,
     Center,
     Right,
 }
 
-impl Default for HorizontalAlign {
-    fn default() -> Self {
-        Self::Left
-    }
-}
-
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerticalAlign {
+    #[default]
     Top,
     Center,
     Bottom,
 }
 
-impl Default for VerticalAlign {
-    fn default() -> Self {
-        Self::Top
-    }
-}
-
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
 pub struct Alignment {
     #[serde(default)]
     pub horizontal: HorizontalAlign,
@@ -219,11 +209,21 @@ pub struct Alignment {
     pub vertical: VerticalAlign,
 }
 
-impl Default for Alignment {
-    fn default() -> Self {
-        Self {
-            horizontal: HorizontalAlign::Left,
-            vertical: VerticalAlign::Top,
+#[derive(Debug, Serialize, ToSchema, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fit {
+    #[default]
+    Contain,
+    Cover,
+    Stretch,
+}
+
+impl Fit {
+    pub fn as_typst(&self) -> &'static str {
+        match self {
+            Fit::Contain => "contain",
+            Fit::Cover => "cover",
+            Fit::Stretch => "stretch",
         }
     }
 }
@@ -247,6 +247,16 @@ pub enum LayoutItem {
         placement: Placement,
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<QrParams>,
+    },
+    Image {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        src: Option<String>,
+        #[serde(flatten)]
+        placement: Placement,
+        #[serde(default)]
+        fit: Fit,
     },
     Line {
         #[serde(flatten)]

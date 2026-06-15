@@ -272,6 +272,7 @@ fn layout_item_name(item: &LayoutItem) -> Option<&str> {
     match item {
         LayoutItem::Text { name, .. } => Some(name.as_str()),
         LayoutItem::Qr { name, .. } => Some(name.as_str()),
+        LayoutItem::Image { name, .. } => name.as_deref(),
         LayoutItem::Line { .. } => None,
         LayoutItem::Container { .. } => None,
     }
@@ -325,6 +326,18 @@ fn validate_layout_item(
                     }
                 }
             }
+        }
+        LayoutItem::Image { placement, .. } => {
+            validate_position(&placement.at)?;
+            validate_rotation(&placement.rotate)?;
+            let (width, height) = resolve_size(
+                &placement.size,
+                placement.max_w,
+                placement.max_h,
+                layout_bounds,
+                false,
+            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
         }
         LayoutItem::Line {
             placement,
@@ -838,6 +851,52 @@ layout: []
                     font_size: FontSize::Fixed(10.0),
                     multiline: false,
                     alignment: Alignment::default(),
+                },
+            ]),
+            version: None,
+        };
+        let err = template.validate().expect_err("expected error");
+        assert!(err.contains("duplicate layout item name"));
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_name_across_item_types() {
+        let template = TemplateDefinition {
+            id: "dup2".to_string(),
+            name: "dup2".to_string(),
+            description: "dup2".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(20.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![
+                LayoutItem::Text {
+                    name: "value".to_string(),
+                    placement: crate::models::Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    font_size: FontSize::Fixed(10.0),
+                    multiline: false,
+                    alignment: Alignment::default(),
+                },
+                LayoutItem::Image {
+                    name: Some("value".to_string()),
+                    src: None,
+                    placement: crate::models::Placement {
+                        at: Position([0.0, 5.0]),
+                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    fit: crate::models::Fit::Contain,
                 },
             ]),
             version: None,
