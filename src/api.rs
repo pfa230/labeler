@@ -47,6 +47,9 @@ impl AppState {
         }
     }
 
+    // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and
+    // consistent with the synchronous Typst render path; revisit with spawn_blocking if it ever
+    // serves large dirs or remote storage.
     fn reload(&self) -> Result<usize, TemplateRegistryError> {
         let registry = TemplateRegistry::load_from_dir(&self.templates_dir)?;
         let count = registry.len();
@@ -103,7 +106,8 @@ pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResp
     path = "/templates/reload",
     responses(
         (status = 200, description = "Templates reloaded from disk", body = ReloadResponse),
-        (status = 422, description = "A template on disk is invalid; previous set kept", body = ErrorResponse)
+        (status = 422, description = "A template on disk is invalid; previous set kept", body = ErrorResponse),
+        (status = 500, description = "Failed to read the templates directory", body = ErrorResponse)
     )
 )]
 pub async fn reload_templates(
@@ -141,7 +145,11 @@ fn write_template_file(path: &std::path::Path, body: &str) -> Result<(), AppErro
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| AppError::render_failed("invalid template path"))?;
-    let tmp = dir.join(format!(".{file_name}.tmp"));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".{file_name}.{nonce}.tmp"));
     std::fs::write(&tmp, body)
         .map_err(|err| AppError::render_failed(format!("failed to write template: {err}")))?;
     std::fs::rename(&tmp, path)
@@ -167,7 +175,7 @@ pub async fn create_template(
     let id = template.id.clone();
     let path = template_file_path(&state.templates_dir, &id)?;
     let _guard = state.write_lock.lock().await;
-    if state.templates.load().get(&id).is_some() {
+    if path.exists() {
         return Err(AppError::template_exists(&id));
     }
     write_template_file(&path, &body)?;
@@ -206,7 +214,7 @@ pub async fn replace_template(
     }
     let path = template_file_path(&state.templates_dir, &id)?;
     let _guard = state.write_lock.lock().await;
-    if state.templates.load().get(&id).is_none() {
+    if !path.exists() {
         return Err(AppError::template_not_found(id));
     }
     write_template_file(&path, &body)?;
