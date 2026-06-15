@@ -7,6 +7,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::models::{ErrorBody, ErrorResponse};
+use crate::templates::TemplateRegistryError;
 
 const CODE_TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
 const CODE_INVALID_REQUEST: &str = "InvalidRequest";
@@ -17,6 +18,8 @@ const CODE_MISSING_FIELD: &str = "MissingField";
 const CODE_UNSUPPORTED_LAYOUT: &str = "UnsupportedLayoutItem";
 const CODE_UNSUPPORTED_FORMAT: &str = "UnsupportedFormat";
 const CODE_RENDER_FAILED: &str = "RenderFailed";
+const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
+const CODE_TEMPLATE_EXISTS: &str = "TemplateExists";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -111,6 +114,24 @@ impl AppError {
         Self::new(StatusCode::BAD_REQUEST, CODE_INVALID_REQUEST, message, None)
     }
 
+    pub fn template_invalid(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            CODE_TEMPLATE_INVALID,
+            message,
+            None,
+        )
+    }
+
+    pub fn template_exists(id: &str) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            CODE_TEMPLATE_EXISTS,
+            format!("A template with id '{id}' already exists"),
+            Some(json!({ "template": id })),
+        )
+    }
+
     fn unsupported_media_type(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -176,6 +197,16 @@ impl From<JsonRejection> for AppError {
 impl From<PathRejection> for AppError {
     fn from(_rejection: PathRejection) -> Self {
         AppError::invalid_request("Invalid path parameter")
+    }
+}
+
+impl From<TemplateRegistryError> for AppError {
+    fn from(err: TemplateRegistryError) -> Self {
+        let message = err.to_string();
+        match err {
+            TemplateRegistryError::Io { .. } => AppError::render_failed(message),
+            _ => AppError::template_invalid(message),
+        }
     }
 }
 

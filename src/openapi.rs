@@ -5,8 +5,8 @@ use crate::{
     models::{
         AutoSize, Dimension, ErrorBody, ErrorResponse, Fit, FontSize, HealthResponse,
         HorizontalAlign, LabelInput, Layout, LayoutItem, Options, Placement, Point, Position,
-        QrParams, RenderBatchRequest, RenderLabelRequest, SheetPosition, Size, SizeValue,
-        TemplateDetail, TemplateFormat, TemplateList, TemplateSummary, VerticalAlign,
+        QrParams, ReloadResponse, RenderBatchRequest, RenderLabelRequest, SheetPosition, Size,
+        SizeValue, TemplateDetail, TemplateFormat, TemplateList, TemplateSummary, VerticalAlign,
     },
 };
 
@@ -15,6 +15,7 @@ use crate::{
     paths(
         api::health,
         api::list_templates,
+        api::reload_templates,
         api::get_template,
         api::render_label,
         api::render_batch
@@ -22,6 +23,7 @@ use crate::{
     components(
         schemas(
             HealthResponse,
+            ReloadResponse,
             TemplateList,
             TemplateSummary,
             TemplateFormat,

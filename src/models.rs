@@ -22,6 +22,11 @@ pub struct HealthResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+pub struct ReloadResponse {
+    pub count: usize,
+}
+
+#[derive(Serialize, ToSchema)]
 pub struct TemplateList {
     pub templates: Vec<TemplateSummary>,
 }
