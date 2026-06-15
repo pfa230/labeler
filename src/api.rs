@@ -286,8 +286,6 @@ pub async fn get_template(
         .ok_or_else(|| AppError::template_not_found(id))
 }
 
-const KNOWN_PRINTER_KINDS: &[&str] = &["cups"];
-
 fn validate_printer(printer: &Printer) -> Result<(), AppError> {
     if printer.id.is_empty()
         || !printer
@@ -303,17 +301,8 @@ fn validate_printer(printer: &Printer) -> Result<(), AppError> {
     if printer.name.trim().is_empty() {
         return Err(AppError::printer_invalid("printer name must not be empty"));
     }
-    if !KNOWN_PRINTER_KINDS.contains(&printer.kind.as_str()) {
-        return Err(AppError::printer_invalid(format!(
-            "unknown printer kind '{}'",
-            printer.kind
-        )));
-    }
-    if !printer.config.is_object() {
-        return Err(AppError::printer_invalid(
-            "printer config must be a JSON object",
-        ));
-    }
+    crate::driver::validate_config(&printer.kind, &printer.config)
+        .map_err(|err| AppError::printer_invalid(err.to_string()))?;
     Ok(())
 }
 

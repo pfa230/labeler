@@ -26,6 +26,8 @@ base64 = "0.22"
 arc-swap = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2"
+ipp = "6"
+async-trait = "0.1"
 
 [dev-dependencies]
 http-body-util = "0.1"
