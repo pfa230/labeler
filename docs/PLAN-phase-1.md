@@ -9,8 +9,9 @@ Scope is the **MVP** tier of [CAPABILITIES.md](CAPABILITIES.md). The GUI editor 
 integration are **Phase 2**, not here.
 
 **Progress.** GitHub milestones M1–M6 hold live status; completed items are also marked **DONE** (with
-their commit) in the issue list below. Done so far: P1-11 / #3 (image), P1-12 / #4 (single-label PDF), P1-14 / #6 (line at/to). P1-13 / #5
-(copies) is deferred pending the per-label batch-composition ADR (#28); M1 fully closes once #5 lands.
+their commit) in the issue list below. Done so far: M1 — P1-11 / #3 (image), P1-12 / #4 (single-label PDF), P1-14 / #6 (line at/to); M2 —
+P1-21 / #7 (reload), P1-22 / #10 (CRUD), P1-23 / #11 (tape templates). P1-13 / #5 (copies) is deferred
+pending the per-label batch-composition ADR (#28); M1 fully closes once #5 lands.
 
 ## 1. Phase 1 goal
 
@@ -83,21 +84,21 @@ validation, and the starter/sample templates.
 
 ### M2 — Template management
 
-#### P1-21 Template hot-reload · GH #7
+#### P1-21 Template hot-reload · GH #7 · DONE (6ac0ec3)
 Reload the template registry when files in the manual store change, without a server restart.
 - **Depends on:** none.
 - **AC:** adding/editing/removing a `.yaml` in `templates/` updates `/templates` within a bounded delay
   or on an explicit reload endpoint; a newly invalid file is reported and does not crash the service;
   tested.
 
-#### P1-22 Template upload / replace / delete API · GH #10
+#### P1-22 Template upload / replace / delete API · GH #10 · DONE (c7bdbd3)
 CRUD for manual templates over the API, writing validated YAML to the manual store.
 - **Depends on:** P1-21.
 - **AC:** `POST`/`PUT`/`DELETE` template endpoints; invalid YAML rejected with the existing path-aware
   error before any write; changes persist across restart; duplicate-id rejected; tested. (GUI-owned
   store and edit-ownership per ADR-0006 are Phase 2.)
 
-#### P1-23 Starter template library · GH #11
+#### P1-23 Starter template library · GH #11 · DONE (713ecd0)
 Bundle ready-to-use templates (e.g. Avery 5160, Avery 5163, Brother 12mm, Dymo 30252).
 - **Depends on:** P1-11 (image item, if any starter uses a logo) — soft.
 - **AC:** templates present on a fresh install; each renders correctly to its format; documented in
