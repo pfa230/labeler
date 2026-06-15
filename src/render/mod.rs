@@ -290,21 +290,26 @@ impl<'a> RenderContext<'a> {
             match item {
                 LayoutItem::Text {
                     name,
+                    value,
                     placement,
                     font_size,
                     multiline,
                     alignment,
                 } => {
+                    let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
                     self.render_text_item(
-                        &mut out, name, placement, font_size, *multiline, alignment,
+                        &mut out, text, placement, font_size, *multiline, alignment,
                     )?;
                 }
                 LayoutItem::Qr {
                     name,
+                    value,
                     placement,
                     params,
                 } => {
-                    self.render_qr_item(&mut out, name, placement, params)?;
+                    let payload =
+                        self.resolve_item_text("qr", name.as_deref(), value.as_deref())?;
+                    self.render_qr_item(&mut out, payload, placement, params)?;
                 }
                 LayoutItem::Image {
                     name,
@@ -332,20 +337,36 @@ impl<'a> RenderContext<'a> {
         Ok(out)
     }
 
+    fn resolve_item_text(
+        &self,
+        kind: &str,
+        name: Option<&str>,
+        value: Option<&str>,
+    ) -> Result<String, AppError> {
+        match (name, value) {
+            (Some(name), _) => Ok(value_to_string(
+                self.data
+                    .get(name)
+                    .ok_or_else(|| AppError::missing_field(name))?,
+            )),
+            (None, Some(_)) => Err(AppError::render_failed(format!(
+                "{kind} value interpolation is not yet supported"
+            ))),
+            (None, None) => Err(AppError::render_failed(format!(
+                "{kind} item has neither name nor value"
+            ))),
+        }
+    }
+
     fn render_text_item(
         &self,
         out: &mut String,
-        name: &str,
+        raw_text: String,
         placement: &Placement,
         font_size: &FontSize,
         multiline: bool,
         alignment: &crate::models::Alignment,
     ) -> Result<(), AppError> {
-        let raw_text = value_to_string(
-            self.data
-                .get(name)
-                .ok_or_else(|| AppError::missing_field(name))?,
-        );
         let text = if multiline {
             raw_text
         } else {
@@ -396,15 +417,10 @@ impl<'a> RenderContext<'a> {
     fn render_qr_item(
         &self,
         out: &mut String,
-        name: &str,
+        payload: String,
         placement: &Placement,
         params: &Option<crate::models::QrParams>,
     ) -> Result<(), AppError> {
-        let payload = value_to_string(
-            self.data
-                .get(name)
-                .ok_or_else(|| AppError::missing_field(name))?,
-        );
         let (width, height) =
             self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let point = placement.at.point();
@@ -676,7 +692,8 @@ mod tests {
                 vec!["default".to_string()],
             )]))),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: "message".to_string(),
+                name: Some("message".to_string()),
+                value: None,
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
@@ -717,7 +734,8 @@ mod tests {
             )]))),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    name: "message".to_string(),
+                    name: Some("message".to_string()),
+                    value: None,
                     placement: Placement {
                         at: Position([0.0, 0.0]),
                         size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
@@ -730,7 +748,8 @@ mod tests {
                     alignment: Alignment::default(),
                 },
                 LayoutItem::Qr {
-                    name: "code".to_string(),
+                    name: Some("code".to_string()),
+                    value: None,
                     placement: Placement {
                         at: Position([20.0, 0.0]),
                         size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
@@ -794,7 +813,8 @@ mod tests {
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: "message".to_string(),
+                name: Some("message".to_string()),
+                value: None,
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
@@ -997,7 +1017,8 @@ mod tests {
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: "message".to_string(),
+                name: Some("message".to_string()),
+                value: None,
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
