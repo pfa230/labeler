@@ -14,4 +14,7 @@ venv/
 *.swp
 *.swo
 
+# Runtime app-state (SQLite)
+/data/
+
 *.pdf
