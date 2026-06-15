@@ -343,6 +343,15 @@ pub struct RenderLabelRequest {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+pub struct PrintRequest {
+    pub template: String,
+    #[serde(flatten)]
+    pub label: LabelInput,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RenderBatchRequest {
     pub template: String,
     pub labels: Vec<LabelInput>,

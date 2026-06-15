@@ -761,4 +761,68 @@ layout:
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn print_download_png_and_pdf() {
+        let app = build_app();
+        let body = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hello", "code": "QR-1" }
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body.clone()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .starts_with("image/png"));
+        assert!(resp.headers().get("content-disposition").is_some());
+        let png = bytes_response(resp).await;
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        let body = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hello", "code": "QR-1" },
+            "format": "pdf"
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let pdf = bytes_response(resp).await;
+        assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[tokio::test]
+    async fn print_unknown_template_returns_404() {
+        let app = build_app();
+        let body = json!({ "template": "nope", "data": {} }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn print_sheet_template_returns_422() {
+        let app = build_app();
+        let body = json!({ "template": "avery5163", "data": {} }).to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
 }

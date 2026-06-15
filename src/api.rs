@@ -16,8 +16,8 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::{
     errors::AppError,
     models::{
-        ErrorResponse, HealthResponse, ReloadResponse, RenderBatchRequest, RenderLabelRequest,
-        TemplateDetail, TemplateList,
+        ErrorResponse, HealthResponse, PrintRequest, ReloadResponse, RenderBatchRequest,
+        RenderLabelRequest, TemplateDetail, TemplateList,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -83,6 +83,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         )
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
+        .route("/print", post(print))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -411,6 +412,74 @@ pub async fn delete_printer(
     } else {
         Err(AppError::printer_not_found(id))
     }
+}
+
+fn render_to_format(
+    template: &TemplateDefinition,
+    data: &std::collections::HashMap<String, serde_json::Value>,
+    option: Option<&std::collections::BTreeMap<String, String>>,
+    format: Option<&str>,
+) -> Result<(Vec<u8>, &'static str, &'static str), AppError> {
+    match format.unwrap_or("png") {
+        "" | "png" => Ok((
+            render_single_label(template, data, option)?,
+            "image/png",
+            "png",
+        )),
+        "pdf" => Ok((
+            render_single_label_pdf(template, data, option)?,
+            "application/pdf",
+            "pdf",
+        )),
+        other => Err(AppError::invalid_request(format!(
+            "unknown format '{other}'; use png or pdf"
+        ))),
+    }
+}
+
+fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
+    (
+        axum::http::StatusCode::OK,
+        [
+            ("content-type", content_type.to_string()),
+            (
+                "content-disposition",
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+#[utoipa::path(
+    post,
+    path = "/print",
+    request_body = PrintRequest,
+    responses(
+        (status = 200, description = "Rendered label (download when no printer)", body = Vec<u8>),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 422, description = "Template is not single-format / validation error", body = ErrorResponse)
+    )
+)]
+pub async fn print(
+    State(state): State<Arc<AppState>>,
+    payload: Result<Json<PrintRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let Json(req) = payload.map_err(AppError::from)?;
+    let registry = state.templates.load_full();
+    let template = registry
+        .get(&req.template)
+        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+    let option = req.label.option.as_ref();
+    let (bytes, content_type, ext) =
+        render_to_format(template, &req.label.data, option, req.format.as_deref())?;
+    Ok(download_response(
+        bytes,
+        content_type,
+        &format!("{}.{ext}", template.id),
+    ))
 }
 
 #[utoipa::path(
