@@ -30,6 +30,9 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 | DELETE | `/templates/{id}` | Delete a template | `204` / `404` |
 | POST | `/render/label` | Render one label (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
 | POST | `/render/batch` | Render a label sheet | `200 application/pdf` |
+| GET / POST | `/printers` | List / create printers | `200` / `201` |
+| GET / PUT / DELETE | `/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
+| POST | `/print` | Render and print, or download | `200` / `204` |
 | GET | `/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/docs` | Swagger UI | `200` |
 
@@ -255,18 +258,28 @@ All errors return JSON:
 
 `code` strings are part of the contract — keep them stable.
 
-## Printing (planned)
+## Printing
 
-Printing is not yet implemented; its architecture is fixed by
-[ADR-0007](adr/0007-printer-architecture-and-transport-model.md). Configured printers are "machine"
-instances `{ id, name, kind, config, enabled }` with an opaque kind-specific config; a `PrinterDriver`
-trait declares the artifact format it accepts and the dispatcher renders to that format before sending.
-Phase 1 ships one `cups` driver that sends PDF over IPP (pure-Rust `ipp` crate, no `lp` binary), plus a
-file-download sink for the no-printer case. Later families (Zebra ZPL, Brother raster, Dymo) drop in as
-new drivers. See M3 (#12/#13/#16/#19) for the implementation.
+Architecture: [ADR-0007](adr/0007-printer-architecture-and-transport-model.md). App state (printers,
+settings, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, default `data/`), behind a
+`store` module.
+
+- **Printers** are "machine" instances `{ id, name, kind, config, enabled }` with an opaque
+  per-`kind` JSON `config`, managed via `/printers` CRUD (`id` is a validated slug). `kind` selects a
+  `PrinterDriver`; create/replace validate the config for that driver.
+- **`POST /print` `{ template, data, printer?, format? }`** renders a single-format template and, with a
+  `printer`, builds its driver and sends the artifact in the driver's accepted format (recording a job);
+  with no `printer`, returns the rendered bytes as a download (png default, or pdf). Unknown
+  template/printer → 404; sheet template → 422; transport failure → 502 (`PrintFailed`).
+- **Phase 1 driver:** `cups` sends the rendered PDF over IPP (pure-Rust `ipp` crate, no `lp` binary) to
+  a CUPS queue or IPP-Everywhere printer URI. Later families (Zebra ZPL, Brother raster, Dymo) register
+  as new drivers without changing dispatch.
+- **Deferred:** printer status read-back, USB/browser printing, batch-to-printer and `copies` (→ #28).
 
 ## Changelog
 
+- **Unreleased** — M3 state and printing: SQLite app-state store (#8), printer CRUD (#12), CUPS/IPP
+  driver (#16), and `POST /print` with file download (#13) and printer dispatch (#19).
 - **Unreleased** — Accepted ADR-0008 (web UI delivery: React SPA served by axum, API to move under
   `/api`); implementation is M5.
 - **Unreleased** — Accepted ADR-0007 (printer architecture and transport model); implementation is M3.
