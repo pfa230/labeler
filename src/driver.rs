@@ -73,7 +73,15 @@ struct CupsConfig {
 
 impl CupsConfig {
     fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
-        serde_json::from_value(config.clone()).map_err(|err| DriverError::Config(err.to_string()))
+        let cfg: CupsConfig = serde_json::from_value(config.clone())
+            .map_err(|err| DriverError::Config(err.to_string()))?;
+        if !(cfg.uri.starts_with("ipp://") || cfg.uri.starts_with("ipps://")) {
+            return Err(DriverError::Config(format!(
+                "cups uri must start with ipp:// or ipps:// (got '{}')",
+                cfg.uri
+            )));
+        }
+        Ok(cfg)
     }
 }
 

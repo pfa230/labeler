@@ -894,4 +894,69 @@ layout:
             "PrinterNotFound"
         );
     }
+
+    #[tokio::test]
+    async fn print_to_disabled_printer_returns_409() {
+        let app = build_app();
+        let body =
+            json!({ "id": "fk", "name": "Fake", "kind": "fake", "config": {}, "enabled": false })
+                .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/printers", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hi", "code": "Q" },
+            "printer": "fk"
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            json_response(resp).await["error"]["code"],
+            "PrinterDisabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn print_format_with_printer_returns_400() {
+        let app = build_app();
+        create_fake_printer(&app, "fk", false).await;
+        let body = json!({
+            "template": "brother12mm",
+            "data": { "message": "Hi", "code": "Q" },
+            "printer": "fk",
+            "format": "pdf"
+        })
+        .to_string();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/print", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn printer_replace_missing_returns_404() {
+        let app = build_app();
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/printers/ghost", printer_json("ghost")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            json_response(resp).await["error"]["code"],
+            "PrinterNotFound"
+        );
+    }
 }

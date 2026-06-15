@@ -407,6 +407,7 @@ pub async fn delete_printer(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
     if state.store().delete_printer(&id).await? {
         Ok(axum::http::StatusCode::NO_CONTENT.into_response())
     } else {
@@ -461,6 +462,7 @@ fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str)
         (status = 204, description = "Sent to the printer"),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
+        (status = 409, description = "Printer is disabled", body = ErrorResponse),
         (status = 422, description = "Template is not single-format / validation error", body = ErrorResponse),
         (status = 502, description = "Printer/transport failure", body = ErrorResponse)
     )
@@ -474,6 +476,16 @@ pub async fn print(
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+    if !matches!(
+        template.format,
+        crate::models::TemplateFormat::Single { .. }
+    ) {
+        return Err(AppError::unsupported_format(format!(
+            "template '{}' is a sheet; use /render/batch for sheet labels",
+            template.id
+        )));
+    }
+
     let option = req.label.option.as_ref();
 
     let Some(printer_id) = req.printer.as_deref() else {
@@ -486,11 +498,20 @@ pub async fn print(
         ));
     };
 
+    if req.format.is_some() {
+        return Err(AppError::invalid_request(
+            "format applies only to download; omit it when printing to a printer",
+        ));
+    }
+
     let printer = state
         .store()
         .get_printer(printer_id)
         .await?
         .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
+    if !printer.enabled {
+        return Err(AppError::printer_disabled(printer_id));
+    }
     let driver = crate::driver::build_driver(&printer.kind, &printer.config)
         .map_err(|err| AppError::printer_invalid(err.to_string()))?;
     let artifact = match driver.accepted_format() {
@@ -511,18 +532,24 @@ pub async fn print(
         .await
     {
         Ok(()) => {
-            let _ = state
+            if let Err(err) = state
                 .store()
                 .record_job(&req.template, Some(printer_id), "ok", None)
-                .await;
+                .await
+            {
+                tracing::warn!(%err, "failed to record print job");
+            }
             Ok(axum::http::StatusCode::NO_CONTENT.into_response())
         }
         Err(err) => {
             let message = err.to_string();
-            let _ = state
+            if let Err(log_err) = state
                 .store()
                 .record_job(&req.template, Some(printer_id), "failed", Some(&message))
-                .await;
+                .await
+            {
+                tracing::warn!(%log_err, "failed to record failed print job");
+            }
             Err(AppError::print_failed(message))
         }
     }
