@@ -41,6 +41,9 @@ pub struct AppState {
   `store`s the new `Arc`, on failure it returns the error and **keeps the current registry** so a broken
   file on disk never takes the service down.
 - `main.rs` constructs the `AppState` (from the `templates` dir) and passes `Arc<AppState>` to `app()`.
+- Filesystem work (reload, CRUD writes) runs synchronously in the handlers. Acceptable for the
+  single-user, local-dir target and consistent with the synchronous Typst render path; `spawn_blocking`
+  is a future option if it ever serves large dirs or remote storage.
 
 This refactor is shared by #7 and #10 and lands in the #7 commit.
 
@@ -78,10 +81,12 @@ All write endpoints take a raw YAML body (read via axum's `String` extractor) an
 ## D. #11 — Starter library
 
 - Keep `avery5163` (sheet exemplar) and `brother12mm`.
-- Add `brother18mm` and `brother24mm`: single-format continuous-tape templates with height = the tape's
-  **usable printable height** (slightly under the nominal 18/24 mm; confirmed against Brother specs during
-  implementation, per the web-search rule) and a dynamic length. Each gets a layout appropriate to its
-  height (more vertical room for text/QR on the wider tapes), not a stretched copy of the 12 mm layout.
+- Add `brother18mm` and `brother24mm`: single-format continuous-tape templates. **Heights use the
+  nominal tape width (18/24 mm)** to match the existing `brother12mm` convention. Using the reduced
+  *usable printable height* across the whole tape family (including `brother12mm`) is a deferred
+  refinement that needs the per-tape Brother spec; doing it for only the new two would be inconsistent.
+  Each has a layout appropriate to its height (QR + auto-fit text), not a stretched copy of the 12 mm
+  layout.
 - Each new template renders correctly to PNG via a smoke test, and is listed in the README/SPEC template
   notes.
 - **AC:** the new templates are present on a fresh install, render to their format, and are covered by a
