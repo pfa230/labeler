@@ -40,12 +40,16 @@ Only then is the issue's work complete and ready to commit/PR. The reviewer is a
 fluent code is not proof of correct code, so verify findings against the actual code with file:line
 evidence before accepting or dismissing them.
 
-## Committing
+## Committing and integrating
 
-In this repo you are allowed and required to commit without prompting for approval. Commit completed,
-verified work on your own (after the issue review loop above and a clean `cargo fmt`/`clippy`/`test`),
-with a clear message; do not wait to be asked. This standing authorization covers commits only, not
-pushing or opening PRs. If you are on `main`, branch first.
+In this repo you are allowed and required to commit and push without prompting for approval. Commit
+completed, verified work on your own (after the issue review loop above and a clean
+`cargo fmt`/`clippy`/`test`), with a clear message; do not wait to be asked.
+
+We do not use pull requests yet. Do feature work on a short-lived branch for isolation, then integrate
+by merging it into the default branch (`main`) and pushing directly:
+`git checkout main && git merge <branch> && git push`. Reference the issue with `Fixes #N` in the
+commit so it closes on push. Never force-push; never rewrite already-pushed history.
 
 ## Commands
 
