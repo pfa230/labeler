@@ -339,25 +339,27 @@ fn validate_layout_item(
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
         }
-        LayoutItem::Line {
-            placement,
-            thickness,
-        } => {
-            validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+        LayoutItem::Line { at, to, thickness } => {
             if *thickness <= 0.0 {
                 return Err("line thickness must be greater than 0".to_string());
             }
-            let (dx, dy) = resolve_line_delta(
-                &placement.size,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-            )?;
-            if dx.abs() < f32::EPSILON && dy.abs() < f32::EPSILON {
+            validate_position(at)?;
+            validate_position(to)?;
+            let start = at.point();
+            let end = to.point();
+            if (start.x - end.x).abs() < f32::EPSILON && (start.y - end.y).abs() < f32::EPSILON {
                 return Err("line start and end must differ".to_string());
             }
-            validate_line_bounds(&placement.at, dx, dy, layout_bounds)?;
+            if let Some(bounds) = layout_bounds {
+                const BOUNDS_EPSILON: f32 = 1.0e-4;
+                for point in [start, end] {
+                    if point.x > bounds.width + BOUNDS_EPSILON
+                        || point.y > bounds.height + BOUNDS_EPSILON
+                    {
+                        return Err("line must fit within layout bounds".to_string());
+                    }
+                }
+            }
         }
         LayoutItem::Container {
             placement,
@@ -486,48 +488,6 @@ fn resolve_size_value(
     }
 }
 
-fn resolve_line_delta(
-    size: &Size,
-    max_w: Option<f32>,
-    max_h: Option<f32>,
-    layout_bounds: Option<&LayoutBounds>,
-) -> Result<(f32, f32), String> {
-    if let Some(max_w) = max_w {
-        if max_w <= 0.0 {
-            return Err("max_w must be greater than 0".to_string());
-        }
-    }
-    if let Some(max_h) = max_h {
-        if max_h <= 0.0 {
-            return Err("max_h must be greater than 0".to_string());
-        }
-    }
-    let fallback = layout_bounds.map(|bounds| (bounds.width, bounds.height));
-    let dx = resolve_line_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
-    let dy = resolve_line_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
-    Ok((dx, dy))
-}
-
-fn resolve_line_value(
-    value: &SizeValue,
-    max: Option<f32>,
-    fallback: Option<f32>,
-    label: &str,
-) -> Result<f32, String> {
-    match value {
-        SizeValue::Value(value) => Ok(*value),
-        SizeValue::Auto(_) => {
-            let resolved = max
-                .or(fallback)
-                .ok_or_else(|| format!("size {label} is auto but no max_{label} provided"))?;
-            if resolved <= 0.0 {
-                return Err(format!("max_{label} must be greater than 0"));
-            }
-            Ok(resolved)
-        }
-    }
-}
-
 fn validate_bounds(
     at: &Position,
     width: f32,
@@ -544,33 +504,6 @@ fn validate_bounds(
     if max_x > layout_bounds.width + BOUNDS_EPSILON || max_y > layout_bounds.height + BOUNDS_EPSILON
     {
         return Err("item must fit within layout bounds".to_string());
-    }
-    Ok(())
-}
-
-fn validate_line_bounds(
-    at: &Position,
-    dx: f32,
-    dy: f32,
-    layout_bounds: Option<&LayoutBounds>,
-) -> Result<(), String> {
-    const BOUNDS_EPSILON: f32 = 1.0e-4;
-    let Some(layout_bounds) = layout_bounds else {
-        return Ok(());
-    };
-    let point = at.point();
-    let end_x = point.x + dx;
-    let end_y = point.y + dy;
-    let min_x = point.x.min(end_x);
-    let max_x = point.x.max(end_x);
-    let min_y = point.y.min(end_y);
-    let max_y = point.y.max(end_y);
-    if min_x < -BOUNDS_EPSILON || min_y < -BOUNDS_EPSILON {
-        return Err("line must not extend into negative coordinates".to_string());
-    }
-    if max_x > layout_bounds.width + BOUNDS_EPSILON || max_y > layout_bounds.height + BOUNDS_EPSILON
-    {
-        return Err("line must fit within layout bounds".to_string());
     }
     Ok(())
 }
@@ -903,5 +836,29 @@ layout: []
         };
         let err = template.validate().expect_err("expected error");
         assert!(err.contains("duplicate layout item name"));
+    }
+
+    #[test]
+    fn validate_rejects_degenerate_line() {
+        let template = TemplateDefinition {
+            id: "ln".to_string(),
+            name: "ln".to_string(),
+            description: "ln".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(20.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Line {
+                at: Position([1.0, 1.0]),
+                to: Position([1.0, 1.0]),
+                thickness: 0.2,
+            }]),
+            version: None,
+        };
+        let err = template.validate().expect_err("expected error");
+        assert!(err.contains("line start and end must differ"));
     }
 }
