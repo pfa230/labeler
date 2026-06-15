@@ -697,6 +697,26 @@ layout:
     }
 
     #[tokio::test]
+    async fn settings_put_then_get_roundtrip() {
+        let app = build_app();
+
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/settings/qr_base_url",
+                json!({ "value": "https://h/i" }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let (status, settings) = get_json(&app, "/settings").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(settings["qr_base_url"], "https://h/i");
+    }
+
+    #[tokio::test]
     async fn printer_create_duplicate_returns_409() {
         let app = build_app();
         app.clone()
