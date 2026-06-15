@@ -125,8 +125,8 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 | `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. |
 | `rotate` | number (deg) | — | Rotates the rendered item. |
 
-`auto` size resolves to `max_w`/`max_h` if present; for `container` and `line` it falls back to the
-parent frame's dimension. A non-`auto` numeric size must be > 0 (lines may be 0 on one axis).
+`auto` size resolves to `max_w`/`max_h` if present; for `container` it falls back to the parent frame's
+dimension. A non-`auto` numeric size must be > 0. (`line` does not use `size`; see §4.1.)
 
 ### 4.1 Item types
 
