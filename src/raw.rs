@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, FontSize, Frame, Options, Placement, Position, QrParams, Size, TemplateFormat,
+    Alignment, Fit, FontSize, Frame, Options, Placement, Position, QrParams, Size, TemplateFormat,
 };
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +27,7 @@ pub struct TemplateDefinitionRaw {
 pub enum LayoutItemRaw {
     Text(TextRaw),
     Qr(QrRaw),
+    Image(ImageRaw),
     Line(LineRaw),
     Container(ContainerRaw),
 }
@@ -52,6 +53,19 @@ pub struct QrRaw {
     pub placement: Placement,
     #[serde(default)]
     pub params: Option<QrParams>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageRaw {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub src: Option<String>,
+    #[serde(flatten)]
+    pub placement: Placement,
+    #[serde(default)]
+    pub fit: Fit,
 }
 
 #[derive(Debug, Deserialize)]

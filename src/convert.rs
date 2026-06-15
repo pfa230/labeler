@@ -94,6 +94,22 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 placement: raw.placement,
                 params: raw.params,
             }),
+            LayoutItemRaw::Image(raw) => match (&raw.src, &raw.name) {
+                (Some(_), Some(_)) => Err(TemplateError::Validation {
+                    path: "image".to_string(),
+                    msg: "image must set exactly one of src or name, not both".to_string(),
+                }),
+                (None, None) => Err(TemplateError::Validation {
+                    path: "image".to_string(),
+                    msg: "image must set one of src or name".to_string(),
+                }),
+                _ => Ok(LayoutItem::Image {
+                    name: raw.name,
+                    src: raw.src,
+                    placement: raw.placement,
+                    fit: raw.fit,
+                }),
+            },
             LayoutItemRaw::Line(raw) => Ok(LayoutItem::Line {
                 placement: raw.placement,
                 thickness: raw.thickness,
