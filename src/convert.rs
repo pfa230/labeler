@@ -71,6 +71,24 @@ impl TryFrom<ContainerRaw> for LayoutItem {
     }
 }
 
+fn require_one_of(
+    kind: &str,
+    name: Option<String>,
+    value: Option<String>,
+) -> Result<(Option<String>, Option<String>), TemplateError> {
+    match (&name, &value) {
+        (Some(_), Some(_)) => Err(TemplateError::Validation {
+            path: kind.to_string(),
+            msg: format!("{kind} must set exactly one of name or value, not both"),
+        }),
+        (None, None) => Err(TemplateError::Validation {
+            path: kind.to_string(),
+            msg: format!("{kind} must set one of name or value"),
+        }),
+        _ => Ok((name, value)),
+    }
+}
+
 impl TryFrom<LayoutItemRaw> for LayoutItem {
     type Error = TemplateError;
 
@@ -78,22 +96,31 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
         match raw {
             LayoutItemRaw::Text(TextRaw {
                 name,
+                value,
                 placement,
                 font_size,
                 multiline,
                 alignment,
-            }) => Ok(LayoutItem::Text {
-                name,
-                placement,
-                font_size,
-                multiline,
-                alignment,
-            }),
-            LayoutItemRaw::Qr(raw) => Ok(LayoutItem::Qr {
-                name: raw.name,
-                placement: raw.placement,
-                params: raw.params,
-            }),
+            }) => {
+                let (name, value) = require_one_of("text", name, value)?;
+                Ok(LayoutItem::Text {
+                    name,
+                    value,
+                    placement,
+                    font_size,
+                    multiline,
+                    alignment,
+                })
+            }
+            LayoutItemRaw::Qr(raw) => {
+                let (name, value) = require_one_of("qr", raw.name, raw.value)?;
+                Ok(LayoutItem::Qr {
+                    name,
+                    value,
+                    placement: raw.placement,
+                    params: raw.params,
+                })
+            }
             LayoutItemRaw::Image(raw) => match (&raw.src, &raw.name) {
                 (Some(_), Some(_)) => Err(TemplateError::Validation {
                     path: "image".to_string(),
@@ -142,5 +169,46 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
             layout: Layout::Items(items),
             version: raw.version,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::raw::TemplateDefinitionRaw;
+    use crate::templates::TemplateDefinition;
+
+    fn try_build(layout_yaml: &str) -> Result<TemplateDefinition, String> {
+        let yaml = format!(
+            "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n{layout_yaml}"
+        );
+        let raw: TemplateDefinitionRaw =
+            serde_yaml_ng::from_str(&yaml).map_err(|e| e.to_string())?;
+        TemplateDefinition::try_from(raw).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn text_with_value_ok() {
+        assert!(try_build("  - type: text\n    value: \"{id}\"\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n").is_ok());
+    }
+
+    #[test]
+    fn text_with_name_ok() {
+        assert!(try_build(
+            "  - type: text\n    name: id\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn text_with_both_errors() {
+        assert!(try_build("  - type: text\n    name: id\n    value: \"{id}\"\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n").is_err());
+    }
+
+    #[test]
+    fn text_with_neither_errors() {
+        assert!(
+            try_build("  - type: text\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n")
+                .is_err()
+        );
     }
 }
