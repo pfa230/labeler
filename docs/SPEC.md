@@ -24,7 +24,7 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 | GET | `/health` | Liveness check | `200 {"status":"ok"}` |
 | GET | `/templates` | List template summaries (sorted by id) | `200 {"templates":[…]}` |
 | GET | `/templates/{id}` | Full template detail incl. layout | `200` / `404` |
-| POST | `/render/label` | Render one label | `200 image/png` |
+| POST | `/render/label` | Render one label (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
 | POST | `/render/batch` | Render a label sheet | `200 application/pdf` |
 | GET | `/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/docs` | Swagger UI | `200` |
@@ -44,6 +44,8 @@ The server binds `0.0.0.0:$PORT` (default `8080`).
 - `template` must reference a template whose `format.type` is `single`; otherwise `422 UnsupportedFormat`.
 - `data` binds field names referenced by `text`/`qr` layout items.
 - `option` is optional and validated against the template's declared `options`.
+- `?format=png|pdf` (default `png`) selects the output: `image/png` (rasterized at the template DPI) or
+  `application/pdf` (vector). An unknown value is `400 InvalidRequest`.
 
 ### 2.2 `POST /render/batch`
 
@@ -226,6 +228,7 @@ All errors return JSON:
 
 ## Changelog
 
+- **Unreleased** — `POST /render/label` gained `?format=png|pdf` (single-label PDF output). Issue #4.
 - **Unreleased** — Added the `image` layout item (static asset under the assets root, and data-bound
   base64 data URI; PNG/JPEG/SVG; injected into Typst as virtual files). See ADR-0009. Issue #3.
 - **0.1.0** — Initial spec captured from the implemented service (single PNG + sheet PDF rendering,
