@@ -7,7 +7,7 @@ use crate::models::{
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
-    assets_root, build_qr_svg, escape_typst_string, fit_text_to_box, format_length,
+    assets_root, build_qr_svg, escape_typst_string, fit_text_to_box, format_length, interpolate,
     parse_image_data_uri, resolve_dimension, resolve_image_asset, to_nonbreaking, to_page_coords,
     typst_alignment, typst_font_options, value_to_string,
 };
@@ -50,6 +50,7 @@ fn compile_single_doc(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
+    settings: &BTreeMap<String, String>,
 ) -> Result<PagedDocument, AppError> {
     let TemplateFormat::Single { width, height } = &template.format else {
         return Err(AppError::unsupported_format(
@@ -57,22 +58,36 @@ fn compile_single_doc(
         ));
     };
 
-    let width_units = resolve_dimension(width)?;
-    let height_units = resolve_dimension(height)?;
+    let page_width_units = resolve_dimension(width)?;
+    let page_height_units = resolve_dimension(height)?;
+    let unit = &template.unit;
 
     let selected_option = normalize_option(template, option)?;
     let items = select_layout_items(template)?;
 
     let images = RefCell::new(ImageCollector::default());
-    let source = build_typst_source(
-        width_units,
-        height_units,
-        &template.unit,
-        items,
+
+    let mut source = String::new();
+    let page_width = format_length(page_width_units, unit)?;
+    let page_height = format_length(page_height_units, unit)?;
+    writeln!(
+        source,
+        "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
+    )
+    .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
+        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+
+    let context = RenderContext::new(
+        page_width_units,
+        page_height_units,
+        unit,
         data,
         selected_option,
+        settings,
         &images,
-    )?;
+    );
+    source.push_str(&context.render_items(items)?);
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
 
     compile_paged(source, images.into_inner().files)
@@ -82,8 +97,9 @@ pub fn render_single_label(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
+    settings: &BTreeMap<String, String>,
 ) -> Result<Vec<u8>, AppError> {
-    let doc = compile_single_doc(template, data, option)?;
+    let doc = compile_single_doc(template, data, option, settings)?;
     let page = doc
         .pages
         .first()
@@ -99,8 +115,9 @@ pub fn render_single_label_pdf(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
+    settings: &BTreeMap<String, String>,
 ) -> Result<Vec<u8>, AppError> {
-    let doc = compile_single_doc(template, data, option)?;
+    let doc = compile_single_doc(template, data, option, settings)?;
     typst_pdf::pdf(&doc, &Default::default())
         .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))
 }
@@ -109,6 +126,7 @@ pub fn render_sheet_labels(
     template: &TemplateDefinition,
     labels: &[LabelInput],
     start_slot: u32,
+    settings: &BTreeMap<String, String>,
 ) -> Result<Vec<u8>, AppError> {
     let TemplateFormat::Sheet {
         paper_width,
@@ -165,6 +183,7 @@ pub fn render_sheet_labels(
             &template.unit,
             &label.data,
             selected_option,
+            settings,
             &images,
         );
         let content = context.render_items(items)?;
@@ -188,40 +207,6 @@ pub fn render_sheet_labels(
         .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))?;
 
     Ok(pdf)
-}
-
-fn build_typst_source(
-    page_width_units: f32,
-    page_height_units: f32,
-    unit: &str,
-    items: &[LayoutItem],
-    data: &HashMap<String, JsonValue>,
-    selected_option: Option<&BTreeMap<String, String>>,
-    images: &RefCell<ImageCollector>,
-) -> Result<String, AppError> {
-    let mut source = String::new();
-    let page_width = format_length(page_width_units, unit)?;
-    let page_height = format_length(page_height_units, unit)?;
-    writeln!(
-        source,
-        "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
-    )
-    .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-
-    let context = RenderContext::new(
-        page_width_units,
-        page_height_units,
-        unit,
-        data,
-        selected_option,
-        images,
-    );
-    let items_source = context.render_items(items)?;
-    source.push_str(&items_source);
-
-    Ok(source)
 }
 
 fn select_layout_items(template: &TemplateDefinition) -> Result<&[LayoutItem], AppError> {
@@ -261,6 +246,7 @@ struct RenderContext<'a> {
     unit: &'a str,
     data: &'a HashMap<String, JsonValue>,
     selected_option: Option<&'a BTreeMap<String, String>>,
+    settings: &'a BTreeMap<String, String>,
     images: &'a RefCell<ImageCollector>,
 }
 
@@ -271,6 +257,7 @@ impl<'a> RenderContext<'a> {
         unit: &'a str,
         data: &'a HashMap<String, JsonValue>,
         selected_option: Option<&'a BTreeMap<String, String>>,
+        settings: &'a BTreeMap<String, String>,
         images: &'a RefCell<ImageCollector>,
     ) -> Self {
         Self {
@@ -279,6 +266,7 @@ impl<'a> RenderContext<'a> {
             unit,
             data,
             selected_option,
+            settings,
             images,
         }
     }
@@ -349,9 +337,7 @@ impl<'a> RenderContext<'a> {
                     .get(name)
                     .ok_or_else(|| AppError::missing_field(name))?,
             )),
-            (None, Some(_)) => Err(AppError::render_failed(format!(
-                "{kind} value interpolation is not yet supported"
-            ))),
+            (None, Some(value)) => interpolate(value, self.data, self.settings),
             (None, None) => Err(AppError::render_failed(format!(
                 "{kind} item has neither name nor value"
             ))),
@@ -558,6 +544,7 @@ impl<'a> RenderContext<'a> {
             self.unit,
             self.data,
             self.selected_option,
+            self.settings,
             self.images,
         );
         let child_source = context.render_items(items)?;
@@ -675,6 +662,10 @@ mod tests {
     use serde_json::json;
     use std::collections::{BTreeMap, HashMap};
 
+    fn no_settings() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
     #[test]
     fn render_single_label_produces_png() {
         let template = TemplateDefinition {
@@ -710,7 +701,8 @@ mod tests {
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
         let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
-        let png = render_single_label(&template, &data, Some(&selection)).expect("render label");
+        let png = render_single_label(&template, &data, Some(&selection), &no_settings())
+            .expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -789,8 +781,8 @@ mod tests {
             ("code".to_string(), json!("QR-123")),
         ]);
         let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
-        let png =
-            render_single_label(&template, &data, Some(&selection)).expect("render label with qr");
+        let png = render_single_label(&template, &data, Some(&selection), &no_settings())
+            .expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -834,7 +826,7 @@ mod tests {
             option: None,
         }];
 
-        let pdf = render_sheet_labels(&template, &labels, 0).expect("render sheet");
+        let pdf = render_sheet_labels(&template, &labels, 0, &no_settings()).expect("render sheet");
 
         assert!(!pdf.is_empty(), "rendered PDF is empty");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
@@ -878,7 +870,8 @@ mod tests {
             "logo".to_string(),
             json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
         )]);
-        let png = render_single_label(&template, &data, None).expect("render image");
+        let png =
+            render_single_label(&template, &data, None, &no_settings()).expect("render image");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -886,7 +879,7 @@ mod tests {
     fn render_image_missing_data_errors() {
         let template = image_single_template();
         let data = HashMap::new();
-        assert!(render_single_label(&template, &data, None).is_err());
+        assert!(render_single_label(&template, &data, None, &no_settings()).is_err());
     }
 
     #[test]
@@ -896,7 +889,7 @@ mod tests {
             "logo".to_string(),
             json!("data:image/png;base64,@@@not-base64@@@"),
         )]);
-        assert!(render_single_label(&template, &data, None).is_err());
+        assert!(render_single_label(&template, &data, None, &no_settings()).is_err());
     }
 
     #[test]
@@ -936,7 +929,8 @@ mod tests {
             )]),
             option: None,
         }];
-        let pdf = render_sheet_labels(&template, &labels, 0).expect("render sheet image");
+        let pdf =
+            render_sheet_labels(&template, &labels, 0, &no_settings()).expect("render sheet image");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
@@ -967,7 +961,7 @@ mod tests {
         );
         let template = image_single_template();
         let data = HashMap::from([("logo".to_string(), json!(uri))]);
-        let png = render_single_label(&template, &data, None).expect("render svg");
+        let png = render_single_label(&template, &data, None, &no_settings()).expect("render svg");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -989,15 +983,23 @@ mod tests {
         std::env::set_var("LABELER_ASSETS_DIR", &dir);
 
         let data = HashMap::new();
-        let png = render_single_label(&image_single_template_with_src("logo.png"), &data, None)
-            .expect("render static src");
+        let png = render_single_label(
+            &image_single_template_with_src("logo.png"),
+            &data,
+            None,
+            &no_settings(),
+        )
+        .expect("render static src");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
         // A missing asset is rejected at render time.
-        assert!(
-            render_single_label(&image_single_template_with_src("missing.png"), &data, None)
-                .is_err()
-        );
+        assert!(render_single_label(
+            &image_single_template_with_src("missing.png"),
+            &data,
+            None,
+            &no_settings()
+        )
+        .is_err());
 
         std::env::remove_var("LABELER_ASSETS_DIR");
         std::fs::remove_dir_all(&dir).ok();
@@ -1033,7 +1035,8 @@ mod tests {
             version: None,
         };
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let pdf = render_single_label_pdf(&template, &data, None).expect("render pdf");
+        let pdf =
+            render_single_label_pdf(&template, &data, None, &no_settings()).expect("render pdf");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
@@ -1047,8 +1050,61 @@ mod tests {
         ]);
         for id in ["brother12mm", "brother18mm", "brother24mm"] {
             let template = registry.get(id).unwrap_or_else(|| panic!("template {id}"));
-            let png = render_single_label(template, &data, None).expect("render tape");
+            let png =
+                render_single_label(template, &data, None, &no_settings()).expect("render tape");
             assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         }
+    }
+
+    #[test]
+    fn render_value_text_and_qr_interpolate() {
+        let template = TemplateDefinition {
+            id: "interp".to_string(),
+            name: "Interp".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(40.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![
+                LayoutItem::Text {
+                    name: None,
+                    value: Some("Item {id}".to_string()),
+                    placement: Placement {
+                        at: Position([0.0, 10.0]),
+                        size: Size([SizeValue::Value(40.0), SizeValue::Value(8.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    font_size: FontSize::Fixed(8.0),
+                    multiline: false,
+                    alignment: Alignment::default(),
+                },
+                LayoutItem::Qr {
+                    name: None,
+                    value: Some("{settings.qr_base_url}/{id}".to_string()),
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    params: None,
+                },
+            ]),
+            version: None,
+        };
+        let data = HashMap::from([("id".to_string(), json!("A1"))]);
+        let settings = BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())]);
+        let png = render_single_label(&template, &data, None, &settings).expect("render interp");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        // Missing setting is an error.
+        assert!(render_single_label(&template, &data, None, &no_settings()).is_err());
     }
 }

@@ -420,15 +420,16 @@ fn render_to_format(
     data: &std::collections::HashMap<String, serde_json::Value>,
     option: Option<&std::collections::BTreeMap<String, String>>,
     format: Option<&str>,
+    settings: &std::collections::BTreeMap<String, String>,
 ) -> Result<(Vec<u8>, &'static str, &'static str), AppError> {
     match format.unwrap_or("png") {
         "" | "png" => Ok((
-            render_single_label(template, data, option)?,
+            render_single_label(template, data, option, settings)?,
             "image/png",
             "png",
         )),
         "pdf" => Ok((
-            render_single_label_pdf(template, data, option)?,
+            render_single_label_pdf(template, data, option, settings)?,
             "application/pdf",
             "pdf",
         )),
@@ -487,10 +488,16 @@ pub async fn print(
     }
 
     let option = req.label.option.as_ref();
+    let settings = state.store().all_settings().await?;
 
     let Some(printer_id) = req.printer.as_deref() else {
-        let (bytes, content_type, ext) =
-            render_to_format(template, &req.label.data, option, req.format.as_deref())?;
+        let (bytes, content_type, ext) = render_to_format(
+            template,
+            &req.label.data,
+            option,
+            req.format.as_deref(),
+            &settings,
+        )?;
         return Ok(download_response(
             bytes,
             content_type,
@@ -516,10 +523,10 @@ pub async fn print(
         .map_err(|err| AppError::printer_invalid(err.to_string()))?;
     let artifact = match driver.accepted_format() {
         crate::driver::ArtifactFormat::Pdf => {
-            render_single_label_pdf(template, &req.label.data, option)?
+            render_single_label_pdf(template, &req.label.data, option, &settings)?
         }
         crate::driver::ArtifactFormat::Png => {
-            render_single_label(template, &req.label.data, option)?
+            render_single_label(template, &req.label.data, option, &settings)?
         }
         fmt => {
             return Err(AppError::print_failed(format!(
@@ -604,13 +611,14 @@ pub async fn render_label(
         ));
     }
 
+    let settings = state.store().all_settings().await?;
     let (bytes, content_type) = match query.format.as_deref() {
         None | Some("") | Some("png") => (
-            render_single_label(template, &req.label.data, option_value)?,
+            render_single_label(template, &req.label.data, option_value, &settings)?,
             "image/png",
         ),
         Some("pdf") => (
-            render_single_label_pdf(template, &req.label.data, option_value)?,
+            render_single_label_pdf(template, &req.label.data, option_value, &settings)?,
             "application/pdf",
         ),
         Some(other) => {
@@ -657,7 +665,8 @@ pub async fn render_batch(
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
 
-    let pdf = render_sheet_labels(template, &req.labels, req.start_slot)?;
+    let settings = state.store().all_settings().await?;
+    let pdf = render_sheet_labels(template, &req.labels, req.start_slot, &settings)?;
 
     Ok((
         axum::http::StatusCode::OK,
