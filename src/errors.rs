@@ -24,6 +24,7 @@ const CODE_TEMPLATE_EXISTS: &str = "TemplateExists";
 const CODE_PRINTER_NOT_FOUND: &str = "PrinterNotFound";
 const CODE_PRINTER_EXISTS: &str = "PrinterExists";
 const CODE_PRINTER_INVALID: &str = "PrinterInvalid";
+const CODE_PRINTER_DISABLED: &str = "PrinterDisabled";
 const CODE_PRINT_FAILED: &str = "PrintFailed";
 const CODE_INTERNAL: &str = "Internal";
 
@@ -162,6 +163,15 @@ impl AppError {
             CODE_PRINTER_INVALID,
             message,
             None,
+        )
+    }
+
+    pub fn printer_disabled(id: &str) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            CODE_PRINTER_DISABLED,
+            format!("printer '{id}' is disabled"),
+            Some(json!({ "printer": id })),
         )
     }
 
