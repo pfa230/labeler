@@ -8,6 +8,9 @@ numbers will differ, so record the mapping in the "GH #" column when issues are 
 Scope is the **MVP** tier of [CAPABILITIES.md](CAPABILITIES.md). The GUI editor and the Homebox pull
 integration are **Phase 2**, not here.
 
+**Progress.** GitHub milestones M1–M6 hold live status; completed items are also marked **DONE** (with
+their commit) in the issue list below. Done so far: P1-11 / #3 (image layout item).
+
 ## 1. Phase 1 goal
 
 A self-hosted, Dockerized label service that an SMB/home user can run, point at hand-authored YAML
@@ -47,7 +50,7 @@ conditions; backend issues require unit/integration tests per the verification r
 
 ### M1 — Rendering completeness
 
-#### P1-11 Image layout item · GH #3
+#### P1-11 Image layout item · GH #3 · DONE (00e1a30)
 Add an `image` layout item that embeds a raster/SVG into the rendered label via Typst.
 - **Depends on:** none.
 - **AC:** template with an `image` item (data-bound source and/or static asset) renders in both PNG and

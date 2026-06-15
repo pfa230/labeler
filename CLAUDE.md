@@ -51,6 +51,10 @@ by merging it into the default branch (`main`) and pushing directly:
 `git checkout main && git merge <branch> && git push`. Reference the issue with `Fixes #N` in the
 commit so it closes on push. Never force-push; never rewrite already-pushed history.
 
+When an issue that appears in a plan doc (e.g. `docs/PLAN-phase-1.md`) is completed, mark its entry
+**DONE** with the commit hash in that plan as part of the same change. GitHub issues remain the live
+tracker; this keeps the roadmap readable, not a duplicate TODO list.
+
 ## Commands
 
 ```bash
