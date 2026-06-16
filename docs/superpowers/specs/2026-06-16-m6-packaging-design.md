@@ -58,7 +58,7 @@ ENTRYPOINT ["/app/labeler"]
 ```
 - `.dockerignore`: exclude `target/`, `ui/node_modules`, `ui/dist`, `data/`, `*.pdf`, `.git`, local artifacts (the image rebuilds `ui/dist` and the binary internally).
 - Caching: no separate `cargo fetch` layer. This repo's `Cargo.toml` has no `[[bin]]`/`[lib]` section (it auto-discovers `src/main.rs`), so cargo cannot parse the manifest until `src/` is present; `src/` is copied before `cargo build --release --locked`. BuildKit cache mounts or cargo-chef can speed rebuilds later. Not a correctness concern for MVP.
-- Base tags (`node:22-bookworm-slim`, `rust:1-bookworm`, distroless `:debug`) float within a tag; for reproducible release builds, pin the tested digests (record them in the plan). MVP uses the tags and records the digest it was built/verified against. Note: a dependency (`ipp` 6) uses Rust edition 2024, so the build needs a recent toolchain (rustc >= 1.85); `rust:1-bookworm` currently satisfies this, and pinning prevents an accidentally old toolchain.
+- Base tags (`node:22-bookworm-slim`, `rust:1-bookworm`, distroless `:debug`) float within a tag; for reproducible release builds, pin the tested digests (record them in the plan). MVP uses the tags and records the digest it was built/verified against. Note: a transitive dependency (`ipp` 6) uses Rust edition 2024, so the build needs a recent toolchain (rustc >= 1.85); `rust:1-bookworm` currently satisfies this, and pinning prevents an accidentally old toolchain.
 
 Rationale for chown: a Docker NAMED VOLUME (and only an empty one) initializes its contents AND ownership from the image directory at the mountpoint on first use ("copy-up"), so /app/templates and /app/data must be owned by uid 65532 or the nonroot process cannot write through the volume. This does NOT apply to bind mounts or pre-existing volumes (see Volumes caveats); the compose init service makes the ownership guarantee robust.
 
@@ -80,6 +80,8 @@ services:
     <<: *labeler-image
     user: "0:0"
     entrypoint: ["/busybox/sh","-c","chown -R 65532:65532 /app/data /app/templates"]
+    healthcheck:
+      disable: true   # short-lived init container; do not run the inherited app healthcheck
     volumes:
       - labeler-data:/app/data
       - labeler-templates:/app/templates

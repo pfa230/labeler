@@ -161,6 +161,8 @@ services:
     <<: *labeler-image
     user: "0:0"
     entrypoint: ["/busybox/sh","-c","chown -R 65532:65532 /app/data /app/templates"]
+    healthcheck:
+      disable: true   # short-lived init container; do not run the inherited app healthcheck
     volumes:
       - labeler-data:/app/data
       - labeler-templates:/app/templates
@@ -194,7 +196,7 @@ volumes:
 - [ ] **Step 2: Create `.env.sample`**
 
 ```bash
-# Copy to .env to override. docker compose interpolates these two values into the model.
+# Copy to .env to override. docker compose interpolates these two values into docker-compose.yml.
 # These are the ONLY operator knobs; everything else is fixed inside the image.
 
 # Host port to publish the service on (the container always listens on 8080 internally).
