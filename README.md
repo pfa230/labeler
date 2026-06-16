@@ -21,7 +21,18 @@ npm --prefix ui run build          # build to ui/dist (then `cargo run` serves i
 ```
 
 In production the binary serves `ui/dist` (override the dir with `LABELER_UI_DIR`). The Docker
-multi-stage build that bundles the UI is M6.
+multi-stage build bundles the UI (see Deployment below).
+
+## Deployment
+
+Run the whole thing with Docker:
+
+```bash
+docker compose up -d --build      # serves on http://localhost:${HOST_PORT:-8080}
+```
+
+See [`docs/DEPLOY.md`](docs/DEPLOY.md) for configuration, persistent volumes and backups, and CUPS/IPP
+printing setup.
 
 YAML templates are loaded from `templates/` at startup; an invalid template stops the service from
 starting. Starter templates: `avery5163` (US Letter sheet) and `brother12mm` / `brother18mm` /
