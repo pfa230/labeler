@@ -40,6 +40,11 @@ Only then is the issue's work complete and ready to commit/PR. The reviewer is a
 fluent code is not proof of correct code, so verify findings against the actual code with file:line
 evidence before accepting or dismissing them.
 
+When the adversarial reviewer is **codex** (used to review plans, designs, or diffs), absent unresolved
+critical (MAJOR/blocking) issues, the hard cap on codex passes is **5**. Stop after 5 even if codex keeps
+surfacing minor or stylistic nits; convergence to "no MAJOR issues" is the goal, not an empty findings
+list. Only exceed 5 if a genuine critical issue is still open.
+
 ## Committing and integrating
 
 In this repo you are allowed and required to commit and push without prompting for approval. Commit
