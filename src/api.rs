@@ -47,6 +47,7 @@ pub struct AppState {
     templates_dir: PathBuf,
     write_lock: Mutex<()>,
     store: Store,
+    ui_dir: PathBuf,
 }
 
 impl AppState {
@@ -56,7 +57,19 @@ impl AppState {
             templates_dir,
             write_lock: Mutex::new(()),
             store,
+            ui_dir: std::env::var_os("LABELER_UI_DIR")
+                .map(Into::into)
+                .unwrap_or_else(|| PathBuf::from("ui/dist")),
         }
+    }
+
+    pub fn with_ui_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.ui_dir = dir.into();
+        self
+    }
+
+    pub fn ui_dir(&self) -> &std::path::Path {
+        &self.ui_dir
     }
 
     pub fn store(&self) -> &Store {
@@ -108,19 +121,32 @@ async fn openapi_json() -> Response {
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
+    let assets = tower_http::services::ServeDir::new(state.ui_dir().join("assets"));
     Router::new()
         .nest("/api", api_router())
+        .nest_service("/assets", assets)
         .fallback(fallback)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
-async fn fallback(uri: axum::http::Uri) -> Response {
+async fn fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> Response {
     if uri.path() == "/api" || uri.path().starts_with("/api/") {
-        AppError::not_found(uri.path()).into_response()
-    } else {
-        // The frontend foundation plan replaces this branch with the SPA index.html.
-        (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()
+        return AppError::not_found(uri.path()).into_response();
+    }
+    // SPA: serve index.html for any non-API, non-asset route (client-side routing).
+    match tokio::fs::read(state.ui_dir().join("index.html")).await {
+        Ok(bytes) => (
+            axum::http::StatusCode::OK,
+            [("content-type", "text/html; charset=utf-8")],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (
+            axum::http::StatusCode::NOT_FOUND,
+            "UI not built; run `npm --prefix ui run build`",
+        )
+            .into_response(),
     }
 }
 
