@@ -383,6 +383,9 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-16**: Packaging & deployment (M6): a multi-stage `Dockerfile` (distroless), `docker-compose.yml`
+  with seeded+owned named volumes, `.env.sample`, and `docs/DEPLOY.md` (build, volumes/backups, CUPS/IPP).
+  No API change (ADR-0016; #18, #25, #26, #9).
 - **2026-06-16**: Web UI Settings & Printers screen (`/settings`): a key/value settings editor over
   `GET /api/settings` + `PUT /api/settings/{key}` (with `qr_base_url` suggested), and a printers CRUD
   table over `/api/printers` (ADR-0015, #23). No API change.
