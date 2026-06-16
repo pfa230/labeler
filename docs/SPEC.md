@@ -21,30 +21,31 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 
 ## 2. HTTP API
 
+All API routes are under `/api` (per ADR-0008); the root is reserved for the web UI (served by the
+frontend build, M5). An unknown `/api/*` path returns `404 NotFound` (the JSON error contract), never an
+HTML page.
+
 | Method | Path | Purpose | Success |
 | --- | --- | --- | --- |
-| GET | `/health` | Liveness check | `200 {"status":"ok"}` |
-| GET | `/templates` | List template summaries (sorted by id) | `200 {"templates":[…]}` |
-| POST | `/templates` | Create a template (raw YAML body) | `201` / `409` / `422` |
-| POST | `/templates/reload` | Re-scan the templates dir | `200 {"count":N}` / `422` |
-| GET | `/templates/{id}` | Full template detail incl. layout | `200` / `404` |
-| PUT | `/templates/{id}` | Replace a template (raw YAML body) | `200` / `400` / `404` / `422` |
-| DELETE | `/templates/{id}` | Delete a template | `204` / `404` |
-| POST | `/render/label` | Render one label for preview (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
-| POST | `/batch` | Render/print a batch of labels | `200` / `413` / `422` |
-| GET / POST | `/printers` | List / create printers | `200` / `201` |
-| GET / PUT / DELETE | `/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
-| GET | `/settings` | All settings as a key/value object | `200 {…}` |
-| PUT | `/settings/{key}` | Upsert a setting | `200` / `400` |
-| POST | `/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
-| GET | `/openapi.json` | OpenAPI 3 document | `200` |
-| GET | `/docs` | Swagger UI | `200` |
+| GET | `/api/health` | Liveness check | `200 {"status":"ok"}` |
+| GET | `/api/templates` | List template summaries (sorted by id) | `200 {"templates":[…]}` |
+| POST | `/api/templates` | Create a template (raw YAML body) | `201` / `409` / `422` |
+| POST | `/api/templates/reload` | Re-scan the templates dir | `200 {"count":N}` / `422` |
+| GET | `/api/templates/{id}` | Full template detail incl. layout | `200` / `404` |
+| GET | `/api/templates/{id}/source` | Raw stored template YAML | `200 text/yaml` / `400` / `404` |
+| PUT | `/api/templates/{id}` | Replace a template (raw YAML body) | `200` / `400` / `404` / `422` |
+| DELETE | `/api/templates/{id}` | Delete a template | `204` / `404` |
+| POST | `/api/render/label` | Render one label for preview (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
+| POST | `/api/batch` | Render/print a batch of labels | `200` / `413` / `422` |
+| GET / POST | `/api/printers` | List / create printers | `200` / `201` |
+| GET / PUT / DELETE | `/api/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
+| GET | `/api/settings` | All settings as a key/value object | `200 {…}` |
+| PUT | `/api/settings/{key}` | Upsert a setting | `200` / `400` |
+| POST | `/api/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
+| GET | `/api/openapi.json` | OpenAPI 3 document | `200` |
+| GET | `/api/docs/` | Swagger UI (trailing slash) | `200` |
 
 The server binds `0.0.0.0:$PORT` (default `8080`).
-
-> **Planned (ADR-0008):** when the web UI lands (M5), the REST API moves under an `/api` prefix
-> (`/api/templates`, `/api/render/label`, …) and the root serves a React SPA. The paths in this section
-> describe the current root-mounted API.
 
 ### 2.0 Template management
 
@@ -59,6 +60,8 @@ previously-loaded set, so a bad file never takes the service down.
 - `PUT /templates/{id}` replaces from a raw YAML body; the body `id` must equal the path `{id}` (else
   `400`); `404` if it does not exist.
 - `DELETE /templates/{id}` removes the template.
+- `GET /templates/{id}/source` returns the raw stored YAML (`text/yaml`) for the read-only source view;
+  `400` on an invalid id, `404` if the file is missing.
 
 API-managed templates are written as `<id>.yaml` under the templates dir (atomic temp-then-rename), and
 `id` must contain only letters, digits, `-`, or `_` (path-traversal guard). Parse errors and validation
@@ -311,6 +314,7 @@ All errors return JSON:
 | `UnsupportedFormat` | 422 | Endpoint/format mismatch or unknown unit. |
 | `BatchInvalid` | 422 | One or more `/batch` labels failed render-validation; `details.failures` lists them. |
 | `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). |
+| `NotFound` | 404 | Unknown `/api/*` route (the API fallback). |
 | `RenderFailed` | 500 | Typst compile/encode failure. |
 
 `code` strings are part of the contract — keep them stable.
@@ -373,6 +377,9 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-16**: REST API moved under `/api` (ADR-0008, #15); the root is reserved for the web UI.
+  Unknown `/api/*` paths return `404 NotFound` (JSON). Added `GET /api/templates/{id}/source` (raw YAML)
+  for the UI's read-only source view. Swagger UI is at `/api/docs/`, the doc at `/api/openapi.json`.
 - **2026-06-16**: Unified batch endpoint `POST /batch` (ADR-0011, #30). One endpoint that dispatches on
   template format (single → ZIP or per-label jobs, sheet → one paginated PDF or one job), with a
   validate-then-execute model (`422 BatchInvalid`), a label cap (`413 BatchTooLarge`), and a
