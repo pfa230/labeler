@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "/",
-  build: { outDir: "dist" },
+  build: { outDir: "dist", cssTarget: "esnext" },
   server: {
     proxy: { "/api": { target: "http://localhost:8080", changeOrigin: true } },
   },
