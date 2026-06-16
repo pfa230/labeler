@@ -13,8 +13,10 @@ their commit) in the issue list below. Done so far: prerequisite ADRs P1-D1 / #1
 ADR-0008); M1 — P1-11 / #3 (image), P1-12 / #4 (single-label PDF), P1-14 / #6 (line at/to); M2 —
 P1-21 / #7 (reload), P1-22 / #10 (CRUD), P1-23 / #11 (tape templates); M3 — P1-31 / #8 (store),
 P1-32 / #12 (printer CRUD), P1-33 / #16 (CUPS/IPP), P1-34 / #13 (download), P1-35 / #19 (/print).
-P1-13 / #5 (copies) is deferred pending the per-label batch-composition ADR (#28); M1 fully closes once
-#5 lands. Remaining: M4 (integrations), M5 (UI), M6 (packaging).
+The standalone `/print` and `/render/batch` endpoints were later removed and absorbed into the unified
+`POST /batch` endpoint (ADR-0011, #30), which delivers sheet-to-printer and multi-page sheets.
+P1-13 / #5 (copies) was deferred pending the per-label batch-composition ADR (#28); with `/batch`,
+copies is expanded client-side and #28 is moot. Remaining: M4 (integrations), M5 (UI), M6 (packaging).
 
 ## 1. Phase 1 goal
 
@@ -43,7 +45,7 @@ These unblock implementation milestones and should be written first.
 | --- | --- | --- |
 | **M1 Rendering completeness** | Render everything Phase 1 needs | Image item, single-label PDF, and copies all render and are covered by tests. |
 | **M2 Template management** | Author and persist templates without a restart | Hot-reload works; upload/replace/delete via API persists and validates; starter library bundled. |
-| **M3 State and printing** | Get a rendered label onto paper | App-state store live; printers CRUD; print to CUPS; file-download fallback; unified `/print` dispatch. |
+| **M3 State and printing** | Get a rendered label onto paper | App-state store live; printers CRUD; print to CUPS; file-download fallback; unified `/batch` dispatch (formerly `/print`). |
 | **M4 Integrations and import** | Drive printing from data and events | QR base-URL mapping; CSV batch import; documented inbound print webhook. |
 | **M5 Basic web UI** | Operate the service without curl | Shell + browse/preview + render/print form + CSV screen + settings, all working end to end. |
 | **M6 Packaging and deployment** | One-command self-host | Docker image; compose with persistent volumes; CUPS access documented and wired; env config. |
@@ -74,6 +76,9 @@ batch composition, which needs a design decision first (single-label physical co
 by the printer/CUPS/browser, so app-level copies is really a sheet concern).
 - **Depends on:** #28 (ADR: per-label configuration and batch composition).
 - **AC:** defined by #28; implement against the decided batch model.
+- **Note (ADR-0011, #30):** the unified `POST /batch` endpoint delivered sheet-to-printer and multi-page
+  sheets, and server-side `copies` is moot under it (a client expands copies into repeated `labels`
+  entries). #28 is rescoped/closeable accordingly; no separate server-side `copies` parameter is planned.
 
 #### P1-14 Fix `line` `size` semantics inconsistency · GH #6 · DONE (b8c3cf2)
 For most items `size` is a box `[w, h]`; for `line` it is a delta `[dx, dy]` from `at`. This is a
@@ -134,9 +139,10 @@ Return the rendered artifact (PNG/PDF) as a download when no printer is selected
 - **AC:** endpoint returns the artifact with correct `Content-Type` and filename headers; works for
   both formats; tested.
 
-#### P1-35 Unified `/print` dispatch endpoint · GH #19 · DONE (e147439)
+#### P1-35 Unified `/print` dispatch endpoint · GH #19 · DONE (e147439) · SUPERSEDED by `/batch` (#30)
 One endpoint that renders `template` + `data` (+`copies`) and either routes to a chosen printer or
-returns the file.
+returns the file. **Superseded:** `/print` was later removed and absorbed into `POST /batch`
+(ADR-0011, #30), which generalizes dispatch to batches across both template formats.
 - **Depends on:** P1-32, P1-33, P1-34, P1-13.
 - **AC:** `POST /print` prints to a named printer or returns the artifact when none is given; honors
   copies; 404 on unknown template/printer; missing-field and option errors preserved; tested.
@@ -156,13 +162,13 @@ Upload a CSV and render/print one label per row, mapping columns to fields by he
 Delivered as `POST /import/csv`: `mode=download` returns an atomic ZIP (one file per row),
 `mode=print` dispatches per-row jobs and returns a `{ total, succeeded, failed }` summary.
 - **Depends on:** P1-35.
-- **AC:** CSV with headers matching template fields produces N labels via `/print`; per-row missing
-  field reported with row index; a downloadable starter CSV is provided; quoted fields and BOM handled;
+- **AC:** CSV with headers matching template fields produces N labels (shared `/batch` path); per-row
+  missing field reported by index; a downloadable starter CSV is provided; quoted fields and BOM handled;
   tested. (Interactive field-mapping UI is Phase 2.)
 
 #### P1-43 Inbound print webhook (contract + LAN hardening) · GH #22 — DEFERRED (out of M4)
-Document and finalize `POST /print {template, fields, copies}` as the integration webhook for tools
-like Grocy.
+Document and finalize the batch print path (`POST /batch` with `mode: print`) as the integration
+webhook for tools like Grocy.
 - **Depends on:** P1-35.
 - **AC:** documented payload schema and examples in SPEC; trusted-LAN assumption stated; oversized/
   malformed payloads rejected cleanly; example receiver config documented.
@@ -190,7 +196,7 @@ Pick a template, fill fields (and options), preview, then print to a printer or 
 #### P1-54 CSV import screen · GH #24
 Upload a CSV, review rows, and batch print/download.
 - **Depends on:** P1-51, P1-42.
-- **AC:** from the UI, a CSV produces a batch via `/print`; row/field errors shown; download or print
+- **AC:** from the UI, a CSV produces a batch via `/batch`; row/field errors shown; download or print
   selectable.
 
 #### P1-55 Settings + printers screen · GH #23
@@ -260,7 +266,7 @@ in parallel.
 
 - A user can `docker compose up`, open the UI, see the starter templates, render a preview, and print
   to a CUPS printer or download a PDF/PNG.
-- The same is achievable over the API, including `POST /print` and CSV batch.
+- The same is achievable over the API, including `POST /batch` and CSV batch.
 - Templates can be hand-authored as YAML and managed over the API; invalid templates are rejected with
   precise errors and never crash the service.
 - All backend changes have tests; `cargo fmt`, `cargo clippy --all-targets --all-features`, and
