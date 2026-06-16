@@ -343,8 +343,8 @@ URL/token).
 **`POST /import/csv?template=<id>&mode=download|print&printer=<id>&format=png|pdf`** renders one label
 per CSV row. The request body is raw `text/csv`: the header row names the fields, each subsequent row
 supplies one label's `data` (all values are strings). A leading UTF-8 BOM is stripped, and the `csv`
-crate handles quoted fields. It targets single-format templates; sheet composition from rows is out of
-scope (→ #28).
+crate handles quoted fields. Output follows the template format via the shared `/batch` path: single
+templates yield per-row artifacts, sheet templates compose the rows into paginated pages.
 
 - **Structural CSV problems** are a whole-request precondition failure with `400` in **both** modes,
   reported before any rendering or printing: ragged rows (a row's field count differs from the header),
@@ -352,11 +352,11 @@ scope (→ #28).
 Internally, `/import/csv` parses the CSV into labels and delegates to the shared `/batch` path
 (ADR-0011), so it inherits the validate-then-execute model.
 
-- **`mode=download`** (default) returns `application/zip` with one file per row, named by 1-based
-  zero-padded row index (`001.png`, …) in the template's render format (`format` selects png/pdf).
-  Download is **atomic** over per-row render failures of otherwise well-formed rows: any row that fails
-  to render (e.g. unresolved interpolation field) fails the whole request with `422 BatchInvalid` and a
-  `details.failures` list; no partial archive.
+- **`mode=download`** (default): for a single template, returns `application/zip` with one file per row,
+  named by 1-based zero-padded index (`001.png`, …) in the requested `format` (png/pdf); for a sheet
+  template, returns one composed `application/pdf`. Download is **atomic** over per-row render failures
+  of otherwise well-formed rows: any row that fails to render (e.g. unresolved interpolation field) fails
+  the whole request with `422 BatchInvalid` and a `details.failures` list; no partial output.
 - **`mode=print`** requires `printer` (and rejects `format`). Because `/import/csv` shares the `/batch`
   path, sheet CSVs are supported: the rows compose a paginated PDF that prints as one job. For single
   templates it dispatches one print job per row (so a continuous-tape printer auto-cuts between labels),
