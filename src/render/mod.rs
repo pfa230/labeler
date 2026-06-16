@@ -1107,4 +1107,57 @@ mod tests {
         // Missing setting is an error.
         assert!(render_single_label(&template, &data, None, &no_settings()).is_err());
     }
+
+    #[test]
+    fn interpolated_data_cannot_inject_typst() {
+        let template = TemplateDefinition {
+            id: "inject".to_string(),
+            name: "Inject".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(60.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("{x}".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 6.0]),
+                    size: Size([SizeValue::Value(60.0), SizeValue::Value(8.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(8.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        // Typst-hostile payload: markup that would call into the system if not escaped.
+        let data = HashMap::from([("x".to_string(), json!(r#""]#sys.version[ \ end"#))]);
+        let png =
+            render_single_label(&template, &data, None, &no_settings()).expect("render escaped");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn homebox_qr_template_renders() {
+        let registry =
+            crate::templates::TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let template = registry.get("homebox-qr").expect("template homebox-qr");
+        let data = HashMap::from([
+            ("id".to_string(), json!("A1")),
+            ("message".to_string(), json!("Widget")),
+        ]);
+        let settings = BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())]);
+        let png = render_single_label(template, &data, None, &settings).expect("render homebox-qr");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        // Missing qr_base_url setting is an error.
+        assert!(render_single_label(template, &data, None, &no_settings()).is_err());
+    }
 }
