@@ -4,10 +4,13 @@ set -euo pipefail
 HOST=${HOST:-http://localhost:8080}
 OUT=${OUT:-avery-horizontal.pdf}
 
-curl -sS -X POST "$HOST/render/batch" \
+# avery5163 is a sheet template: POST /batch in download mode lays the labels into
+# slots and returns one paginated PDF.
+curl -sS -X POST "$HOST/batch" \
   -H 'content-type: application/json' \
   -d '{
     "template":"avery5163",
+    "mode":"download",
     "labels":[
       {
         "option": {
