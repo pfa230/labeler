@@ -379,6 +379,8 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-16**: Web UI Render & Print screen (`/print`): pick a template, fill the auto-generated
+  field/option form, live preview, then print to a printer or download (ADR-0013, #20). No API change.
 - **2026-06-16**: REST API moved under `/api` (ADR-0008, #15); the root is reserved for the web UI.
   Unknown `/api/*` paths return `404 NotFound` (JSON). Added `GET /api/templates/{id}/source` (raw YAML)
   for the UI's read-only source view. Swagger UI is at `/api/docs/`, the doc at `/api/openapi.json`.
