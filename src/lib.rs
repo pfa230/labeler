@@ -78,6 +78,24 @@ mod http_tests {
         )))
     }
 
+    fn uniq() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "{}_{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn app_with_ui(dir: &std::path::Path) -> axum::Router {
+        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let store = Store::open_in_memory().expect("store");
+        app(Arc::new(
+            AppState::new(templates, "templates".into(), store).with_ui_dir(dir),
+        ))
+    }
+
     async fn json_response(response: axum::response::Response) -> Value {
         let body = response
             .into_body()
@@ -131,9 +149,13 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn root_path_is_not_the_api() {
-        let app = build_app();
-        let response = app
+    async fn root_path_serves_spa_not_api() {
+        // empty ui dir (no index.html): the old root API path is gone; /health is not the API.
+        let dir = std::env::temp_dir().join(format!("labeler_ui_empty_{}", uniq()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = app_with_ui(&dir);
+        let res = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/health")
@@ -141,8 +163,99 @@ mod http_tests {
                     .unwrap(),
             )
             .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND); // not the API; no index.html present
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_serves_index_for_non_api() {
+        let dir = std::env::temp_dir().join(format!("labeler_ui_{}", uniq()));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(
+            dir.join("index.html"),
+            "<!doctype html><title>labeler ui</title>",
+        )
+        .unwrap();
+        let app = app_with_ui(&dir);
+
+        // a client-side route falls back to index.html
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/templates/abc")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let ct = res
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(ct.contains("text/html"), "got {ct}");
+        let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("labeler ui"));
+
+        // unknown API path still returns the JSON contract
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "NotFound");
+
+        // a missing asset is a 404 (NOT the SPA html) — assets must not be shadowed by index.html
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/assets/missing.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let ct = res
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        assert!(
+            !ct.contains("text/html"),
+            "missing asset must not serve SPA html"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
