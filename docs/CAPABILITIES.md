@@ -121,7 +121,7 @@ Decide via ADR.
 | Field-mapping UI (auto-match headers, show sample values, save mapping) | P2 | Highest-ROI import UX. |
 | Excel (.xlsx) import | P2 | |
 | Google Sheets (public URL → CSV; OAuth later) | Later | Public-URL path is cheap; OAuth second. |
-| Inbound print webhook: `POST /print {template, fields, copies}` | MVP | Lets Grocy-style tools and scripts drive printing. Clean integration surface. |
+| Inbound print webhook: `POST /batch` with `mode: print` | MVP | Lets Grocy-style tools and scripts drive printing. Clean integration surface. |
 | Homebox integration (pull entities, render labels, QR → instance URL) | P2 | Priority target. Read `/v1/entities`; QR = `{base}/item/{uuid}` or `/a/{assetId}`. Treat as read-only. |
 | InvenTree / Snipe-IT pull integrations | Later | InvenTree's machine-driver model informs our printer abstraction; Snipe-IT `/api/v1/hardware`. |
 | Configurable QR "base URL + id field" mapping | MVP | Covers Homebox/Snipe-IT/any tool with one setting. |

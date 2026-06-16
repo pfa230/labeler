@@ -10,8 +10,10 @@ the decision as an ADR under [`docs/adr/`](adr/).
 Labeler is a stateless REST service that renders labels from declarative YAML templates. It supports
 two output modes:
 
-- **Single label → PNG** (`POST /render/label`), for continuous-roll label printers.
-- **Sheet of labels → PDF** (`POST /render/batch`), for pre-cut label sheets on standard paper.
+- **Single label → PNG** (`POST /render/label`), for previews and one-off continuous-roll labels.
+- **Batches of labels** (`POST /batch`), which dispatches on the template format: single templates
+  yield a ZIP of per-label files (download) or one print job per label, sheet templates lay labels into
+  slots across one paginated PDF.
 
 Templates are loaded once at startup and held immutably. Rendering works by generating
 [Typst](https://typst.app/) source on the fly and compiling it in-process via `typst-as-lib`
@@ -28,11 +30,10 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 | GET | `/templates/{id}` | Full template detail incl. layout | `200` / `404` |
 | PUT | `/templates/{id}` | Replace a template (raw YAML body) | `200` / `400` / `404` / `422` |
 | DELETE | `/templates/{id}` | Delete a template | `204` / `404` |
-| POST | `/render/label` | Render one label (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
-| POST | `/render/batch` | Render a label sheet | `200 application/pdf` |
+| POST | `/render/label` | Render one label for preview (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
+| POST | `/batch` | Render/print a batch of labels | `200` / `413` / `422` |
 | GET / POST | `/printers` | List / create printers | `200` / `201` |
 | GET / PUT / DELETE | `/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
-| POST | `/print` | Render and print, or download | `200` / `204` |
 | GET | `/settings` | All settings as a key/value object | `200 {…}` |
 | PUT | `/settings/{key}` | Upsert a setting | `200` / `400` |
 | POST | `/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
@@ -74,17 +75,24 @@ failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned s
 }
 ```
 
+- Renders a single label as a preview or one-off; for multi-label work and printing, use `POST /batch`.
 - `template` must reference a template whose `format.type` is `single`; otherwise `422 UnsupportedFormat`.
 - `data` binds field names referenced by `text`/`qr` layout items.
 - `option` is optional and validated against the template's declared `options`.
 - `?format=png|pdf` (default `png`) selects the output: `image/png` (rasterized at the template DPI) or
-  `application/pdf` (vector). An unknown value is `400 InvalidRequest`.
+  `application/pdf` (vector). An unknown value is `400 InvalidRequest`. The output is the raw image/PDF,
+  not a ZIP.
 
-### 2.2 `POST /render/batch`
+### 2.2 `POST /batch`
+
+One endpoint for rendering and printing batches of labels. It owns the format decision so clients never
+branch on single vs. sheet: they post a list of resolved labels plus a `mode` and branch only on the
+response (download yields a binary, print yields a JSON summary). See [ADR-0011](adr/0011-unified-batch-endpoint.md).
 
 ```json
 {
   "template": "avery5163",
+  "mode": "download",
   "start_slot": 0,
   "labels": [
     { "option": { "orientation": "horizontal", "outline": "yes" },
@@ -93,9 +101,37 @@ failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned s
 }
 ```
 
-- `template` must be `format.type: sheet`; otherwise `422 UnsupportedFormat`.
-- `start_slot` (default `0`) is the zero-based index into the template's `positions`. Each label fills
-  the next slot. `start_slot + labels.len()` must not exceed the number of positions.
+- `mode` is `download` or `print`. `print` requires `printer` and rejects `format` (`400 InvalidRequest`).
+- `format` (`png`|`pdf`) applies to single+download and selects the per-file render format.
+- `start_slot` (default `0`) applies to sheet templates only: it is the zero-based index of the first
+  slot on the first page. Supplying it for a single template is `400 InvalidRequest`.
+- `printer` names a registered printer for `print` mode (unknown printer → `404`).
+
+**Dispatch matrix** (by template `format.type` × `mode`):
+
+| | `download` | `print` |
+| --- | --- | --- |
+| `single` | ZIP of per-label files (`application/zip`), one per label in the `format` render format | one print job per label |
+| `sheet` | labels laid into slots, paginated across pages, as one `application/pdf` | that paginated PDF sent as a single print job |
+
+**Validate-then-execute.** Every label is render-validated first. If any label has bad data, the request
+returns `422 BatchInvalid` with `details.failures: [{ index, code, message }]` listing every failing
+label, and nothing is produced or printed (atomic in both modes and both formats). Only once all labels
+validate does the endpoint execute: `download` streams the blob; `print` dispatches jobs and returns a
+`200` summary.
+
+**Print summary (`BatchSummary`).** Print transport is best-effort: a label that fails to send is
+reported, not fatal.
+
+```json
+{ "total": 3, "succeeded": 2, "failed": [{ "index": 1, "error": "…" }], "jobs": 1 }
+```
+
+`jobs` counts jobs dispatched: one per label for single templates, `1` for a sheet (the whole sheet is
+one job). `failed[].index` is the zero-based label index.
+
+- Batches over 500 labels return `413 BatchTooLarge`.
+- `template` referencing an unknown id → `404`; `option` validated per the template's declared `options`.
 
 ## 3. Template schema
 
@@ -266,6 +302,8 @@ All errors return JSON:
 | `MissingField` | 422 | A referenced `data` field is absent. |
 | `UnsupportedLayoutItem` | 422 | Layout item cannot be rendered (e.g. bad size/qr param). |
 | `UnsupportedFormat` | 422 | Endpoint/format mismatch or unknown unit. |
+| `BatchInvalid` | 422 | One or more `/batch` labels failed render-validation; `details.failures` lists them. |
+| `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). |
 | `RenderFailed` | 500 | Typst compile/encode failure. |
 
 `code` strings are part of the contract — keep them stable.
@@ -279,14 +317,16 @@ settings, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, def
 - **Printers** are "machine" instances `{ id, name, kind, config, enabled }` with an opaque
   per-`kind` JSON `config`, managed via `/printers` CRUD (`id` is a validated slug). `kind` selects a
   `PrinterDriver`; create/replace validate the config for that driver.
-- **`POST /print` `{ template, data, printer?, format? }`** renders a single-format template and, with a
-  `printer`, builds its driver and sends the artifact in the driver's accepted format (recording a job);
-  with no `printer`, returns the rendered bytes as a download (png default, or pdf). Unknown
-  template/printer → 404; sheet template → 422; transport failure → 502 (`PrintFailed`).
+- **Printing is driven by `POST /batch` with `mode: print`** (see §2.2). With a `printer`, it builds that
+  printer's driver and sends each artifact in the driver's accepted format, recording a job and returning
+  a `BatchSummary`. Single templates dispatch one job per label; sheet templates send the paginated PDF
+  as one job. Unknown template/printer → 404; transport failures are best-effort and reported per-label
+  in the summary. (`POST /print` was removed and absorbed by `/batch`; ADR-0011.)
 - **Phase 1 driver:** `cups` sends the rendered PDF over IPP (pure-Rust `ipp` crate, no `lp` binary) to
   a CUPS queue or IPP-Everywhere printer URI. Later families (Zebra ZPL, Brother raster, Dymo) register
   as new drivers without changing dispatch.
-- **Deferred:** printer status read-back, USB/browser printing, batch-to-printer and `copies` (→ #28).
+- **Deferred:** printer status read-back, USB/browser printing. (Batch-to-printer and multi-page sheets
+  are now delivered by `/batch`; `copies` is expanded client-side, so #28 is moot.)
 
 ## Settings
 
@@ -308,20 +348,29 @@ scope (→ #28).
 - **Structural CSV problems** are a whole-request precondition failure with `400` in **both** modes,
   reported before any rendering or printing: ragged rows (a row's field count differs from the header),
   empty or duplicate header column names, and no data rows.
+Internally, `/import/csv` parses the CSV into labels and delegates to the shared `/batch` path
+(ADR-0011), so it inherits the validate-then-execute model.
+
 - **`mode=download`** (default) returns `application/zip` with one file per row, named by 1-based
   zero-padded row index (`001.png`, …) in the template's render format (`format` selects png/pdf).
-  Download is **atomic** over per-row render failures of otherwise well-formed rows: the first row that
-  fails to render (e.g. unresolved interpolation field) fails the whole request with `422` and the
-  offending `details.row`; no partial archive.
+  Download is **atomic** over per-row render failures of otherwise well-formed rows: any row that fails
+  to render (e.g. unresolved interpolation field) fails the whole request with `422 BatchInvalid` and a
+  `details.failures` list; no partial archive.
 - **`mode=print`** requires `printer` (and rejects `format`). It dispatches one print job per row
   (so a continuous-tape printer auto-cuts between labels), recording each job, and **continues past**
-  per-row render/print failures. It returns `200` with a summary
-  `{ total, succeeded, failed: [{ row, error }] }`. Unknown template/printer → 404; disabled
+  per-row print transport failures. It returns `200` with a `BatchSummary`
+  `{ total, succeeded, failed: [{ index, error }], jobs }`. Unknown template/printer → 404; disabled
   printer → 409; sheet template → 422.
 - **Out of scope (v1):** per-row option selection, multipart upload.
 
 ## Changelog
 
+- **2026-06-16**: Unified batch endpoint `POST /batch` (ADR-0011, #30). One endpoint that dispatches on
+  template format (single → ZIP or per-label jobs, sheet → one paginated PDF or one job), with a
+  validate-then-execute model (`422 BatchInvalid`), a label cap (`413 BatchTooLarge`), and a
+  `BatchSummary` print response. `POST /print` and `POST /render/batch` were removed and absorbed;
+  sheet printing and multi-page sheets are now delivered (previously deferred in #28). `/render/label`
+  remains for single-label preview; `/import/csv` now shares the `/batch` path.
 - **2026-06-15** — Added CSV import (`POST /import/csv`): one label per row, ZIP download (atomic)
   or per-row print jobs with a `{ total, succeeded, failed }` summary. Added a generic settings
   store with `GET /settings` and `PUT /settings/{key}`. Issues #21, #14.
