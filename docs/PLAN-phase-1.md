@@ -5,8 +5,9 @@ acceptance criteria. It seeds the GitHub issues; per [CLAUDE.md](../CLAUDE.md), 
 are the live tracker. Plan IDs (`P1-xx`) are stable and used to express dependencies; GitHub issue
 numbers will differ, so record the mapping in the "GH #" column when issues are filed.
 
-Scope is the **MVP** tier of [CAPABILITIES.md](CAPABILITIES.md). The GUI editor and the Homebox pull
-integration are **Phase 2**, not here.
+Scope is the **MVP** tier of [CAPABILITIES.md](CAPABILITIES.md), plus a Homebox data-source integration
+pulled forward into Phase 1 (M7). The GUI editor and the broader integration framework (InvenTree, more
+connectors) stay **Phase 2**.
 
 **Progress.** GitHub milestones M1–M6 hold live status; completed items are also marked **DONE** (with
 their commit) in the issue list below. Done so far: prerequisite ADRs P1-D1 / #1 (printer architecture, ADR-0007) and P1-D2 / #2 (UI delivery,
@@ -27,8 +28,10 @@ and an inbound print webhook are the Phase 1 integrations.
 
 ### Explicitly deferred to Phase 2 (not in Phase 1)
 
-GUI template editor; 1D barcodes; ZPL/Zebra and Brother QL/Dymo network printing; Homebox pull;
-CSV field-mapping UI (Phase 1 ships header-name auto-match only); API token auth; printer status.
+GUI template editor; 1D barcodes; ZPL/Zebra and Brother QL/Dymo network printing; the broader
+integration framework beyond Homebox (InvenTree, additional connectors, declarative connector DSL);
+CSV field-mapping UI (Phase 1 ships header-name auto-match only); API token / app-level auth; printer
+status. (Homebox itself moved into Phase 1 as M7.)
 
 ## 2. Prerequisite decisions (ADRs)
 
@@ -49,6 +52,7 @@ These unblock implementation milestones and should be written first.
 | **M4 Integrations and import** | Drive printing from data and events | QR base-URL mapping; CSV batch import; documented inbound print webhook. |
 | **M5 Basic web UI** | Operate the service without curl | Shell + browse/preview + render/print form + CSV screen + settings, all working end to end. |
 | **M6 Packaging and deployment** | One-command self-host | Docker image; compose with persistent volumes; CUPS access documented and wired; env config. |
+| **M7 External data sources (Homebox)** | Print from real inventory | Browse Homebox in the UI, select records, map to a template, print/download via `/batch`; built on a scoped `Connector` spine. |
 
 ## 4. Issues
 
@@ -230,6 +234,42 @@ Consolidate configuration (PORT, data dir, QR base URL, log level) into document
 - **AC:** all Phase 1 config is env-driven with sane defaults; a sample `.env`/compose env block is
   documented; service starts with zero required config.
 
+### M7 — External data sources (Homebox)
+
+Pulled forward from Phase 2 so Phase 1 can print from real inventory. Builds the minimum integration
+"spine" (design: [api integration framework](superpowers/specs/2026-06-16-api-integration-framework-design.md)),
+scoped to Homebox. The broader framework (InvenTree, more connectors, declarative DSL, full app-auth) stays
+Phase 2 ([#34](https://github.com/pfa230/labeler/issues/34), [#33](https://github.com/pfa230/labeler/issues/33)).
+
+#### P1-71 Connector spine · GH #35
+Backend `Connector` trait + registry (like printer drivers); connections store + CRUD with write-only,
+redacted credentials; browse model endpoints (`schema`/`browse`/`materialize`); a hardened outbound HTTP
+client (scheme/port policy, timeouts, max bytes, no cross-host redirects, IP/metadata checks, private-LAN
+egress documented, secret/cursor redaction).
+- **Depends on:** P1-35 (`/batch`).
+- **AC:** a fake connector browses, paginates (bound cursor), and materializes selected rows under a
+  fanout budget; egress policy rejects cross-host redirect, oversized response, and metadata IPs; tests
+  cover schema/browse/materialize + error categories.
+
+#### P1-72 Homebox connector · GH #35
+The first concrete `Connector`: Homebox `/v1/entities` model, token auth (pasted or login), the
+location→contained-items relation.
+- **Depends on:** P1-71.
+- **AC:** against a realistic Homebox fixture, browse locations/items, drill a location into its items,
+  and materialize fields; auth-failure and empty-page paths covered.
+
+#### P1-73 Integration UI + mapping · GH #35
+One generic browse component (grid + drill-down driven by `schema`) and a `(connection, template)` field
+mapping that materializes selected rows into the existing editable grid → `/batch`.
+- **Depends on:** P1-71, P1-51 (UI shell), P1-54 (editable grid).
+- **AC:** end-to-end from the UI: connect to Homebox → browse → select → map → print/download; mapping
+  drift (missing template field) is surfaced.
+
+Trust model (interim): M7 ships under the existing LAN-trust posture (no app auth yet); residual risk
+equals today's unauthenticated print/template endpoints because connectors are server-side code calling
+known APIs (no generic credentialed proxy). App-level auth ([#33](https://github.com/pfa230/labeler/issues/33))
+is the Phase 2 hardening; document the trust model in SPEC.
+
 ## 5. Dependency graph
 
 ```
@@ -267,6 +307,8 @@ in parallel.
 - A user can `docker compose up`, open the UI, see the starter templates, render a preview, and print
   to a CUPS printer or download a PDF/PNG.
 - The same is achievable over the API, including `POST /batch` and CSV batch.
+- A user can connect Homebox, browse its inventory in the UI, select records, map them to a template, and
+  print/download, under the documented LAN-trust posture.
 - Templates can be hand-authored as YAML and managed over the API; invalid templates are rejected with
   precise errors and never crash the service.
 - All backend changes have tests; `cargo fmt`, `cargo clippy --all-targets --all-features`, and

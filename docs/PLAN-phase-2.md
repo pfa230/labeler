@@ -14,8 +14,9 @@ single-container, self-hosted model.
 
 | Item | Issue | Design | State |
 | --- | --- | --- | --- |
-| App-level authentication | [#33](https://github.com/pfa230/labeler/issues/33) | integration spec §Security | Designed (prerequisite) |
-| API integration framework | [#34](https://github.com/pfa230/labeler/issues/34) | [spec](superpowers/specs/2026-06-16-api-integration-framework-design.md) | Designed |
+| Homebox integration + connector spine | [#35](https://github.com/pfa230/labeler/issues/35) | [spec](superpowers/specs/2026-06-16-api-integration-framework-design.md) | **Moved to Phase 1 (M7)** |
+| App-level authentication | [#33](https://github.com/pfa230/labeler/issues/33) | integration spec §Security | Designed (Phase 2 hardening) |
+| Integration framework breadth (InvenTree, more connectors) | [#34](https://github.com/pfa230/labeler/issues/34) | [spec](superpowers/specs/2026-06-16-api-integration-framework-design.md) | Designed |
 | Inbound print webhook | [#22](https://github.com/pfa230/labeler/issues/22) | — | Backlog |
 | `option.<name>` columns for `/import/csv` | [#32](https://github.com/pfa230/labeler/issues/32) | — | Backlog (low) |
 | Job-log retention / pruning | [#29](https://github.com/pfa230/labeler/issues/29) | — | Backlog |
@@ -28,22 +29,23 @@ single-container, self-hosted model.
 
 ## Track 1 — External integrations
 
-The headline Phase 2 capability. Sequenced because the integration framework cannot ship safely without
-app auth.
+The headline capability. **Homebox + the connector spine moved into Phase 1 (M7,
+[#35](https://github.com/pfa230/labeler/issues/35));** see [`PLAN-phase-1.md`](PLAN-phase-1.md). Phase 2
+builds the breadth on top of that spine.
 
-1. **App-level authentication ([#33](https://github.com/pfa230/labeler/issues/33)) — prerequisite.**
-   The service binds `0.0.0.0` with no auth today. Storing third-party API tokens and browsing inventory
-   through them raises the blast radius, so this lands first: app token auth, CSRF/origin protection on
-   state-changing calls, and admin-only connection CRUD.
+0. **Already in Phase 1 (M7):** the `Connector` trait + registry, connections store, browse/materialize
+   model, generic browse UI, field mapping → `/batch`, and the **Homebox** connector, shipping under the
+   LAN-trust posture with hardened egress (no generic credentialed proxy, so the app-auth blocker that the
+   reviews raised does not apply to this scope).
 
-2. **API integration framework ([#34](https://github.com/pfa230/labeler/issues/34)).** Design approved
+1. **App-level authentication ([#33](https://github.com/pfa230/labeler/issues/33)) — Phase 2 hardening.**
+   Not a blocker for M7 (server-side connectors over LAN-trust), but required as the integration surface
+   grows: app token auth, CSRF/origin protection on state-changing calls, and admin-only connection CRUD.
+
+2. **Integration framework breadth ([#34](https://github.com/pfa230/labeler/issues/34)).** Design approved
    ([spec](superpowers/specs/2026-06-16-api-integration-framework-design.md)), vetted across three
-   adversarial reviews. Connectors are backend code behind a `Connector` trait (registered like printer
-   drivers), normalizing each external API into a shared browse model that one generic frontend renders;
-   `browse` (display) is split from `materialize` (hydration of selected rows); relationships and expansion
-   (per-serial/quantity) are first-class; cursors are server-bound. First connectors: **Homebox** and
-   **InvenTree**. Selection → field mapping → the editable grid → `/batch` (#30, done). Depends on #33 and
-   the hardened egress policy in the spec.
+   adversarial reviews. On top of the M7 spine: the **InvenTree** connector (limit/offset, `Token` auth,
+   hydration, trees, per-serial/quantity expansion) and further connectors, each a new `Connector` impl.
 
    **Deferred behind the trait seam:** a declarative connector DSL and user-authored connector types,
    revisit only with real demand and 2-3 concrete `Connector` impls to generalize from. The trait keeps
