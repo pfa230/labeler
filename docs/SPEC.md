@@ -358,6 +358,10 @@ supplies one label's `data` (all values are strings). A leading UTF-8 BOM is str
 crate handles quoted fields. Output follows the template format via the shared `/batch` path: single
 templates yield per-row artifacts, sheet templates compose the rows into paginated pages.
 
+The web UI's CSV Import screen (`/import`, ADR-0014) is a separate client-side path: it parses and
+edits the CSV in the browser and posts resolved labels to `POST /api/batch`. It does not call
+`/api/import/csv`, which remains the self-contained automation endpoint.
+
 - **Structural CSV problems** are a whole-request precondition failure with `400` in **both** modes,
   reported before any rendering or printing: ragged rows (a row's field count differs from the header),
   empty or duplicate header column names, and no data rows.
@@ -379,6 +383,9 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-16**: Web UI CSV Import screen (`/import`): parse a CSV client-side, review/edit rows and
+  per-row options in an editable grid, then batch print or download via `POST /api/batch` (ADR-0014,
+  #24). No API change; the screen does not use `/api/import/csv`.
 - **2026-06-16**: Web UI Render & Print screen (`/print`): pick a template, fill the auto-generated
   field/option form, live preview, then print to a printer or download (ADR-0013, #20). No API change.
 - **2026-06-16**: REST API moved under `/api` (ADR-0008, #15); the root is reserved for the web UI.
