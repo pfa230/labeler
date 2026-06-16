@@ -197,7 +197,7 @@ Pick a template, fill fields (and options), preview, then print to a printer or 
 - **AC:** end-to-end: choose template → form generated from fields → live/triggered preview → print or
   download succeeds; errors shown inline.
 
-#### P1-54 CSV import screen · GH #24
+#### P1-54 CSV import screen · GH #24 · DONE (f5a84d4)
 Upload a CSV, review rows, and batch print/download.
 - **Depends on:** P1-51, P1-42.
 - **AC:** from the UI, a CSV produces a batch via `/batch`; row/field errors shown; download or print
