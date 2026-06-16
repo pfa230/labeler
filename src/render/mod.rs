@@ -122,7 +122,7 @@ pub fn render_single_label_pdf(
         .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))
 }
 
-pub fn render_sheet_labels(
+pub fn render_sheet_pages(
     template: &TemplateDefinition,
     labels: &[LabelInput],
     start_slot: u32,
@@ -137,76 +137,138 @@ pub fn render_sheet_labels(
     } = &template.format
     else {
         return Err(AppError::unsupported_format(
-            "render_batch only supports sheet format",
+            "render_sheet_pages only supports sheet format",
         ));
     };
 
-    let page_width_units = *paper_width;
-    let page_height_units = *paper_height;
-
     let start_slot = start_slot as usize;
-    if start_slot > positions.len() {
+    if start_slot >= positions.len() && !labels.is_empty() {
         return Err(AppError::invalid_request("start_slot is out of range"));
     }
-    if start_slot + labels.len() > positions.len() {
-        return Err(AppError::invalid_request("not enough sheet positions"));
-    }
 
-    let mut source = String::new();
-    let page_width = format_length(page_width_units, &template.unit)?;
-    let page_height = format_length(page_height_units, &template.unit)?;
-    writeln!(
-        source,
-        "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})",
-        unit = template.unit
-    )
-    .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+    let page_width_units = *paper_width;
+    let page_height_units = *paper_height;
+    let unit = &template.unit;
+    let items = select_layout_items(template)?;
+
+    let slots_per_page = positions.len();
+    let mut placements: Vec<(usize, usize)> = Vec::with_capacity(labels.len());
+    let mut slot = start_slot;
+    let mut page = 0usize;
+    for _ in labels {
+        if slot >= slots_per_page {
+            page += 1;
+            slot = 0;
+        }
+        placements.push((page, slot));
+        slot += 1;
+    }
+    let page_count = placements.last().map(|(p, _)| p + 1).unwrap_or(1);
 
     let images = RefCell::new(ImageCollector::default());
 
-    for (idx, label) in labels.iter().enumerate() {
-        let position = &positions[start_slot + idx];
-        let point = position.point();
-        let left = point.x;
-        let bottom = point.y;
-        let width = *label_width;
-        let height = *label_height;
-        let top = bottom + height;
-
-        let selected_option = normalize_option(template, label.option.as_ref())?;
-        let items = select_layout_items(template)?;
+    let mut rendered: Vec<String> = Vec::with_capacity(labels.len());
+    let mut failures: Vec<crate::errors::BatchFailure> = Vec::new();
+    for (idx, lbl) in labels.iter().enumerate() {
+        let selected_option = match normalize_option(template, lbl.option.as_ref()) {
+            Ok(opt) => opt,
+            Err(err) => {
+                failures.push(crate::errors::BatchFailure {
+                    index: idx,
+                    code: err.code(),
+                    message: err.message_text(),
+                });
+                rendered.push(String::new());
+                continue;
+            }
+        };
         let context = RenderContext::new(
-            width,
-            height,
-            &template.unit,
-            &label.data,
+            *label_width,
+            *label_height,
+            unit,
+            &lbl.data,
             selected_option,
             settings,
             &images,
         );
-        let content = context.render_items(items)?;
+        match context.render_items(items) {
+            Ok(content) => rendered.push(content),
+            Err(err) => {
+                failures.push(crate::errors::BatchFailure {
+                    index: idx,
+                    code: err.code(),
+                    message: err.message_text(),
+                });
+                rendered.push(String::new());
+            }
+        }
+    }
+    if !failures.is_empty() {
+        return Err(AppError::batch_invalid(failures));
+    }
 
-        let dx = format_length(left, &template.unit)?;
-        let dy = format_length(page_height_units - top, &template.unit)?;
-        let box_width = format_length(width, &template.unit)?;
-        let box_height = format_length(height, &template.unit)?;
-
-        writeln!(
-            source,
-            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
-        )
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+    let mut source = String::new();
+    let page_w = format_length(page_width_units, unit)?;
+    let page_h = format_length(page_height_units, unit)?;
+    for p in 0..page_count {
+        if p == 0 {
+            writeln!(
+                source,
+                "#set page(width: {page_w}, height: {page_h}, margin: 0{unit})"
+            )
+            .map_err(|err| {
+                AppError::render_failed(format!("failed to build typst source: {err}"))
+            })?;
+            writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))").map_err(
+                |err| AppError::render_failed(format!("failed to build typst source: {err}")),
+            )?;
+        } else {
+            writeln!(source, "#pagebreak()").map_err(|err| {
+                AppError::render_failed(format!("failed to build typst source: {err}"))
+            })?;
+        }
+        for (idx, (lp, ls)) in placements.iter().enumerate() {
+            if *lp != p {
+                continue;
+            }
+            let point = positions[*ls].point();
+            let top = point.y + *label_height;
+            let dx = format_length(point.x, unit)?;
+            let dy = format_length(page_height_units - top, unit)?;
+            let bw = format_length(*label_width, unit)?;
+            let bh = format_length(*label_height, unit)?;
+            writeln!(
+                source,
+                "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {bw}, height: {bh}, clip: true)[{}]]",
+                rendered[idx]
+            )
+            .map_err(|err| {
+                AppError::render_failed(format!("failed to build typst source: {err}"))
+            })?;
+        }
     }
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
 
     let doc = compile_paged(source, images.into_inner().files)?;
+    typst_pdf::pdf(&doc, &Default::default())
+        .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))
+}
 
-    let pdf = typst_pdf::pdf(&doc, &Default::default())
-        .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))?;
-
-    Ok(pdf)
+/// Count rendered PDF pages by counting "/Type /Page" objects (excluding the "/Type /Pages" tree
+/// node). Used by pagination tests.
+pub fn count_pdf_pages(pdf: &[u8]) -> usize {
+    let needle = b"/Type /Page";
+    let mut count = 0usize;
+    let mut i = 0;
+    while let Some(pos) = pdf[i..].windows(needle.len()).position(|w| w == needle) {
+        let at = i + pos;
+        let after = at + needle.len();
+        if pdf.get(after) != Some(&b's') {
+            count += 1;
+        }
+        i = after;
+    }
+    count
 }
 
 fn select_layout_items(template: &TemplateDefinition) -> Result<&[LayoutItem], AppError> {
@@ -653,7 +715,9 @@ impl<'a> RenderContext<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_sheet_labels, render_single_label, render_single_label_pdf};
+    use super::{
+        count_pdf_pages, render_sheet_pages, render_single_label, render_single_label_pdf,
+    };
     use crate::models::{
         Alignment, Dimension, Fit, FontSize, Frame, LabelInput, Layout, LayoutItem, Options,
         Padding, Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat,
@@ -664,6 +728,77 @@ mod tests {
 
     fn no_settings() -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    fn two_slot_sheet() -> TemplateDefinition {
+        TemplateDefinition {
+            id: "sheet2".to_string(),
+            name: "Sheet2".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Sheet {
+                paper_width: 20.0,
+                paper_height: 10.0,
+                label_width: 10.0,
+                label_height: 10.0,
+                positions: vec![SheetPosition([0.0, 0.0]), SheetPosition([10.0, 0.0])],
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: Some("message".to_string()),
+                value: None,
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(8.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        }
+    }
+
+    fn sheet_label(msg: &str) -> LabelInput {
+        LabelInput {
+            data: HashMap::from([("message".to_string(), json!(msg))]),
+            option: None,
+        }
+    }
+
+    #[test]
+    fn sheet_pages_paginate_overflow() {
+        let labels = vec![sheet_label("a"), sheet_label("b"), sheet_label("c")];
+        let pdf =
+            render_sheet_pages(&two_slot_sheet(), &labels, 0, &no_settings()).expect("render");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert_eq!(count_pdf_pages(&pdf), 2);
+    }
+
+    #[test]
+    fn sheet_pages_respect_start_slot() {
+        let labels = vec![sheet_label("a"), sheet_label("b")];
+        let pdf =
+            render_sheet_pages(&two_slot_sheet(), &labels, 1, &no_settings()).expect("render");
+        assert!(pdf.starts_with(b"%PDF"));
+        assert_eq!(count_pdf_pages(&pdf), 2);
+    }
+
+    #[test]
+    fn sheet_pages_collect_bad_label_index() {
+        let labels = vec![
+            sheet_label("a"),
+            LabelInput {
+                data: HashMap::new(),
+                option: None,
+            },
+        ];
+        let err = render_sheet_pages(&two_slot_sheet(), &labels, 0, &no_settings()).unwrap_err();
+        assert_eq!(err.code(), "BatchInvalid");
     }
 
     #[test]
@@ -826,7 +961,7 @@ mod tests {
             option: None,
         }];
 
-        let pdf = render_sheet_labels(&template, &labels, 0, &no_settings()).expect("render sheet");
+        let pdf = render_sheet_pages(&template, &labels, 0, &no_settings()).expect("render sheet");
 
         assert!(!pdf.is_empty(), "rendered PDF is empty");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
@@ -930,7 +1065,7 @@ mod tests {
             option: None,
         }];
         let pdf =
-            render_sheet_labels(&template, &labels, 0, &no_settings()).expect("render sheet image");
+            render_sheet_pages(&template, &labels, 0, &no_settings()).expect("render sheet image");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
