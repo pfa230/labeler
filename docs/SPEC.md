@@ -383,6 +383,9 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-16**: Web UI Settings & Printers screen (`/settings`): a key/value settings editor over
+  `GET /api/settings` + `PUT /api/settings/{key}` (with `qr_base_url` suggested), and a printers CRUD
+  table over `/api/printers` (ADR-0015, #23). No API change.
 - **2026-06-16**: Web UI CSV Import screen (`/import`): parse a CSV client-side, review/edit rows and
   per-row options in an editable grid, then batch print or download via `POST /api/batch` (ADR-0014,
   #24). No API change; the screen does not use `/api/import/csv`.

@@ -25,6 +25,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0012](0012-job-options.md) | Job options as format-intrinsic batch parameters | Accepted |
 | [0013](0013-render-print-ux.md) | Render & Print UX decisions | Accepted |
 | [0014](0014-csv-import-grid.md) | CSV import editable grid | Accepted |
+| [0015](0015-settings-printers-ux.md) | Settings & Printers screen UX | Accepted |
 
 ## Adding an ADR
 
