@@ -86,12 +86,12 @@ handler body without changing this contract; not built now.
 
 ## Architecture
 
-- **`batch` module** owns `execute_batch(template, labels, mode, printer, format, start_slot, settings)`
+- **`batch` module** owns `render_batch(template, labels, mode, printer, format, start_slot, settings)`
   returning either bytes+content-type (download) or a summary (print). The handler is a thin wrapper.
 - **`render_sheet_labels` generalizes** to multi-page pagination; the single-page path becomes the
   one-page case.
 - **`/import/csv` refactors** to parse the CSV (existing `parse_csv_rows`) → build `labels` → call
-  `execute_batch`. It removes the duplicated render/zip/print loop and remains the self-contained CSV
+  `render_batch`. It removes the duplicated render/zip/print loop and remains the self-contained CSV
   path. Its current single-format-only guard relaxes (sheet CSVs now compose via the same path).
 - **Remove `/print` and `/render/batch`:** delete handlers/routes; migrate their tests to `/batch`;
   update SPEC endpoints, `scripts/*.sh`, and `openapi.rs` (new request/response models registered).
@@ -114,7 +114,7 @@ handler body without changing this contract; not built now.
 - Print transport: a failing fake-driver yields a `200` summary with the right `failed[]` indices.
 - `start_slot`: sheet offset places the first label in the right slot and paginates overflow;
   `start_slot` on a single template → `400`. `format` with print → `400`. Over-cap → `413`.
-- `/import/csv` still works end to end through the shared `execute_batch`.
+- `/import/csv` still works end to end through the shared `render_batch`.
 
 ## Docs to update in the same change
 

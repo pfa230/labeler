@@ -102,7 +102,8 @@ response (download yields a binary, print yields a JSON summary). See [ADR-0011]
 ```
 
 - `mode` is `download` or `print`. `print` requires `printer` and rejects `format` (`400 InvalidRequest`).
-- `format` (`png`|`pdf`) applies to single+download and selects the per-file render format.
+- `format` (`png`|`pdf`) applies to single+download and selects the per-file render format. Sheet output
+  is always PDF, so `format` is ignored for sheet templates.
 - `start_slot` (default `0`) applies to sheet templates only: it is the zero-based index of the first
   slot on the first page. Supplying it for a single template is `400 InvalidRequest`.
 - `printer` names a registered printer for `print` mode (unknown printer → `404`).
@@ -356,11 +357,12 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   Download is **atomic** over per-row render failures of otherwise well-formed rows: any row that fails
   to render (e.g. unresolved interpolation field) fails the whole request with `422 BatchInvalid` and a
   `details.failures` list; no partial archive.
-- **`mode=print`** requires `printer` (and rejects `format`). It dispatches one print job per row
-  (so a continuous-tape printer auto-cuts between labels), recording each job, and **continues past**
-  per-row print transport failures. It returns `200` with a `BatchSummary`
-  `{ total, succeeded, failed: [{ index, error }], jobs }`. Unknown template/printer → 404; disabled
-  printer → 409; sheet template → 422.
+- **`mode=print`** requires `printer` (and rejects `format`). Because `/import/csv` shares the `/batch`
+  path, sheet CSVs are supported: the rows compose a paginated PDF that prints as one job. For single
+  templates it dispatches one print job per row (so a continuous-tape printer auto-cuts between labels),
+  recording each job, and **continues past** per-row print transport failures. It returns `200` with a
+  `BatchSummary` `{ total, succeeded, failed: [{ index, error }], jobs }`. Unknown template/printer → 404;
+  disabled printer → 409.
 - **Out of scope (v1):** per-row option selection, multipart upload.
 
 ## Changelog
