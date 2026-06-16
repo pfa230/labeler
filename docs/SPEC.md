@@ -21,9 +21,11 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 
 ## 2. HTTP API
 
-All API routes are under `/api` (per ADR-0008); the root is reserved for the web UI (served by the
-frontend build, M5). An unknown `/api/*` path returns `404 NotFound` (the JSON error contract), never an
-HTML page.
+All API routes are under `/api` (per ADR-0008). The root serves the React SPA (`ui/`, built by Vite to
+`ui/dist`): hashed assets at `/assets/*` (a missing asset is a `404`, not HTML), and every other non-`/api`
+path falls back to `index.html` for client-side routing. The served UI dir is `LABELER_UI_DIR`
+(default `ui/dist`); if absent the root returns a "UI not built" `404`. An unknown `/api/*` path returns
+`404 NotFound` (the JSON error contract), never an HTML page.
 
 | Method | Path | Purpose | Success |
 | --- | --- | --- | --- |
