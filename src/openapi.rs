@@ -20,6 +20,7 @@ use crate::{
         api::create_template,
         api::reload_templates,
         api::get_template,
+        api::template_source,
         api::replace_template,
         api::delete_template,
         api::list_printers,
@@ -33,6 +34,7 @@ use crate::{
         api::batch,
         api::import_csv
     ),
+    servers((url = "/api")),
     components(
         schemas(
             HealthResponse,

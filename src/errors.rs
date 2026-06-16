@@ -29,6 +29,7 @@ const CODE_PRINT_FAILED: &str = "PrintFailed";
 const CODE_INTERNAL: &str = "Internal";
 const CODE_BATCH_INVALID: &str = "BatchInvalid";
 const CODE_BATCH_TOO_LARGE: &str = "BatchTooLarge";
+const CODE_NOT_FOUND: &str = "NotFound";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -94,6 +95,15 @@ impl AppError {
             CODE_TEMPLATE_NOT_FOUND,
             format!("No template with id '{}' was found", id),
             Some(json!({ "template": id })),
+        )
+    }
+
+    pub fn not_found(path: &str) -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            CODE_NOT_FOUND,
+            format!("no API route for '{path}'"),
+            Some(json!({ "path": path })),
         )
     }
 
