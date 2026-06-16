@@ -24,6 +24,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0011](0011-unified-batch-endpoint.md) | Unified batch render/print endpoint | Accepted |
 | [0012](0012-job-options.md) | Job options as format-intrinsic batch parameters | Accepted |
 | [0013](0013-render-print-ux.md) | Render & Print UX decisions | Accepted |
+| [0014](0014-csv-import-grid.md) | CSV import editable grid | Accepted |
 
 ## Adding an ADR
 
