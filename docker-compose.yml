@@ -1,0 +1,38 @@
+x-labeler-image: &labeler-image
+  build: .
+  image: labeler:latest
+  pull_policy: build
+
+services:
+  labeler-init:
+    <<: *labeler-image
+    user: "0:0"
+    entrypoint: ["/busybox/sh","-c","chown -R 65532:65532 /app/data /app/templates"]
+    volumes:
+      - labeler-data:/app/data
+      - labeler-templates:/app/templates
+  labeler:
+    <<: *labeler-image
+    depends_on:
+      labeler-init:
+        condition: service_completed_successfully
+    ports: ["${HOST_PORT:-8080}:8080"]
+    environment:
+      RUST_LOG: ${RUST_LOG:-labeler=info,tower_http=info}
+    volumes:
+      - labeler-data:/app/data
+      - labeler-templates:/app/templates
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD","/busybox/wget","-qO-","http://127.0.0.1:8080/api/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+volumes:
+  labeler-data:
+    name: labeler-data
+  labeler-templates:
+    name: labeler-templates
