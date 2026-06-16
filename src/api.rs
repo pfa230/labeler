@@ -96,7 +96,15 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/render/label", post(render_label))
         .route("/batch", post(batch))
         .route("/import/csv", post(import_csv))
+        // Serve the OpenAPI doc from an explicit route so it resolves at /api/openapi.json under the
+        // `/api` nest (SwaggerUi's own `.url()` serving route gets double-prefixed when nested).
+        .route("/openapi.json", get(openapi_json))
+        // SwaggerUi serves the UI at /api/docs/ (trailing slash).
         .merge(SwaggerUi::new("/docs").url("/api/openapi.json", ApiDoc::openapi()))
+}
+
+async fn openapi_json() -> Response {
+    Json(ApiDoc::openapi()).into_response()
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
