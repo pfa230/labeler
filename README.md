@@ -10,6 +10,19 @@ A REST service that renders labels from declarative YAML templates. It produces 
 cargo run            # serves on 0.0.0.0:$PORT (default 8080)
 ```
 
+## Web UI
+
+A React + TypeScript SPA in `ui/` (Vite, Tailwind). The backend serves its build at `/`.
+
+```bash
+npm --prefix ui install            # once
+npm --prefix ui run dev            # Vite dev server (proxies /api to cargo run on :8080)
+npm --prefix ui run build          # build to ui/dist (then `cargo run` serves it at /)
+```
+
+In production the binary serves `ui/dist` (override the dir with `LABELER_UI_DIR`). The Docker
+multi-stage build that bundles the UI is M6.
+
 YAML templates are loaded from `templates/` at startup; an invalid template stops the service from
 starting. Starter templates: `avery5163` (US Letter sheet) and `brother12mm` / `brother18mm` /
 `brother24mm` (continuous tape).
