@@ -301,17 +301,23 @@ URL/token).
 
 **`POST /import/csv?template=<id>&mode=download|print&printer=<id>&format=png|pdf`** renders one label
 per CSV row. The request body is raw `text/csv`: the header row names the fields, each subsequent row
-supplies one label's `data` (all values are strings). It targets single-format templates; sheet
-composition from rows is out of scope (→ #28).
+supplies one label's `data` (all values are strings). A leading UTF-8 BOM is stripped, and the `csv`
+crate handles quoted fields. It targets single-format templates; sheet composition from rows is out of
+scope (→ #28).
 
+- **Structural CSV problems** are a whole-request precondition failure with `400` in **both** modes,
+  reported before any rendering or printing: ragged rows (a row's field count differs from the header),
+  empty or duplicate header column names, and no data rows.
 - **`mode=download`** (default) returns `application/zip` with one file per row, named by 1-based
   zero-padded row index (`001.png`, …) in the template's render format (`format` selects png/pdf).
-  Download is **atomic**: the first row that fails to render (e.g. unresolved interpolation field)
-  fails the whole request with `422` and the offending `details.row`; no partial archive.
+  Download is **atomic** over per-row render failures of otherwise well-formed rows: the first row that
+  fails to render (e.g. unresolved interpolation field) fails the whole request with `422` and the
+  offending `details.row`; no partial archive.
 - **`mode=print`** requires `printer` (and rejects `format`). It dispatches one print job per row
-  (so a continuous-tape printer auto-cuts between labels), recording each job, and **continues past
-  failures**. It returns `200` with a summary `{ total, succeeded, failed: [{ row, error }] }`.
-  Unknown template/printer → 404; disabled printer → 409; sheet template → 422.
+  (so a continuous-tape printer auto-cuts between labels), recording each job, and **continues past**
+  per-row render/print failures. It returns `200` with a summary
+  `{ total, succeeded, failed: [{ row, error }] }`. Unknown template/printer → 404; disabled
+  printer → 409; sheet template → 422.
 - **Out of scope (v1):** per-row option selection, multipart upload.
 
 ## Changelog
