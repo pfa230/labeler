@@ -17,4 +17,4 @@ venv/
 # Runtime app-state (SQLite)
 /data/
 
-*.pdf
+*.pdf.superpowers/
