@@ -48,7 +48,7 @@ describe("parseCsv", () => {
   });
 
   it("marks malformed CSV (unterminated quote) as fatal", () => {
-    // papaparse emits a "Quoted field unterminated" error for an opened-but-unclosed quote.
+    // papaparse emits a MissingQuotes error for an opened-but-unclosed quote, which sets fatal.
     const r = parseCsv('sku\n"open');
     expect(r.fatal).toBe(true);
     expect(r.issues.join(" ")).toMatch(/parse error/i);
