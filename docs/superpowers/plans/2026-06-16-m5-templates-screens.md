@@ -63,7 +63,8 @@ export interface TemplateDetail {
 }
 ```
 
-Also widen `TemplateSummary.format` to `TemplateFormat["type"]`-bearing: change it to `format: { type: "single" | "sheet" }` and add `options?: Options`.
+Also change `TemplateSummary` to carry the FULL format and options (the backend summary clones the full
+`TemplateFormat`): `format: TemplateFormat` and `options?: Options` (drop the old `{ type: string }`).
 
 - [ ] **Step 2: Add queries**
 
@@ -71,7 +72,7 @@ In `ui/src/api/queries.ts`:
 
 ```ts
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getJson, sendJson } from "./client";
+import { getJson } from "./client"; // only getJson is used here; do NOT import sendJson (noUnusedLocals)
 import type { TemplateSummary, TemplateDetail } from "./types";
 
 export function useTemplates() {
@@ -175,15 +176,15 @@ Run: `cd ui && npx vitest run src/lib/templateFields.test.ts` → FAIL (module m
 ```ts
 import type { LayoutItem, Options } from "../api/types";
 
-// Parse `{field}` / `{settings.key}` tokens from an interpolation string, honoring `{{`/`}}` escapes.
+// Best-effort token parse of an interpolation string (NOT validation): `{field}` / `{settings.key}`,
+// honoring `{{`/`}}` escapes. Unmatched braces are ignored here (the backend rejects them at render time).
 function tokens(s: string): string[] {
   const out: string[] = [];
   let i = 0;
   while (i < s.length) {
-    const c = s[i];
-    if (c === "{" && s[i + 1] === "{") { i += 2; continue; }
-    if (c === "}" && s[i + 1] === "}") { i += 2; continue; }
-    if (c === "{") {
+    if (s[i] === "{" && s[i + 1] === "{") { i += 2; continue; }
+    if (s[i] === "}" && s[i + 1] === "}") { i += 2; continue; }
+    if (s[i] === "{") {
       const end = s.indexOf("}", i + 1);
       if (end === -1) break;
       out.push(s.slice(i + 1, end));
@@ -201,46 +202,59 @@ export function defaultOptions(options?: Options): Record<string, string> {
   return sel;
 }
 
-function walk(items: LayoutItem[], selected: Record<string, string>, onToken: (t: string) => void) {
+// A text/qr item carries EXACTLY ONE of name|value (backend invariant). Emit name if present, else value tokens.
+function walk(
+  items: LayoutItem[],
+  selected: Record<string, string>,
+  onData: (t: string) => void,
+  onImage: (t: string) => void,
+) {
+  const gating = Object.keys(selected).length > 0; // no selection => mirror backend's "render all" (no gate)
   for (const it of items) {
     if (it.type === "text" || it.type === "qr") {
-      if (it.name) onToken(it.name);
-      if (it.value) for (const t of tokens(it.value)) onToken(t);
+      if (it.name) onData(it.name);
+      else if (it.value) for (const t of tokens(it.value)) onData(t);
     } else if (it.type === "image") {
-      if (it.name) onToken(it.name);
+      // a data-bound image is BOTH a referenced data field AND an image field (sample = data URI)
+      if (it.name) { onData(it.name); onImage(it.name); }
     } else if (it.type === "container") {
-      // gate: a container with an `option` only contributes when the selection matches all its keys
-      const match = Object.entries(it.option ?? {}).every(([k, v]) => selected[k] === v);
-      if (match) walk(it.items, selected, onToken);
+      const match = !gating || Object.entries(it.option ?? {}).every(([k, v]) => selected[k] === v);
+      if (match) walk(it.items, selected, onData, onImage);
     }
   }
 }
 
+// Data fields the (option-selected) layout references — text/qr name|value tokens (excluding settings.*).
 export function referencedFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
   const set = new Set<string>();
-  walk(layout, selected, (t) => { if (!t.startsWith("settings.")) set.add(t); });
+  walk(layout, selected, (t) => { if (!t.startsWith("settings.")) set.add(t); }, () => {});
   return [...set];
 }
 
+// Subset of referenced fields that are data-bound IMAGE fields (need a data-URI sample, not text).
+export function imageFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
+  const set = new Set<string>();
+  walk(layout, selected, () => {}, (t) => set.add(t));
+  return [...set];
+}
+
+// {settings.*} keys referenced anywhere in the layout (not option-gated; discovery across all branches).
 export function referencedSettings(layout: LayoutItem[]): string[] {
   const set = new Set<string>();
-  // settings are not option-gated for discovery; collect across all branches
-  const all: Record<string, string> = {}; // empty selection still matches option-less containers; for settings,
-  walkAllForSettings(layout, set);
-  void all;
+  const rec = (items: LayoutItem[]) => {
+    for (const it of items) {
+      if ((it.type === "text" || it.type === "qr") && it.value) {
+        for (const t of tokens(it.value)) if (t.startsWith("settings.")) set.add(t.slice("settings.".length));
+      } else if (it.type === "container") rec(it.items);
+    }
+  };
+  rec(layout);
   return [...set];
 }
-
-function walkAllForSettings(items: LayoutItem[], set: Set<string>) {
-  for (const it of items) {
-    if ((it.type === "text" || it.type === "qr") && it.value) {
-      for (const t of tokens(it.value)) if (t.startsWith("settings.")) set.add(t.slice("settings.".length));
-    } else if (it.type === "container") {
-      walkAllForSettings(it.items, set);
-    }
-  }
-}
 ```
+
+Add a test that `imageFields(layout, sel)` returns `["logo"]` for the fixture, and that a malformed
+`{ type: "text", value: "a{id" }` doesn't throw (best-effort: yields no token past the unmatched brace).
 
 - [ ] **Step 3: Run to verify it passes**
 
@@ -285,11 +299,17 @@ Run: `cd ui && npx vitest run src/lib/preview.test.ts` → FAIL.
 ```ts
 import { useEffect, useState } from "react";
 import { fetchBlob, submitBatch } from "../api/client";
-import { defaultOptions, referencedFields } from "./templateFields";
+import { defaultOptions, imageFields, referencedFields } from "./templateFields";
 import type { TemplateDetail } from "../api/types";
 
-export function sampleData(fields: string[]): Record<string, string> {
-  return Object.fromEntries(fields.map((f) => [f, f]));
+// A 1x1 transparent PNG data URI — a valid sample for data-bound image fields (backend parses a data URI).
+const SAMPLE_PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+// Build sample values per referenced field: image fields get a data URI, others the field name as a stand-in.
+export function sampleData(fields: string[], imgFields: string[] = []): Record<string, string> {
+  const imgs = new Set(imgFields);
+  return Object.fromEntries(fields.map((f) => [f, imgs.has(f) ? SAMPLE_PNG : f]));
 }
 
 // Renders a preview object URL for a template detail. Single -> /render/label image; sheet -> /batch pdf.
@@ -300,18 +320,21 @@ export function useTemplatePreview(detail: TemplateDetail | undefined): { url?: 
     let url: string | undefined;
     let cancelled = false;
     setState({ loading: true });
-    const option = defaultOptions(detail.options);
-    const data = sampleData(referencedFields(detail.layout, option));
+    const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
+    const option = hasOptions ? defaultOptions(detail.options) : undefined; // omit `option` for no-option templates
+    const sel = option ?? {};
+    const data = sampleData(referencedFields(detail.layout, sel), imageFields(detail.layout, sel));
+    const label: Record<string, unknown> = option ? { data, option } : { data };
     (async () => {
       try {
         let blob: Blob;
         if (detail.format.type === "single") {
+          const body = option ? { template: detail.id, data, option } : { template: detail.id, data };
           ({ blob } = await fetchBlob("/render/label", {
-            method: "POST", headers: { "content-type": "application/json" },
-            body: JSON.stringify({ template: detail.id, data, option }),
+            method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
           }));
         } else {
-          const r = await submitBatch({ template: detail.id, labels: [{ data, option }], mode: "download" });
+          const r = await submitBatch({ template: detail.id, labels: [label], mode: "download" });
           if (r.kind !== "download") throw new Error("expected a sheet PDF");
           blob = r.blob;
         }
@@ -328,17 +351,32 @@ export function useTemplatePreview(detail: TemplateDetail | undefined): { url?: 
 }
 ```
 
-Note: `/api/render/label` and `/api/print`-style bodies take `{ template, data, option }` (flattened `LabelInput`), matching the backend `RenderLabelRequest`. Verify the field name (`option`) against `src/models.rs` `LabelInput` during impl.
+Notes: the render/label and batch label bodies are the flattened `LabelInput` (`{ template, data, option? }`);
+**`option` is omitted entirely for templates that declare no options** (the backend rejects any `option`
+on a no-option template). Image fields get a valid PNG data URI so the preview render succeeds.
 
-- [ ] **Step 3: Run**
+- [ ] **Step 3: Stub object URLs for jsdom**
+
+jsdom has no `URL.createObjectURL`/`revokeObjectURL`, which the hook (and any blob test) needs. Append to
+`ui/src/setupTests.ts`:
+
+```ts
+if (!URL.createObjectURL) {
+  // jsdom shim for blob preview/download tests
+  (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = () => "blob:mock";
+  (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {};
+}
+```
+
+- [ ] **Step 4: Run**
 
 Run: `cd ui && npx vitest run src/lib/preview.test.ts` → PASS (the `sampleData` unit; the hook is exercised by the detail screen test with a mocked fetch).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add ui/src/lib/preview.ts ui/src/lib/preview.test.ts
-git commit -m "Template preview hook with synthesized sample data (#17)"
+git add ui/src/lib/preview.ts ui/src/lib/preview.test.ts ui/src/setupTests.ts
+git commit -m "Template preview hook with synthesized sample data + jsdom URL stub (#17)"
 ```
 
 ---
@@ -349,7 +387,7 @@ git commit -m "Template preview hook with synthesized sample data (#17)"
 
 - [ ] **Step 1: Failing test**
 
-`ui/src/pages/Templates.test.tsx`: render `Templates` inside `QueryClientProvider` + `MemoryRouter`, with `fetch` stubbed to return two templates (one single, one sheet). Assert both names render, the single/sheet badges show, and typing in the search box filters by id. Example assertions: `await screen.findByText("Brother 24mm")`, `screen.getByText("sheet")`, after `fireEvent.change(searchBox, { target: { value: "avery" }})` only the matching card remains.
+`ui/src/pages/Templates.test.tsx`: render `Templates` inside `QueryClientProvider` (with `defaultOptions: { queries: { retry: false } }` so errors surface fast) + `ToastProvider` (the page calls `useToast`) + `MemoryRouter`, with `fetch` stubbed to return two templates (one single, one sheet). Assert both names render, the single/sheet badges show, and typing in the search box filters by id. Example assertions: `await screen.findByText("Brother 24mm")`, `screen.getByText("sheet")`, after `fireEvent.change(searchBox, { target: { value: "avery" }})` only the matching card remains.
 
 - [ ] **Step 2: Implement**
 
@@ -372,7 +410,7 @@ git commit -m "Templates list screen: cards, search, badges (#17)"
 
 - [ ] **Step 1: Failing test**
 
-`ui/src/pages/TemplateDetail.test.tsx`: render with a route `/templates/brother24mm` (use `MemoryRouter initialEntries` + a `Routes`), stub `fetch` for `/api/templates/brother24mm` (detail), `/api/templates/brother24mm/source` (yaml text), and the preview render (return a small blob). Assert: the name renders, the referenced field names appear (e.g. `message`, `code`), the format badge shows, the raw YAML source toggle reveals the yaml text, and a "Use to print" link/button is present pointing at `/print`.
+`ui/src/pages/TemplateDetail.test.tsx`: render inside `QueryClientProvider` (retry: false) + `ToastProvider` + `MemoryRouter initialEntries={["/templates/brother24mm"]}` with a `Routes`/`Route path="/templates/:id"`. Stub `fetch` for `/api/templates/brother24mm` (detail JSON), `/api/templates/brother24mm/source` (yaml text), and the preview render (`/api/render/label` → a small blob, e.g. `new Response(new Blob(["x"]), {status:200, headers:{"content-type":"image/png"}})`). Assert: the name renders, the referenced field names appear (e.g. `message`, `code`), the format badge shows, the raw YAML source toggle reveals the yaml text, and a "Use to print" link/button is present pointing at `/print`. (The jsdom `URL.createObjectURL` stub from Task 3 makes the preview hook safe.)
 
 - [ ] **Step 2: Implement**
 
@@ -380,7 +418,11 @@ git commit -m "Templates list screen: cards, search, badges (#17)"
 
 - [ ] **Step 3: Route**
 
-In `ui/src/app/App.tsx`, add child routes under the Shell layout: `/templates/:id` → `TemplateDetail`, `/templates/new` → `NewTemplate` (Task 6). Ensure these are matched before the catch-all redirect.
+In `ui/src/app/App.tsx`, add a child route under the Shell layout: `/templates/:id` → `TemplateDetail`,
+and a `/templates` → `/` redirect (the list lives at `/`). Matched before the catch-all `*` redirect. Do
+NOT add the `/templates/new` route here — it's added in Task 6 with `NewTemplate` (adding it now would
+import a file that doesn't exist yet and break the build). Note: `/templates/new` must be ordered BEFORE
+`/templates/:id` in Task 6 so "new" isn't captured as an `:id`.
 
 - [ ] **Step 4: Run + commit**
 
@@ -399,19 +441,21 @@ git commit -m "Template detail screen: preview, metadata, fields, source, use-to
 
 - [ ] **Step 1: Failing test**
 
-`ui/src/pages/NewTemplate.test.tsx`: render in providers + router; stub `fetch` POST `/api/templates` to 201 with a detail body; type YAML into the textarea, click "Create", assert it navigates to the new detail (or shows success) and on a 422 it shows the error message from the contract.
+`ui/src/pages/NewTemplate.test.tsx`: render inside `QueryClientProvider` (retry: false) + `ToastProvider` + `MemoryRouter`; stub `fetch` POST `/api/templates` to 201 with a detail body; type YAML into the textarea, click "Create", assert success (navigation or a success state). Add a second case: stub a 422 with `{ error: { code: "TemplateInvalid", message: "..." } }` and assert the message shows.
 
-- [ ] **Step 2: Implement**
+- [ ] **Step 2: Implement + route**
 
-`ui/src/pages/NewTemplate.tsx`: a `<textarea>` for raw YAML, a "Create" button using `useCreateTemplate()`; on success navigate to `/templates/${created.id}` and toast ok; on error show the `error.message` inline + toast. This is NOT the GUI editor (out of scope), just a raw-YAML create form against the existing endpoint.
+`ui/src/pages/NewTemplate.tsx`: a `<textarea>` for raw YAML, a "Create" button using `useCreateTemplate()`; on success `navigate("/templates/${created.id}")` (react-router `useNavigate`) and toast ok; on error show the message inline + toast. NOT the GUI editor (out of scope), just a raw-YAML create form against `POST /api/templates`.
+
+In `ui/src/app/App.tsx`, add the `/templates/new` route → `NewTemplate`, ordered BEFORE `/templates/:id` (so "new" isn't matched as an `:id`).
 
 - [ ] **Step 3: Run + commit**
 
-`cd ui && npx vitest run src/pages/NewTemplate.test.tsx` → PASS.
+`cd ui && npx vitest run src/pages/NewTemplate.test.tsx` → PASS. `npm run build` clean.
 
 ```bash
-git add ui/src/pages/NewTemplate.tsx ui/src/pages/NewTemplate.test.tsx
-git commit -m "Raw-YAML new-template view (#17)"
+git add ui/src/pages/NewTemplate.tsx ui/src/pages/NewTemplate.test.tsx ui/src/app/App.tsx
+git commit -m "Raw-YAML new-template view + route (#17)"
 ```
 
 ---
