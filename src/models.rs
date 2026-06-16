@@ -386,6 +386,33 @@ pub struct RenderBatchRequest {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+pub struct BatchRequest {
+    pub template: String,
+    pub labels: Vec<LabelInput>,
+    pub mode: String,
+    #[serde(default)]
+    pub printer: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub start_slot: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BatchRowError {
+    pub index: usize,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BatchSummary {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: Vec<BatchRowError>,
+    pub jobs: usize,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LabelInput {
     pub data: HashMap<String, Value>,
     #[serde(default)]
