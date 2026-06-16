@@ -104,7 +104,7 @@ mod http_tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/health")
+                    .uri("/api/health")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -210,7 +210,7 @@ mod http_tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/templates")
+                    .uri("/api/templates")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -234,7 +234,7 @@ mod http_tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/templates/missing")
+                    .uri("/api/templates/missing")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -253,7 +253,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/render/label")
+                    .uri("/api/render/label")
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
                     .unwrap(),
@@ -279,7 +279,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/render/label")
+                    .uri("/api/render/label")
                     .header("content-type", "application/json")
                     .body(Body::from(label_payload.to_string()))
                     .unwrap(),
@@ -310,7 +310,7 @@ mod http_tests {
             ]
         });
         let response = app
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -343,7 +343,7 @@ mod http_tests {
             "labels": [label.clone(), label]
         });
         let response = app
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -369,7 +369,7 @@ mod http_tests {
             ]
         });
         let response = app
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -393,7 +393,7 @@ mod http_tests {
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -418,7 +418,7 @@ mod http_tests {
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -452,7 +452,7 @@ mod http_tests {
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -486,7 +486,7 @@ mod http_tests {
         });
         let response = app
             .clone()
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -509,7 +509,7 @@ mod http_tests {
             ]
         });
         let response = app
-            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -526,7 +526,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/render/label?format=pdf")
+                    .uri("/api/render/label?format=pdf")
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
                     .unwrap(),
@@ -555,7 +555,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/render/label?format=xml")
+                    .uri("/api/render/label?format=xml")
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
                     .unwrap(),
@@ -575,7 +575,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/render/label?format=pdf")
+                    .uri("/api/render/label?format=pdf")
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
                     .unwrap(),
@@ -595,7 +595,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother24mm")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -622,7 +622,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother24mm")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -648,7 +648,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother24mm")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -670,7 +670,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother24mm")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -697,7 +697,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/import/csv?template=brother24mm&mode=print&printer=ok-printer")
+                    .uri("/api/import/csv?template=brother24mm&mode=print&printer=ok-printer")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -716,7 +716,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/import/csv?template=brother24mm&mode=print&printer=bad-printer")
+                    .uri("/api/import/csv?template=brother24mm&mode=print&printer=bad-printer")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -745,7 +745,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/import/csv?template=brother24mm&mode=print")
+                    .uri("/api/import/csv?template=brother24mm&mode=print")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -798,7 +798,7 @@ layout:
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/templates")
+                    .uri("/api/templates")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -821,7 +821,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/templates/reload")
+                    .uri("/api/templates/reload")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -848,7 +848,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/templates/reload")
+                    .uri("/api/templates/reload")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -878,7 +878,7 @@ layout:
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/templates", "POST", template_yaml("new1")))
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("new1")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CREATED);
@@ -888,7 +888,7 @@ layout:
         let body200 = template_yaml("new1").replace("dpi: 300", "dpi: 200");
         let resp = app
             .clone()
-            .oneshot(yaml_post("/templates/new1", "PUT", body200))
+            .oneshot(yaml_post("/api/templates/new1", "PUT", body200))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -896,7 +896,7 @@ layout:
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/templates/new1")
+                    .uri("/api/templates/new1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -911,7 +911,7 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/templates/new1")
+                    .uri("/api/templates/new1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -922,7 +922,7 @@ layout:
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/templates/new1")
+                    .uri("/api/templates/new1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -940,7 +940,7 @@ layout:
         let app = build_app_in(&dir);
         let resp = app
             .clone()
-            .oneshot(yaml_post("/templates", "POST", template_yaml("dup")))
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("dup")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -956,7 +956,7 @@ layout:
         let resp = app
             .clone()
             .oneshot(yaml_post(
-                "/templates",
+                "/api/templates",
                 "POST",
                 "id: x\nunit: nope\n".to_string(),
             ))
@@ -975,7 +975,7 @@ layout:
         let body = template_yaml("ok").replace("id: ok", "id: ../evil");
         let resp = app
             .clone()
-            .oneshot(yaml_post("/templates", "POST", body))
+            .oneshot(yaml_post("/api/templates", "POST", body))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -991,7 +991,7 @@ layout:
         let app = build_app_in(&dir);
         let resp = app
             .clone()
-            .oneshot(yaml_post("/templates/a", "PUT", template_yaml("b")))
+            .oneshot(yaml_post("/api/templates/a", "PUT", template_yaml("b")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -1004,7 +1004,11 @@ layout:
         let app = build_app_in(&dir);
         let resp = app
             .clone()
-            .oneshot(yaml_post("/templates/ghost", "PUT", template_yaml("ghost")))
+            .oneshot(yaml_post(
+                "/api/templates/ghost",
+                "PUT",
+                template_yaml("ghost"),
+            ))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1021,7 +1025,7 @@ layout:
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/templates", "POST", template_yaml("new1")))
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("new1")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -1065,15 +1069,15 @@ layout:
 
         let resp = app
             .clone()
-            .oneshot(json_req("POST", "/printers", printer_json("office")))
+            .oneshot(json_req("POST", "/api/printers", printer_json("office")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CREATED);
 
-        let (_, list) = get_json(&app, "/printers").await;
+        let (_, list) = get_json(&app, "/api/printers").await;
         assert_eq!(list.as_array().unwrap().len(), 1);
 
-        let (status, detail) = get_json(&app, "/printers/office").await;
+        let (status, detail) = get_json(&app, "/api/printers/office").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(detail["kind"], "cups");
 
@@ -1084,11 +1088,11 @@ layout:
         .to_string();
         let resp = app
             .clone()
-            .oneshot(json_req("PUT", "/printers/office", replace))
+            .oneshot(json_req("PUT", "/api/printers/office", replace))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::OK);
-        let (_, detail) = get_json(&app, "/printers/office").await;
+        let (_, detail) = get_json(&app, "/api/printers/office").await;
         assert_eq!(detail["name"], "Front Desk");
 
         let resp = app
@@ -1096,14 +1100,14 @@ layout:
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri("/printers/office")
+                    .uri("/api/printers/office")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        let (status, _) = get_json(&app, "/printers/office").await;
+        let (status, _) = get_json(&app, "/api/printers/office").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
@@ -1115,14 +1119,14 @@ layout:
             .clone()
             .oneshot(json_req(
                 "PUT",
-                "/settings/qr_base_url",
+                "/api/settings/qr_base_url",
                 json!({ "value": "https://h/i" }).to_string(),
             ))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let (status, settings) = get_json(&app, "/settings").await;
+        let (status, settings) = get_json(&app, "/api/settings").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(settings["qr_base_url"], "https://h/i");
     }
@@ -1131,12 +1135,12 @@ layout:
     async fn printer_create_duplicate_returns_409() {
         let app = build_app();
         app.clone()
-            .oneshot(json_req("POST", "/printers", printer_json("p")))
+            .oneshot(json_req("POST", "/api/printers", printer_json("p")))
             .await
             .expect("request");
         let resp = app
             .clone()
-            .oneshot(json_req("POST", "/printers", printer_json("p")))
+            .oneshot(json_req("POST", "/api/printers", printer_json("p")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -1149,7 +1153,7 @@ layout:
         let body = json!({ "id": "p", "name": "P", "kind": "zebra", "config": {} }).to_string();
         let resp = app
             .clone()
-            .oneshot(json_req("POST", "/printers", body))
+            .oneshot(json_req("POST", "/api/printers", body))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -1164,7 +1168,7 @@ layout:
                 .to_string();
         let resp = app
             .clone()
-            .oneshot(json_req("POST", "/printers", body))
+            .oneshot(json_req("POST", "/api/printers", body))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -1173,7 +1177,7 @@ layout:
     #[tokio::test]
     async fn printer_get_unknown_returns_404() {
         let app = build_app();
-        let (status, body) = get_json(&app, "/printers/nope").await;
+        let (status, body) = get_json(&app, "/api/printers/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["error"]["code"], "PrinterNotFound");
     }
@@ -1182,12 +1186,12 @@ layout:
     async fn printer_replace_id_mismatch_returns_400() {
         let app = build_app();
         app.clone()
-            .oneshot(json_req("POST", "/printers", printer_json("a")))
+            .oneshot(json_req("POST", "/api/printers", printer_json("a")))
             .await
             .expect("request");
         let resp = app
             .clone()
-            .oneshot(json_req("PUT", "/printers/a", printer_json("b")))
+            .oneshot(json_req("PUT", "/api/printers/a", printer_json("b")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -1198,7 +1202,7 @@ layout:
             json!({ "id": id, "name": id, "kind": "fake", "config": { "fail": fail } }).to_string();
         let resp = app
             .clone()
-            .oneshot(json_req("POST", "/printers", body))
+            .oneshot(json_req("POST", "/api/printers", body))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CREATED);
@@ -1209,7 +1213,11 @@ layout:
         let app = build_app();
         let resp = app
             .clone()
-            .oneshot(json_req("PUT", "/printers/ghost", printer_json("ghost")))
+            .oneshot(json_req(
+                "PUT",
+                "/api/printers/ghost",
+                printer_json("ghost"),
+            ))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
