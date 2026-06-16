@@ -116,6 +116,95 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn api_routes_are_namespaced() {
+        let app = build_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn root_path_is_not_the_api() {
+        let app = build_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn unknown_api_route_returns_json_404() {
+        let app = build_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "NotFound");
+    }
+
+    #[tokio::test]
+    async fn template_source_returns_yaml() {
+        let app = build_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/brother24mm/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("yaml"),
+            "content-type: {content_type}"
+        );
+        let body = bytes_response(response).await;
+        let body = String::from_utf8(body).expect("utf8 body");
+        assert!(body.contains("id: brother24mm"), "body: {body}");
+    }
+
+    #[tokio::test]
+    async fn template_source_unknown_is_404() {
+        let app = build_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/does-not-exist/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn templates_lists_available_templates() {
         let app = build_app();
         let response = app
