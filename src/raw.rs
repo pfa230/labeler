@@ -35,7 +35,10 @@ pub enum LayoutItemRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextRaw {
-    pub name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
     #[serde(flatten)]
     pub placement: Placement,
     pub font_size: FontSize,
@@ -48,7 +51,10 @@ pub struct TextRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QrRaw {
-    pub name: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub value: Option<String>,
     #[serde(flatten)]
     pub placement: Placement,
     #[serde(default)]

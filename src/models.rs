@@ -21,6 +21,11 @@ pub struct HealthResponse {
     pub status: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SettingValue {
+    pub value: String,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ReloadResponse {
     pub count: usize,
@@ -237,7 +242,10 @@ impl Fit {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutItem {
     Text {
-        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
         #[serde(flatten)]
         placement: Placement,
         font_size: FontSize,
@@ -247,7 +255,10 @@ pub enum LayoutItem {
         alignment: Alignment,
     },
     Qr {
-        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
         #[serde(flatten)]
         placement: Placement,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -351,6 +362,19 @@ pub struct PrintRequest {
     pub printer: Option<String>,
     #[serde(default)]
     pub format: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ImportRowError {
+    pub row: usize,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ImportSummary {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: Vec<ImportRowError>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
