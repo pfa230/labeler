@@ -44,6 +44,8 @@ export function resolveLabels(
 ): ResolvedLabel[] {
   const out: ResolvedLabel[] = [];
   for (const row of rows) {
+    // A row's CSV option value wins over the manual/global default, including a blank value: a blank
+    // CSV option cell is treated as invalid (caught by validateOptionCell), not as a fallback to manual.
     const option = { ...manualOptions, ...row.option };
     const label: ResolvedLabel = Object.keys(option).length ? { data: row.data, option } : { data: row.data };
     for (let i = 0; i < copies; i += 1) out.push(label);
