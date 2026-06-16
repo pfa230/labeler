@@ -30,8 +30,7 @@ use crate::{
         api::get_settings,
         api::put_setting,
         api::render_label,
-        api::render_batch,
-        api::print,
+        api::batch,
         api::import_csv
     ),
     components(

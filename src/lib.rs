@@ -177,26 +177,6 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn render_batch_unknown_template_returns_404() {
-        let app = build_app();
-        let payload = json!({ "template": "missing", "labels": [] });
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/render/batch")
-                    .header("content-type", "application/json")
-                    .body(Body::from(payload.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "TemplateNotFound");
-    }
-
-    #[tokio::test]
     async fn render_png() {
         let app = build_app();
         let label_payload = json!({
@@ -230,35 +210,51 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn render_pdf() {
+    async fn batch_single_download_returns_zip() {
         let app = build_app();
-        let sheet_payload = json!({
-            "template": "avery5163",
+        let payload = json!({
+            "template": "brother24mm",
+            "mode": "download",
             "labels": [
-                {
-                    "option": {
-                        "orientation": "horizontal",
-                        "outline": "yes"
-                    },
-                    "data": {
-                        "id": "A1",
-                        "url": "https://example.com/A1",
-                        "name": "Floor Grinder",
-                        "tags": "Power tools",
-                        "description": "Angle grinder with floor grinding attachment and dust shroud"
-                    }
-                }
+                { "data": { "message": "Hello", "code": "QR-1" } },
+                { "data": { "message": "World", "code": "QR-2" } }
             ]
         });
         let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/render/batch")
-                    .header("content-type", "application/json")
-                    .body(Body::from(sheet_payload.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "application/zip");
+        let body = bytes_response(response).await;
+        assert_eq!(&body[..4], b"PK\x03\x04");
+    }
+
+    #[tokio::test]
+    async fn batch_sheet_download_returns_pdf() {
+        let app = build_app();
+        let label = json!({
+            "option": { "orientation": "horizontal", "outline": "yes" },
+            "data": {
+                "id": "A1",
+                "url": "https://example.com/A1",
+                "name": "Floor Grinder",
+                "tags": "Power tools",
+                "description": "Angle grinder with floor grinding attachment and dust shroud"
+            }
+        });
+        let payload = json!({
+            "template": "avery5163",
+            "mode": "download",
+            "labels": [label.clone(), label]
+        });
+        let response = app
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
@@ -269,8 +265,98 @@ mod http_tests {
             .unwrap_or("");
         assert!(content_type.starts_with("application/pdf"));
         let body = bytes_response(response).await;
-        assert!(!body.is_empty(), "rendered PDF is empty");
         assert!(body.starts_with(b"%PDF"), "missing PDF header");
+    }
+
+    #[tokio::test]
+    async fn batch_invalid_label_returns_422() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother24mm",
+            "mode": "download",
+            "labels": [
+                { "data": { "message": "Hello", "code": "QR-1" } },
+                { "data": { "message": "World" } }
+            ]
+        });
+        let response = app
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        assert_eq!(body["error"]["details"]["failures"][0]["index"], 1);
+    }
+
+    #[tokio::test]
+    async fn batch_print_summary_ok() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({
+            "template": "brother24mm",
+            "mode": "print",
+            "printer": "ok-printer",
+            "labels": [
+                { "data": { "message": "Hello", "code": "QR-1" } },
+                { "data": { "message": "World", "code": "QR-2" } }
+            ]
+        });
+        let response = app
+            .clone()
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["succeeded"], 2);
+        assert_eq!(body["failed"].as_array().expect("failed array").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn batch_print_summary_failure() {
+        let app = build_app();
+        create_fake_printer(&app, "bad-printer", true).await;
+        let payload = json!({
+            "template": "brother24mm",
+            "mode": "print",
+            "printer": "bad-printer",
+            "labels": [
+                { "data": { "message": "Hello", "code": "QR-1" } },
+                { "data": { "message": "World", "code": "QR-2" } }
+            ]
+        });
+        let response = app
+            .clone()
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["succeeded"], 0);
+        let failed = body["failed"].as_array().expect("failed array");
+        assert_eq!(failed.len(), 2);
+        assert_eq!(failed[0]["index"], 0);
+        assert_eq!(failed[1]["index"], 1);
+    }
+
+    #[tokio::test]
+    async fn batch_start_slot_single_400() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother24mm",
+            "mode": "download",
+            "start_slot": 1,
+            "labels": [
+                { "data": { "message": "Hello", "code": "QR-1" } }
+            ]
+        });
+        let response = app
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -948,70 +1034,6 @@ layout:
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
-    #[tokio::test]
-    async fn print_download_png_and_pdf() {
-        let app = build_app();
-        let body = json!({
-            "template": "brother12mm",
-            "data": { "message": "Hello", "code": "QR-1" }
-        })
-        .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body.clone()))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert!(resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .starts_with("image/png"));
-        assert!(resp.headers().get("content-disposition").is_some());
-        let png = bytes_response(resp).await;
-        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
-
-        let body = json!({
-            "template": "brother12mm",
-            "data": { "message": "Hello", "code": "QR-1" },
-            "format": "pdf"
-        })
-        .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::OK);
-        let pdf = bytes_response(resp).await;
-        assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    #[tokio::test]
-    async fn print_unknown_template_returns_404() {
-        let app = build_app();
-        let body = json!({ "template": "nope", "data": {} }).to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn print_sheet_template_returns_422() {
-        let app = build_app();
-        let body = json!({ "template": "avery5163", "data": {} }).to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    }
-
     async fn create_fake_printer(app: &axum::Router, id: &str, fail: bool) {
         let body =
             json!({ "id": id, "name": id, "kind": "fake", "config": { "fail": fail } }).to_string();
@@ -1021,114 +1043,6 @@ layout:
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CREATED);
-    }
-
-    #[tokio::test]
-    async fn print_to_printer_dispatches_and_succeeds() {
-        let app = build_app();
-        create_fake_printer(&app, "fk", false).await;
-        let body = json!({
-            "template": "brother12mm",
-            "data": { "message": "Hi", "code": "Q" },
-            "printer": "fk"
-        })
-        .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
-    async fn print_to_failing_printer_returns_502() {
-        let app = build_app();
-        create_fake_printer(&app, "fk", true).await;
-        let body = json!({
-            "template": "brother12mm",
-            "data": { "message": "Hi", "code": "Q" },
-            "printer": "fk"
-        })
-        .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
-        assert_eq!(json_response(resp).await["error"]["code"], "PrintFailed");
-    }
-
-    #[tokio::test]
-    async fn print_to_unknown_printer_returns_404() {
-        let app = build_app();
-        let body = json!({
-            "template": "brother12mm",
-            "data": { "message": "Hi", "code": "Q" },
-            "printer": "nope"
-        })
-        .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        assert_eq!(
-            json_response(resp).await["error"]["code"],
-            "PrinterNotFound"
-        );
-    }
-
-    #[tokio::test]
-    async fn print_to_disabled_printer_returns_409() {
-        let app = build_app();
-        let body =
-            json!({ "id": "fk", "name": "Fake", "kind": "fake", "config": {}, "enabled": false })
-                .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/printers", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let body = json!({
-            "template": "brother12mm",
-            "data": { "message": "Hi", "code": "Q" },
-            "printer": "fk"
-        })
-        .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        assert_eq!(
-            json_response(resp).await["error"]["code"],
-            "PrinterDisabled"
-        );
-    }
-
-    #[tokio::test]
-    async fn print_format_with_printer_returns_400() {
-        let app = build_app();
-        create_fake_printer(&app, "fk", false).await;
-        let body = json!({
-            "template": "brother12mm",
-            "data": { "message": "Hi", "code": "Q" },
-            "printer": "fk",
-            "format": "pdf"
-        })
-        .to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/print", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
