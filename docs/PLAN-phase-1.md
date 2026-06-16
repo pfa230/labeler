@@ -143,20 +143,24 @@ returns the file.
 
 ### M4 — Integrations and import
 
-#### P1-41 Configurable QR base-URL + id-field mapping · GH #14
-A setting so QR content can be composed as `{base_url}/{id_field_value}`.
+#### P1-41 Configurable QR base-URL + id-field mapping · GH #14 — DONE (M4 branch)
+A setting so QR content can be composed as `{base_url}/{id_field_value}`. Delivered via the substitution
+interpolation layer (ADR-0010): a `value` field on text/qr items resolves `{settings.qr_base_url}/{id}`.
+See the `homebox-qr` demo template.
 - **Depends on:** P1-31.
 - **AC:** configured base URL plus a per-template/request id field produces a URL-encoded QR; absent
   config falls back to literal QR content; tested.
 
-#### P1-42 CSV import (one label per row) · GH #21
+#### P1-42 CSV import (one label per row) · GH #21 — DONE (M4 branch)
 Upload a CSV and render/print one label per row, mapping columns to fields by header name.
+Delivered as `POST /import/csv`: `mode=download` returns an atomic ZIP (one file per row),
+`mode=print` dispatches per-row jobs and returns a `{ total, succeeded, failed }` summary.
 - **Depends on:** P1-35.
 - **AC:** CSV with headers matching template fields produces N labels via `/print`; per-row missing
   field reported with row index; a downloadable starter CSV is provided; quoted fields and BOM handled;
   tested. (Interactive field-mapping UI is Phase 2.)
 
-#### P1-43 Inbound print webhook (contract + LAN hardening) · GH #22
+#### P1-43 Inbound print webhook (contract + LAN hardening) · GH #22 — DEFERRED (out of M4)
 Document and finalize `POST /print {template, fields, copies}` as the integration webhook for tools
 like Grocy.
 - **Depends on:** P1-35.

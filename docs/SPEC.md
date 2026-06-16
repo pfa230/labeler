@@ -33,6 +33,9 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 | GET / POST | `/printers` | List / create printers | `200` / `201` |
 | GET / PUT / DELETE | `/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
 | POST | `/print` | Render and print, or download | `200` / `204` |
+| GET | `/settings` | All settings as a key/value object | `200 {…}` |
+| PUT | `/settings/{key}` | Upsert a setting | `200` / `400` |
+| POST | `/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
 | GET | `/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/docs` | Swagger UI | `200` |
 
@@ -160,12 +163,14 @@ dimension. A non-`auto` numeric size must be > 0. (`line` does not use `size`; s
 
 ### 4.1 Item types
 
-- **`text`** — `name` (data key), placement, `font_size`, `multiline` (default `false`),
+- **`text`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
+  placement, `font_size`, `multiline` (default `false`),
   `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom).
   `font_size` is either a fixed number or a range `{ min, max }`. A range auto-shrinks the text to fit
   the box (0.5pt steps, `fontdue` metrics) and truncates with an ellipsis if it still overflows.
   Single-line text collapses spaces to non-breaking and renders only the first line.
-- **`qr`** — `name` (data key), placement, optional `params`:
+- **`qr`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
+  placement, optional `params`:
   `error_correction` (`L`/`M`/`Q`/`H`, default `M`), `module_size`, `quiet_zone`.
   Rendered as an SVG via the `qrcode` crate, embedded as a Typst image.
 - **`image`** — exactly one of `src` (a path to a bundled asset, resolved under the assets root with a
@@ -184,7 +189,7 @@ dimension. A non-`auto` numeric size must be > 0. (`line` does not use `size`; s
   default `0`.
 
 Layout item `name`s (text/qr, and a data-bound `image`) must be unique and non-empty within a sibling
-list.
+list. `value`-based text/qr items are anonymous and are exempt from this check.
 
 ## 5. Options
 
@@ -227,9 +232,16 @@ Sizing/bounds logic is intentionally duplicated between validation (compile time
 
 ## 8. Data binding
 
-`text` and `qr` items resolve their `name` against the request `data` map. A missing key is
-`422 MissingField`. JSON scalars are stringified (`value_to_string`): strings as-is, numbers/bools via
-their textual form, `null` as empty, other values via JSON.
+`text` and `qr` items bind in one of two ways (exactly one of `name` / `value`):
+
+- `name` resolves a single data key against the request `data` map.
+- `value` is an interpolated template string. `{field}` resolves from `data`, `{settings.<key>}`
+  resolves from the settings store, and `{{` / `}}` emit literal braces. There are no operators or
+  functions; this is substitution only (ADR-0010). Interpolation applies to text content and QR content.
+
+A missing key or unresolved token is `422 MissingField`. JSON scalars are stringified
+(`value_to_string`): strings as-is, numbers/bools via their textual form, `null` as empty, other values
+via JSON.
 
 ## 9. Fonts
 
@@ -276,8 +288,47 @@ settings, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, def
   as new drivers without changing dispatch.
 - **Deferred:** printer status read-back, USB/browser printing, batch-to-printer and `copies` (→ #28).
 
+## Settings
+
+A generic key/value store backs integration settings, persisted in the SQLite `settings` table.
+`GET /settings` returns all pairs as a JSON object; `PUT /settings/{key}` with `{ "value": "…" }`
+upserts one (the key is a slug of letters, digits, `_`, `-`, `.`; otherwise `400`). Settings are
+readable from templates through `{settings.<key>}` interpolation (see §8). The only key used in
+Phase 1 is `qr_base_url`; the generic shape leaves room for later integration config (e.g. a Homebox
+URL/token).
+
+## CSV import
+
+**`POST /import/csv?template=<id>&mode=download|print&printer=<id>&format=png|pdf`** renders one label
+per CSV row. The request body is raw `text/csv`: the header row names the fields, each subsequent row
+supplies one label's `data` (all values are strings). A leading UTF-8 BOM is stripped, and the `csv`
+crate handles quoted fields. It targets single-format templates; sheet composition from rows is out of
+scope (→ #28).
+
+- **Structural CSV problems** are a whole-request precondition failure with `400` in **both** modes,
+  reported before any rendering or printing: ragged rows (a row's field count differs from the header),
+  empty or duplicate header column names, and no data rows.
+- **`mode=download`** (default) returns `application/zip` with one file per row, named by 1-based
+  zero-padded row index (`001.png`, …) in the template's render format (`format` selects png/pdf).
+  Download is **atomic** over per-row render failures of otherwise well-formed rows: the first row that
+  fails to render (e.g. unresolved interpolation field) fails the whole request with `422` and the
+  offending `details.row`; no partial archive.
+- **`mode=print`** requires `printer` (and rejects `format`). It dispatches one print job per row
+  (so a continuous-tape printer auto-cuts between labels), recording each job, and **continues past**
+  per-row render/print failures. It returns `200` with a summary
+  `{ total, succeeded, failed: [{ row, error }] }`. Unknown template/printer → 404; disabled
+  printer → 409; sheet template → 422.
+- **Out of scope (v1):** per-row option selection, multipart upload.
+
 ## Changelog
 
+- **2026-06-15** — Added CSV import (`POST /import/csv`): one label per row, ZIP download (atomic)
+  or per-row print jobs with a `{ total, succeeded, failed }` summary. Added a generic settings
+  store with `GET /settings` and `PUT /settings/{key}`. Issues #21, #14.
+- **2026-06-15** — Added a `value` field on `text`/`qr` items: a substitution interpolation string
+  (`{field}` from request data, `{settings.<key>}` from the settings store, `{{`/`}}` literal braces;
+  unresolved token → `422 MissingField`), as an exactly-one-of alternative to `name`. See ADR-0010 and
+  the `homebox-qr` demo template. Issue #14.
 - **Unreleased** — M3 state and printing: SQLite app-state store (#8), printer CRUD (#12), CUPS/IPP
   driver (#16), and `POST /print` with file download (#13) and printer dispatch (#19).
 - **Unreleased** — Accepted ADR-0008 (web UI delivery: React SPA served by axum, API to move under

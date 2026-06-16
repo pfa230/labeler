@@ -3,7 +3,7 @@ use axum::{
     extract::rejection::JsonRejection,
     extract::{Json, Path, Query, State},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use crate::{
     errors::AppError,
     models::{
         ErrorResponse, HealthResponse, PrintRequest, ReloadResponse, RenderBatchRequest,
-        RenderLabelRequest, TemplateDetail, TemplateList,
+        RenderLabelRequest, SettingValue, TemplateDetail, TemplateList,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -30,6 +30,14 @@ use crate::{
 
 #[derive(serde::Deserialize)]
 pub struct RenderQuery {
+    pub format: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ImportCsvQuery {
+    pub template: String,
+    pub mode: Option<String>,
+    pub printer: Option<String>,
     pub format: Option<String>,
 }
 
@@ -81,9 +89,12 @@ pub fn app(state: Arc<AppState>) -> Router {
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
         )
+        .route("/settings", get(get_settings))
+        .route("/settings/{key}", put(put_setting))
         .route("/render/label", post(render_label))
         .route("/render/batch", post(render_batch))
         .route("/print", post(print))
+        .route("/import/csv", post(import_csv))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -363,6 +374,46 @@ pub async fn get_printer(
 }
 
 #[utoipa::path(
+    get,
+    path = "/settings",
+    responses((status = 200, description = "All settings", body = std::collections::BTreeMap<String, String>))
+)]
+pub async fn get_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<std::collections::BTreeMap<String, String>>, AppError> {
+    Ok(Json(state.store().all_settings().await?))
+}
+
+#[utoipa::path(
+    put,
+    path = "/settings/{key}",
+    params(("key" = String, Path, description = "Setting key")),
+    request_body = SettingValue,
+    responses(
+        (status = 200, description = "Setting stored", body = SettingValue),
+        (status = 400, description = "Invalid key", body = ErrorResponse)
+    )
+)]
+pub async fn put_setting(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<SettingValue>,
+) -> Result<Json<SettingValue>, AppError> {
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    {
+        return Err(AppError::invalid_request(format!(
+            "setting key '{key}' must be non-empty and contain only letters, digits, '_', '-' or '.'"
+        )));
+    }
+    let _guard = state.write_lock.lock().await;
+    state.store().set_setting(&key, &body.value).await?;
+    Ok(Json(body))
+}
+
+#[utoipa::path(
     put,
     path = "/printers/{id}",
     params(("id" = String, Path, description = "Printer ID")),
@@ -420,15 +471,16 @@ fn render_to_format(
     data: &std::collections::HashMap<String, serde_json::Value>,
     option: Option<&std::collections::BTreeMap<String, String>>,
     format: Option<&str>,
+    settings: &std::collections::BTreeMap<String, String>,
 ) -> Result<(Vec<u8>, &'static str, &'static str), AppError> {
     match format.unwrap_or("png") {
         "" | "png" => Ok((
-            render_single_label(template, data, option)?,
+            render_single_label(template, data, option, settings)?,
             "image/png",
             "png",
         )),
         "pdf" => Ok((
-            render_single_label_pdf(template, data, option)?,
+            render_single_label_pdf(template, data, option, settings)?,
             "application/pdf",
             "pdf",
         )),
@@ -436,6 +488,43 @@ fn render_to_format(
             "unknown format '{other}'; use png or pdf"
         ))),
     }
+}
+
+fn parse_csv_rows(
+    body: &str,
+) -> Result<Vec<std::collections::HashMap<String, serde_json::Value>>, AppError> {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .trim(csv::Trim::All)
+        .from_reader(body.as_bytes());
+    let headers = reader
+        .headers()
+        .map_err(|err| AppError::invalid_request(format!("invalid CSV header: {err}")))?
+        .clone();
+    let mut seen = std::collections::HashSet::new();
+    for header in headers.iter() {
+        let header = header.trim();
+        if header.is_empty() || !seen.insert(header) {
+            return Err(AppError::invalid_request(
+                "CSV header has empty or duplicate column names",
+            ));
+        }
+    }
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        let record =
+            record.map_err(|err| AppError::invalid_request(format!("invalid CSV row: {err}")))?;
+        let mut data = std::collections::HashMap::new();
+        for (key, val) in headers.iter().zip(record.iter()) {
+            data.insert(key.to_string(), serde_json::Value::String(val.to_string()));
+        }
+        rows.push(data);
+    }
+    if rows.is_empty() {
+        return Err(AppError::invalid_request("CSV has no data rows"));
+    }
+    Ok(rows)
 }
 
 fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str) -> Response {
@@ -487,10 +576,16 @@ pub async fn print(
     }
 
     let option = req.label.option.as_ref();
+    let settings = state.store().all_settings().await?;
 
     let Some(printer_id) = req.printer.as_deref() else {
-        let (bytes, content_type, ext) =
-            render_to_format(template, &req.label.data, option, req.format.as_deref())?;
+        let (bytes, content_type, ext) = render_to_format(
+            template,
+            &req.label.data,
+            option,
+            req.format.as_deref(),
+            &settings,
+        )?;
         return Ok(download_response(
             bytes,
             content_type,
@@ -516,10 +611,10 @@ pub async fn print(
         .map_err(|err| AppError::printer_invalid(err.to_string()))?;
     let artifact = match driver.accepted_format() {
         crate::driver::ArtifactFormat::Pdf => {
-            render_single_label_pdf(template, &req.label.data, option)?
+            render_single_label_pdf(template, &req.label.data, option, &settings)?
         }
         crate::driver::ArtifactFormat::Png => {
-            render_single_label(template, &req.label.data, option)?
+            render_single_label(template, &req.label.data, option, &settings)?
         }
         fmt => {
             return Err(AppError::print_failed(format!(
@@ -604,13 +699,14 @@ pub async fn render_label(
         ));
     }
 
+    let settings = state.store().all_settings().await?;
     let (bytes, content_type) = match query.format.as_deref() {
         None | Some("") | Some("png") => (
-            render_single_label(template, &req.label.data, option_value)?,
+            render_single_label(template, &req.label.data, option_value, &settings)?,
             "image/png",
         ),
         Some("pdf") => (
-            render_single_label_pdf(template, &req.label.data, option_value)?,
+            render_single_label_pdf(template, &req.label.data, option_value, &settings)?,
             "application/pdf",
         ),
         Some(other) => {
@@ -657,7 +753,8 @@ pub async fn render_batch(
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
 
-    let pdf = render_sheet_labels(template, &req.labels, req.start_slot)?;
+    let settings = state.store().all_settings().await?;
+    let pdf = render_sheet_labels(template, &req.labels, req.start_slot, &settings)?;
 
     Ok((
         axum::http::StatusCode::OK,
@@ -665,4 +762,150 @@ pub async fn render_batch(
         pdf,
     )
         .into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/import/csv",
+    params(
+        ("template" = String, Query, description = "Template id"),
+        ("mode" = Option<String>, Query, description = "download (default) or print"),
+        ("printer" = Option<String>, Query, description = "Printer id (required when mode=print)"),
+        ("format" = Option<String>, Query, description = "Download format: png (default) or pdf")
+    ),
+    request_body(content = String, description = "CSV (header row + one row per label)", content_type = "text/csv"),
+    responses(
+        (status = 200, description = "ZIP of rendered labels (download) or per-row summary (print)"),
+        (status = 400, description = "Invalid CSV or request", body = ErrorResponse),
+        (status = 404, description = "Template or printer not found", body = ErrorResponse),
+        (status = 422, description = "Render/validation error (download is atomic)", body = ErrorResponse),
+        (status = 502, description = "Printer/transport failure", body = ErrorResponse)
+    )
+)]
+pub async fn import_csv(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ImportCsvQuery>,
+    body: String,
+) -> Result<Response, AppError> {
+    let registry = state.templates.load_full();
+    let template = registry
+        .get(&params.template)
+        .ok_or_else(|| AppError::template_not_found(params.template.clone()))?;
+    let rows = parse_csv_rows(&body)?;
+    let settings = state.store().all_settings().await?;
+
+    match params.mode.as_deref().unwrap_or("download") {
+        "download" => {
+            let width = rows.len().to_string().len();
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            let mut zip = zip::ZipWriter::new(&mut cursor);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            use std::io::Write as _;
+            for (idx, data) in rows.iter().enumerate() {
+                let (bytes, _ct, ext) =
+                    render_to_format(template, data, None, params.format.as_deref(), &settings)
+                        .map_err(|err| err.with_row(idx + 1))?;
+                let name = format!("{:0width$}.{ext}", idx + 1, width = width);
+                zip.start_file(name, opts)
+                    .map_err(|err| AppError::render_failed(format!("zip error: {err}")))?;
+                zip.write_all(&bytes)
+                    .map_err(|err| AppError::render_failed(format!("zip error: {err}")))?;
+            }
+            zip.finish()
+                .map_err(|err| AppError::render_failed(format!("zip error: {err}")))?;
+            let bytes = cursor.into_inner();
+            Ok(download_response(
+                bytes,
+                "application/zip",
+                &format!("{}.zip", template.id),
+            ))
+        }
+        "print" => {
+            if !matches!(
+                template.format,
+                crate::models::TemplateFormat::Single { .. }
+            ) {
+                return Err(AppError::unsupported_format(format!(
+                    "template '{}' is a sheet; CSV import prints single-format templates only",
+                    template.id
+                )));
+            }
+            let printer_id = params
+                .printer
+                .as_deref()
+                .ok_or_else(|| AppError::invalid_request("mode=print requires a printer"))?;
+            if params.format.is_some() {
+                return Err(AppError::invalid_request(
+                    "format applies only to download; omit it when printing",
+                ));
+            }
+            let printer = state
+                .store()
+                .get_printer(printer_id)
+                .await?
+                .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
+            if !printer.enabled {
+                return Err(AppError::printer_disabled(printer_id));
+            }
+            let driver = crate::driver::build_driver(&printer.kind, &printer.config)
+                .map_err(|err| AppError::printer_invalid(err.to_string()))?;
+            let total = rows.len();
+            let mut failed = Vec::new();
+            for (idx, data) in rows.iter().enumerate() {
+                let row = idx + 1;
+                let artifact = match driver.accepted_format() {
+                    crate::driver::ArtifactFormat::Pdf => {
+                        render_single_label_pdf(template, data, None, &settings)
+                    }
+                    crate::driver::ArtifactFormat::Png => {
+                        render_single_label(template, data, None, &settings)
+                    }
+                    fmt => Err(AppError::print_failed(format!(
+                        "no renderer for artifact format {fmt:?}"
+                    ))),
+                };
+                let result = match artifact {
+                    Ok(bytes) => driver
+                        .send(&bytes, &crate::driver::PrintOptions::default())
+                        .await
+                        .map_err(|err| AppError::print_failed(err.to_string())),
+                    Err(err) => Err(err),
+                };
+                match result {
+                    Ok(()) => {
+                        let _ = state
+                            .store()
+                            .record_job(&params.template, Some(printer_id), "ok", None)
+                            .await;
+                    }
+                    Err(err) => {
+                        let message = err.message_text();
+                        let _ = state
+                            .store()
+                            .record_job(
+                                &params.template,
+                                Some(printer_id),
+                                "failed",
+                                Some(&message),
+                            )
+                            .await;
+                        failed.push(crate::models::ImportRowError {
+                            row,
+                            error: message,
+                        });
+                    }
+                }
+            }
+            let summary = crate::models::ImportSummary {
+                total,
+                succeeded: total - failed.len(),
+                failed,
+            };
+            Ok((axum::http::StatusCode::OK, Json(summary)).into_response())
+        }
+        other => Err(AppError::invalid_request(format!(
+            "unknown mode '{other}'; use download or print"
+        ))),
+    }
 }

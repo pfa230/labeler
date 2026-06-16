@@ -147,6 +147,22 @@ impl Store {
         Ok(())
     }
 
+    pub async fn all_settings(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = std::collections::BTreeMap::new();
+        for row in rows {
+            let (k, v) = row?;
+            out.insert(k, v);
+        }
+        Ok(out)
+    }
+
     pub async fn record_job(
         &self,
         template: &str,
@@ -230,6 +246,9 @@ mod tests {
         assert_eq!(store.get_setting("k").await.unwrap().as_deref(), Some("v"));
         store.set_setting("k", "v2").await.unwrap();
         assert_eq!(store.get_setting("k").await.unwrap().as_deref(), Some("v2"));
+
+        let all = store.all_settings().await.unwrap();
+        assert_eq!(all.get("k").map(String::as_str), Some("v2"));
 
         store
             .record_job("tpl", Some("p1"), "ok", None)

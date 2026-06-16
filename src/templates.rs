@@ -270,8 +270,8 @@ fn validate_layout_items(
 
 fn layout_item_name(item: &LayoutItem) -> Option<&str> {
     match item {
-        LayoutItem::Text { name, .. } => Some(name.as_str()),
-        LayoutItem::Qr { name, .. } => Some(name.as_str()),
+        LayoutItem::Text { name, .. } => name.as_deref(),
+        LayoutItem::Qr { name, .. } => name.as_deref(),
         LayoutItem::Image { name, .. } => name.as_deref(),
         LayoutItem::Line { .. } => None,
         LayoutItem::Container { .. } => None,
@@ -760,7 +760,8 @@ layout: []
             )]))),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    name: "value".to_string(),
+                    name: Some("value".to_string()),
+                    value: None,
                     placement: crate::models::Placement {
                         at: Position([0.0, 0.0]),
                         size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
@@ -773,7 +774,8 @@ layout: []
                     alignment: Alignment::default(),
                 },
                 LayoutItem::Text {
-                    name: "value".to_string(),
+                    name: Some("value".to_string()),
+                    value: None,
                     placement: crate::models::Placement {
                         at: Position([0.0, 0.0]),
                         size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
@@ -807,7 +809,8 @@ layout: []
             options: None,
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    name: "value".to_string(),
+                    name: Some("value".to_string()),
+                    value: None,
                     placement: crate::models::Placement {
                         at: Position([0.0, 0.0]),
                         size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),

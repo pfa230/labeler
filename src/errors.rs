@@ -51,6 +51,10 @@ impl AppError {
         }
     }
 
+    pub fn message_text(&self) -> String {
+        self.message.clone()
+    }
+
     pub fn template_not_found(id: String) -> Self {
         Self::new(
             StatusCode::NOT_FOUND,
@@ -186,6 +190,15 @@ impl AppError {
             message,
             None,
         )
+    }
+
+    pub fn with_row(mut self, row: usize) -> Self {
+        let mut details = self.details.take().unwrap_or_else(|| json!({}));
+        if let Some(obj) = details.as_object_mut() {
+            obj.insert("row".to_string(), json!(row));
+        }
+        self.details = Some(details);
+        self
     }
 
     fn unsupported_media_type(message: impl Into<String>) -> Self {
