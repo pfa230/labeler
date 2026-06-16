@@ -41,7 +41,7 @@ Introduce one endpoint that owns the format decision:
   a `200` summary `{ total, succeeded, failed: [{ index, error }], jobs }`.
 
 - **Consolidation.** `/render/batch` and `/print` are removed and absorbed. A shared `batch` module
-  (`execute_batch`) backs the endpoint, and `/import/csv` is refactored to parse the CSV and call it,
+  (`render_batch`) backs the endpoint, and `/import/csv` is refactored to parse the CSV and call it,
   remaining the self-contained CSV path. `render_sheet_labels` generalizes to multi-page pagination.
 
 - **`/render/label` is retained** as the single-label preview / one-off download path (raw image/PDF,
@@ -50,7 +50,7 @@ Introduce one endpoint that owns the format decision:
 ## Consequences
 
 - The frontend posts a uniform batch and renders the response; format complexity lives in one backend
-  place. The same `execute_batch` serves the UI and the CSV API path.
+  place. The same `render_batch` serves the UI and the CSV API path.
 - Delivers sheet-to-printer and multi-page sheets, previously deferred in #28; server-side `copies`
   from #28 is moot (client-side expansion), so #28 is rescoped/closeable.
 - Breaking API change: `/print` and `/render/batch` are removed. Their tests migrate to `/batch`, and
