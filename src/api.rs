@@ -493,6 +493,7 @@ fn render_to_format(
 fn parse_csv_rows(
     body: &str,
 ) -> Result<Vec<std::collections::HashMap<String, serde_json::Value>>, AppError> {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .trim(csv::Trim::All)
@@ -501,6 +502,15 @@ fn parse_csv_rows(
         .headers()
         .map_err(|err| AppError::invalid_request(format!("invalid CSV header: {err}")))?
         .clone();
+    let mut seen = std::collections::HashSet::new();
+    for header in headers.iter() {
+        let header = header.trim();
+        if header.is_empty() || !seen.insert(header) {
+            return Err(AppError::invalid_request(
+                "CSV header has empty or duplicate column names",
+            ));
+        }
+    }
     let mut rows = Vec::new();
     for record in reader.records() {
         let record =

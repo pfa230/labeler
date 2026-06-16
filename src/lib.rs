@@ -372,6 +372,52 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn import_csv_strips_leading_bom() {
+        let app = build_app();
+        let csv = format!("{}message,code\nHello,QR-1\n", '\u{feff}');
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "application/zip");
+        let body = bytes_response(response).await;
+        assert_eq!(&body[..4], b"PK\x03\x04");
+    }
+
+    #[tokio::test]
+    async fn import_csv_duplicate_headers_returns_400() {
+        let app = build_app();
+        let csv = "message,message\nHello,World\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
     async fn import_csv_missing_field_is_atomic() {
         let app = build_app();
         // brother24mm needs `message` and `code`. The CSV omits the `code` column, so the very
