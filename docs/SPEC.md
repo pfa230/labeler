@@ -108,6 +108,12 @@ response (download yields a binary, print yields a JSON summary). See [ADR-0011]
   slot on the first page. Supplying it for a single template is `400 InvalidRequest`.
 - `printer` names a registered printer for `print` mode (unknown printer → `404`).
 
+`start_slot` is the first **job option**: a job-level knob intrinsic to the template's format (distinct
+from per-row `data` and per-row template `options`), passed as an optional `/batch` field and validated
+against the format. Future job options (skip arbitrary sheet slots, per-job margins, continuous-tape
+cut/gap) follow the same pattern and are catalogued in [ADR-0012](adr/0012-job-options.md); none are
+implemented yet.
+
 **Dispatch matrix** (by template `format.type` × `mode`):
 
 | | `download` | `print` |
