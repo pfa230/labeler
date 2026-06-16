@@ -14,3 +14,8 @@ if (!("ResizeObserver" in globalThis)) {
     disconnect() {}
   };
 }
+
+// react-data-grid scrolls the selected cell into view on edit; jsdom lacks scrollIntoView.
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
