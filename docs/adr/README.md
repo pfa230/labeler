@@ -21,6 +21,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0008](0008-ui-delivery.md) | Web UI delivery | Accepted |
 | [0009](0009-image-source-model.md) | Image source model | Accepted |
 | [0010](0010-variable-interpolation-layer.md) | Variable interpolation layer | Accepted |
+| [0011](0011-unified-batch-endpoint.md) | Unified batch render/print endpoint | Accepted |
 
 ## Adding an ADR
 
