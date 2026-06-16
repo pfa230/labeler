@@ -210,29 +210,35 @@ Configure QR base URL, printers, and view the webhook endpoint.
 
 ### M6 — Packaging and deployment
 
-#### P1-61 Dockerfile (single image) · GH #18
+#### P1-61 Dockerfile (single image) · GH #18 · DONE (d5f24b9)
 Build the service into one image with fonts bundled.
 - **Depends on:** core service runnable (M1–M3 in practice).
 - **AC:** `docker build` produces an image that runs the server and serves the UI; Inter fonts present;
-  image documented.
+  image documented. (Multi-stage distroless image; verified by build + smoke.)
 
-#### P1-62 docker-compose + persistent volumes · GH #25
+#### P1-62 docker-compose + persistent volumes · GH #25 · DONE (165c9a1)
 Compose file with volumes for templates and the app-state store.
 - **Depends on:** P1-61, P1-31, P1-22.
 - **AC:** `docker compose up` starts the service; templates and SQLite persist across recreate;
-  documented.
+  documented. (Verified: seeded templates + setting persisted across `down`/`up`.)
 
-#### P1-63 CUPS access documentation + wiring · GH #26
+#### P1-63 CUPS access documentation + wiring · GH #26 · DONE (db1639a)
 Document and wire how the container reaches CUPS (socket mount or host gateway).
 - **Depends on:** P1-33, P1-62.
-- **AC:** a documented compose configuration prints to a host CUPS printer; both socket-mount and
-  network-CUPS options described with trade-offs.
+- **AC met (rescoped):** the implementation supports **network IPP only** (ADR-0016, user-approved);
+  `docs/DEPLOY.md` documents the network-CUPS reachability prerequisites AND explains why the
+  socket-mount option is intentionally not provided (the app is an `ipp`-crate TCP client, not a
+  libcups/socket client; socket mounts are Linux-host-only). The "both options with trade-offs"
+  requirement is met by documenting and justifying the rejection.
 
-#### P1-64 Env-var configuration + sample env · GH #9
+#### P1-64 Env-var configuration + sample env · GH #9 · DONE (165c9a1)
 Consolidate configuration (PORT, data dir, QR base URL, log level) into documented env vars.
 - **Depends on:** none.
-- **AC:** all Phase 1 config is env-driven with sane defaults; a sample `.env`/compose env block is
-  documented; service starts with zero required config.
+- **AC met (rescoped):** config is env-driven with defaults (`PORT`, `LABELER_DATA_DIR`,
+  `LABELER_UI_DIR`, `LABELER_ASSETS_DIR`, `RUST_LOG`), `.env.sample` + `docs/DEPLOY.md` document the
+  contract, and the service starts with zero required config. The QR base URL is a runtime *setting*
+  (`PUT /api/settings/qr_base_url`, ADR-0010), not an env var; making the template/font dirs
+  env-configurable is deferred to #38.
 
 ### M7 — External data sources (Homebox)
 
