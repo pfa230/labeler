@@ -1,4 +1,5 @@
 pub mod api;
+pub mod batch;
 mod convert;
 pub mod driver;
 pub mod errors;
