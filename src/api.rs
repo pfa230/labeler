@@ -116,7 +116,7 @@ pub fn app(state: Arc<AppState>) -> Router {
 }
 
 async fn fallback(uri: axum::http::Uri) -> Response {
-    if uri.path().starts_with("/api/") {
+    if uri.path() == "/api" || uri.path().starts_with("/api/") {
         AppError::not_found(uri.path()).into_response()
     } else {
         // The frontend foundation plan replaces this branch with the SPA index.html.
