@@ -364,6 +364,19 @@ pub struct PrintRequest {
     pub format: Option<String>,
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ImportRowError {
+    pub row: usize,
+    pub error: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ImportSummary {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: Vec<ImportRowError>,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RenderBatchRequest {
     pub template: String,

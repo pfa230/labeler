@@ -4,10 +4,10 @@ use crate::{
     api,
     models::{
         AutoSize, Dimension, ErrorBody, ErrorResponse, Fit, FontSize, HealthResponse,
-        HorizontalAlign, LabelInput, Layout, LayoutItem, Options, Placement, Point, Position,
-        PrintRequest, QrParams, ReloadResponse, RenderBatchRequest, RenderLabelRequest,
-        SettingValue, SheetPosition, Size, SizeValue, TemplateDetail, TemplateFormat, TemplateList,
-        TemplateSummary, VerticalAlign,
+        HorizontalAlign, ImportRowError, ImportSummary, LabelInput, Layout, LayoutItem, Options,
+        Placement, Point, Position, PrintRequest, QrParams, ReloadResponse, RenderBatchRequest,
+        RenderLabelRequest, SettingValue, SheetPosition, Size, SizeValue, TemplateDetail,
+        TemplateFormat, TemplateList, TemplateSummary, VerticalAlign,
     },
     store::Printer,
 };
@@ -64,6 +64,8 @@ use crate::{
             RenderBatchRequest,
             PrintRequest,
             LabelInput,
+            ImportSummary,
+            ImportRowError,
             ErrorResponse,
             ErrorBody
         )
