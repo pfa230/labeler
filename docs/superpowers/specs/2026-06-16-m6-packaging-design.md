@@ -37,7 +37,7 @@ COPY Cargo.toml Cargo.lock ./
 RUN cargo fetch --locked     # caches the dependency DOWNLOAD (not compiled artifacts)
 COPY src/ src/
 RUN cargo build --release --locked   # binary at /app/target/release/labeler (gcc present for rusqlite bundled)
-RUN mkdir -p /seed/data      # shell-having stage seeds an empty writable data dir for the runtime
+RUN mkdir -p /seed/data /seed/assets   # empty writable data dir + empty assets dir for the runtime
 
 FROM gcr.io/distroless/cc-debian12:debug AS runtime
 WORKDIR /app
@@ -46,13 +46,15 @@ COPY --chown=65532:65532 templates/ /app/templates/   # starter templates; named
 COPY fonts/ /app/fonts/
 COPY --from=ui /ui/dist /app/ui/dist
 COPY --chown=65532:65532 --from=build /seed/data /app/data
+COPY --from=build /seed/assets /app/assets
 USER nonroot                 # uid 65532
 EXPOSE 8080
 ENV PORT=8080
 ENV LABELER_DATA_DIR=/app/data
 ENV LABELER_UI_DIR=/app/ui/dist
+ENV LABELER_ASSETS_DIR=/app/assets
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-  CMD ["/busybox/wget","-qO-","http://127.0.0.1:8080/health"]   # busybox lives at /busybox in distroless :debug
+  CMD ["/busybox/wget","-qO-","http://127.0.0.1:8080/api/health"]   # busybox lives at /busybox in distroless :debug
 ENTRYPOINT ["/app/labeler"]
 ```
 - `.dockerignore`: exclude `target/`, `ui/node_modules`, `ui/dist`, `data/`, `*.pdf`, `.git`, local artifacts (the image rebuilds `ui/dist` and the binary internally).
@@ -96,7 +98,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"   # maps host gateway on Linux; see CUPS prerequisites
     healthcheck:
-      test: ["CMD","/busybox/wget","-qO-","http://127.0.0.1:8080/health"]
+      test: ["CMD","/busybox/wget","-qO-","http://127.0.0.1:8080/api/health"]
       interval: 30s
       timeout: 3s
       retries: 3
@@ -145,7 +147,7 @@ New `docs/DEPLOY.md` (Docker build, compose up, volumes, env, CUPS) + a short "D
 Manual smoke steps in the plan:
 - `docker build -t labeler .` succeeds.
 - BusyBox path is real (the healthcheck depends on it): `docker run --rm --entrypoint=/busybox/wget labeler:latest --help` exits 0. If a future distroless tag moves busybox, switch the healthcheck/docs to a busybox `wget` copied from `busybox:1.37` into a fixed path.
-- `docker compose up -d`; `GET /health` -> 200; `GET /` serves the SPA; `GET /api/templates` lists the bundled starters.
+- `docker compose up -d`; `GET /api/health` -> 200; `GET /` serves the SPA; `GET /api/templates` lists the bundled starters.
 - Upload a template via the UI/API; `docker compose down && docker compose up -d` (NOT `-v`); the uploaded template and any printer/setting persist (named volumes).
 - `docker compose exec labeler /busybox/sh` to inspect (BusyBox shell under `/busybox` in distroless `:debug`; this is not a full distro and has no package manager).
 - **Verify volume writability (the must-test invariant):** as the app user, create and delete a file in each mounted dir, e.g. `docker compose exec labeler /busybox/sh -c 'touch /app/data/.w /app/templates/.w && rm /app/data/.w /app/templates/.w && echo writable'`. This proves the init-service chown took effect and the app can open the sqlite db and accept template uploads.
