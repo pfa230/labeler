@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useTemplates } from "../api/queries";
-import { useToast } from "../app/toast";
+import { useToast } from "../app/toast-context";
 
 export function Templates() {
   const { data, isLoading, isError, error } = useTemplates();

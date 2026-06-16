@@ -1,34 +1,8 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
-
-export type ToastKind = "ok" | "error";
-
-export interface Toast {
-  id: number;
-  kind: ToastKind;
-  message: string;
-}
-
-interface ToastContextValue {
-  push: (toast: { kind: ToastKind; message: string }) => void;
-}
+import { useCallback, useRef, useState, type ReactNode } from "react";
+import { ToastContext, type Toast, type ToastKind } from "./toast-context";
 
 const DEDUPE_WINDOW_MS = 4000;
 const DISMISS_AFTER_MS = 5000;
-
-const ToastContext = createContext<ToastContextValue | null>(null);
-
-export function useToast(): ToastContextValue {
-  const ctx = useContext(ToastContext);
-  if (!ctx) throw new Error("useToast must be used within a ToastProvider");
-  return ctx;
-}
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
