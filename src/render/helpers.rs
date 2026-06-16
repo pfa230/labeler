@@ -193,8 +193,9 @@ fn inter_font() -> Result<&'static Font, AppError> {
         .map_err(|err| AppError::render_failed(format!("failed to read font: {err}")))?;
     let font = Font::from_bytes(bytes, fontdue::FontSettings::default())
         .map_err(|err| AppError::render_failed(format!("failed to parse font: {err}")))?;
-    FONT.set(font)
-        .map_err(|_| AppError::render_failed("failed to cache font"))?;
+    // A concurrent caller may win the race to populate the cache; either value is valid, so fall
+    // back to the stored font rather than treating the lost race as an error.
+    let _ = FONT.set(font);
     Ok(FONT.get().expect("font initialized"))
 }
 

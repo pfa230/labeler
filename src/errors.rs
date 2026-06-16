@@ -51,6 +51,10 @@ impl AppError {
         }
     }
 
+    pub fn message_text(&self) -> String {
+        self.message.clone()
+    }
+
     pub fn template_not_found(id: String) -> Self {
         Self::new(
             StatusCode::NOT_FOUND,

@@ -811,7 +811,89 @@ pub async fn import_csv(
                 &format!("{}.zip", template.id),
             ))
         }
-        "print" => Err(AppError::invalid_request("print mode added in next task")),
+        "print" => {
+            if !matches!(
+                template.format,
+                crate::models::TemplateFormat::Single { .. }
+            ) {
+                return Err(AppError::unsupported_format(format!(
+                    "template '{}' is a sheet; CSV import prints single-format templates only",
+                    template.id
+                )));
+            }
+            let printer_id = params
+                .printer
+                .as_deref()
+                .ok_or_else(|| AppError::invalid_request("mode=print requires a printer"))?;
+            if params.format.is_some() {
+                return Err(AppError::invalid_request(
+                    "format applies only to download; omit it when printing",
+                ));
+            }
+            let printer = state
+                .store()
+                .get_printer(printer_id)
+                .await?
+                .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
+            if !printer.enabled {
+                return Err(AppError::printer_disabled(printer_id));
+            }
+            let driver = crate::driver::build_driver(&printer.kind, &printer.config)
+                .map_err(|err| AppError::printer_invalid(err.to_string()))?;
+            let total = rows.len();
+            let mut failed = Vec::new();
+            for (idx, data) in rows.iter().enumerate() {
+                let row = idx + 1;
+                let artifact = match driver.accepted_format() {
+                    crate::driver::ArtifactFormat::Pdf => {
+                        render_single_label_pdf(template, data, None, &settings)
+                    }
+                    crate::driver::ArtifactFormat::Png => {
+                        render_single_label(template, data, None, &settings)
+                    }
+                    fmt => Err(AppError::print_failed(format!(
+                        "no renderer for artifact format {fmt:?}"
+                    ))),
+                };
+                let result = match artifact {
+                    Ok(bytes) => driver
+                        .send(&bytes, &crate::driver::PrintOptions::default())
+                        .await
+                        .map_err(|err| AppError::print_failed(err.to_string())),
+                    Err(err) => Err(err),
+                };
+                match result {
+                    Ok(()) => {
+                        let _ = state
+                            .store()
+                            .record_job(&params.template, Some(printer_id), "ok", None)
+                            .await;
+                    }
+                    Err(err) => {
+                        let message = err.message_text();
+                        let _ = state
+                            .store()
+                            .record_job(
+                                &params.template,
+                                Some(printer_id),
+                                "failed",
+                                Some(&message),
+                            )
+                            .await;
+                        failed.push(crate::models::ImportRowError {
+                            row,
+                            error: message,
+                        });
+                    }
+                }
+            }
+            let summary = crate::models::ImportSummary {
+                total,
+                succeeded: total - failed.len(),
+                failed,
+            };
+            Ok((axum::http::StatusCode::OK, Json(summary)).into_response())
+        }
         other => Err(AppError::invalid_request(format!(
             "unknown mode '{other}'; use download or print"
         ))),
