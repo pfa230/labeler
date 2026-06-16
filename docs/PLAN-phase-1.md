@@ -191,7 +191,7 @@ List templates with a rendered preview thumbnail and a detail view.
 - **AC:** templates list from `/templates`; selecting one shows a server-rendered preview for sample
   data; sheet vs single indicated.
 
-#### P1-53 Render / print form · GH #20
+#### P1-53 Render / print form · GH #20 — DONE (43d5176)
 Pick a template, fill fields (and options), preview, then print to a printer or download.
 - **Depends on:** P1-51, P1-35.
 - **AC:** end-to-end: choose template → form generated from fields → live/triggered preview → print or
