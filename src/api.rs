@@ -21,7 +21,7 @@ use crate::{
     },
     openapi::ApiDoc,
     parse::parse_template,
-    render::render_sheet_labels,
+    render::render_sheet_pages,
     render::render_single_label,
     render::render_single_label_pdf,
     store::{Printer, Store},
@@ -754,7 +754,7 @@ pub async fn render_batch(
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
 
     let settings = state.store().all_settings().await?;
-    let pdf = render_sheet_labels(template, &req.labels, req.start_slot, &settings)?;
+    let pdf = render_sheet_pages(template, &req.labels, req.start_slot, &settings)?;
 
     Ok((
         axum::http::StatusCode::OK,
