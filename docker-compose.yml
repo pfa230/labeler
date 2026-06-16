@@ -8,6 +8,8 @@ services:
     <<: *labeler-image
     user: "0:0"
     entrypoint: ["/busybox/sh","-c","chown -R 65532:65532 /app/data /app/templates"]
+    healthcheck:
+      disable: true   # short-lived init container; don't run the inherited app healthcheck
     volumes:
       - labeler-data:/app/data
       - labeler-templates:/app/templates
