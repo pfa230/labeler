@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { useTemplate, useTemplateSource } from "../api/queries";
 import { useTemplatePreview } from "../lib/preview";
-import { defaultOptions, referencedFields, referencedSettings } from "../lib/templateFields";
+import { referencedFields, referencedSettings } from "../lib/templateFields";
 import type { Dimension, TemplateDetail as TemplateDetailModel, TemplateFormat } from "../api/types";
 
 function dim(d: Dimension): string {
@@ -64,7 +64,9 @@ export function TemplateDetail() {
     );
   }
 
-  const fields = referencedFields(detail.layout, defaultOptions(detail.options));
+  // Reference view: show the union of fields across all option branches (empty selection = ungated),
+  // consistent with referencedSettings which is also ungated.
+  const fields = referencedFields(detail.layout, {});
   const settings = referencedSettings(detail.layout);
 
   return (
