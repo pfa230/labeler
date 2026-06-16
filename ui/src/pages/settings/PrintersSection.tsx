@@ -41,8 +41,13 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
       setError("cups uri must not be empty");
       return;
     }
+    if (!/^ipps?:\/\//.test(uri.trim())) {
+      // Mirror the server's cups uri check (driver.rs) so a bad scheme is caught before the request.
+      setError("cups uri must start with ipp:// or ipps://");
+      return;
+    }
     setError(null);
-    const printer: Printer = { id, name, kind: "cups", config: { uri }, enabled };
+    const printer: Printer = { id, name: name.trim(), kind: "cups", config: { uri: uri.trim() }, enabled };
     save.mutate(
       { printer, isNew },
       {

@@ -136,4 +136,25 @@ describe("PrintersSection", () => {
     // deleting the edited printer closes the now-stale form (otherwise Save would PUT a 404).
     await waitFor(() => expect(screen.queryByLabelText(/printer id/i)).not.toBeInTheDocument());
   });
+
+  it("shows a server validation error inline when save is rejected", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.startsWith("/api/printers") && method === "POST") {
+        return json({ error: { code: "PrinterInvalid", message: "cups uri rejected by server" } }, 422);
+      }
+      if (url.startsWith("/api/printers")) return json([]);
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "back" } });
+    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "Back" } });
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://ok" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    // the 422 message surfaces inline in the form's <p> (onError -> setError); the toast shows it too.
+    expect(await screen.findByText(/cups uri rejected by server/i, { selector: "p" })).toBeInTheDocument();
+  });
 });
