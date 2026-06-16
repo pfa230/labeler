@@ -74,7 +74,7 @@ impl AppState {
     }
 }
 
-pub fn app(state: Arc<AppState>) -> Router {
+fn api_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/health", get(health))
         .route("/templates", get(list_templates).post(create_template))
@@ -85,6 +85,7 @@ pub fn app(state: Arc<AppState>) -> Router {
                 .put(replace_template)
                 .delete(delete_template),
         )
+        .route("/templates/{id}/source", get(template_source))
         .route("/printers", get(list_printers).post(create_printer))
         .route(
             "/printers/{id}",
@@ -95,9 +96,32 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/render/label", post(render_label))
         .route("/batch", post(batch))
         .route("/import/csv", post(import_csv))
-        .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
+        // Serve the OpenAPI doc from an explicit route so it resolves at /api/openapi.json under the
+        // `/api` nest (SwaggerUi's own `.url()` serving route gets double-prefixed when nested).
+        .route("/openapi.json", get(openapi_json))
+        // SwaggerUi serves the UI at /api/docs/ (trailing slash).
+        .merge(SwaggerUi::new("/docs").url("/api/openapi.json", ApiDoc::openapi()))
+}
+
+async fn openapi_json() -> Response {
+    Json(ApiDoc::openapi()).into_response()
+}
+
+pub fn app(state: Arc<AppState>) -> Router {
+    Router::new()
+        .nest("/api", api_router())
+        .fallback(fallback)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn fallback(uri: axum::http::Uri) -> Response {
+    if uri.path() == "/api" || uri.path().starts_with("/api/") {
+        AppError::not_found(uri.path()).into_response()
+    } else {
+        // The frontend foundation plan replaces this branch with the SPA index.html.
+        (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()
+    }
 }
 
 #[utoipa::path(
@@ -296,6 +320,30 @@ pub async fn get_template(
         .detail(&id)
         .map(Json)
         .ok_or_else(|| AppError::template_not_found(id))
+}
+
+#[utoipa::path(
+    get,
+    path = "/templates/{id}/source",
+    params(("id" = String, Path, description = "Template ID")),
+    responses(
+        (status = 200, description = "Raw template YAML", content_type = "text/yaml"),
+        (status = 400, description = "Invalid id", body = ErrorResponse),
+        (status = 404, description = "Template not found", body = ErrorResponse)
+    )
+)]
+pub async fn template_source(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let path = template_file_path(&state.templates_dir, &id)?;
+    let yaml = std::fs::read_to_string(&path).map_err(|_| AppError::template_not_found(id))?;
+    Ok((
+        axum::http::StatusCode::OK,
+        [("content-type", "text/yaml; charset=utf-8")],
+        yaml,
+    )
+        .into_response())
 }
 
 fn validate_printer(printer: &Printer) -> Result<(), AppError> {

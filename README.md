@@ -16,13 +16,16 @@ starting. Starter templates: `avery5163` (US Letter sheet) and `brother12mm` / `
 
 ## Endpoints
 
-- `GET /health` → `{ "status": "ok" }`
-- `GET /templates` → list of template summaries
-- `GET /templates/{id}` → detailed template schema
-- `POST /render/label` → rendered PNG (templates with `format.type: single`)
-- `POST /render/batch` → rendered PDF (templates with `format.type: sheet`)
-- `GET /openapi.json` → OpenAPI document
-- `GET /docs` → Swagger UI
+All routes are under `/api` (the root is reserved for the web UI); unknown `/api/*` → `404 NotFound`.
+
+- `GET /api/health` → `{ "status": "ok" }`
+- `GET /api/templates` → list of template summaries
+- `GET /api/templates/{id}` → detailed template schema
+- `GET /api/templates/{id}/source` → raw stored template YAML
+- `POST /api/render/label` → rendered PNG/PDF for a single template (preview / one-off)
+- `POST /api/batch` → render/print a batch (single → ZIP or per-label jobs, sheet → paginated PDF or job)
+- `GET /api/openapi.json` → OpenAPI document
+- `GET /api/docs/` → Swagger UI
 
 `scripts/render_test.sh` and `scripts/render_avery_horizontal.sh` post sample requests to a running
 server and write a PDF.
