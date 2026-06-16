@@ -151,8 +151,10 @@ See the `homebox-qr` demo template.
 - **AC:** configured base URL plus a per-template/request id field produces a URL-encoded QR; absent
   config falls back to literal QR content; tested.
 
-#### P1-42 CSV import (one label per row) · GH #21
+#### P1-42 CSV import (one label per row) · GH #21 — DONE (M4 branch)
 Upload a CSV and render/print one label per row, mapping columns to fields by header name.
+Delivered as `POST /import/csv`: `mode=download` returns an atomic ZIP (one file per row),
+`mode=print` dispatches per-row jobs and returns a `{ total, succeeded, failed }` summary.
 - **Depends on:** P1-35.
 - **AC:** CSV with headers matching template fields produces N labels via `/print`; per-row missing
   field reported with row index; a downloadable starter CSV is provided; quoted fields and BOM handled;

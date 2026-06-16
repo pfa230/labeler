@@ -33,6 +33,9 @@ Templates are loaded once at startup and held immutably. Rendering works by gene
 | GET / POST | `/printers` | List / create printers | `200` / `201` |
 | GET / PUT / DELETE | `/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
 | POST | `/print` | Render and print, or download | `200` / `204` |
+| GET | `/settings` | All settings as a key/value object | `200 {…}` |
+| PUT | `/settings/{key}` | Upsert a setting | `200` / `400` |
+| POST | `/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
 | GET | `/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/docs` | Swagger UI | `200` |
 
@@ -285,8 +288,37 @@ settings, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, def
   as new drivers without changing dispatch.
 - **Deferred:** printer status read-back, USB/browser printing, batch-to-printer and `copies` (→ #28).
 
+## Settings
+
+A generic key/value store backs integration settings, persisted in the SQLite `settings` table.
+`GET /settings` returns all pairs as a JSON object; `PUT /settings/{key}` with `{ "value": "…" }`
+upserts one (the key is a slug of letters, digits, `_`, `-`, `.`; otherwise `400`). Settings are
+readable from templates through `{settings.<key>}` interpolation (see §8). The only key used in
+Phase 1 is `qr_base_url`; the generic shape leaves room for later integration config (e.g. a Homebox
+URL/token).
+
+## CSV import
+
+**`POST /import/csv?template=<id>&mode=download|print&printer=<id>&format=png|pdf`** renders one label
+per CSV row. The request body is raw `text/csv`: the header row names the fields, each subsequent row
+supplies one label's `data` (all values are strings). It targets single-format templates; sheet
+composition from rows is out of scope (→ #28).
+
+- **`mode=download`** (default) returns `application/zip` with one file per row, named by 1-based
+  zero-padded row index (`001.png`, …) in the template's render format (`format` selects png/pdf).
+  Download is **atomic**: the first row that fails to render (e.g. unresolved interpolation field)
+  fails the whole request with `422` and the offending `details.row`; no partial archive.
+- **`mode=print`** requires `printer` (and rejects `format`). It dispatches one print job per row
+  (so a continuous-tape printer auto-cuts between labels), recording each job, and **continues past
+  failures**. It returns `200` with a summary `{ total, succeeded, failed: [{ row, error }] }`.
+  Unknown template/printer → 404; disabled printer → 409; sheet template → 422.
+- **Out of scope (v1):** per-row option selection, multipart upload.
+
 ## Changelog
 
+- **2026-06-15** — Added CSV import (`POST /import/csv`): one label per row, ZIP download (atomic)
+  or per-row print jobs with a `{ total, succeeded, failed }` summary. Added a generic settings
+  store with `GET /settings` and `PUT /settings/{key}`. Issues #21, #14.
 - **2026-06-15** — Added a `value` field on `text`/`qr` items: a substitution interpolation string
   (`{field}` from request data, `{settings.<key>}` from the settings store, `{{`/`}}` literal braces;
   unresolved token → `422 MissingField`), as an exactly-one-of alternative to `name`. See ADR-0010 and
