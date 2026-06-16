@@ -34,7 +34,6 @@ RUN npm run build            # tsc -b && vite build -> /ui/dist
 FROM rust:1-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-RUN cargo fetch --locked     # caches the dependency DOWNLOAD (not compiled artifacts)
 COPY src/ src/
 RUN cargo build --release --locked   # binary at /app/target/release/labeler (gcc present for rusqlite bundled)
 RUN mkdir -p /seed/data /seed/assets   # empty writable data dir + empty assets dir for the runtime
@@ -58,7 +57,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
 ENTRYPOINT ["/app/labeler"]
 ```
 - `.dockerignore`: exclude `target/`, `ui/node_modules`, `ui/dist`, `data/`, `*.pdf`, `.git`, local artifacts (the image rebuilds `ui/dist` and the binary internally).
-- Caching: `cargo fetch --locked` caches only the dependency download; any `src/` change still recompiles deps in the `cargo build` layer. If build speed matters later, switch to BuildKit cache mounts (`--mount=type=cache,target=/app/target` and the cargo registry) or cargo-chef. Not a correctness concern for MVP; the design does not overclaim a compile cache.
+- Caching: no separate `cargo fetch` layer. This repo's `Cargo.toml` has no `[[bin]]`/`[lib]` section (it auto-discovers `src/main.rs`), so cargo cannot parse the manifest until `src/` is present; `src/` is copied before `cargo build --release --locked`. BuildKit cache mounts or cargo-chef can speed rebuilds later. Not a correctness concern for MVP.
 - Base tags (`node:22-bookworm-slim`, `rust:1-bookworm`, distroless `:debug`) float within a tag; for reproducible release builds, pin the tested digests (record them in the plan). MVP uses the tags and records the digest it was built/verified against. Note: a dependency (`ipp` 6) uses Rust edition 2024, so the build needs a recent toolchain (rustc >= 1.85); `rust:1-bookworm` currently satisfies this, and pinning prevents an accidentally old toolchain.
 
 Rationale for chown: a Docker NAMED VOLUME (and only an empty one) initializes its contents AND ownership from the image directory at the mountpoint on first use ("copy-up"), so /app/templates and /app/data must be owned by uid 65532 or the nonroot process cannot write through the volume. This does NOT apply to bind mounts or pre-existing volumes (see Volumes caveats); the compose init service makes the ownership guarantee robust.

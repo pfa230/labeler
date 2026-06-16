@@ -83,7 +83,6 @@ RUN npm run build
 FROM rust:1-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-RUN cargo fetch --locked
 COPY src/ src/
 RUN cargo build --release --locked
 RUN mkdir -p /seed/data /seed/assets
