@@ -1,0 +1,9 @@
+target/
+ui/node_modules/
+ui/dist/
+data/
+*.pdf
+*.db
+.git/
+.env
+docs/
