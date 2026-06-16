@@ -27,6 +27,8 @@ const CODE_PRINTER_INVALID: &str = "PrinterInvalid";
 const CODE_PRINTER_DISABLED: &str = "PrinterDisabled";
 const CODE_PRINT_FAILED: &str = "PrintFailed";
 const CODE_INTERNAL: &str = "Internal";
+const CODE_BATCH_INVALID: &str = "BatchInvalid";
+const CODE_BATCH_TOO_LARGE: &str = "BatchTooLarge";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -34,6 +36,14 @@ pub struct AppError {
     code: &'static str,
     message: String,
     details: Option<Value>,
+}
+
+/// One label's validation failure within a batch (its 0-based index + the error code/message).
+#[derive(Debug, serde::Serialize)]
+pub struct BatchFailure {
+    pub index: usize,
+    pub code: &'static str,
+    pub message: String,
 }
 
 impl AppError {
@@ -53,6 +63,29 @@ impl AppError {
 
     pub fn message_text(&self) -> String {
         self.message.clone()
+    }
+
+    pub fn batch_invalid(failures: Vec<BatchFailure>) -> Self {
+        Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            CODE_BATCH_INVALID,
+            "one or more labels in the batch are invalid",
+            Some(json!({ "failures": failures })),
+        )
+    }
+
+    pub fn batch_too_large(count: usize, max: usize) -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            CODE_BATCH_TOO_LARGE,
+            format!("batch has {count} labels; the maximum is {max}"),
+            Some(json!({ "count": count, "max": max })),
+        )
+    }
+
+    /// The stable error `code` string (for tests / introspection).
+    pub fn code(&self) -> &'static str {
+        self.code
     }
 
     pub fn template_not_found(id: String) -> Self {
