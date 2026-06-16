@@ -203,7 +203,7 @@ Upload a CSV, review rows, and batch print/download.
 - **AC:** from the UI, a CSV produces a batch via `/batch`; row/field errors shown; download or print
   selectable.
 
-#### P1-55 Settings + printers screen · GH #23
+#### P1-55 Settings + printers screen · GH #23 · DONE (efbc668)
 Configure QR base URL, printers, and view the webhook endpoint.
 - **Depends on:** P1-51, P1-32, P1-41.
 - **AC:** add/edit/remove printers; set QR base URL; settings persist; webhook URL/example shown.
