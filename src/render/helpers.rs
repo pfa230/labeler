@@ -5,6 +5,7 @@ use fontdue::Font;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
 use serde_json::Value as JsonValue;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use typst_as_lib::typst_kit_options::TypstKitFontOptions;
@@ -17,6 +18,67 @@ pub(super) fn value_to_string(value: &JsonValue) -> String {
         JsonValue::Null => String::new(),
         other => other.to_string(),
     }
+}
+
+/// Substitution-only interpolation (ADR-0010). `{field}` resolves from `data` via `value_to_string`,
+/// `{settings.<key>}` from `settings`; `{{`/`}}` emit literal braces. An unresolved token or an
+/// unmatched brace is an error.
+pub(super) fn interpolate(
+    template: &str,
+    data: &HashMap<String, JsonValue>,
+    settings: &BTreeMap<String, String>,
+) -> Result<String, AppError> {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    out.push('{');
+                    continue;
+                }
+                let mut token = String::new();
+                let mut closed = false;
+                for tc in chars.by_ref() {
+                    if tc == '}' {
+                        closed = true;
+                        break;
+                    }
+                    token.push(tc);
+                }
+                if !closed {
+                    return Err(AppError::invalid_request(format!(
+                        "unterminated '{{' in template '{template}'"
+                    )));
+                }
+                let resolved = if let Some(key) = token.strip_prefix("settings.") {
+                    settings
+                        .get(key)
+                        .cloned()
+                        .ok_or_else(|| AppError::missing_field(&format!("settings.{key}")))?
+                } else {
+                    value_to_string(
+                        data.get(&token)
+                            .ok_or_else(|| AppError::missing_field(&token))?,
+                    )
+                };
+                out.push_str(&resolved);
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    out.push('}');
+                } else {
+                    return Err(AppError::invalid_request(format!(
+                        "unmatched '}}' in template '{template}'"
+                    )));
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    Ok(out)
 }
 
 pub(super) fn resolve_dimension(dimension: &Dimension) -> Result<f32, AppError> {
@@ -131,8 +193,9 @@ fn inter_font() -> Result<&'static Font, AppError> {
         .map_err(|err| AppError::render_failed(format!("failed to read font: {err}")))?;
     let font = Font::from_bytes(bytes, fontdue::FontSettings::default())
         .map_err(|err| AppError::render_failed(format!("failed to parse font: {err}")))?;
-    FONT.set(font)
-        .map_err(|_| AppError::render_failed("failed to cache font"))?;
+    // A concurrent caller may win the race to populate the cache; either value is valid, so fall
+    // back to the stored font rather than treating the lost race as an error.
+    let _ = FONT.set(font);
     Ok(FONT.get().expect("font initialized"))
 }
 
@@ -495,5 +558,57 @@ mod tests {
         let dir = unique_dir("missing");
         assert!(resolve_image_asset(&dir, "nope.png").is_err());
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod interpolate_tests {
+    use super::interpolate;
+    use serde_json::json;
+    use std::collections::{BTreeMap, HashMap};
+
+    fn data() -> HashMap<String, serde_json::Value> {
+        HashMap::from([
+            ("id".to_string(), json!("A1")),
+            ("count".to_string(), json!(3)),
+        ])
+    }
+
+    fn settings() -> BTreeMap<String, String> {
+        BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())])
+    }
+
+    #[test]
+    fn substitutes_field_and_setting() {
+        let out = interpolate("{settings.qr_base_url}/{id}", &data(), &settings()).unwrap();
+        assert_eq!(out, "https://h/i/A1");
+    }
+
+    #[test]
+    fn stringifies_non_string_field() {
+        assert_eq!(
+            interpolate("n={count}", &data(), &settings()).unwrap(),
+            "n=3"
+        );
+    }
+
+    #[test]
+    fn literal_braces() {
+        assert_eq!(interpolate("{{x}}", &data(), &settings()).unwrap(), "{x}");
+    }
+
+    #[test]
+    fn missing_field_errors() {
+        assert!(interpolate("{nope}", &data(), &settings()).is_err());
+    }
+
+    #[test]
+    fn missing_setting_errors() {
+        assert!(interpolate("{settings.nope}", &data(), &settings()).is_err());
+    }
+
+    #[test]
+    fn unmatched_brace_errors() {
+        assert!(interpolate("a{id", &data(), &settings()).is_err());
     }
 }

@@ -28,6 +28,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 rusqlite_migration = "2"
 ipp = "6"
 async-trait = "0.1"
+csv = "1.4.0"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 http-body-util = "0.1"

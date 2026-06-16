@@ -344,6 +344,171 @@ mod http_tests {
         assert_eq!(body["error"]["code"], "UnsupportedFormat");
     }
 
+    #[tokio::test]
+    async fn import_csv_download_zips_rows() {
+        let app = build_app();
+        let csv = "message,code\nHello,QR-1\nWorld,QR-2\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "application/zip");
+        let body = bytes_response(response).await;
+        assert!(body.len() > 4, "zip body too small");
+        assert_eq!(&body[..4], b"PK\x03\x04");
+    }
+
+    #[tokio::test]
+    async fn import_csv_strips_leading_bom() {
+        let app = build_app();
+        let csv = format!("{}message,code\nHello,QR-1\n", '\u{feff}');
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(content_type, "application/zip");
+        let body = bytes_response(response).await;
+        assert_eq!(&body[..4], b"PK\x03\x04");
+    }
+
+    #[tokio::test]
+    async fn import_csv_duplicate_headers_returns_400() {
+        let app = build_app();
+        let csv = "message,message\nHello,World\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+    }
+
+    #[tokio::test]
+    async fn import_csv_missing_field_is_atomic() {
+        let app = build_app();
+        // brother24mm needs `message` and `code`. The CSV omits the `code` column, so the very
+        // first row fails to render and the atomic download aborts at row 1.
+        let csv = "message\nHello\nWorld\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "code");
+        assert_eq!(body["error"]["details"]["row"], 1);
+    }
+
+    #[tokio::test]
+    async fn import_csv_print_reports_per_row() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let csv = "message,code\nHello,QR-1\nWorld,QR-2\n";
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm&mode=print&printer=ok-printer")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["succeeded"], 2);
+        assert_eq!(body["failed"].as_array().expect("failed array").len(), 0);
+
+        create_fake_printer(&app, "bad-printer", true).await;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm&mode=print&printer=bad-printer")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["succeeded"], 0);
+        let failed = body["failed"].as_array().expect("failed array");
+        assert_eq!(failed.len(), 2);
+        assert_eq!(failed[0]["row"], 1);
+        assert_eq!(failed[1]["row"], 2);
+        assert!(!failed[0]["error"]
+            .as_str()
+            .expect("error string")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn import_csv_print_requires_printer() {
+        let app = build_app();
+        let csv = "message,code\nHello,QR-1\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/import/csv?template=brother24mm&mode=print")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
     fn temp_templates_dir() -> std::path::PathBuf {
         let mut dir = std::env::temp_dir();
         let n = std::time::SystemTime::now()
@@ -694,6 +859,26 @@ layout:
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         let (status, _) = get_json(&app, "/printers/office").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn settings_put_then_get_roundtrip() {
+        let app = build_app();
+
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/settings/qr_base_url",
+                json!({ "value": "https://h/i" }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let (status, settings) = get_json(&app, "/settings").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(settings["qr_base_url"], "https://h/i");
     }
 
     #[tokio::test]
