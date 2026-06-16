@@ -1,9 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJson } from "./client"; // only getJson is used here; do NOT import sendJson (noUnusedLocals)
-import type { TemplateSummary, TemplateDetail } from "./types";
+import type { TemplateSummary, TemplateDetail, Printer } from "./types";
 
 export function useTemplates() {
   return useQuery({ queryKey: ["templates"], queryFn: () => getJson<{ templates: TemplateSummary[] }>("/templates") });
+}
+export function usePrinters() {
+  return useQuery({ queryKey: ["printers"], queryFn: () => getJson<Printer[]>("/printers") });
 }
 export function useTemplate(id: string) {
   return useQuery({ queryKey: ["template", id], queryFn: () => getJson<TemplateDetail>(`/templates/${id}`), enabled: !!id });
