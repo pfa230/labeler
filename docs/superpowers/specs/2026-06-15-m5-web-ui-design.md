@@ -58,10 +58,12 @@ without the two colliding:
 
 ### Data layer
 
-- **Typed API client** over `/api`. Types are generated from the OpenAPI doc (or hand-written and
-  checked against it); responses are validated at the boundary, including the **binary-or-JSON**
-  endpoints (`/batch` returns a blob on success or a JSON error, `/render/label` returns image/PDF
-  bytes or JSON error), so the client branches on status + content-type before reading the body.
+- **Typed API client** over `/api`. JSON CRUD types may be generated from the OpenAPI doc (or
+  hand-written and checked against it), but the **binary-or-JSON** endpoints (`/batch` returns a blob on
+  success or a JSON error; `/render/label` returns image/PDF or JSON error) are **hand-written** in the
+  client, since the current utoipa annotations don't model the binary/dual-content responses, the
+  client must branch on status + content-type before reading the body, not trust a generated type.
+  (Improving those annotations is optional; the hand-written wrappers are the contract of record.)
 - **Server-state caching** (React Query or equivalent) for templates/printers/settings, with explicit
   invalidation after mutations (create/replace/delete template, printer CRUD, settings PUT).
 - **Cross-screen prefill:** "Use to print" carries the chosen template (and any sample data) into the
@@ -108,31 +110,37 @@ generic SaaS look (ADR-0008 goal). Token names live in the mockup CSS as the ref
 
 ### 1. Templates list — `/` (#17)
 Landing page. Responsive grid of template cards: id (monospace chip), name, single/sheet badge, and a
-**lazy, best-effort thumbnail**. Single cards render a small PNG via `/api/render/label` with sample
-data; **sheet cards do not render a live page per card** (too expensive on a grid), they show a sheet
-placeholder/badge and defer the real preview to the detail page. Thumbnails load lazily (on view) and
-failures degrade to the placeholder. Search by id. Empty state. Card → detail. A **"new template"**
-action opens a raw-YAML create view (the GUI editor is out of scope; this is a textarea posting to
-`POST /api/templates`).
+**static placeholder** (no live render). The list deliberately does **not** render thumbnails: card
+summaries (`TemplateSummary`) carry no layout or sample data, and a live render per card is expensive
+and would need synthesized data + settings; the real preview lives on the detail page. Search by id.
+Empty state. Card → detail. A **"new template"** action opens a raw-YAML create view (the GUI editor is
+out of scope; this is a textarea posting to `POST /api/templates`).
 
 ### 2. Template detail — `/templates/:id` (#17)
-Large preview (single via `/api/render/label`; sheet via `/api/batch` `mode=download`), metadata (unit,
-dpi, format + dimensions, declared options), the **referenced field names** (extracted client-side by
-walking the template `layout` for `text`/`qr` `name`/`value` interpolation tokens), the **settings keys**
-the template interpolates, a read-only collapsible **raw YAML source**, and "Use to print" (prefills
-Render & Print). Single vs sheet indicated.
+Large preview, metadata (unit, dpi, format + dimensions, declared options), the **referenced field
+names** and **settings keys** (derived client-side from `layout`), a read-only collapsible **raw YAML
+source**, and "Use to print" (prefills Render & Print). Single vs sheet indicated.
 
-> **Backend touch (small):** the current `GET /api/templates/{id}` returns the normalized
-> `TemplateDetail` (no raw YAML). The raw-YAML source view needs either a `?source` variant / a
-> `GET /api/templates/{id}/source` endpoint returning the stored YAML, or the view is dropped.
-> The plan must resolve this; "referenced fields" and "settings used" are derived client-side from the
-> existing `layout`, no backend change.
+- **Preview** synthesizes sample values for the referenced fields and uses the real settings
+  (`GET /api/settings`, for `{settings.*}` interpolation like `homebox-qr`), then renders single via
+  `/api/render/label` and sheet via `/api/batch` `mode=download`. (Templates declaring their own sample
+  data is a possible later backend enhancement; M5 synthesizes.)
+- **Referenced-field extraction** walks `layout` for every data binding: `text`/`qr` `name` and the
+  `{field}` tokens inside their `value`, **and `image.name`** (data-bound images are required fields).
+  It is **option-aware**: containers gated by `option` only contribute their fields when the selected
+  option set matches, so extraction runs against the currently selected options (defaulting to the
+  first allowed value of each declared option), matching what the renderer actually requires.
+
+> **Backend touch (small, in M5 scope):** add `GET /api/templates/{id}/source` returning the stored
+> YAML (the registry knows each template's file path), to back the raw-source view. "Referenced fields"
+> and "settings used" need no backend change (derived from `layout`).
 
 ### 3. Render & Print — `/print` (#20)
 Two-pane. Left: template picker, a form auto-generated from the template's referenced fields (extracted
 from `layout` as in §2), an options section (selects from declared `options`), printer select, and a
-sheet-only **start slot** input (`start_slot`, hidden for single templates). Right: live preview and
-**Print** (primary) / **Download** (secondary) actions.
+sheet-only **start slot** input (`start_slot`, hidden for single templates, bounded client-side to the
+sheet's slot count from `format.positions.length`). Right: live preview and **Print** (primary) /
+**Download** (secondary) actions.
 
 - **Preview** is debounced (~300ms), gated on the required fields being present, cancellable
   (`AbortController` on each keystroke so a stale render can't overwrite a newer one), and cached by a
@@ -171,20 +179,24 @@ This re-scopes #24 to an editable grid (the reusable label-grid component above)
 against `/api/batch`.
 
 ### 5. Settings & Printers — `/settings` (#23)
-One page, two sections. *Settings*: key/value editor seeded with `qr_base_url`
-(`GET /api/settings` for all, `PUT /api/settings/{key}` to upsert). *Printers*: table with
-add/edit/delete (`/api/printers` CRUD), kind + config (cups uri), enabled toggle.
+One page, two sections. *Settings*: key/value editor over `GET /api/settings` (all) +
+`PUT /api/settings/{key}` (upsert). The store does not auto-seed; the UI shows `qr_base_url` as a
+suggested/default row to fill if absent. *Printers*: table with add/edit/delete (`/api/printers` CRUD),
+kind + config (cups uri), enabled toggle.
 
 ## Error handling
 
 Field-level validation inline; API errors (the stable `{ error: { code, message, details } }` schema)
-surface in toasts with the message, and near the triggering control where one exists. Row-level errors
-have **two distinct shapes** the grid must adapt:
+surface in toasts with the message, and near the triggering control where one exists. `/batch` is
+**validate-then-execute in both modes**, so row errors come in two distinct shapes the grid must adapt:
 
-- **`mode=download` (atomic):** a bad batch fails with `422 BatchInvalid` and
-  `details.failures: [{ index, code, message }]`; the grid maps each `index` to its row.
-- **`mode=print` (best-effort):** `200` with `failed: [{ index, error }]` (no `code`); the grid
-  annotates those rows as failed and the rest as ok.
+- **Data/render errors (either mode):** a bad row fails the whole request with `422 BatchInvalid` and
+  `details.failures: [{ index, code, message }]`, **before** anything is produced or printed; the grid
+  maps each `index` to its row. (This is the path for a missing field, invalid option, etc. in print
+  mode too, not just download.)
+- **Print transport failures (print only):** after all rows render, a `200` summary may carry
+  `failed: [{ index, error }]` (no `code`) for labels whose print job failed to send; the grid annotates
+  those rows failed, the rest ok.
 - `413 BatchTooLarge` is prevented client-side (the cap check), but still handled if it slips through.
 
 Binary endpoints (`/batch` download, `/render/label`) are read as a blob **only** on a 2xx with the
@@ -200,8 +212,9 @@ grid provides the base), a focus trap on the mobile nav drawer, and `aria-live` 
 
 ## Testing
 
-- **Backend:** `/api` namespacing and SPA-fallback tests, `/api/templates` and `/api/docs` resolve,
-  `/templates/:id` and asset URLs fall back to `index.html`, a bogus `/api/nope` returns the JSON 404
+- **Backend:** `/api` namespacing and SPA-fallback tests: `/api/templates` and `/api/docs` resolve;
+  an unknown **SPA route** like `/templates/:id` falls back to `index.html`; built **assets serve as
+  themselves** and a missing asset is a `404` (not HTML); a bogus `/api/nope` returns the JSON `404`
   (not the SPA). Existing root-path HTTP tests in `src/lib.rs` migrate to `/api`.
 - **Frontend component:** the generated render form; the CSV grid (parse, inline edit, copies expansion,
   duplicate/remove/reset, option precedence, the 500-cap disabling Run); the settings/printers tables;
