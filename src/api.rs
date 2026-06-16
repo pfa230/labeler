@@ -16,17 +16,18 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::{
     errors::AppError,
     models::{
-        ErrorResponse, HealthResponse, PrintRequest, ReloadResponse, RenderBatchRequest,
+        BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, ReloadResponse,
         RenderLabelRequest, SettingValue, TemplateDetail, TemplateList,
     },
     openapi::ApiDoc,
     parse::parse_template,
-    render::render_sheet_pages,
     render::render_single_label,
     render::render_single_label_pdf,
     store::{Printer, Store},
     templates::{TemplateDefinition, TemplateRegistry, TemplateRegistryError},
 };
+
+const MAX_BATCH_LABELS: usize = 500;
 
 #[derive(serde::Deserialize)]
 pub struct RenderQuery {
@@ -92,8 +93,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/settings", get(get_settings))
         .route("/settings/{key}", put(put_setting))
         .route("/render/label", post(render_label))
-        .route("/render/batch", post(render_batch))
-        .route("/print", post(print))
+        .route("/batch", post(batch))
         .route("/import/csv", post(import_csv))
         .merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()))
         .layer(TraceLayer::new_for_http())
@@ -544,108 +544,151 @@ fn download_response(bytes: Vec<u8>, content_type: &'static str, filename: &str)
 
 #[utoipa::path(
     post,
-    path = "/print",
-    request_body = PrintRequest,
+    path = "/batch",
+    request_body = BatchRequest,
     responses(
-        (status = 200, description = "Rendered label (download when no printer)", body = Vec<u8>),
-        (status = 204, description = "Sent to the printer"),
+        (status = 200, description = "Download blob (zip/pdf) or print summary"),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
-        (status = 409, description = "Printer is disabled", body = ErrorResponse),
-        (status = 422, description = "Template is not single-format / validation error", body = ErrorResponse),
-        (status = 502, description = "Printer/transport failure", body = ErrorResponse)
+        (status = 409, description = "Printer disabled", body = ErrorResponse),
+        (status = 413, description = "Batch too large", body = ErrorResponse),
+        (status = 422, description = "One or more labels invalid", body = ErrorResponse),
+        (status = 502, description = "Printer transport failure", body = ErrorResponse)
     )
 )]
-pub async fn print(
+pub async fn batch(
     State(state): State<Arc<AppState>>,
-    payload: Result<Json<PrintRequest>, JsonRejection>,
+    payload: Result<Json<BatchRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(req) = payload.map_err(AppError::from)?;
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
-    if !matches!(
+    let is_single = matches!(
         template.format,
         crate::models::TemplateFormat::Single { .. }
-    ) {
-        return Err(AppError::unsupported_format(format!(
-            "template '{}' is a sheet; use /render/batch for sheet labels",
-            template.id
-        )));
-    }
+    );
 
-    let option = req.label.option.as_ref();
-    let settings = state.store().all_settings().await?;
-
-    let Some(printer_id) = req.printer.as_deref() else {
-        let (bytes, content_type, ext) = render_to_format(
-            template,
-            &req.label.data,
-            option,
-            req.format.as_deref(),
-            &settings,
-        )?;
-        return Ok(download_response(
-            bytes,
-            content_type,
-            &format!("{}.{ext}", template.id),
-        ));
-    };
-
-    if req.format.is_some() {
-        return Err(AppError::invalid_request(
-            "format applies only to download; omit it when printing to a printer",
-        ));
-    }
-
-    let printer = state
-        .store()
-        .get_printer(printer_id)
-        .await?
-        .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
-    if !printer.enabled {
-        return Err(AppError::printer_disabled(printer_id));
-    }
-    let driver = crate::driver::build_driver(&printer.kind, &printer.config)
-        .map_err(|err| AppError::printer_invalid(err.to_string()))?;
-    let artifact = match driver.accepted_format() {
-        crate::driver::ArtifactFormat::Pdf => {
-            render_single_label_pdf(template, &req.label.data, option, &settings)?
-        }
-        crate::driver::ArtifactFormat::Png => {
-            render_single_label(template, &req.label.data, option, &settings)?
-        }
-        fmt => {
-            return Err(AppError::print_failed(format!(
-                "no renderer for artifact format {fmt:?}"
+    let mode = match req.mode.as_str() {
+        "download" => crate::batch::BatchMode::Download,
+        "print" => crate::batch::BatchMode::Print,
+        other => {
+            return Err(AppError::invalid_request(format!(
+                "unknown mode '{other}'; use download or print"
             )))
         }
     };
-    match driver
-        .send(&artifact, &crate::driver::PrintOptions::default())
-        .await
-    {
-        Ok(()) => {
-            if let Err(err) = state
-                .store()
-                .record_job(&req.template, Some(printer_id), "ok", None)
-                .await
-            {
-                tracing::warn!(%err, "failed to record print job");
-            }
-            Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+    if req.start_slot > 0 && is_single {
+        return Err(AppError::invalid_request(
+            "start_slot applies only to sheet templates",
+        ));
+    }
+    let settings = state.store().all_settings().await?;
+
+    match mode {
+        crate::batch::BatchMode::Download => {
+            let rendered = crate::batch::render_batch(
+                template,
+                &req.labels,
+                mode,
+                req.format.as_deref(),
+                req.start_slot,
+                &settings,
+                MAX_BATCH_LABELS,
+            )?;
+            let crate::batch::RenderedBatch::Download {
+                bytes,
+                content_type,
+                filename,
+            } = rendered
+            else {
+                return Err(AppError::internal(
+                    "batch returned non-download for download mode",
+                ));
+            };
+            Ok(download_response(bytes, content_type, &filename))
         }
-        Err(err) => {
-            let message = err.to_string();
-            if let Err(log_err) = state
-                .store()
-                .record_job(&req.template, Some(printer_id), "failed", Some(&message))
-                .await
-            {
-                tracing::warn!(%log_err, "failed to record failed print job");
+        crate::batch::BatchMode::Print => {
+            if req.format.is_some() {
+                return Err(AppError::invalid_request(
+                    "format applies only to download; omit it when printing",
+                ));
             }
-            Err(AppError::print_failed(message))
+            let printer_id = req
+                .printer
+                .as_deref()
+                .ok_or_else(|| AppError::invalid_request("mode=print requires a printer"))?;
+            let printer = state
+                .store()
+                .get_printer(printer_id)
+                .await?
+                .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
+            if !printer.enabled {
+                return Err(AppError::printer_disabled(printer_id));
+            }
+            let driver = crate::driver::build_driver(&printer.kind, &printer.config)
+                .map_err(|err| AppError::printer_invalid(err.to_string()))?;
+            let driver_format = match driver.accepted_format() {
+                crate::driver::ArtifactFormat::Pdf => "pdf",
+                crate::driver::ArtifactFormat::Png => "png",
+                fmt => {
+                    return Err(AppError::print_failed(format!(
+                        "no renderer for artifact format {fmt:?}"
+                    )))
+                }
+            };
+            // Validate-then-execute: render everything first; bad data => 422 before any send.
+            let rendered = crate::batch::render_batch(
+                template,
+                &req.labels,
+                mode,
+                Some(driver_format),
+                req.start_slot,
+                &settings,
+                MAX_BATCH_LABELS,
+            )?;
+            let crate::batch::RenderedBatch::Print { units } = rendered else {
+                return Err(AppError::internal(
+                    "batch returned non-print for print mode",
+                ));
+            };
+            let total = req.labels.len();
+            let jobs = units.len();
+            let mut failed = Vec::new();
+            for unit in &units {
+                match driver
+                    .send(&unit.bytes, &crate::driver::PrintOptions::default())
+                    .await
+                {
+                    Ok(()) => {
+                        let _ = state
+                            .store()
+                            .record_job(&req.template, Some(printer_id), "ok", None)
+                            .await;
+                    }
+                    Err(err) => {
+                        let msg = err.to_string();
+                        let _ = state
+                            .store()
+                            .record_job(&req.template, Some(printer_id), "failed", Some(&msg))
+                            .await;
+                        for &i in &unit.indices {
+                            failed.push(BatchRowError {
+                                index: i,
+                                error: msg.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            let summary = BatchSummary {
+                total,
+                succeeded: total - failed.len(),
+                failed,
+                jobs,
+            };
+            Ok((axum::http::StatusCode::OK, Json(summary)).into_response())
         }
     }
 }
@@ -720,46 +763,6 @@ pub async fn render_label(
         axum::http::StatusCode::OK,
         [("content-type", content_type)],
         bytes,
-    )
-        .into_response())
-}
-
-#[utoipa::path(
-    post,
-    path = "/render/batch",
-    request_body = RenderBatchRequest,
-    responses(
-        (status = 200, description = "Rendered PDF bytes", content_type = "application/pdf", body = Vec<u8>),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 415, description = "Unsupported media type", body = ErrorResponse),
-        (status = 422, description = "Validation error", body = ErrorResponse),
-        (status = 501, description = "Not implemented", body = ErrorResponse)
-    )
-)]
-pub async fn render_batch(
-    State(state): State<Arc<AppState>>,
-    payload: Result<Json<RenderBatchRequest>, JsonRejection>,
-) -> Result<Response, AppError> {
-    let Json(req) = payload.map_err(AppError::from)?;
-    tracing::debug!(
-        template = %req.template,
-        labels = req.labels.len(),
-        start_slot = req.start_slot,
-        "render batch request"
-    );
-    let registry = state.templates.load_full();
-    let template = registry
-        .get(&req.template)
-        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
-
-    let settings = state.store().all_settings().await?;
-    let pdf = render_sheet_pages(template, &req.labels, req.start_slot, &settings)?;
-
-    Ok((
-        axum::http::StatusCode::OK,
-        [("content-type", "application/pdf")],
-        pdf,
     )
         .into_response())
 }
