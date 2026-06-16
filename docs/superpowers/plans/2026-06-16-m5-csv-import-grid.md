@@ -12,20 +12,20 @@
 
 ## Context the implementer needs
 
-- **Spec (source of truth):** `docs/superpowers/specs/2026-06-15-m5-web-ui-design.md`, section **§4 "CSV Import — `/import` (#24)"** and **"Reusable label grid + row model"**. Read those two sections before starting.
+- **Spec (source of truth):** `docs/superpowers/specs/2026-06-15-m5-web-ui-design.md`, section **§4 "CSV Import, `/import` (#24)"** and **"Reusable label grid + row model"**. Read those two sections before starting.
 - **The `/api/batch` contract** (ADR-0011, already shipped): `POST /api/batch { template, labels: [{ data, option? }], mode: "download" | "print", printer?, start_slot? }`.
   - `mode=download` → a binary blob (zip for single, pdf for sheet).
   - `mode=print` → `200` JSON `BatchSummary { total, succeeded, failed: [{ index, error }], jobs }`.
   - A bad row fails the **whole** request with `422 BatchInvalid`, `details.failures: [{ index, code, message }]`, in **both** modes, before anything is produced.
   - `413 BatchTooLarge` if a batch exceeds 500 labels.
-- **Client wrappers already exist** in `ui/src/api/client.ts`: `submitBatch(body): Promise<BatchResult>` (discriminates download-blob vs JSON summary), `saveBlob(blob, filename)`, `ApiError` (carries `code`, `status`, `details`). **Reuse them — do not re-implement fetch.**
+- **Client wrappers already exist** in `ui/src/api/client.ts`: `submitBatch(body): Promise<BatchResult>` (discriminates download-blob vs JSON summary), `saveBlob(blob, filename)`, `ApiError` (carries `code`, `status`, `details`). **Reuse them; do not re-implement fetch.**
 - **Field/option helpers already exist** in `ui/src/lib/templateFields.ts`: `referencedFields(layout, selected)`, `defaultOptions(options)`. Reuse them.
 - **Existing patterns to mirror:**
-  - `ui/src/pages/print/PrintForm.tsx` — how a screen resolves labels, calls `submitBatch`, maps `BatchInvalid` failures, toasts via `useToast()`, omits `option` for option-less templates and `start_slot` when 0.
-  - `ui/src/pages/Print.test.tsx` — the canonical `stubFetch()` + `MemoryRouter` + `QueryClientProvider` + `ToastProvider` test harness. Copy this structure.
-  - `ui/src/api/queries.ts` — `useTemplates()`, `useTemplate(id)`, `usePrinters()`.
+  - `ui/src/pages/print/PrintForm.tsx`: how a screen resolves labels, calls `submitBatch`, maps `BatchInvalid` failures, toasts via `useToast()`, omits `option` for option-less templates and `start_slot` when 0.
+  - `ui/src/pages/Print.test.tsx`: the canonical `stubFetch()` + `MemoryRouter` + `QueryClientProvider` + `ToastProvider` test harness. Copy this structure.
+  - `ui/src/api/queries.ts`: `useTemplates()`, `useTemplate(id)`, `usePrinters()`.
 - **The toast provider is imported from `../app/toast`** (the `ToastProvider`), context hook `useToast()` from `../app/toast-context`. The `Print.test.tsx` import `import { ToastProvider } from "../app/toast";` is correct.
-- **Lint constraints (will fail CI otherwise):** `react-hooks/set-state-in-effect` (no synchronous `setState` in an effect body — only inside async/timer callbacks), `react-hooks/refs` (no `ref.current` read during render), `react-refresh/only-export-components` (a `.tsx` file may only export components; put types/helpers in `.ts` files), `noUnusedLocals`. No `any` (use `unknown` + narrowing). No em dashes in code comments or docs.
+- **Lint constraints (will fail CI otherwise):** `react-hooks/set-state-in-effect` (no synchronous `setState` in an effect body, only inside async/timer callbacks), `react-hooks/refs` (no `ref.current` read during render), `react-refresh/only-export-components` (a `.tsx` file may only export components; put types/helpers in `.ts` files), `noUnusedLocals`. No `any` (use `unknown` + narrowing). No em dashes in code comments or docs.
 - **No backend or API change.** The screen consumes existing endpoints (`/api/batch`, `/api/render/label`), not `/api/import/csv`. SPEC gets only a short clarification note plus a changelog entry distinguishing this client-side screen from the `/api/import/csv` API (Task 6), mirroring how ADR-0013/#20 added a "No API change" changelog line.
 - **Branch:** do this work on a short-lived branch `m5-csv-grid` off `main`; the final task merges to `main` and pushes (`Fixes #24`).
 
