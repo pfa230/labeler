@@ -342,6 +342,73 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn batch_sheet_print_failure_marks_all() {
+        let app = build_app();
+        create_fake_printer(&app, "bad-sheet-printer", true).await;
+        let label = json!({
+            "option": { "orientation": "horizontal", "outline": "yes" },
+            "data": {
+                "id": "A1",
+                "url": "https://example.com/A1",
+                "name": "Floor Grinder",
+                "tags": "Power tools",
+                "description": "Angle grinder with floor grinding attachment and dust shroud"
+            }
+        });
+        let payload = json!({
+            "template": "avery5163",
+            "mode": "print",
+            "printer": "bad-sheet-printer",
+            "labels": [label.clone(), label]
+        });
+        let response = app
+            .clone()
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["succeeded"], 0);
+        let failed = body["failed"].as_array().expect("failed array");
+        assert_eq!(failed.len(), 2);
+        assert_eq!(body["jobs"], 1);
+    }
+
+    #[tokio::test]
+    async fn batch_sheet_print_success_one_job() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-sheet-printer", false).await;
+        let label = json!({
+            "option": { "orientation": "horizontal", "outline": "yes" },
+            "data": {
+                "id": "A1",
+                "url": "https://example.com/A1",
+                "name": "Floor Grinder",
+                "tags": "Power tools",
+                "description": "Angle grinder with floor grinding attachment and dust shroud"
+            }
+        });
+        let payload = json!({
+            "template": "avery5163",
+            "mode": "print",
+            "printer": "ok-sheet-printer",
+            "labels": [label.clone(), label]
+        });
+        let response = app
+            .clone()
+            .oneshot(json_req("POST", "/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["succeeded"], 2);
+        assert_eq!(body["failed"].as_array().expect("failed array").len(), 0);
+        assert_eq!(body["jobs"], 1);
+    }
+
+    #[tokio::test]
     async fn batch_start_slot_single_400() {
         let app = build_app();
         let payload = json!({

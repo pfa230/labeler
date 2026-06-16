@@ -281,6 +281,64 @@ mod tests {
     }
 
     #[test]
+    fn single_print_renders_requested_format() {
+        let labels = vec![lbl("a")];
+        // pdf driver format -> PDF bytes
+        let out = render_batch(
+            &single_tpl(),
+            &labels,
+            BatchMode::Print,
+            Some("pdf"),
+            0,
+            &no_settings(),
+            500,
+        )
+        .unwrap();
+        let RenderedBatch::Print { units } = out else {
+            panic!("expected print")
+        };
+        assert!(
+            units[0].bytes.starts_with(b"%PDF"),
+            "pdf driver format must yield PDF bytes"
+        );
+        // png driver format -> PNG bytes
+        let out = render_batch(
+            &single_tpl(),
+            &labels,
+            BatchMode::Print,
+            Some("png"),
+            0,
+            &no_settings(),
+            500,
+        )
+        .unwrap();
+        let RenderedBatch::Print { units } = out else {
+            panic!("expected print")
+        };
+        assert_eq!(
+            &units[0].bytes[..8],
+            b"\x89PNG\r\n\x1a\n",
+            "png driver format must yield PNG bytes"
+        );
+    }
+
+    #[test]
+    fn empty_batch_is_invalid_request() {
+        let labels: Vec<LabelInput> = vec![];
+        let err = render_batch(
+            &single_tpl(),
+            &labels,
+            BatchMode::Download,
+            Some("png"),
+            0,
+            &no_settings(),
+            500,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "InvalidRequest");
+    }
+
+    #[test]
     fn over_cap_is_too_large() {
         let labels = vec![lbl("a"), lbl("b")];
         let err = render_batch(
