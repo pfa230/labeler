@@ -49,12 +49,12 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
         });
         if (r.kind === "download") saveBlob(r.blob, r.filename ?? `${detail.id}.pdf`);
       } else {
-        const { blob } = await fetchBlob(`/render/label?format=${fmt}`, {
+        const { blob, filename } = await fetchBlob(`/render/label?format=${fmt}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ template: detail.id, data: value.data, ...(option ? { option } : {}) }),
         });
-        saveBlob(blob, `${detail.id}.${fmt}`);
+        saveBlob(blob, filename ?? `${detail.id}.${fmt}`);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Download failed";
