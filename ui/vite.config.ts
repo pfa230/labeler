@@ -1,4 +1,3 @@
-/// <reference types="vitest/config" />
 import { defineConfig } from "vitest/config"; // re-exports vite's defineConfig + the `test` field
 import react from "@vitejs/plugin-react";
 

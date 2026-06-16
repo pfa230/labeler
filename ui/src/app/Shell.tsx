@@ -36,9 +36,10 @@ export function Shell() {
     document.addEventListener("keydown", onKeyDown);
     const firstLink = sidebarRef.current?.querySelector<HTMLElement>("a, button");
     firstLink?.focus();
+    const toggle = toggleRef.current;
     return () => {
       document.removeEventListener("keydown", onKeyDown);
-      toggleRef.current?.focus();
+      toggle?.focus();
     };
   }, [drawerOpen]);
 
