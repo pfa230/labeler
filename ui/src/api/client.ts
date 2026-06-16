@@ -35,6 +35,12 @@ export async function sendJson<T>(method: string, path: string, body: unknown): 
   return (await res.json()) as T;
 }
 
+// DELETE returns 204 with no body, so there is nothing to parse; throw the error contract on non-2xx.
+export async function del(path: string): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, { method: "DELETE" });
+  if (!res.ok) throw await toError(res);
+}
+
 function filenameFrom(res: Response): string | undefined {
   // Matches the current server's `Content-Disposition: attachment; filename="x"`; not RFC5987 `filename*=`.
   const m = (res.headers.get("content-disposition") ?? "").match(/filename="?([^"]+)"?/);

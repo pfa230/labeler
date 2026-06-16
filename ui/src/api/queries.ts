@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getJson } from "./client"; // only getJson is used here; do NOT import sendJson (noUnusedLocals)
+import { getJson, sendJson, del } from "./client";
 import type { TemplateSummary, TemplateDetail, Printer } from "./types";
 
 export function useTemplates() {
@@ -34,5 +34,37 @@ export function useCreateTemplate() {
       return (await res.json()) as TemplateDetail;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
+export function useSettings() {
+  return useQuery({ queryKey: ["settings"], queryFn: () => getJson<Record<string, string>>("/settings") });
+}
+
+export function useUpsertSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, value }: { key: string; value: string }) =>
+      sendJson<{ value: string }>("PUT", `/settings/${encodeURIComponent(key)}`, { value }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useSavePrinter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ printer, isNew }: { printer: Printer; isNew: boolean }) =>
+      isNew
+        ? sendJson<Printer>("POST", "/printers", printer)
+        : sendJson<Printer>("PUT", `/printers/${encodeURIComponent(printer.id)}`, printer),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
+  });
+}
+
+export function useDeletePrinter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => del(`/printers/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
   });
 }
