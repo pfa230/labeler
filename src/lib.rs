@@ -507,8 +507,8 @@ mod http_tests {
     #[tokio::test]
     async fn import_csv_missing_field_is_atomic() {
         let app = build_app();
-        // brother24mm needs `message` and `code`. The CSV omits the `code` column, so the very
-        // first row fails to render and the atomic download aborts at row 1.
+        // brother24mm needs `message` and `code`. The CSV omits the `code` column, so every row
+        // fails to render and the atomic batch aborts with a BatchInvalid before any output.
         let csv = "message\nHello\nWorld\n";
         let response = app
             .oneshot(
@@ -523,9 +523,12 @@ mod http_tests {
             .expect("request");
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "MissingField");
-        assert_eq!(body["error"]["details"]["field"], "code");
-        assert_eq!(body["error"]["details"]["row"], 1);
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"]
+            .as_array()
+            .expect("failures array");
+        assert_eq!(failures[0]["index"], 0);
+        assert_eq!(failures[0]["code"], "MissingField");
     }
 
     #[tokio::test]
@@ -570,8 +573,8 @@ mod http_tests {
         assert_eq!(body["succeeded"], 0);
         let failed = body["failed"].as_array().expect("failed array");
         assert_eq!(failed.len(), 2);
-        assert_eq!(failed[0]["row"], 1);
-        assert_eq!(failed[1]["row"], 2);
+        assert_eq!(failed[0]["index"], 0);
+        assert_eq!(failed[1]["index"], 1);
         assert!(!failed[0]["error"]
             .as_str()
             .expect("error string")

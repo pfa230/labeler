@@ -354,38 +354,6 @@ pub struct RenderLabelRequest {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct PrintRequest {
-    pub template: String,
-    #[serde(flatten)]
-    pub label: LabelInput,
-    #[serde(default)]
-    pub printer: Option<String>,
-    #[serde(default)]
-    pub format: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ImportRowError {
-    pub row: usize,
-    pub error: String,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ImportSummary {
-    pub total: usize,
-    pub succeeded: usize,
-    pub failed: Vec<ImportRowError>,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct RenderBatchRequest {
-    pub template: String,
-    pub labels: Vec<LabelInput>,
-    #[serde(default)]
-    pub start_slot: u32,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
 pub struct BatchRequest {
     pub template: String,
     pub labels: Vec<LabelInput>,
