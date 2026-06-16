@@ -131,13 +131,32 @@ body {
 
 Replace the Vite default `ui/src/index.css` import in `ui/src/main.tsx` with `import "./theme.css";` (delete `index.css` and `App.css` if unused).
 
-- [ ] **Step 2: Verify**
+- [ ] **Step 2: Pre-paint theme (no FOUC)**
+
+Add an inline script to `ui/index.html` `<head>`, BEFORE the `<script type="module" src="/src/main.tsx">`,
+so the dark class is set before first paint (a React effect runs too late and flashes). Wrap in
+`try/catch` for private-mode/SSR safety:
+
+```html
+<script>
+  try {
+    var t = localStorage.getItem("theme");
+    var dark = t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    if (dark) document.documentElement.classList.add("dark");
+  } catch (_) {}
+</script>
+```
+
+The `ThemeToggle` component (Task 6) only toggles/persists after load; it must not read
+`document`/`localStorage` at module scope.
+
+- [ ] **Step 3: Verify**
 
 `cd ui && npm run build` succeeds. Commit.
 
 ```bash
-git add ui/src
-git commit -m "Add Ink & Tape theme tokens + base styles (#15)"
+git add ui/src ui/index.html
+git commit -m "Add Ink & Tape theme tokens + pre-paint theme init (#15)"
 ```
 
 ---
@@ -146,19 +165,69 @@ git commit -m "Add Ink & Tape theme tokens + base styles (#15)"
 
 **Files:** `Cargo.toml`, `src/api.rs`, `src/lib.rs` (tests)
 
-- [ ] **Step 1: Write the failing test**
+NOTE on versions: the repo is on **axum 0.8** (`Cargo.toml`), `tower-http 0.7` (currently `trace` only).
+Verify API against those versions. The UI dir is threaded through `AppState` (NOT read from a global env
+var in the handler) so parallel tests can each set their own dir without racing.
 
-In `src/lib.rs` `http_tests`, add a test that the SPA fallback serves `index.html` for non-`/api` routes while `/api/*` keeps the JSON 404. It points the UI dir at a temp fixture:
+- [ ] **Step 1: Add `ui_dir` to `AppState`**
+
+In `src/api.rs`, add a `ui_dir: PathBuf` field to `AppState`. In `AppState::new(...)`, default it to
+`LABELER_UI_DIR` env or `ui/dist`; add a builder for tests:
 
 ```rust
+// in struct AppState { … , ui_dir: std::path::PathBuf }
+// in AppState::new(...), set:
+//   ui_dir: std::env::var_os("LABELER_UI_DIR").map(Into::into)
+//            .unwrap_or_else(|| std::path::PathBuf::from("ui/dist")),
+pub fn with_ui_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+    self.ui_dir = dir.into();
+    self
+}
+pub fn ui_dir(&self) -> &std::path::Path { &self.ui_dir }
+```
+
+`main.rs` keeps calling `AppState::new(...)` unchanged (it picks up the env/default).
+
+- [ ] **Step 2: Write the failing tests**
+
+In `src/lib.rs` `http_tests`, REPLACE the existing `root_path_is_not_the_api` test (it currently asserts
+`/health` → 404, which becomes nondeterministic once a real `ui/dist` exists) and add the SPA + asset
+tests. Each builds an app with an explicit, isolated `ui_dir` (no global env, no race). Add a small
+helper near `build_app`:
+
+```rust
+    fn app_with_ui(dir: &std::path::Path) -> axum::Router {
+        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let store = Store::open_in_memory().expect("store");
+        app(Arc::new(
+            AppState::new(templates, "templates".into(), store).with_ui_dir(dir),
+        ))
+    }
+
+    #[tokio::test]
+    async fn root_path_serves_spa_not_api() {
+        // empty ui dir (no index.html): the old root API path is gone; /health is not the API.
+        let dir = std::env::temp_dir().join(format!("labeler_ui_empty_{}", uniq()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = app_with_ui(&dir);
+        let res = app.clone()
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND); // not the API; no index.html present
+        let res = app.clone()
+            .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn spa_fallback_serves_index_for_non_api() {
-        let dir = std::env::temp_dir().join(format!("labeler_ui_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("labeler_ui_{}", uniq()));
         std::fs::create_dir_all(dir.join("assets")).unwrap();
         std::fs::write(dir.join("index.html"), "<!doctype html><title>labeler ui</title>").unwrap();
-        std::env::set_var("LABELER_UI_DIR", &dir);
+        let app = app_with_ui(&dir);
 
-        let app = build_app();
         // a client-side route falls back to index.html
         let res = app.clone()
             .oneshot(Request::builder().uri("/templates/abc").body(Body::empty()).unwrap())
@@ -169,7 +238,7 @@ In `src/lib.rs` `http_tests`, add a test that the SPA fallback serves `index.htm
         let body = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("labeler ui"));
 
-        // an unknown API path still returns the JSON contract
+        // unknown API path still returns the JSON contract
         let res = app.clone()
             .oneshot(Request::builder().uri("/api/nope").body(Body::empty()).unwrap())
             .await.unwrap();
@@ -178,33 +247,38 @@ In `src/lib.rs` `http_tests`, add a test that the SPA fallback serves `index.htm
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "NotFound");
 
-        std::env::remove_var("LABELER_UI_DIR");
+        // a missing asset is a 404 (NOT the SPA html) — assets must not be shadowed by index.html
+        let res = app.clone()
+            .oneshot(Request::builder().uri("/assets/missing.js").body(Body::empty()).unwrap())
+            .await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let ct = res.headers().get("content-type").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+        assert!(!ct.contains("text/html"), "missing asset must not serve SPA html");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 ```
 
-- [ ] **Step 2: Run to verify it fails**
+Add a `uniq()` test helper if one doesn't exist (a process-id + atomic counter, or nanos timestamp) so
+temp dirs don't collide across parallel tests.
 
-Run: `cargo test --lib http_tests::spa_fallback_serves_index_for_non_api 2>&1 | tail -20`
-Expected: FAIL (the non-`/api` branch returns plain "Not Found", not index.html).
+- [ ] **Step 3: Run to verify they fail**
 
-- [ ] **Step 3: Add tower-http `fs`**
+Run: `cargo test --lib http_tests::root_path_serves_spa_not_api http_tests::spa_fallback_serves_index_for_non_api 2>&1 | tail -20`
+Expected: FAIL (`with_ui_dir`/`ui_dir` don't exist yet; the non-`/api` branch still returns plain text).
+
+- [ ] **Step 4: Add tower-http `fs`**
 
 In `Cargo.toml`: `tower-http = { version = "0.7", features = ["trace", "fs"] }`.
 
-- [ ] **Step 4: Serve assets + index.html**
+- [ ] **Step 5: Serve assets + index.html from `AppState.ui_dir`**
 
-In `src/api.rs`: add a UI-dir helper and rewrite the `fallback` else branch to serve `index.html`; mount the hashed assets via `ServeDir`. Update `app()`:
+Mount `ServeDir` for assets and make `fallback` a `State`-aware handler reading `state.ui_dir()`. Update
+`app()`:
 
 ```rust
-fn ui_dir() -> std::path::PathBuf {
-    std::env::var_os("LABELER_UI_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("ui/dist"))
-}
-
 pub fn app(state: Arc<AppState>) -> Router {
-    let assets = tower_http::services::ServeDir::new(ui_dir().join("assets"));
+    let assets = tower_http::services::ServeDir::new(state.ui_dir().join("assets"));
     Router::new()
         .nest("/api", api_router())
         .nest_service("/assets", assets)
@@ -213,12 +287,12 @@ pub fn app(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn fallback(uri: axum::http::Uri) -> Response {
+async fn fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> Response {
     if uri.path() == "/api" || uri.path().starts_with("/api/") {
         return AppError::not_found(uri.path()).into_response();
     }
     // SPA: serve index.html for any non-API, non-asset route (client-side routing).
-    match tokio::fs::read(ui_dir().join("index.html")).await {
+    match tokio::fs::read(state.ui_dir().join("index.html")).await {
         Ok(bytes) => (
             axum::http::StatusCode::OK,
             [("content-type", "text/html; charset=utf-8")],
@@ -234,18 +308,21 @@ async fn fallback(uri: axum::http::Uri) -> Response {
 }
 ```
 
-(`nest_service("/assets", …)` serves hashed JS/CSS; `/assets/*` misses fall through to `fallback` → index.html, harmless. The dev workflow uses Vite's own server + proxy, so this path matters in prod.)
+Correctness notes (verified against axum/tower-http docs): a nested/mounted service that returns 404
+does **not** fall through to the router fallback, so a **missing `/assets/*` file returns ServeDir's 404**
+(good, not the SPA html). Unknown `/api/*` is caught by this `fallback` (the outer fallback applies to the
+nest's unmatched paths) and returns JSON. `ServeDir` rejects `..`/backslash traversal itself.
 
-- [ ] **Step 5: Run to verify it passes**
+- [ ] **Step 6: Run to verify they pass**
 
-Run: `cargo test --lib http_tests::spa_fallback_serves_index_for_non_api 2>&1 | tail -20`
-Expected: PASS. Then `cargo test 2>&1 | tail -5` → all pass; `cargo clippy --all-targets --all-features` clean.
+Run: `cargo test --lib http_tests::root_path_serves_spa_not_api http_tests::spa_fallback_serves_index_for_non_api 2>&1 | tail -20`
+Expected: PASS. Then `cargo test 2>&1 | tail -5` → all pass; `cargo fmt`; `cargo clippy --all-targets --all-features` clean.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add Cargo.toml Cargo.lock src/api.rs src/lib.rs
-git commit -m "Serve the SPA build from axum with index.html fallback (#15)"
+git commit -m "Serve the SPA build from axum (AppState.ui_dir) with index.html fallback (#15)"
 ```
 
 ---
@@ -259,7 +336,8 @@ git commit -m "Serve the SPA build from axum with index.html fallback (#15)"
 Set `ui/vite.config.ts`:
 
 ```ts
-import { defineConfig } from "vite";
+/// <reference types="vitest/config" />
+import { defineConfig } from "vitest/config"; // re-exports vite's defineConfig + the `test` field
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
@@ -272,6 +350,9 @@ export default defineConfig({
   test: { environment: "jsdom", setupFiles: "./src/setupTests.ts", globals: true },
 });
 ```
+
+(Importing `defineConfig` from `vitest/config` keeps the `test` field type-valid; importing it from
+`vite` would make the template's typecheck reject `test` and break `npm run build`.)
 
 Create `ui/src/setupTests.ts`:
 
@@ -373,22 +454,45 @@ export async function sendJson<T>(method: string, path: string, body: unknown): 
   return (await res.json()) as T;
 }
 
-// Binary endpoints: success is a blob (image/pdf/zip); failure is the JSON error contract.
-// Branch on status + content-type BEFORE reading the body as a blob.
+function filenameFrom(res: Response): string | undefined {
+  // Matches the current server's `Content-Disposition: attachment; filename="x"`; not RFC5987 `filename*=`.
+  const m = (res.headers.get("content-disposition") ?? "").match(/filename="?([^"]+)"?/);
+  return m?.[1];
+}
+
+// /api/render/label: 2xx is ALWAYS a binary image/pdf; failure is the JSON error contract.
 export async function fetchBlob(path: string, init?: RequestInit): Promise<{ blob: Blob; filename?: string }> {
   const res = await fetch(`${BASE}${path}`, init);
   if (!res.ok) throw await toError(res);
-  const cd = res.headers.get("content-disposition") ?? "";
-  const m = cd.match(/filename="?([^"]+)"?/);
-  return { blob: await res.blob(), filename: m?.[1] };
+  return { blob: await res.blob(), filename: filenameFrom(res) };
 }
 
-// Trigger a browser download for a blob, revoking the object URL afterward.
+// /api/batch: a 2xx is EITHER a binary download (zip/pdf) OR a JSON print summary, depending on `mode`.
+// Discriminate on content-type after confirming res.ok; errors are still the JSON contract.
+import type { BatchSummary } from "./types";
+export type BatchResult =
+  | { kind: "download"; blob: Blob; filename?: string }
+  | { kind: "summary"; summary: BatchSummary };
+
+export async function submitBatch(body: unknown): Promise<BatchResult> {
+  const res = await fetch(`${BASE}/batch`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await toError(res);
+  const ct = res.headers.get("content-type") ?? "";
+  if (ct.includes("application/json")) {
+    return { kind: "summary", summary: (await res.json()) as BatchSummary };
+  }
+  return { kind: "download", blob: await res.blob(), filename: filenameFrom(res) };
+}
+
+// Trigger a browser download. Revoke the object URL on a delay, immediate revoke after click()
+// can abort the download in Chromium (crbug 41380177); MDN: revoke when finished using the URL.
 export function saveBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }
 ```
 
@@ -442,11 +546,17 @@ git commit -m "Typed /api client (JSON + binary blob) + TanStack Query (#15)"
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { ToastProvider } from "./toast";
 import { Shell } from "./Shell";
 
 describe("Shell", () => {
   it("renders the nav sections", () => {
-    render(<MemoryRouter><Shell /></MemoryRouter>);
+    // Shell renders <ToastRegion/> (needs ToastProvider) and NavLinks (need a Router).
+    render(
+      <ToastProvider>
+        <MemoryRouter><Shell /></MemoryRouter>
+      </ToastProvider>,
+    );
     for (const label of ["Templates", "Print", "Import", "Settings"]) {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     }
@@ -462,7 +572,7 @@ Run: `cd ui && npx vitest run src/app/Shell.test.tsx` → FAIL (no `Shell`).
 
 - [ ] **Step 3: Theme toggle**
 
-`ui/src/app/ThemeToggle.tsx`: a button toggling `document.documentElement.classList.toggle("dark")`, persisted to `localStorage("theme")`, initialized from stored value or `prefers-color-scheme` on load. Accessible label ("Toggle theme"); visible focus ring (`focus-visible:ring`).
+`ui/src/app/ThemeToggle.tsx`: a button toggling `document.documentElement.classList.toggle("dark")` and persisting to `localStorage("theme")`. The initial theme is already applied by the pre-paint script in `index.html` (Task 2); the component reads the current `classList.contains("dark")` inside `useEffect`/the click handler, NOT at module scope (keeps it import-safe under jsdom/SSR). Accessible label ("Toggle theme"); visible focus ring (`focus-visible:ring`).
 
 - [ ] **Step 4: Shell**
 
@@ -507,7 +617,9 @@ Also verify the dev workflow once: `npm --prefix ui run dev` (Vite on :5173) wit
 
 - [ ] **Step 2: Docs**
 
-`docs/SPEC.md`: add a sentence that the root (`/`) serves the React SPA from `ui/dist` (built by Vite); non-`/api` routes fall back to `index.html`; `/assets/*` are the hashed build assets. `README.md`: add a short "Web UI (dev)" section, `npm --prefix ui install`, `npm --prefix ui run dev` (proxying to `cargo run`), and `npm --prefix ui run build` for the served bundle. (Docker multi-stage build is M6.)
+`docs/SPEC.md`: add a sentence that the root (`/`) serves the React SPA from `ui/dist` (built by Vite); non-`/api` routes fall back to `index.html`; `/assets/*` are the hashed build assets (a missing asset is a 404, not the SPA). `README.md`: add a short "Web UI (dev)" section, `npm --prefix ui install`, `npm --prefix ui run dev` (proxying to `cargo run`), and `npm --prefix ui run build` for the served bundle. (Docker multi-stage build is M6.)
+
+**ADR:** no new ADR is needed. ADR-0008 (Web UI delivery) already records the React-SPA-served-by-axum + `/api` decision this plan implements; note that in the commit message rather than adding/superseding an ADR. (Per CLAUDE.md, behavior changes update SPEC + an ADR; here the ADR already exists, so only SPEC changes.)
 
 - [ ] **Step 3: Gate**
 
@@ -532,5 +644,6 @@ Reference `#15`; do not close it (the screens remain).
 
 ## Self-review notes
 - **Spec coverage:** Vite scaffold + Tailwind (T1), Ink & Tape tokens incl. dark + reduced-motion (T2), axum SPA serving with `/api` JSON-404 preserved (T3), dev proxy (T4), typed client with JSON + binary/blob branching + `saveBlob` revoke (T5), shell nav + theme toggle + toasts + routing + a11y focus/drawer/aria-live (T6), smoke + docs + gate (T7). The five real screens, the reusable grid, Docker, and e2e are explicitly the next plan / M6.
-- **Type consistency:** `getJson`/`sendJson`/`fetchBlob`/`saveBlob`/`ApiError` defined in T5 and used by `queries.ts` (T5) and the shell smoke (T6); `LABELER_UI_DIR` + `ui_dir()` used by both the asset `ServeDir` and the `fallback` index.html read (T3).
-- **Verify at impl:** exact Tailwind v3 vs v4 init (the plan pins v3); React 18 vs 19 from the scaffold (either is fine); that `nest_service("/assets")` + `fallback` ordering doesn't shadow `/api` (it can't, `/api` is a separate nest matched first).
+- **Type consistency:** `getJson`/`sendJson`/`fetchBlob`/`submitBatch`/`saveBlob`/`ApiError` defined in T5 and used by `queries.ts` (T5) and the shell smoke (T6); `AppState.ui_dir()` + `with_ui_dir` used by the asset `ServeDir` and the `fallback` index.html read (T3).
+- **Revised after a codex review (2026-06-16):** UI dir threaded through `AppState` (no global-env race); the `/health` root test replaced with a deterministic isolated-`ui_dir` test; missing-`/assets` returns 404 not SPA html (with a test); `vitest/config` `defineConfig` to keep `npm run build` typechecking; `submitBatch` discriminates 2xx JSON summary vs binary download (`/batch` print vs download); `saveBlob` delays object-URL revoke; pre-paint theme script in `index.html` (no FOUC); Shell test wraps `ToastProvider`; ADR-0008 already covers the decision (SPEC-only).
+- **Verify at impl:** Tailwind v3 init (pinned); React 18 vs 19 from the scaffold (either is fine); axum **0.8** / tower-http 0.7 APIs.
