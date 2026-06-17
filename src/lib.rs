@@ -4,6 +4,7 @@ pub mod batch;
 mod convert;
 pub mod driver;
 pub mod errors;
+pub mod middleware;
 pub mod models;
 pub mod openapi;
 pub mod parse;
