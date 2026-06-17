@@ -12,12 +12,16 @@ drops the framework's interim "LAN-trust" caveat (the app is now authenticated).
    opt-in" was over-engineered for this app (a single-tenant, self-hosted LAN tool behind app auth, whose
    connector calls only Homebox's known endpoints, no arbitrary-URL primitive). Reaching the LAN is the
    whole point. So: keep the cheap, high-value protections; allow private LAN; block only link-local.
-2. **Homebox auth = login flow.** Verified: base Homebox has no long-lived API token (API keys are an
-   open feature request). Auth is `POST /api/v1/users/login` (username/password, `stayLoggedIn:true`) ->
-   bearer token, with `/users/refresh`. The connection credential is the Homebox username+password; the
-   connector logs in, caches the token, and refreshes it.
-3. **Both Items and Locations are labelable resources**, each with a derived back-link URL to its Homebox
-   entity page.
+2. **Homebox auth = pasted API key.** Verified against the live swagger: Homebox supports static API keys
+   (shipped in v0.26; `hb_`-prefixed, created at `POST /v1/users/self/api-keys`, listed/revoked at
+   `GET`/`DELETE /v1/users/self/api-keys/{id}`, optional `expiresAt` so it can be long-lived, takes the
+   creating user's access level). The user generates a key in Homebox and pastes it; the connector sends
+   it as `Authorization: Bearer hb_...`. No stored username/password, no login/refresh/expiry handling, and
+   the key is independently revocable in Homebox (lower blast radius than storing the master credential).
+   The connection credential is the API key.
+3. **Unified entity model.** Verified: Homebox merged items and locations into one `/v1/entities` resource
+   (the April-2026 "entity merge"), discriminated by an `entityType` field. Both item-type and
+   location-type entities are labelable, each with a derived back-link URL.
 4. **Thumbnails omitted in v1** (would need a token-safe media proxy; deferred).
 5. **Expansion = `AsListed` only** (one selected entity -> one grid row; copies via the grid's multiplier).
 6. **Decomposition:** two implementation plans, (A) backend spine + Homebox connector, (B) frontend.
@@ -28,23 +32,24 @@ A single outbound HTTP client (`reqwest` or hyper) used by every connector, conf
 - Connect + read timeouts; a max response-body byte cap; a decompression bound; a JSON content-type check.
 - **Do not follow cross-host redirects** (a `3xx` to a different host is rejected, not followed, so a
   redirect cannot bounce the credential to another host).
-- **IP check:** resolve the `base_url` host, and **deny only** link-local `169.254.0.0/16` (covers the
-  cloud-metadata endpoint), the unspecified `0.0.0.0`/`::`, and (cheap) loopback is allowed since a LAN
-  Homebox may be reached via a host alias. Private LAN ranges (`10/8`, `172.16/12`, `192.168/16`) are
-  **allowed**. Pin the connection to the vetted IP to avoid DNS-rebinding between check and connect.
+- **IP check:** resolve the `base_url` host, and **deny** link-local `169.254.0.0/16` (covers the
+  cloud-metadata endpoint), the unspecified `0.0.0.0`/`::`, and **loopback** `127.0.0.0/8`/`::1` (so the
+  connector cannot be used to probe localhost-only services on the labeler's own host; a same-host Homebox
+  is reached via its LAN IP or a Docker network alias, not the labeler's loopback). Private LAN ranges
+  (`10/8`, `172.16/12`, `192.168/16`) are **allowed** (that is where Homebox lives). Pin the connection to
+  the vetted IP to avoid DNS-rebinding between check and connect.
 - **Redact** `Authorization`, cookies, the stored credential, and cursor payloads in all logs.
 - Connectors only ever pass their own constructed requests to this client; no client-supplied URL or path
   reaches it. The `base_url` is the only user-controlled input.
 
 ## 2. Connections store + CRUD
 A `connections` table mirroring the printer-store pattern: `{ id, connector, name, base_url, credential,
-enabled, created_at }`. For Homebox the `credential` is the username+password (a small JSON blob). It is
+enabled, created_at }`. For Homebox the `credential` is the pasted API key (`hb_...`). It is
 **write-only / redacted**: never returned by reads (the API returns the connection without the credential,
 plus a `has_credential` bool), updatable, deletable. Encryption-at-rest is a later hardening; redaction and
 lifecycle are in scope now. CRUD endpoints `/api/connections` (list/create) and `/api/connections/{id}`
-(get/update/delete) require app auth (flat: any authenticated user; no admin tier). The connector caches
-the live bearer token in memory per connection (not persisted), keyed by connection id, with the
-expiry/refresh handled by the connector.
+(get/update/delete) require app auth (flat: any authenticated user; no admin tier). Because the credential
+is a static API key used directly as a bearer header, there is no in-memory token cache or refresh logic.
 
 ## 3. `Connector` trait + registry
 Exactly the framework trait (`schema` / `browse` / `materialize`, connection-aware async, server-issued
@@ -52,29 +57,35 @@ bound cursors, `RowRef` identity, structured relationships, `ExpansionPolicy`, t
 set). A registry keyed by connector id (`"homebox"`), like `PrinterDriver`. This sub-project ships the
 trait + one impl; InvenTree and the declarative DSL stay deferred behind the seam.
 
-## 4. Homebox connector
-- **Auth:** `POST {base_url}/api/v1/users/login` with `{username, password, stayLoggedIn: true}` -> bearer
-  token; cache it; on a `401` (or near expiry) re-login (or call `/api/v1/users/refresh`). The
-  `auth_kinds` advertise `Login`. (Confirm exact request/response shapes + token lifetime at
-  implementation.)
-- **Resources & schema:**
-  - `items` (`View::Table`): `FieldSpec`s `name`, `description`, `quantity`, `location` (name), `assetId`,
-    `serialNumber`, `modelNumber`, `manufacturer`, `purchasePrice`, `labels` (comma-joined names), `id`,
-    and a derived `item_url` = `{base_url}/item/{id}`. Filters: text `search`, `location`, `label`,
-    `archived` (bool).
+## 4. Homebox connector (unified `/v1/entities` model)
+- **Auth:** send the stored API key as `Authorization: Bearer hb_...` on every request. No login, refresh,
+  or token cache. `auth_kinds` advertise `StaticToken` (paste). A `401` surfaces as `ConnectorError::AuthFailed`.
+- **Resources & schema** (one upstream resource, split into two connector resources by `entityType`):
+  - `items` (`View::Table`): `FieldSpec`s `name`, `description`, `quantity`, `location` (the `parent`
+    name), `assetId`, `serialNumber`, `modelNumber`, `manufacturer`, `purchasePrice`, `tags`
+    (comma-joined label names), `id`, and a derived `item_url` = `{base_url}/entity/{id}` (confirm the
+    web route; post-merge entities share a route). Filters: text `q`, `parent` (a location id from the
+    tree / a picker, NOT a free-text name), `tag` (label id), `archived` (bool).
   - `locations` (`View::Tree`, also labelable): `FieldSpec`s `name`, `description`, `parent` (name),
-    `id`, and a derived `location_url` = `{base_url}/location/{id}`.
-  - The `location -> contained items` relationship lets the UI drill from a location into its items.
-- **browse:** items via `GET /api/v1/items?page=&pageSize=&q=&locations=&labels=&...`; locations via
-  `GET /api/v1/locations/tree` (tree) and a location's items via the items filter. `next_cursor` is a
-  server-issued bound token carrying `{connector, connection, resource, filter_hash, page, page_size}`;
-  an upstream URL is never used as a cursor. `browse` returns cheap display cells only.
-- **materialize:** for the selected `RowRef`s and the mapped `FieldKey`s, fetch full detail
-  (`GET /api/v1/items/{id}` / `GET /api/v1/locations/{id}`) within a fanout/cache budget, build the
-  derived URLs, and return one `LabelRow` per selected entity (`AsListed`).
-- **Identity:** Homebox ids (uuid) are the `RowRef.key`.
-- (Confirm exact endpoint paths, pagination params, and field names against the running Homebox API at
-  implementation; the verified facts are the login/refresh model and the items/locations/labels resources.)
+    `itemCount`, `id`, and a derived `location_url` = `{base_url}/entity/{id}`.
+  - The `location -> contained items` relationship drills via the `parentIds` filter.
+- **browse:**
+  - items: `GET {base_url}/api/v1/entities?q=&page=&pageSize=&tags=<ids>&parentIds=<locId>` and keep only
+    `entityType == item` rows (the list mixes types; if a server-side type filter is absent it is applied
+    in the connector before returning the page. confirm whether a type param exists at implementation).
+    Response rows come from `repo.EntitySummary` (cheap display fields).
+  - locations: `GET {base_url}/api/v1/entities/tree?withItems=false` (the tree nodes are the locations).
+  - `next_cursor` is a server-issued bound token carrying `{connector, connection, resource, filter_hash,
+    page, page_size}`; an upstream URL is never used as a cursor.
+- **materialize:** for the selected `RowRef`s and mapped `FieldKey`s, fetch `GET {base_url}/api/v1/entities/{id}`
+  (`repo.EntityOut` carries all detail fields: `manufacturer`, `modelNumber`, `serialNumber`,
+  `purchasePrice`, custom `fields`, etc.) within a fanout/cache budget, build the derived URL, and return
+  one `LabelRow` per selected entity (`AsListed`).
+- **Identity:** Homebox entity ids (uuid) are the `RowRef.key`.
+- **Verified API facts** (from the live swagger, `sysadminsmedia/homebox`): `GET /v1/entities` params are
+  `q`, `page`, `pageSize`, `tags[]` (label ids), `parentIds[]` (location ids); `GET /v1/entities/tree`
+  (`withItems`); detail `GET /v1/entities/{id}`; `entityType` discriminates item vs location; API keys at
+  `/v1/users/self/api-keys`. (Confirm the web entity-URL path at implementation.)
 
 ## 5. Browse endpoints (backend)
 - `GET  /api/connections/{id}/schema` -> `ConnectorSchema` (cached, TTL + a version key; a connector or
@@ -95,7 +106,8 @@ template fields and stale source keys (drift).
 
 ## 7. Frontend
 - A **Connections** management screen (list/add/edit/delete; the add form picks connector = Homebox, sets
-  name + base_url + username/password; credential write-only).
+  name + base_url + the pasted Homebox API key `hb_...`; credential write-only, shown only as "set").
+  The form links to where Homebox generates a key (Profile -> API keys).
 - A generic **browse** view driven by `schema()` + `browse()`: renders items as a grid and locations as a
   tree (per `View`), shows the curated filter widgets, drills location -> items via the relationship,
   paginates via `next_cursor`/`has_more`, and multi-selects.
@@ -106,17 +118,21 @@ template fields and stale source keys (drift).
 - App auth gates all connection CRUD and browse endpoints (flat; any authenticated user).
 - Egress hardening as in section 1 (link-local blocked; private LAN allowed; no cross-host redirects;
   timeouts/size caps; secret redaction).
-- The connector is **read-only** against Homebox: it POSTs only to obtain/refresh its own token; it never
-  mutates inventory.
-- The stored Homebox credential is redacted in all reads and logs; at-rest encryption is deferred.
+- The connector is **read-only** against Homebox: only `GET` requests; it never mutates inventory.
+- The stored credential is a Homebox **API key**, not the account password: it can be scoped/revoked
+  independently in Homebox, so a leaked labeler DB exposes a revocable key rather than the master
+  credential (the reason API-key auth is preferred over the login flow). The key is redacted in all reads
+  and logs; at-rest encryption is deferred (consistent with the rest of the store) and is the recommended
+  next hardening for credential columns.
 
 ## 9. Testing
 - **Egress client:** cross-host redirect rejected; link-local/metadata IP blocked; private LAN allowed;
   oversized response capped; timeout enforced; secrets redacted in logs.
-- **Homebox connector** (mocked Homebox API, realistically-shaped fixtures): login + token caching +
-  refresh on 401; items browse paging; a location-tree + location->items drill-down; `materialize`
-  hydration of the mapped fields incl. the derived URLs; identity. One positive + one negative
-  (auth failure, empty page) each.
+- **Homebox connector** (mocked Homebox API, realistically-shaped fixtures): the `Authorization: Bearer
+  hb_...` header is sent; a `401` maps to `AuthFailed`; `entities` browse paging with `entityType`
+  filtering to items; the `entities/tree` location tree + a location->items drill-down via `parentIds`;
+  `materialize` hydration of the mapped fields incl. the derived URLs; identity. One positive + one
+  negative (auth failure, empty page) each.
 - **Browse endpoints** against a fake connector: schema shape + version pinning; browse cursor bind/reject;
   error-category -> HTTP mapping; `AsListed`.
 - **Mapping -> materialize -> grid -> /batch** round-trip with a couple of Homebox records.
@@ -125,8 +141,9 @@ template fields and stale source keys (drift).
 
 ## 10. Scope
 - **In:** the hardened egress client, the `connections` store + CRUD, the `Connector` trait + registry,
-  the Homebox connector (login flow, items + locations, browse/materialize/schema, derived URLs), the
-  browse endpoints, field mapping, the generic browse UI + connections screen, `AsListed` expansion.
+  the Homebox connector (API-key auth, the unified `/v1/entities` model browsed as items + locations,
+  browse/materialize/schema, derived URLs), the browse endpoints, field mapping, the generic browse UI +
+  connections screen, `AsListed` expansion.
 - **Out / deferred (behind the trait seam):** InvenTree + other connectors, the declarative connector DSL,
   user-authored connector types, thumbnails / media proxy, `BySerialOrQuantity` expansion, OAuth/OIDC
   Homebox auth, write-back to Homebox, connection-credential at-rest encryption, per-connection egress
