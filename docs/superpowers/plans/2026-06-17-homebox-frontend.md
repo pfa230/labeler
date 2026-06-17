@@ -1,5 +1,7 @@
 # Homebox Integration Plan B (Frontend) Implementation Plan
 
+> **Status: DONE** — implemented and merged to `main` (`af96f81`, 2026-06-17). All 6 tasks shipped; #35 closed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add the UI for using a Homebox inventory as a label data source: a Connections management screen, a generic schema-driven browse/drill-down UI for any connector, field mapping into the existing LabelGrid, and a materialize → batch → PDF/print flow.

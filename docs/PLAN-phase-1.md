@@ -17,7 +17,9 @@ P1-32 / #12 (printer CRUD), P1-33 / #16 (CUPS/IPP), P1-34 / #13 (download), P1-3
 The standalone `/print` and `/render/batch` endpoints were later removed and absorbed into the unified
 `POST /batch` endpoint (ADR-0011, #30), which delivers sheet-to-printer and multi-page sheets.
 P1-13 / #5 (copies) was deferred pending the per-label batch-composition ADR (#28); with `/batch`,
-copies is expanded client-side and #28 is moot. Remaining: M4 (integrations), M5 (UI), M6 (packaging).
+copies is expanded client-side and #28 is moot (#5 and #28 closed). **All Phase 1 milestones M1-M7 are
+complete** (M4 integrations, M5 UI, M6 packaging, M7 Homebox). Flat app auth also shipped (ADR-0017,
+#33). The only Phase 1 item still open is the inbound print webhook (#22), explicitly deferred out of M4.
 
 ## 1. Phase 1 goal
 
@@ -74,7 +76,7 @@ Render `format: single` templates to PDF in addition to PNG (needed for office p
 - **AC:** the render path returns PDF for single-format templates (via format selector or content
   negotiation); PNG path unchanged; test asserts a valid `%PDF` for a single template.
 
-#### P1-13 Copies / quantity · GH #5 · BLOCKED (needs #28)
+#### P1-13 Copies / quantity · GH #5 · DONE (moot under `/batch`, #5 + #28 closed)
 Support per-label quantities. **Deferred from the initial M1 pass:** copies is one facet of per-label
 batch composition, which needs a design decision first (single-label physical copies are already handled
 by the printer/CUPS/browser, so app-level copies is really a sheet concern).
@@ -179,13 +181,13 @@ webhook for tools like Grocy.
 
 ### M5 — Basic web UI
 
-#### P1-51 Web UI shell and serving · GH #15
+#### P1-51 Web UI shell and serving · GH #15 · DONE (M5)
 App shell (navigation, layout, theming) served by the service per ADR-0008.
 - **Depends on:** P1-D2.
 - **AC:** UI served at `/` (or documented path); responsive; builds within the Docker image; no console
   errors on load.
 
-#### P1-52 Template browse + preview · GH #17
+#### P1-52 Template browse + preview · GH #17 · DONE (M5)
 List templates with a rendered preview thumbnail and a detail view.
 - **Depends on:** P1-51, P1-12.
 - **AC:** templates list from `/templates`; selecting one shows a server-rendered preview for sample
@@ -244,10 +246,11 @@ Consolidate configuration (PORT, data dir, QR base URL, log level) into document
 
 Pulled forward from Phase 2 so Phase 1 can print from real inventory. Builds the minimum integration
 "spine" (design: [api integration framework](superpowers/specs/2026-06-16-api-integration-framework-design.md)),
-scoped to Homebox. The broader framework (InvenTree, more connectors, declarative DSL, full app-auth) stays
-Phase 2 ([#34](https://github.com/pfa230/labeler/issues/34), [#33](https://github.com/pfa230/labeler/issues/33)).
+scoped to Homebox. The broader framework (InvenTree, more connectors, declarative DSL) is deferred to the Later tier
+([#34](https://github.com/pfa230/labeler/issues/34) closed). Flat app auth shipped (ADR-0017,
+[#33](https://github.com/pfa230/labeler/issues/33) closed).
 
-#### P1-71 Connector spine · GH #35
+#### P1-71 Connector spine · GH #35 · DONE (`40dcc72`)
 Backend `Connector` trait + registry (like printer drivers); connections store + CRUD with write-only,
 redacted credentials; browse model endpoints (`schema`/`browse`/`materialize`); a hardened outbound HTTP
 client (scheme/port policy, timeouts, max bytes, no cross-host redirects, IP/metadata checks, private-LAN
@@ -257,24 +260,24 @@ egress documented, secret/cursor redaction).
   fanout budget; egress policy rejects cross-host redirect, oversized response, and metadata IPs; tests
   cover schema/browse/materialize + error categories.
 
-#### P1-72 Homebox connector · GH #35
-The first concrete `Connector`: Homebox `/v1/entities` model, token auth (pasted or login), the
-location→contained-items relation.
+#### P1-72 Homebox connector · GH #35 · DONE (`40dcc72`)
+The first concrete `Connector`: Homebox `/v1/entities` model, pasted API-key bearer auth (verified
+against the swagger; no login/refresh needed), the location→contained-items relation.
 - **Depends on:** P1-71.
 - **AC:** against a realistic Homebox fixture, browse locations/items, drill a location into its items,
   and materialize fields; auth-failure and empty-page paths covered.
 
-#### P1-73 Integration UI + mapping · GH #35
+#### P1-73 Integration UI + mapping · GH #35 · DONE (`af96f81`)
 One generic browse component (grid + drill-down driven by `schema`) and a `(connection, template)` field
 mapping that materializes selected rows into the existing editable grid → `/batch`.
 - **Depends on:** P1-71, P1-51 (UI shell), P1-54 (editable grid).
 - **AC:** end-to-end from the UI: connect to Homebox → browse → select → map → print/download; mapping
   drift (missing template field) is surfaced.
 
-Trust model (interim): M7 ships under the existing LAN-trust posture (no app auth yet); residual risk
-equals today's unauthenticated print/template endpoints because connectors are server-side code calling
-known APIs (no generic credentialed proxy). App-level auth ([#33](https://github.com/pfa230/labeler/issues/33))
-is the Phase 2 hardening; document the trust model in SPEC.
+Trust model: M7 connectors are server-side code calling known APIs (no generic credentialed proxy), with
+hardened egress (ADR-0018). Flat app auth shipped alongside (ADR-0017, #33): every `/api` route requires
+a session cookie or API token, so the connection CRUD and browse/materialize endpoints are authenticated.
+Granular roles/admin-only CRUD remain deferred.
 
 ## 5. Dependency graph
 

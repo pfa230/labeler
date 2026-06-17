@@ -14,9 +14,9 @@ single-container, self-hosted model.
 
 | Item | Issue | Design | State |
 | --- | --- | --- | --- |
-| Homebox integration + connector spine | [#35](https://github.com/pfa230/labeler/issues/35) | [spec](superpowers/specs/2026-06-16-api-integration-framework-design.md) | **Moved to Phase 1 (M7)** |
-| App-level authentication | [#33](https://github.com/pfa230/labeler/issues/33) | integration spec §Security | Designed (Phase 2 hardening) |
-| Integration framework breadth (InvenTree, more connectors) | [#34](https://github.com/pfa230/labeler/issues/34) | [spec](superpowers/specs/2026-06-16-api-integration-framework-design.md) | Designed |
+| Homebox integration + connector spine | [#35](https://github.com/pfa230/labeler/issues/35) | [backend plan](superpowers/plans/2026-06-16-homebox-backend.md) / [frontend plan](superpowers/plans/2026-06-17-homebox-frontend.md) | **DONE** — M7 (backend `40dcc72`, UI `af96f81`); #35 closed |
+| App-level authentication | [#33](https://github.com/pfa230/labeler/issues/33) | [ADR-0017](adr/0017-app-authentication.md) | **DONE** — flat app auth (sessions + API tokens, origin/CSRF checks); #33 closed. Granular roles/admin-only CRUD deferred |
+| Integration framework breadth (InvenTree, more connectors) | [#34](https://github.com/pfa230/labeler/issues/34) | [spec](superpowers/specs/2026-06-16-api-integration-framework-design.md) | Spine **DONE** in M7; InvenTree + quantity/serial expansion + recursive drill deferred (Later); #34 closed |
 | Inbound print webhook | [#22](https://github.com/pfa230/labeler/issues/22) | — | Backlog |
 | `option.<name>` columns for `/import/csv` | [#32](https://github.com/pfa230/labeler/issues/32) | — | Backlog (low) |
 | Job-log retention / pruning | [#29](https://github.com/pfa230/labeler/issues/29) | — | Backlog |
@@ -33,19 +33,21 @@ The headline capability. **Homebox + the connector spine moved into Phase 1 (M7,
 [#35](https://github.com/pfa230/labeler/issues/35));** see [`PLAN-phase-1.md`](PLAN-phase-1.md). Phase 2
 builds the breadth on top of that spine.
 
-0. **Already in Phase 1 (M7):** the `Connector` trait + registry, connections store, browse/materialize
-   model, generic browse UI, field mapping → `/batch`, and the **Homebox** connector, shipping under the
-   LAN-trust posture with hardened egress (no generic credentialed proxy, so the app-auth blocker that the
-   reviews raised does not apply to this scope).
+0. **Shipped in Phase 1 (M7) — DONE:** the `Connector` trait + enum registry, connections store,
+   browse/materialize model with signed cursors, generic schema-driven browse UI, field mapping →
+   `/batch`, and the **Homebox** connector, under the LAN-trust posture with hardened egress (ADR-0018).
+   Backend merge `40dcc72`, UI merge `af96f81`, #35 closed.
 
-1. **App-level authentication ([#33](https://github.com/pfa230/labeler/issues/33)) — Phase 2 hardening.**
-   Not a blocker for M7 (server-side connectors over LAN-trust), but required as the integration surface
-   grows: app token auth, CSRF/origin protection on state-changing calls, and admin-only connection CRUD.
+1. **App-level authentication ([#33](https://github.com/pfa230/labeler/issues/33)) — DONE.** Shipped flat
+   app auth (ADR-0017): server-side session cookies + `Authorization: Bearer` API tokens, argon2id
+   passwords, first-run setup, and an origin/CSRF check on cookie state-changing calls. #33 closed. No
+   roles: granular permissions / admin-only connection CRUD are deferred until there is a multi-user need.
 
-2. **Integration framework breadth ([#34](https://github.com/pfa230/labeler/issues/34)).** Design approved
-   ([spec](superpowers/specs/2026-06-16-api-integration-framework-design.md)), vetted across three
-   adversarial reviews. On top of the M7 spine: the **InvenTree** connector (limit/offset, `Token` auth,
-   hydration, trees, per-serial/quantity expansion) and further connectors, each a new `Connector` impl.
+2. **Integration framework breadth ([#34](https://github.com/pfa230/labeler/issues/34)) — spine DONE,
+   breadth deferred.** The framework spine + Homebox shipped in M7 (item 0); #34 is closed. The remaining
+   breadth is deferred to the Later tier: the **InvenTree** connector (limit/offset, `Token` auth,
+   hydration, trees, per-serial/quantity expansion), recursive drill-down, and further connectors, each a
+   new `Connector` impl. File a focused issue when wanted.
 
    **Deferred behind the trait seam:** a declarative connector DSL and user-authored connector types,
    revisit only with real demand and 2-3 concrete `Connector` impls to generalize from. The trait keeps

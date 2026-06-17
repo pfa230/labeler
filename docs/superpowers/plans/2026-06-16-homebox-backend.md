@@ -1,5 +1,7 @@
 # Homebox Integration Plan A (Backend) Implementation Plan
 
+> **Status: DONE** — implemented and merged to `main` (`40dcc72`, 2026-06-17). All 7 tasks shipped; #35 closed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the backend spine for browsing a Homebox inventory as a label data source: a hardened egress client, a connections store + CRUD, a `Connector` trait + registry, the Homebox connector, and the `schema`/`browse`/`materialize` endpoints.
