@@ -137,7 +137,7 @@ pub struct MaterializeRequest {
     pub expansion: ExpansionPolicy,
 }
 
-#[derive(serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct LabelRow {
     pub source: RowRef,
     pub data: BTreeMap<String, String>,

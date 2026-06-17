@@ -21,6 +21,16 @@ pub enum EgressError {
 /// Private LAN ranges are allowed (that is where a self-hosted Homebox lives). `allow_loopback` is the
 /// test override (true only for `Egress::with_loopback`); it relaxes ONLY loopback, never link-local etc.
 pub fn ip_allowed(ip: IpAddr, allow_loopback: bool) -> bool {
+    // Normalize IPv4-mapped IPv6 (::ffff:a.b.c.d) down to V4 first, otherwise a mapped loopback /
+    // link-local / unspecified address (e.g. ::ffff:169.254.169.254) would skip the V4 checks below
+    // and be wrongly allowed while the OS still connects to it as IPv4.
+    let ip = match ip {
+        IpAddr::V6(v6) => v6
+            .to_ipv4_mapped()
+            .map(IpAddr::V4)
+            .unwrap_or(IpAddr::V6(v6)),
+        v4 => v4,
+    };
     if ip.is_loopback() {
         return allow_loopback;
     }
@@ -156,7 +166,7 @@ async fn read_capped(mut resp: reqwest::Response) -> Result<Vec<u8>, EgressError
     while let Some(chunk) = resp
         .chunk()
         .await
-        .map_err(|e| EgressError::Transport(e.to_string()))?
+        .map_err(|e| EgressError::Transport(redact(&e.to_string())))?
     {
         if out.len() + chunk.len() > MAX_BYTES {
             return Err(EgressError::TooLarge);
@@ -203,6 +213,24 @@ mod tests {
             true
         ));
         assert!(!ip_allowed(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), true));
+        // IPv4-mapped IPv6 must NOT bypass the V4 checks (loopback/link-local/unspecified)
+        assert!(!ip_allowed(
+            IpAddr::V6("::ffff:127.0.0.1".parse().unwrap()),
+            false
+        ));
+        assert!(!ip_allowed(
+            IpAddr::V6("::ffff:169.254.169.254".parse().unwrap()),
+            false
+        ));
+        assert!(!ip_allowed(
+            IpAddr::V6("::ffff:0.0.0.0".parse().unwrap()),
+            false
+        ));
+        // a mapped public address is still allowed
+        assert!(ip_allowed(
+            IpAddr::V6("::ffff:1.1.1.1".parse().unwrap()),
+            false
+        ));
     }
 
     #[tokio::test]
