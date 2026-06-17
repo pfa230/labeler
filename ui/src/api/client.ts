@@ -12,6 +12,10 @@ export class ApiError extends Error {
   }
 }
 
+function on401(status: number) {
+  if (status === 401) window.dispatchEvent(new CustomEvent("labeler:unauthenticated"));
+}
+
 async function toError(res: Response): Promise<ApiError> {
   const ct = res.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
@@ -23,7 +27,10 @@ async function toError(res: Response): Promise<ApiError> {
 
 export async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`);
-  if (!res.ok) throw await toError(res);
+  if (!res.ok) {
+    on401(res.status);
+    throw await toError(res);
+  }
   return (await res.json()) as T;
 }
 
@@ -31,7 +38,10 @@ export async function sendJson<T>(method: string, path: string, body: unknown): 
   const res = await fetch(`${BASE}${path}`, {
     method, headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   });
-  if (!res.ok) throw await toError(res);
+  if (!res.ok) {
+    on401(res.status);
+    throw await toError(res);
+  }
   return (await res.json()) as T;
 }
 
@@ -50,7 +60,10 @@ function filenameFrom(res: Response): string | undefined {
 // /api/render/label: 2xx is ALWAYS a binary image/pdf; failure is the JSON error contract.
 export async function fetchBlob(path: string, init?: RequestInit): Promise<{ blob: Blob; filename?: string }> {
   const res = await fetch(`${BASE}${path}`, init);
-  if (!res.ok) throw await toError(res);
+  if (!res.ok) {
+    on401(res.status);
+    throw await toError(res);
+  }
   return { blob: await res.blob(), filename: filenameFrom(res) };
 }
 
@@ -65,7 +78,10 @@ export async function submitBatch(body: unknown): Promise<BatchResult> {
   const res = await fetch(`${BASE}/batch`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   });
-  if (!res.ok) throw await toError(res);
+  if (!res.ok) {
+    on401(res.status);
+    throw await toError(res);
+  }
   const ct = res.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
     return { kind: "summary", summary: (await res.json()) as BatchSummary };
