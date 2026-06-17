@@ -57,11 +57,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          # Dev/test runtime. The suite hits a jsdom+undici Blob-in-Response quirk on Node 22 that does
-          # not occur on 24+/the dev's Node; vitest is a dev-time gate (it never runs in prod), so it runs
-          # on a current Node here. The production image still builds the UI on node:22 (Dockerfile), which
-          # the `image` job validates via `vite build`.
-          node-version: 26
+          # Single source of truth for the project's Node (the active LTS, 24). `.nvmrc` is also what
+          # `nvm use` reads locally and what the Dockerfile UI stage pins to, so dev / CI / image agree.
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: ui/package-lock.json
 
