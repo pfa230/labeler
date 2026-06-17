@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { ThemeToggle } from "./ThemeToggle";
+import { useAuth, useLogout } from "../api/auth";
 
 const NAV_ITEMS = [
   { to: "/", label: "Templates" },
@@ -27,6 +28,13 @@ export function Shell() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const navigate = useNavigate();
+  const { data: auth } = useAuth();
+  const logout = useLogout();
+
+  const onLogout = () => {
+    logout.mutate(undefined, { onSettled: () => navigate("/login") });
+  };
 
   useEffect(() => {
     if (!drawerOpen) return;
@@ -77,7 +85,23 @@ export function Shell() {
             </li>
           ))}
         </ul>
-        <div className="mt-auto pt-4">
+        <div className="mt-auto flex flex-col gap-3 pt-4">
+          {auth?.me && (
+            <div className="flex items-center justify-between gap-2 px-3">
+              <span className="truncate text-sm" style={{ color: "var(--muted)" }} aria-label="current user">
+                {auth.me.username}
+              </span>
+              <button
+                type="button"
+                onClick={onLogout}
+                disabled={logout.isPending}
+                className="rounded-md px-2 py-1 text-sm underline disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                style={{ color: "var(--ink)" }}
+              >
+                Logout
+              </button>
+            </div>
+          )}
           <ThemeToggle />
         </div>
       </nav>
