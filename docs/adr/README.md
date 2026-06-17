@@ -30,6 +30,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0017](0017-app-authentication.md) | App authentication | Accepted |
 | [0018](0018-api-integration-spine.md) | API integration spine (connectors) | Accepted |
 | [0019](0019-ci-and-image-publishing.md) | CI and image publishing | Accepted |
+| [0020](0020-variables-vs-settings.md) | Variables vs settings (substitution vs app config) | Accepted |
 
 ## Adding an ADR
 
