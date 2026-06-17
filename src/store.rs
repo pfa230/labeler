@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::Connection as SqlConnection;
 use rusqlite::OptionalExtension;
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,16 @@ pub struct ApiToken {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct Connection {
+    pub id: String,
+    pub connector: String,
+    pub name: String,
+    pub base_url: String,
+    pub credential: String,
+    pub enabled: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
@@ -52,7 +62,7 @@ pub enum StoreError {
 /// methods are async-shaped so the backing store can later move to an async driver (e.g. sqlx) without
 /// changing call sites.
 pub struct Store {
-    conn: Mutex<Connection>,
+    conn: Mutex<SqlConnection>,
 }
 
 fn migrations() -> Migrations<'static> {
@@ -101,12 +111,23 @@ fn migrations() -> Migrations<'static> {
             created_at   TEXT NOT NULL DEFAULT (datetime('now'))
         );",
         ),
+        M::up(
+            "CREATE TABLE connections (
+            id         TEXT PRIMARY KEY,
+            connector  TEXT NOT NULL,
+            name       TEXT NOT NULL,
+            base_url   TEXT NOT NULL,
+            credential TEXT NOT NULL,
+            enabled    INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+        ),
     ])
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let mut conn = Connection::open(path)?;
+        let mut conn = SqlConnection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.pragma_update(None, "foreign_keys", true)?;
         migrations().to_latest(&mut conn)?;
@@ -116,7 +137,7 @@ impl Store {
     }
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let mut conn = Connection::open_in_memory()?;
+        let mut conn = SqlConnection::open_in_memory()?;
         conn.pragma_update(None, "foreign_keys", true)?;
         migrations().to_latest(&mut conn)?;
         Ok(Self {
@@ -431,6 +452,88 @@ impl Store {
         let conn = self.conn.lock().expect("store lock");
         Ok(conn.execute("DELETE FROM api_tokens WHERE id = ?1", [id])? > 0)
     }
+
+    // Connections
+    pub async fn create_connection(
+        &self,
+        connector: &str,
+        name: &str,
+        base_url: &str,
+        credential: &str,
+    ) -> Result<Connection, StoreError> {
+        let id = crate::auth::random_secret();
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "INSERT INTO connections (id, connector, name, base_url, credential) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, connector, name, base_url, credential],
+        )?;
+        Ok(Connection {
+            id,
+            connector: connector.to_string(),
+            name: name.to_string(),
+            base_url: base_url.to_string(),
+            credential: credential.to_string(),
+            enabled: true,
+        })
+    }
+
+    pub async fn get_connection(&self, id: &str) -> Result<Option<Connection>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.query_row(
+            "SELECT id, connector, name, base_url, credential, enabled FROM connections WHERE id = ?1",
+            [id],
+            row_to_connection,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub async fn list_connections(&self) -> Result<Vec<Connection>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare(
+            "SELECT id, connector, name, base_url, credential, enabled FROM connections ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], row_to_connection)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub async fn update_connection(
+        &self,
+        id: &str,
+        name: &str,
+        base_url: &str,
+        credential: Option<&str>,
+        enabled: bool,
+    ) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let n = match credential {
+            Some(cred) => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, credential = ?3, enabled = ?4 WHERE id = ?5",
+                rusqlite::params![name, base_url, cred, enabled as i64, id],
+            )?,
+            None => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, enabled = ?3 WHERE id = ?4",
+                rusqlite::params![name, base_url, enabled as i64, id],
+            )?,
+        };
+        Ok(n > 0)
+    }
+
+    pub async fn delete_connection(&self, id: &str) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        Ok(conn.execute("DELETE FROM connections WHERE id = ?1", [id])? > 0)
+    }
+}
+
+fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
+    Ok(Connection {
+        id: r.get(0)?,
+        connector: r.get(1)?,
+        name: r.get(2)?,
+        base_url: r.get(3)?,
+        credential: r.get(4)?,
+        enabled: r.get::<_, i64>(5)? != 0,
+    })
 }
 
 type PrinterParts = (String, String, String, String, i64);
@@ -512,6 +615,46 @@ mod tests {
             .record_job("tpl", None, "failed", Some("boom"))
             .await
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    fn store() -> Store {
+        Store::open_in_memory().unwrap()
+    }
+
+    #[tokio::test]
+    async fn connection_crud() {
+        let s = store();
+        let c = s
+            .create_connection("homebox", "home", "http://hb.lan:7745", "hb_secret")
+            .await
+            .unwrap();
+        assert_eq!(c.connector, "homebox");
+        assert_eq!(c.credential, "hb_secret");
+        assert!(s.get_connection(&c.id).await.unwrap().is_some());
+        assert_eq!(s.list_connections().await.unwrap().len(), 1);
+        // update name + keep credential (None = unchanged)
+        assert!(s
+            .update_connection(&c.id, "renamed", "http://hb.lan:7745", None, true)
+            .await
+            .unwrap());
+        let g = s.get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(g.name, "renamed");
+        assert_eq!(g.credential, "hb_secret"); // unchanged
+                                               // update credential
+        assert!(s
+            .update_connection(&c.id, "renamed", "http://hb.lan:7745", Some("hb_new"), true)
+            .await
+            .unwrap());
+        assert_eq!(
+            s.get_connection(&c.id).await.unwrap().unwrap().credential,
+            "hb_new"
+        );
+        assert!(s.delete_connection(&c.id).await.unwrap());
+        assert!(s.get_connection(&c.id).await.unwrap().is_none());
     }
 }
 

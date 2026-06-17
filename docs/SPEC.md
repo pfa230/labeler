@@ -49,6 +49,10 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | POST | `/api/auth/password` | Change own password | see §11 |
 | GET / POST / DELETE | `/api/users`, `/api/users/{id}` | User management (flat) | see §11 |
 | GET / POST / DELETE | `/api/tokens`, `/api/tokens/{id}` | API-token management | see §11 |
+| GET / POST | `/api/connections`, `/api/connections/{id}` | Connection CRUD (credential redacted) | see §12 |
+| GET | `/api/connections/{id}/schema` | Connector schema (resources, fields, filters) | `200` / `404` / `502` |
+| POST | `/api/connections/{id}/browse` | Page through a resource's rows | `200` / `400` / `404` / `502` |
+| POST | `/api/connections/{id}/materialize` | Selected rows to label data | `200` / `400` / `404` / `502` |
 | GET | `/api/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/api/docs/` | Swagger UI (trailing slash) | `200` |
 
@@ -382,6 +386,45 @@ stored only as a SHA-256 hash. Automation sends it as `Authorization: Bearer $LA
 a user cascades their sessions; changing a password revokes the user's other sessions but keeps the
 current one. Passwords are argon2id; secrets at rest (sessions, tokens) are SHA-256 hashes.
 
+## 12. Integrations (connectors)
+
+Decision: [ADR-0018](adr/0018-api-integration-spine.md). A connector pulls label data straight from an
+external system of record (first Homebox) so a user can browse and materialize rows instead of re-keying.
+
+**Connections.** A connection is `{ id, connector, name, base_url, credential, enabled }` stored in
+SQLite. The credential (a pasted Homebox API key) is stored as-is for now (at-rest encryption deferred)
+and is **never** returned by the API: responses expose only `has_credential`.
+
+| Method | Path | Purpose | Success |
+| --- | --- | --- | --- |
+| GET | `/api/connections` | List connections (credential redacted) | `200` |
+| POST | `/api/connections` | Create a connection (`connector`, `name`, `base_url`, `credential`) | `201` / `400` |
+| GET | `/api/connections/{id}` | Connection detail (credential redacted) | `200` / `404` |
+| PUT | `/api/connections/{id}` | Update; omitting `credential` keeps the stored one | `200` / `404` |
+| DELETE | `/api/connections/{id}` | Delete a connection | `204` / `404` |
+
+`POST` rejects an unknown `connector`, a missing `credential`, or an invalid `base_url` with `400`.
+
+**Browse model.** A connector describes its data as a schema and is paged through with browse, then a
+selection is turned into label data with materialize.
+
+- **`GET /connections/{id}/schema`** returns `{ version, resources, relationships }`. A resource is
+  `{ id, label, view, columns, filters }`; `view` is `table` or `tree`. Each column (`FieldSpec`) carries
+  a `tier`: `cheap` (free from the list call), `hydrated` (needs a per-row fetch), or `derived`
+  (computed). Filters (`FilterSpec`) are typed (`search`, `location_id`, `label_id`).
+- **`POST /connections/{id}/browse`** takes `{ resource, filters?, parent?, cursor?, page_size? }` and
+  returns `{ rows, next_cursor, has_more, count? }`. Each row is `{ id: { resource, key }, cells }`.
+  Cursors are opaque, HMAC-signed, and bound to {connector, connection, resource, filter, page}; the
+  signing key is per process lifetime, so cursors do not survive a restart (the UI re-browses).
+- **`POST /connections/{id}/materialize`** takes `{ rows: [{ resource, key }], fields, expansion }` and
+  returns label rows `[{ source, data }]`, where `data` is a string map ready to bind to a template.
+
+**Egress policy.** All outbound calls go through one shared `reqwest`/rustls client with connect/read
+timeouts, an 8 MiB streamed response cap, no redirects, and no proxy-env use; bearer tokens are redacted
+from logs and errors. The target IP is allow-checked: loopback, link-local, unspecified, and multicast
+are blocked, while private LAN ranges are allowed (the target Homebox commonly lives on the LAN).
+Upstream failures surface as `502`; bad filters and budget overruns as `400`.
+
 ## Printing
 
 Architecture: [ADR-0007](adr/0007-printer-architecture-and-transport-model.md). App state (printers,
@@ -444,6 +487,15 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-17**: API integration spine (ADR-0018). Adds connector-backed connections: `GET/POST
+  /api/connections` and `GET/PUT/DELETE /api/connections/{id}` (credential stored as-is, never returned;
+  responses expose only `has_credential`), plus `GET /api/connections/{id}/schema`,
+  `POST /api/connections/{id}/browse` (opaque HMAC-signed, restart-ephemeral cursors), and
+  `POST /api/connections/{id}/materialize` (rows to label data). The browse model has resources with
+  tiered fields (cheap/hydrated/derived) and typed filters. Outbound HTTP goes through one hardened
+  egress client (timeouts, 8 MiB cap, no redirects/proxy, IP allow-check that blocks
+  loopback/link-local/multicast but permits private LAN, bearer redaction). Upstream failures map to
+  `502`. First connector is Homebox over `/v1/entities`. See §12.
 - **2026-06-16**: App authentication (ADR-0017, #33). Flat user accounts (no roles): every `/api` route
   now requires a session cookie or `Authorization: Bearer` token except `/api/health`,
   `/api/auth/login`, `/api/auth/setup`, `/api/auth/me`, `/api/openapi.json`, and `/api/docs`. Adds
