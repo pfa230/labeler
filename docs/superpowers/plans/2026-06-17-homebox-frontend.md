@@ -318,6 +318,13 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
     <div className="flex flex-col gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)" }}>
       <div className="flex flex-wrap gap-3">
         <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>connector</span>
+          {/* Only Homebox exists today; shown read-only so the user knows what they are configuring. */}
+          <select aria-label="connector" value={initial?.connector ?? "homebox"} disabled className={inputClass} style={inputStyle}>
+            <option value="homebox">homebox</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>name</span>
           <input aria-label="name" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} style={inputStyle} />
         </label>
@@ -612,10 +619,9 @@ describe("ConnectorBrowser", () => {
 
 - [ ] **Step 3: Implement `src/pages/connect/ConnectorBrowser.tsx`:**
 ```tsx
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   browseConnection,
-  type BrowsePage,
   type ConnectorSchema,
   type DisplayRow,
   type RelationshipSpec,
@@ -651,36 +657,57 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
 
   const selectedKeys = useMemo(() => new Set(selected.map(refKey)), [selected]);
 
-  const load = useCallback(
-    async (opts: { append: boolean }) => {
-      if (!resource) return;
-      setBusy(true);
-      setError(null);
+  // Fresh page whenever the resource, applied filters, or parent changes. An `active` flag prevents a
+  // slow earlier request from overwriting a newer one when the user switches resources / drills quickly
+  // (the stale request's setRows is dropped). `resource` is memoized on resourceId so this never loops.
+  useEffect(() => {
+    if (!resource) return;
+    let active = true;
+    setBusy(true);
+    setError(null);
+    (async () => {
       try {
-        const page: BrowsePage = await browseConnection(connectionId, {
+        const page = await browseConnection(connectionId, {
           resource: resource.id,
           ...(Object.keys(applied).length ? { filters: applied } : {}),
           ...(parent ? { parent: { relationship: parent.relationship, key: parent.key } } : {}),
-          ...(opts.append && cursor ? { cursor } : {}),
         });
-        setRows((prev) => (opts.append ? [...prev, ...page.rows] : page.rows));
+        if (!active) return;
+        setRows(page.rows);
         setCursor(page.next_cursor);
         setHasMore(page.has_more);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Browse failed");
+        if (active) setError(err instanceof Error ? err.message : "Browse failed");
       } finally {
-        setBusy(false);
+        if (active) setBusy(false);
       }
-    },
-    [connectionId, resource, applied, parent, cursor],
-  );
+    })();
+    return () => {
+      active = false;
+    };
+  }, [connectionId, resource, applied, parent]);
 
-  // Reload whenever the resource, applied filters, or parent changes (fresh page, not append).
-  useEffect(() => {
-    if (!resource) return;
-    void load({ append: false });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connectionId, resourceId, applied, parent]);
+  // "Load more": append the next cursor page. (Pagination only ever appends to the current resource.)
+  const loadMore = async () => {
+    if (!resource || !cursor) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const page = await browseConnection(connectionId, {
+        resource: resource.id,
+        ...(Object.keys(applied).length ? { filters: applied } : {}),
+        ...(parent ? { parent: { relationship: parent.relationship, key: parent.key } } : {}),
+        cursor,
+      });
+      setRows((prev) => [...prev, ...page.rows]);
+      setCursor(page.next_cursor);
+      setHasMore(page.has_more);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Browse failed");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const toggle = (ref: RowRef) => {
     if (selectedKeys.has(refKey(ref))) onSelectedChange(selected.filter((r) => refKey(r) !== refKey(ref)));
@@ -747,6 +774,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
       )}
 
       {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
+      {busy && rows.length === 0 && <p className="text-sm" style={{ color: "var(--muted)" }}>Loading...</p>}
 
       {resource && (
         <table className="w-full border-collapse">
@@ -786,7 +814,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
 
       <div className="flex items-center gap-3">
         {hasMore && (
-          <button type="button" disabled={busy} onClick={() => void load({ append: true })} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
+          <button type="button" disabled={busy} onClick={() => void loadMore()} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
             Load more
           </button>
         )}
@@ -798,7 +826,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
 ```
 Notes: the `tree` view is rendered as the same flat table (the backend already flattened the location tree; depth is not available in v1). Drill-down uses the first relationship whose `from` equals the current resource (`location_children`), browsing the `to` resource (`entities`) with the location as `parent`. The "Apply" button is what commits filters (no per-keystroke browse).
 
-- [ ] **Step 4: Run tests** — `npm run test -- ConnectorBrowser` (2 pass). `npm run lint` (the `exhaustive-deps` disable comment is intentional and localized; do not remove the `load` callback memo).
+- [ ] **Step 4: Run tests** — `npm run test -- ConnectorBrowser` (2 pass). `npm run lint` clean (the fresh-load effect depends on `[connectionId, resource, applied, parent]`; `resource` is memoized on `resourceId`, so there is no loop and no `exhaustive-deps` suppression is needed).
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -890,7 +918,8 @@ describe("Connect", () => {
 - [ ] **Step 3: Implement `src/pages/Connect.tsx`.** Use this structure (complete code):
 ```tsx
 import { useMemo, useRef, useState } from "react";
-import { useConnections, useConnectorSchema, materializeConnection, type RowRef } from "../api/connectors";
+import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type RowRef } from "../api/connectors";
+import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
 import { referencedFields, defaultOptions } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
@@ -907,9 +936,7 @@ type BatchFailures = { failures?: { index: number; code: string; message: string
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
-
-// Lazy import to avoid a cycle in tooling; ConnectorBrowser is a sibling.
-import { ConnectorBrowser } from "./connect/ConnectorBrowser";
+const MATERIALIZE_CAP = 200; // backend /materialize rejects more than this in one call (400 BudgetExceeded)
 
 export function Connect() {
   const { data: connections } = useConnections();
@@ -945,7 +972,7 @@ export function Connect() {
       </div>
 
       {connectionId && schema && (
-        <ConnectorBrowser connectionId={connectionId} schema={schema} selected={selected} onSelectedChange={setSelected} />
+        <ConnectorBrowser key={connectionId} connectionId={connectionId} schema={schema} selected={selected} onSelectedChange={setSelected} />
       )}
 
       {connectionId && schema && detail && conn && (
@@ -968,7 +995,7 @@ function Composer({
 }: {
   connectionId: string;
   connectorId: string;
-  schema: import("../api/connectors").ConnectorSchema;
+  schema: ConnectorSchema;
   detail: TemplateDetail;
   selected: RowRef[];
   printers: { id: string; name: string }[];
@@ -1014,17 +1041,22 @@ function Composer({
   const addRows = async () => {
     if (selected.length === 0) return;
     setFormError(null);
+    // Guard the caps BEFORE the API call: /materialize rejects > MATERIALIZE_CAP rows (400 BudgetExceeded),
+    // and the grid/batch caps at MAX_BATCH_LABELS. Catch both here for a clear message and no wasted call.
+    if (selected.length > MATERIALIZE_CAP) {
+      setFormError(`Select at most ${MATERIALIZE_CAP} rows at a time.`);
+      return;
+    }
+    if (rowsRef.current.length + selected.length > MAX_BATCH_LABELS) {
+      setFormError(`That would exceed the ${MAX_BATCH_LABELS}-row limit.`);
+      return;
+    }
     setBusy(true);
     try {
       const fields = mappedConnectorKeys(mapping);
       const materialized = await materializeConnection(connectionId, { rows: selected, fields, expansion: "as_listed" });
       const built = rowsFromMaterialized(materialized, mapping, connectorId, connectionId);
-      const next = [...rowsRef.current, ...built];
-      if (next.length > MAX_BATCH_LABELS) {
-        setFormError(`That would exceed the ${MAX_BATCH_LABELS}-row limit.`);
-        return;
-      }
-      commitRows(next);
+      commitRows([...rowsRef.current, ...built]);
       push({ kind: "ok", message: `Added ${built.length} rows` });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Materialize failed";
@@ -1214,7 +1246,7 @@ This is the second of the two M7 sub-projects; with the UI shipped, close the Ho
 
 **1. Spec coverage:** Connections CRUD + API-key paste + redacted display -> Task 2 (+ Task 1 layer). Generic schema-driven browse (table/tree, filters search/location/label, cursor pagination, direct drill-down) -> Task 4 (+ Task 1). Field mapping connector fields -> LabelGrid -> Task 3 + Task 5. Materialize selected rows -> `/materialize` -> grid -> `/batch` PDF/print -> Task 5. Routing/nav -> Task 5. Docs/close issue -> Task 6. The "tree view" renders flat in v1 (backend flattens the tree); noted in Task 4 and acceptable per the spec's deferred-recursion decision.
 
-**2. Placeholder scan:** no TBD/TODO; every step has complete code or an exact edit. The one `eslint-disable-next-line react-hooks/exhaustive-deps` (Task 4) is a deliberate, localized escape for the browse effect (the `load` callback is memoized on its real deps; listing it would re-run the effect on every render). No `any`.
+**2. Placeholder scan:** no TBD/TODO; every step has complete code or an exact edit. No `eslint-disable` and no `any`. The browse effect (Task 4) lists its real deps `[connectionId, resource, applied, parent]` (`resource` is memoized on `resourceId`) and uses an `active` cancellation flag so a stale request cannot overwrite a newer one; "Load more" is a separate `loadMore`. `addRows` (Task 5) guards both the 200-row `/materialize` cap (`MATERIALIZE_CAP`) and the 500-row batch cap before calling the API.
 
 **3. Type/name consistency:** the api types (`Connection`, `ConnectorSchema`, `ResourceSpec`, `FieldSpec`, `FilterSpec`, `RelationshipSpec`, `DisplayRow`, `RowRef`, `BrowsePage`, `LabelRowResult`) defined in Task 1 are used unchanged in Tasks 2/4/5. `browseConnection`/`materializeConnection` signatures match their callers. `FieldMapping`, `defaultMapping`, `mappedConnectorKeys`, `rowsFromMaterialized` (Task 3) are consumed by Task 5 with matching shapes. `LabelGridRow` (`origin: "connector"`, `source: RowSource`) matches the existing `src/lib/labelGrid.ts` model. `LabelGrid` props (`rows`, `fields`, `optionNames`, `optionValues`, `onRowsChange`, `onDuplicate`, `onRemove`, `disabled`) match the existing component; Task 5 passes `optionNames={[]}` (connector rows have no per-row option columns).
 
