@@ -1465,6 +1465,61 @@ mod auth_http_tests {
         serde_json::from_slice(&bytes).expect("parse json")
     }
 
+    fn cookie_from(res: &axum::response::Response) -> String {
+        res.headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Create the first user and log in, returning the session cookie that authorizes protected calls.
+    async fn setup_login_cookie(app: &axum::Router) -> String {
+        app.clone()
+            .oneshot(req_post_json(
+                "/api/auth/setup",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/login",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        cookie_from(&res)
+    }
+
+    fn req_post_json_cookie(uri: &str, body: &str, cookie: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("origin", "http://localhost")
+            .header("cookie", cookie)
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn req_delete_cookie(uri: &str, cookie: &str) -> Request<Body> {
+        Request::builder()
+            .method("DELETE")
+            .uri(uri)
+            .header("host", "localhost")
+            .header("origin", "http://localhost")
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn protected_route_requires_auth() {
         let app = test_app();
@@ -1629,5 +1684,133 @@ mod auth_http_tests {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn create_user_then_duplicate_conflicts() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        // create a second user
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/users",
+                r#"{"username":"bob","password":"pw"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        // list now shows 2
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/users", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body.as_array().unwrap().len(), 2);
+        // a second POST with the same username is a clean 409, not a 500
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/users",
+                r#"{"username":"bob","password":"pw"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn delete_last_user_conflicts() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        // there is exactly one user; find its id
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/users", &cookie))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        let id = body[0]["id"].as_str().unwrap().to_string();
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(&format!("/api/users/{id}"), &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn change_password_verifies_current() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        // wrong current password is 401
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/auth/password",
+                r#"{"current_password":"nope","new_password":"new"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        // correct current password is 200
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/auth/password",
+                r#"{"current_password":"pw","new_password":"new"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn token_create_authorizes_then_revokes() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        // create a token; the secret is returned once
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/tokens",
+                r#"{"name":"ci"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body = body_json(res).await;
+        let secret = body["secret"].as_str().unwrap().to_string();
+        let id = body["id"].as_str().unwrap().to_string();
+        // the token authorizes a protected GET via the bearer header
+        let req = Request::builder()
+            .uri("/api/templates")
+            .header("authorization", format!("Bearer {secret}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // revoke it
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(&format!("/api/tokens/{id}"), &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        // the revoked token no longer authorizes
+        let req = Request::builder()
+            .uri("/api/templates")
+            .header("authorization", format!("Bearer {secret}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }
