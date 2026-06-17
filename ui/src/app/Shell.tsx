@@ -7,6 +7,7 @@ const NAV_ITEMS = [
   { to: "/", label: "Templates" },
   { to: "/print", label: "Print" },
   { to: "/import", label: "Import" },
+  { to: "/connect", label: "Connect" },
   { to: "/settings", label: "Settings" },
 ];
 
