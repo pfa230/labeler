@@ -1,11 +1,12 @@
 use arc_swap::ArcSwap;
 use axum::{
     extract::rejection::JsonRejection,
-    extract::{Json, Path, Query, State},
+    extract::{FromRequestParts, Json, Path, Query, State},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Router,
 };
+use axum_extra::extract::cookie::CookieJar;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -117,6 +118,10 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/render/label", post(render_label))
         .route("/batch", post(batch))
         .route("/import/csv", post(import_csv))
+        .route("/auth/setup", post(setup))
+        .route("/auth/login", post(login))
+        .route("/auth/logout", post(logout))
+        .route("/auth/me", get(me))
         // Serve the OpenAPI doc from an explicit route so it resolves at /api/openapi.json under the
         // `/api` nest (SwaggerUi's own `.url()` serving route gets double-prefixed when nested).
         .route("/openapi.json", get(openapi_json))
@@ -894,4 +899,130 @@ pub async fn import_csv(
         0,
     )
     .await
+}
+
+#[derive(serde::Deserialize)]
+pub struct Credentials {
+    pub username: String,
+    pub password: String,
+}
+
+pub async fn setup(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    req_https: HttpsHint,
+    Json(body): Json<Credentials>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    if state.store().count_users().await.map_err(AppError::from)? > 0 {
+        return Err(AppError::conflict("setup already completed"));
+    }
+    let hash = crate::auth::hash_password(&body.password)
+        .map_err(|_| AppError::internal("hash failed"))?;
+    let user = state
+        .store()
+        .create_user(&body.username, &hash)
+        .await
+        .map_err(AppError::from)?;
+    start_session(&state, jar, &user.id, req_https.0).await
+}
+
+pub async fn login(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    req_https: HttpsHint,
+    Json(body): Json<Credentials>,
+) -> Result<Response, AppError> {
+    match state
+        .store()
+        .get_user_by_username(&body.username)
+        .await
+        .map_err(AppError::from)?
+    {
+        Some(user) if crate::auth::verify_password(&body.password, &user.password_hash) => {
+            start_session(&state, jar, &user.id, req_https.0).await
+        }
+        Some(_) => Err(AppError::unauthorized()),
+        None => {
+            crate::auth::dummy_verify(&body.password);
+            Err(AppError::unauthorized())
+        }
+    }
+}
+
+async fn start_session(
+    state: &AppState,
+    jar: CookieJar,
+    user_id: &str,
+    https: bool,
+) -> Result<Response, AppError> {
+    // Rotate: invalidate any session the incoming cookie referenced (session-fixation defense).
+    if let Some(old) = jar.get(crate::middleware::SESSION_COOKIE) {
+        let _ = state
+            .store()
+            .delete_session(&crate::auth::sha256_hex(old.value()))
+            .await;
+    }
+    let secret = crate::auth::random_secret();
+    state
+        .store()
+        .create_session(&crate::auth::sha256_hex(&secret), user_id, "+30 days")
+        .await
+        .map_err(AppError::from)?;
+    let jar = jar.add(crate::middleware::session_cookie(secret, https));
+    Ok((jar, Json(serde_json::json!({"ok": true}))).into_response())
+}
+
+pub async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Response {
+    if let Some(c) = jar.get(crate::middleware::SESSION_COOKIE) {
+        let _ = state
+            .store()
+            .delete_session(&crate::auth::sha256_hex(c.value()))
+            .await;
+    }
+    (
+        jar.add(crate::middleware::clear_cookie()),
+        Json(serde_json::json!({"ok": true})),
+    )
+        .into_response()
+}
+
+// `/auth/me` is AUTH-EXEMPT (it must answer for logged-OUT callers too), so it resolves auth itself
+// (optional) and always returns 200 with the auth state the SPA needs.
+pub async fn me(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Result<Response, AppError> {
+    if let Some(p) = crate::middleware::resolve_optional(&state, &headers).await {
+        let me = match p {
+            crate::middleware::Principal::User { id, username } => {
+                serde_json::json!({"id": id, "username": username})
+            }
+            crate::middleware::Principal::Token { .. } => {
+                serde_json::json!({"id": "token", "username": "api-token"})
+            }
+        };
+        return Ok(
+            Json(serde_json::json!({"authed": true, "needsSetup": false, "me": me}))
+                .into_response(),
+        );
+    }
+    let needs_setup = state.store().count_users().await.map_err(AppError::from)? == 0;
+    Ok(Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response())
+}
+
+// Effective-https extractor for the cookie Secure flag (proxy-aware), used by setup/login.
+pub struct HttpsHint(pub bool);
+impl FromRequestParts<Arc<AppState>> for HttpsHint {
+    type Rejection = std::convert::Infallible;
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        state: &Arc<AppState>,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(HttpsHint(crate::middleware::effective_https(
+            &parts.headers,
+            &parts.uri,
+            state.trust_proxy(),
+        )))
+    }
 }
