@@ -4,6 +4,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # We deliberately track the active Node LTS (24), not the newest release. Dependabot has no concept
+    # of LTS, so block major bumps on the node base image: it then only refreshes the digest / minor
+    # within 24. Advancing to the next LTS line is a manual bump.
+    ignore:
+      - dependency-name: node
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
