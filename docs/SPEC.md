@@ -425,6 +425,15 @@ from logs and errors. The target IP is allow-checked: loopback, link-local, unsp
 are blocked, while private LAN ranges are allowed (the target Homebox commonly lives on the LAN).
 Upstream failures surface as `502`; bad filters and budget overruns as `400`.
 
+**Using a connection (UI).** Settings > Connections adds and edits connections (connector, name, base
+URL, API key). The key is write-only: the API returns only `has_credential`, the form shows it as a
+password field, and editing with the field left blank keeps the stored key. The Connect page drives the
+flow: pick a connection and a template, browse the connector (a generic schema-driven table/tree with
+typed filters, cursor pagination, and direct drill-down via relationships), select rows, map template
+fields to connector columns, then materialize the selection into the label grid and download or print a
+batch. Materialize is capped at 200 rows per call; the grid/batch caps at 500 (§2.2). v1 renders the
+location tree flat, drills one level (direct), and expands as-listed.
+
 ## Printing
 
 Architecture: [ADR-0007](adr/0007-printer-architecture-and-transport-model.md). App state (printers,
@@ -487,6 +496,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-17**: Homebox integration UI (#35). Settings > Connections manages connections (API key
+  write-only: password field, redacted display, blank-on-edit keeps the stored key). New Connect page:
+  pick a connection + template, browse the connector (generic schema-driven table/tree, typed filters,
+  cursor pagination, direct drill-down), select and map fields, materialize into the label grid, and
+  download/print a batch. See §12 "Using a connection (UI)".
 - **2026-06-17**: API integration spine (ADR-0018). Adds connector-backed connections: `GET/POST
   /api/connections` and `GET/PUT/DELETE /api/connections/{id}` (credential stored as-is, never returned;
   responses expose only `has_credential`), plus `GET /api/connections/{id}/schema`,
