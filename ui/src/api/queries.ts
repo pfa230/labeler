@@ -68,3 +68,68 @@ export function useDeletePrinter() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
   });
 }
+
+export interface UserSummary {
+  id: string;
+  username: string;
+}
+
+export function useUsers() {
+  return useQuery({ queryKey: ["users"], queryFn: () => getJson<UserSummary[]>("/users") });
+}
+
+export function useCreateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (c: { username: string; password: string }) => sendJson<UserSummary>("POST", "/users", c),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useDeleteUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => del(`/users/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["users"] }),
+  });
+}
+
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (c: { current_password: string; new_password: string }) =>
+      sendJson<{ ok: boolean }>("POST", "/auth/password", c),
+  });
+}
+
+export interface ApiToken {
+  id: string;
+  name: string;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export interface CreatedToken {
+  id: string;
+  name: string;
+  secret: string;
+}
+
+export function useTokens() {
+  return useQuery({ queryKey: ["tokens"], queryFn: () => getJson<ApiToken[]>("/tokens") });
+}
+
+export function useCreateToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (c: { name: string }) => sendJson<CreatedToken>("POST", "/tokens", c),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tokens"] }),
+  });
+}
+
+export function useDeleteToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => del(`/tokens/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tokens"] }),
+  });
+}
