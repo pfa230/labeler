@@ -496,6 +496,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-17**: CI and image publishing (ADR-0019, #37). CI now also builds/tests the UI and builds +
+  smoke-tests the Docker image; images publish to `ghcr.io/pfa230/labeler` (`:edge` + `:sha-` on `main`,
+  `:X.Y.Z`/`:X.Y`/`:latest` on a `vX.Y.Z` tag) via the built-in `GITHUB_TOKEN`. Base images are pinned to
+  digests with Dependabot bumps. amd64 only (arm64 deferred, #36). No API change.
 - **2026-06-17**: Homebox integration UI (#35). Settings > Connections manages connections (API key
   write-only: password field, redacted display, blank-on-edit keeps the stored key). New Connect page:
   pick a connection + template, browse the connector (generic schema-driven table/tree, typed filters,
