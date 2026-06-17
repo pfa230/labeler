@@ -165,6 +165,13 @@ mod http_tests {
         )))
     }
 
+    fn loopback_state() -> Arc<AppState> {
+        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let store = Store::open_in_memory().expect("store");
+        seed_token(&store);
+        Arc::new(AppState::new(templates, "templates".into(), store).with_loopback_egress())
+    }
+
     async fn json_response(response: axum::response::Response) -> Value {
         let body = response
             .into_body()
@@ -1485,6 +1492,183 @@ layout:
             json_response(resp).await["error"]["code"],
             "PrinterNotFound"
         );
+    }
+
+    #[tokio::test]
+    async fn browse_endpoint_returns_rows_e2e() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id":"e1","name":"Drill","entityType":{"name":"item"}}], "total": 1
+            })))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection("homebox", "h", &hb.uri(), "hb_key")
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["rows"][0]["id"]["key"], "e1");
+    }
+
+    #[tokio::test]
+    async fn schema_endpoint_e2e() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(["SKU"])))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection("homebox", "h", &hb.uri(), "hb_key")
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/connections/{}/schema", c.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(v["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "entities"));
+    }
+
+    #[tokio::test]
+    async fn materialize_endpoint_e2e() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"e1","name":"Drill","manufacturer":"Acme"
+            })))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection("homebox", "h", &hb.uri(), "hb_key")
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/materialize", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["name","manufacturer"],"expansion":"as_listed"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v[0]["data"]["manufacturer"], "Acme");
+    }
+
+    #[tokio::test]
+    async fn browse_requires_auth() {
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection("homebox", "h", "http://hb.lan:7745", "hb_key")
+            .await
+            .unwrap();
+        let router = app(state.clone()); // NO with_auth
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn browse_unknown_connection_404() {
+        let state = loopback_state();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections/does-not-exist/browse")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn browse_bad_cursor_400() {
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection("homebox", "h", "http://hb.lan:7745", "hb_key")
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"resource":"entities","cursor":"garbage.token"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }
 
