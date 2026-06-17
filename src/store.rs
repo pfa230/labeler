@@ -122,6 +122,7 @@ fn migrations() -> Migrations<'static> {
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );",
         ),
+        M::up("CREATE INDEX idx_jobs_ts ON jobs(ts);"),
     ])
 }
 
@@ -239,6 +240,22 @@ impl Store {
             rusqlite::params![template, printer, status, error],
         )?;
         Ok(())
+    }
+
+    /// Delete job-log rows older than `retention_days`. `0` disables (no-op). Returns rows deleted.
+    /// `ts` is canonical `datetime('now')` UTC text, so the string compare against
+    /// `datetime('now', '-<n> days')` is chronological. The modifier is bound as a full parameter
+    /// (a `u32`, so it is always `-<digits> days`; no injection surface).
+    pub async fn prune_jobs(&self, retention_days: u32) -> Result<usize, StoreError> {
+        if retention_days == 0 {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().expect("store lock");
+        let deleted = conn.execute(
+            "DELETE FROM jobs WHERE ts < datetime('now', ?1)",
+            rusqlite::params![format!("-{retention_days} days")],
+        )?;
+        Ok(deleted)
     }
 
     pub async fn count_users(&self) -> Result<i64, StoreError> {
@@ -615,6 +632,45 @@ mod tests {
             .record_job("tpl", None, "failed", Some("boom"))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn prune_jobs_deletes_old_keeps_recent() {
+        let store = Store::open_in_memory().unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO jobs (ts, template, status) VALUES (datetime('now','-200 days'), 'tpl', 'ok')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO jobs (ts, template, status) VALUES (datetime('now'), 'tpl', 'ok')",
+                [],
+            )
+            .unwrap();
+        }
+        let deleted = store.prune_jobs(90).await.unwrap();
+        assert_eq!(deleted, 1);
+        let remaining: i64 = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(remaining, 1);
+    }
+
+    #[tokio::test]
+    async fn prune_jobs_zero_is_noop() {
+        let store = Store::open_in_memory().unwrap();
+        store.record_job("tpl", None, "ok", None).await.unwrap();
+        assert_eq!(store.prune_jobs(0).await.unwrap(), 0);
+        let remaining: i64 = {
+            let conn = store.conn.lock().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(remaining, 1);
     }
 }
 
