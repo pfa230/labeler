@@ -212,6 +212,11 @@ impl HomeboxConnector {
         let b = base(conn)?;
         let mut out = Vec::with_capacity(req.rows.len());
         for r in &req.rows {
+            // The key is interpolated into the upstream path; reject anything that could traverse
+            // out of /v1/entities/{id} (URL path normalization would collapse `..` segments).
+            if r.key.is_empty() || r.key.contains('/') || r.key.starts_with('.') {
+                return Err(ConnectorError::InvalidFilter("invalid row key".into()));
+            }
             let detail: serde_json::Value = egress
                 .get_json(
                     &b,
@@ -511,5 +516,63 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].data["manufacturer"], "Acme");
         assert!(rows[0].data["item_url"].ends_with("/entity/e1"));
+    }
+
+    #[tokio::test]
+    async fn browse_locations_flattens_tree() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/tree"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {"id":"l1","name":"Garage","children":[{"id":"l2","name":"Shelf A","children":[]}]},
+                {"id":"l3","name":"Office","children":[]}
+            ])))
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::with_loopback();
+        let key = crate::connector::cursor::SigningKey::random();
+        let page = HomeboxConnector
+            .browse(
+                &conn(&server.uri()),
+                &egress,
+                &key,
+                crate::connector::BrowseRequest {
+                    resource: "locations".into(),
+                    filters: Default::default(),
+                    parent: None,
+                    cursor: None,
+                    page_size: None,
+                },
+            )
+            .await
+            .unwrap();
+        // Garage + nested Shelf A + Office = 3 flattened rows.
+        assert_eq!(page.rows.len(), 3);
+        assert!(page.rows.iter().all(|r| r.id.resource == "locations"));
+        assert!(!page.has_more);
+    }
+
+    #[tokio::test]
+    async fn materialize_rejects_traversal_key() {
+        let egress = crate::egress::Egress::with_loopback();
+        let err = HomeboxConnector
+            .materialize(
+                &conn("http://hb.lan:7745"),
+                &egress,
+                crate::connector::MaterializeRequest {
+                    rows: vec![crate::connector::RowRef {
+                        resource: "entities".into(),
+                        key: "../fields".into(),
+                    }],
+                    fields: vec!["name".into()],
+                    expansion: crate::connector::ExpansionPolicy::AsListed,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::connector::ConnectorError::InvalidFilter(_)
+        ));
     }
 }

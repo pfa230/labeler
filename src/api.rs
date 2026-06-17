@@ -702,6 +702,7 @@ pub async fn update_connection_h(
     Path(id): Path<String>,
     Json(body): Json<ConnectionInput>,
 ) -> Result<Response, AppError> {
+    url::Url::parse(&body.base_url).map_err(|_| AppError::invalid_request("invalid base_url"))?;
     let _g = state.write_lock.lock().await;
     let cred = body.credential.filter(|c| !c.is_empty());
     let ok = state
