@@ -11,6 +11,7 @@ function stubFetch() {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith("/api/settings")) return json({ qr_base_url: "https://x" });
     if (url.startsWith("/api/printers")) return json([]);
+    if (url.startsWith("/api/connections")) return json([]);
     throw new Error(`unexpected fetch: ${url}`);
   });
 }
