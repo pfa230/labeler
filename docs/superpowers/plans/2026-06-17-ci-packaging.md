@@ -192,7 +192,7 @@ git commit -m "ci: add UI lint/test/build job; semver-tag + main triggers, scope
           flavor: latest=false
           tags: |
             type=edge,branch=main
-            type=sha,prefix=sha-
+            type=sha,prefix=sha-,enable=${{ startsWith(github.ref, 'refs/heads/') }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') }}
@@ -221,9 +221,16 @@ git commit -m "ci: add UI lint/test/build job; semver-tag + main triggers, scope
 
       - name: Smoke test (/api/health)
         run: |
-          docker run -d -p 8080:8080 --name smoke labeler:test
+          set -u
+          cleanup() { docker rm -f smoke >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          if ! docker run -d -p 8080:8080 --name smoke labeler:test; then
+            echo "smoke test failed: container did not start"
+            docker ps -a || true
+            exit 1
+          fi
           ok=
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/api/health >/dev/null 2>&1; then ok=1; break; fi
             sleep 2
           done
@@ -231,10 +238,8 @@ git commit -m "ci: add UI lint/test/build job; semver-tag + main triggers, scope
             echo "smoke test failed: /api/health never became healthy"
             docker logs smoke || true
             docker ps -a || true
-            docker rm -f smoke || true
             exit 1
           fi
-          docker rm -f smoke
 
       - name: Push to GHCR
         if: github.event_name != 'pull_request'
@@ -248,8 +253,10 @@ Why this shape (do not "optimize" it away):
 - `cache-to` is gated to non-PR events because fork PRs and **Dependabot PRs** get a read-only `GITHUB_TOKEN`, and the GHA cache exporter needs write; an unconditional `cache-to` would fail those PRs. `cache-from` stays on for everyone.
 - `labels: ${{ steps.meta.outputs.labels }}` puts `org.opencontainers.image.source` on the image, which is what makes GHCR auto-link the package to this repo on first publish (avoids a token-denied first push).
 - `flavor: latest=false` + the `type=raw` latest gated on `refs/tags/` means `main` pushes never produce `:latest`; only a `v*.*.*` tag does.
+- `type=sha` is gated to `refs/heads/` (branch pushes) so a **release tag does NOT also get a `:sha-` tag**. This keeps the published set exactly "main -> `:edge` + `:sha-<short>`; tag -> `:X.Y.Z` + `:X.Y` + `:latest`" (metadata-action otherwise emits `type=sha` on tag events too).
+- The smoke step uses a `trap cleanup EXIT` so the `smoke` container is removed even if `docker run` itself fails, and `for _` (not `for i`) so shellcheck does not flag an unused loop var.
 
-- [ ] **Step 2: Lint.** `actionlint .github/workflows/ci.yml` (expected: clean). Note: `actionlint` runs `shellcheck` on `run:` blocks if it is installed; address any SC warning on the smoke/push scripts (the loops above are written to pass: quoted vars, no unused `i`). If shellcheck flags `i` as unused in the `for i in $(seq ...)` loop (SC2034), that is acceptable for a counter loop; if it errors, replace with `for _ in $(seq 1 30)`.
+- [ ] **Step 2: Lint.** `actionlint .github/workflows/ci.yml` (expected: clean). `actionlint` runs `shellcheck` on `run:` blocks if installed; the smoke/push scripts are written to pass (quoted vars, `for _`, trap-based cleanup). Fix any real SC finding at the source; do not add `# shellcheck disable` blindly.
 
 - [ ] **Step 3: Commit:**
 ```bash
@@ -311,8 +318,8 @@ image are not addressed here.
 
 - [ ] **Step 2: Add the index row to `docs/adr/README.md`.** Add a row for ADR-0019 to the index table, matching the existing rows' columns (number, title linked to the file, status `Accepted`). Place it after the 0018 row.
 
-- [ ] **Step 3: Add a "Run a published image" section to `docs/DEPLOY.md`** (after the Quick start section). Use this content:
-```markdown
+- [ ] **Step 3: Add a "Run a published image" section to `docs/DEPLOY.md`** (after the Quick start section). Use this content (the outer fence is four backticks so the inner `bash`/`yaml` fences are part of the pasted content):
+````markdown
 ## Run a published image (GHCR)
 
 CI publishes images to `ghcr.io/pfa230/labeler`:
@@ -341,8 +348,7 @@ x-labeler-image: &labeler-image
 (removing `build: .` and `pull_policy: build`), then `docker compose up -d` (no `--build`). If the very
 first automated publish ever fails to link the package to the repo, open the package page on GitHub and
 use "Connect repository" / Manage Actions access to link it.
-```
-(Note: the triple-backtick `bash`/`yaml` fences above are literal content to paste into DEPLOY.md.)
+````
 
 - [ ] **Step 4: Add a `docs/SPEC.md` changelog entry** at the top of the Changelog list (matching the existing dated-entry format):
 ```markdown
