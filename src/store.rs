@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use rusqlite::OptionalExtension;
 use rusqlite_migration::{Migrations, M};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -22,6 +23,21 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Debug, Clone)]
+pub struct User {
+    pub id: String,
+    pub username: String,
+    pub password_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApiToken {
+    pub id: String,
+    pub name: String,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("database error: {0}")]
@@ -40,8 +56,9 @@ pub struct Store {
 }
 
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        "CREATE TABLE printers (
+    Migrations::new(vec![
+        M::up(
+            "CREATE TABLE printers (
             id         TEXT PRIMARY KEY,
             name       TEXT NOT NULL,
             kind       TEXT NOT NULL,
@@ -61,13 +78,37 @@ fn migrations() -> Migrations<'static> {
             status   TEXT NOT NULL,
             error    TEXT
         );",
-    )])
+        ),
+        M::up(
+            "CREATE TABLE users (
+            id            TEXT PRIMARY KEY,
+            username      TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE sessions (
+            id         TEXT PRIMARY KEY,
+            user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            expires_at TEXT NOT NULL,
+            last_seen  TEXT NOT NULL DEFAULT (datetime('now')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE api_tokens (
+            id           TEXT PRIMARY KEY,
+            name         TEXT NOT NULL,
+            token_hash   TEXT NOT NULL UNIQUE,
+            last_used_at TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+        ),
+    ])
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.pragma_update(None, "foreign_keys", true)?;
         migrations().to_latest(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -76,6 +117,7 @@ impl Store {
 
     pub fn open_in_memory() -> Result<Self, StoreError> {
         let mut conn = Connection::open_in_memory()?;
+        conn.pragma_update(None, "foreign_keys", true)?;
         migrations().to_latest(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -177,6 +219,218 @@ impl Store {
         )?;
         Ok(())
     }
+
+    pub async fn count_users(&self) -> Result<i64, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
+    }
+
+    pub async fn create_user(
+        &self,
+        username: &str,
+        password_hash: &str,
+    ) -> Result<User, StoreError> {
+        let id = crate::auth::random_secret();
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "INSERT INTO users (id, username, password_hash) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, username, password_hash],
+        )?;
+        Ok(User {
+            id,
+            username: username.to_string(),
+            password_hash: password_hash.to_string(),
+        })
+    }
+
+    pub async fn get_user_by_username(&self, username: &str) -> Result<Option<User>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.query_row(
+            "SELECT id, username, password_hash FROM users WHERE username = ?1",
+            [username],
+            |r| {
+                Ok(User {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    password_hash: r.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub async fn get_user_by_id(&self, id: &str) -> Result<Option<User>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.query_row(
+            "SELECT id, username, password_hash FROM users WHERE id = ?1",
+            [id],
+            |r| {
+                Ok(User {
+                    id: r.get(0)?,
+                    username: r.get(1)?,
+                    password_hash: r.get(2)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub async fn list_users(&self) -> Result<Vec<User>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt =
+            conn.prepare("SELECT id, username, password_hash FROM users ORDER BY username")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(User {
+                id: r.get(0)?,
+                username: r.get(1)?,
+                password_hash: r.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub async fn delete_user(&self, id: &str) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        Ok(conn.execute("DELETE FROM users WHERE id = ?1", [id])? > 0)
+    }
+
+    pub async fn set_user_password(&self, id: &str, password_hash: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            rusqlite::params![password_hash, id],
+        )?;
+        Ok(())
+    }
+
+    // Sessions
+    pub async fn create_session(
+        &self,
+        id_hash: &str,
+        user_id: &str,
+        ttl_modifier: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "INSERT INTO sessions (id, user_id, expires_at) VALUES (?1, ?2, datetime('now', ?3))",
+            rusqlite::params![id_hash, user_id, ttl_modifier],
+        )?;
+        Ok(())
+    }
+
+    /// Look up a live (non-expired) session and its user. Slides expiry + last_seen, but only when
+    /// last_seen is older than 1 hour (throttle), to avoid a write per request.
+    pub async fn lookup_session(&self, id_hash: &str) -> Result<Option<User>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let user = conn
+            .query_row(
+                "SELECT u.id, u.username, u.password_hash
+                 FROM sessions s JOIN users u ON u.id = s.user_id
+                 WHERE s.id = ?1 AND s.expires_at > datetime('now')",
+                [id_hash],
+                |r| {
+                    Ok(User {
+                        id: r.get(0)?,
+                        username: r.get(1)?,
+                        password_hash: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?;
+        if user.is_some() {
+            conn.execute(
+                "UPDATE sessions SET expires_at = datetime('now', '+30 days'), last_seen = datetime('now')
+                 WHERE id = ?1 AND last_seen < datetime('now', '-1 hour')",
+                [id_hash],
+            )?;
+        }
+        Ok(user)
+    }
+
+    pub async fn delete_session(&self, id_hash: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute("DELETE FROM sessions WHERE id = ?1", [id_hash])?;
+        Ok(())
+    }
+
+    pub async fn delete_user_sessions_except(
+        &self,
+        user_id: &str,
+        keep_id_hash: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "DELETE FROM sessions WHERE user_id = ?1 AND id <> ?2",
+            rusqlite::params![user_id, keep_id_hash],
+        )?;
+        Ok(())
+    }
+
+    // Tokens
+    pub async fn create_token(&self, name: &str, token_hash: &str) -> Result<ApiToken, StoreError> {
+        let id = crate::auth::random_secret();
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "INSERT INTO api_tokens (id, name, token_hash) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, name, token_hash],
+        )?;
+        conn.query_row(
+            "SELECT id, name, last_used_at, created_at FROM api_tokens WHERE id = ?1",
+            [&id],
+            |r| {
+                Ok(ApiToken {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    last_used_at: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            },
+        )
+        .map_err(Into::into)
+    }
+
+    /// Look up a token by its hash; on hit, throttled-update last_used_at. Returns the token id.
+    pub async fn lookup_token(&self, token_hash: &str) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM api_tokens WHERE token_hash = ?1",
+                [token_hash],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(ref tid) = id {
+            conn.execute(
+                "UPDATE api_tokens SET last_used_at = datetime('now')
+                 WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < datetime('now', '-1 hour'))",
+                [tid],
+            )?;
+        }
+        Ok(id)
+    }
+
+    pub async fn list_tokens(&self) -> Result<Vec<ApiToken>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare(
+            "SELECT id, name, last_used_at, created_at FROM api_tokens ORDER BY created_at",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ApiToken {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                last_used_at: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub async fn delete_token(&self, id: &str) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        Ok(conn.execute("DELETE FROM api_tokens WHERE id = ?1", [id])? > 0)
+    }
 }
 
 type PrinterParts = (String, String, String, String, i64);
@@ -258,5 +512,77 @@ mod tests {
             .record_job("tpl", None, "failed", Some("boom"))
             .await
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+
+    fn store() -> Store {
+        Store::open_in_memory().unwrap()
+    }
+
+    #[tokio::test]
+    async fn user_lifecycle_and_count() {
+        let s = store();
+        assert_eq!(s.count_users().await.unwrap(), 0);
+        let u = s.create_user("alice", "phc-hash").await.unwrap();
+        assert_eq!(u.username, "alice");
+        assert_eq!(s.count_users().await.unwrap(), 1);
+        assert!(s.get_user_by_username("alice").await.unwrap().is_some());
+        assert!(s.create_user("alice", "h").await.is_err()); // unique username
+        assert_eq!(s.list_users().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_create_lookup_delete_and_user_cascade() {
+        let s = store();
+        let u = s.create_user("bob", "h").await.unwrap();
+        let raw = "raw-session-value";
+        s.create_session(&crate::auth::sha256_hex(raw), &u.id, "+30 days")
+            .await
+            .unwrap();
+        let found = s
+            .lookup_session(&crate::auth::sha256_hex(raw))
+            .await
+            .unwrap();
+        assert_eq!(found.unwrap().username, "bob");
+        // delete cascades when the user is removed
+        s.delete_user(&u.id).await.unwrap();
+        assert!(s
+            .lookup_session(&crate::auth::sha256_hex(raw))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_session_not_returned() {
+        let s = store();
+        let u = s.create_user("carol", "h").await.unwrap();
+        s.create_session("h1", &u.id, "-1 minute").await.unwrap();
+        assert!(s.lookup_session("h1").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn token_create_lookup_revoke() {
+        let s = store();
+        let t = s
+            .create_token("ci", &crate::auth::sha256_hex("secretval"))
+            .await
+            .unwrap();
+        assert_eq!(t.name, "ci");
+        assert!(s
+            .lookup_token(&crate::auth::sha256_hex("secretval"))
+            .await
+            .unwrap()
+            .is_some());
+        s.delete_token(&t.id).await.unwrap();
+        assert!(s
+            .lookup_token(&crate::auth::sha256_hex("secretval"))
+            .await
+            .unwrap()
+            .is_none());
     }
 }
