@@ -70,14 +70,78 @@ mod http_tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
+    // These integration tests exercise the protected `/api` routes. The auth middleware now rejects
+    // unauthenticated callers with 401, so every app the harness builds seeds a fixed API token and
+    // every request the harness sends carries `Authorization: Bearer <TEST_TOKEN>`. This authenticates
+    // genuinely (the middleware hashes and looks the token up in the store), with no per-test churn.
+    const TEST_TOKEN: &str = "test-token-secret";
+
+    fn seed_token(store: &Store) {
+        // The builders run inside the test's tokio runtime, so drive the async seed on a separate OS
+        // thread with its own runtime (block_on from within a runtime would panic).
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .expect("seed runtime");
+                rt.block_on(async {
+                    store
+                        .create_token("test", &super::auth::sha256_hex(TEST_TOKEN))
+                        .await
+                        .expect("seed token");
+                });
+            });
+        });
+    }
+
+    /// Inject the bearer header into every request the harness sends, so protected routes authenticate.
+    fn with_auth(router: axum::Router) -> axum::Router {
+        router.layer(tower::layer::layer_fn(|inner| AuthInject { inner }))
+    }
+
+    #[derive(Clone)]
+    struct AuthInject<S> {
+        inner: S,
+    }
+
+    impl<S> tower::Service<Request<Body>> for AuthInject<S>
+    where
+        S: tower::Service<Request<Body>> + Clone,
+    {
+        type Response = S::Response;
+        type Error = S::Error;
+        type Future = S::Future;
+
+        fn poll_ready(
+            &mut self,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            self.inner.poll_ready(cx)
+        }
+
+        fn call(&mut self, mut req: Request<Body>) -> Self::Future {
+            if !req
+                .headers()
+                .contains_key(axum::http::header::AUTHORIZATION)
+            {
+                req.headers_mut().insert(
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::HeaderValue::from_str(&format!("Bearer {TEST_TOKEN}")).unwrap(),
+                );
+            }
+            self.inner.call(req)
+        }
+    }
+
     fn build_app() -> axum::Router {
         let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
         let store = Store::open_in_memory().expect("store");
-        app(Arc::new(AppState::new(
+        seed_token(&store);
+        with_auth(app(Arc::new(AppState::new(
             templates,
             "templates".into(),
             store,
-        )))
+        ))))
     }
 
     fn uniq() -> String {
@@ -93,9 +157,10 @@ mod http_tests {
     fn app_with_ui(dir: &std::path::Path) -> axum::Router {
         let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
         let store = Store::open_in_memory().expect("store");
-        app(Arc::new(
+        seed_token(&store);
+        with_auth(app(Arc::new(
             AppState::new(templates, "templates".into(), store).with_ui_dir(dir),
-        ))
+        )))
     }
 
     async fn json_response(response: axum::response::Response) -> Value {
@@ -884,7 +949,12 @@ mod http_tests {
     fn build_app_in(dir: &std::path::Path) -> axum::Router {
         let templates = TemplateRegistry::load_from_dir(dir).expect("load templates");
         let store = Store::open_in_memory().expect("store");
-        app(Arc::new(AppState::new(templates, dir.to_path_buf(), store)))
+        seed_token(&store);
+        with_auth(app(Arc::new(AppState::new(
+            templates,
+            dir.to_path_buf(),
+            store,
+        ))))
     }
 
     fn template_yaml(id: &str) -> String {
@@ -1340,5 +1410,224 @@ layout:
             json_response(resp).await["error"]["code"],
             "PrinterNotFound"
         );
+    }
+}
+
+#[cfg(test)]
+mod auth_http_tests {
+    use super::store::Store;
+    use super::{app, AppState, TemplateRegistry};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use serde_json::Value;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    fn test_app() -> axum::Router {
+        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let store = Store::open_in_memory().expect("store");
+        app(Arc::new(AppState::new(
+            templates,
+            "templates".into(),
+            store,
+        )))
+    }
+
+    fn req_get(uri: &str) -> Request<Body> {
+        Request::builder().uri(uri).body(Body::empty()).unwrap()
+    }
+
+    fn req_get_cookie(uri: &str, cookie: &str) -> Request<Body> {
+        Request::builder()
+            .uri(uri)
+            .header("cookie", cookie)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn req_post_json(uri: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("origin", "http://localhost")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn body_json(res: axum::response::Response) -> Value {
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .expect("collect body");
+        serde_json::from_slice(&bytes).expect("parse json")
+    }
+
+    #[tokio::test]
+    async fn protected_route_requires_auth() {
+        let app = test_app();
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn setup_then_login_flow() {
+        let app = test_app();
+        // setup creates the first user (origin header required for state-changing)
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/setup",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // second setup is rejected
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/setup",
+                r#"{"username":"b","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        // login returns a session cookie
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/login",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let cookie = res
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        // the cookie now authorizes a protected GET
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/templates", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // bad password is 401
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/login",
+                r#"{"username":"a","password":"nope"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn health_is_open() {
+        let app = test_app();
+        let res = app.oneshot(req_get("/api/health")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn me_reports_needs_setup_then_authed() {
+        let app = test_app();
+        // zero users: me is exempt, 200, authed:false needsSetup:true
+        let res = app.clone().oneshot(req_get("/api/auth/me")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["authed"], false);
+        assert_eq!(body["needsSetup"], true);
+        // after setup + login, me with the cookie is authed:true
+        app.clone()
+            .oneshot(req_post_json(
+                "/api/auth/setup",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/login",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        let cookie = res
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/auth/me", &cookie))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["authed"], true);
+        assert_eq!(body["me"]["username"], "a");
+    }
+
+    #[tokio::test]
+    async fn origin_mismatch_rejected_for_cookie_post() {
+        let app = test_app();
+        app.clone()
+            .oneshot(req_post_json(
+                "/api/auth/setup",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/login",
+                r#"{"username":"a","password":"pw"}"#,
+            ))
+            .await
+            .unwrap();
+        let cookie = res
+            .headers()
+            .get("set-cookie")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        // A cookie-authenticated state-changing POST with a foreign Origin is rejected with 403.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/logout")
+            .header("host", "localhost")
+            .header("origin", "http://evil.test")
+            .header("cookie", &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 }
