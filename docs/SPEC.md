@@ -44,10 +44,17 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | GET | `/api/settings` | All settings as a key/value object | `200 {…}` |
 | PUT | `/api/settings/{key}` | Upsert a setting | `200` / `400` |
 | POST | `/api/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
+| POST | `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout` | First-run setup / login / logout | see §11 |
+| GET | `/api/auth/me` | SPA auth state | `200` |
+| POST | `/api/auth/password` | Change own password | see §11 |
+| GET / POST / DELETE | `/api/users`, `/api/users/{id}` | User management (flat) | see §11 |
+| GET / POST / DELETE | `/api/tokens`, `/api/tokens/{id}` | API-token management | see §11 |
 | GET | `/api/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/api/docs/` | Swagger UI (trailing slash) | `200` |
 
-The server binds `0.0.0.0:$PORT` (default `8080`).
+The server binds `0.0.0.0:$PORT` (default `8080`). **Every `/api` route requires authentication** (a
+session cookie or a `Authorization: Bearer` token) except `/api/health`, `/api/auth/login`,
+`/api/auth/setup`, `/api/auth/me`, `/api/openapi.json`, and `/api/docs`; see §11.
 
 ### 2.0 Template management
 
@@ -319,7 +326,61 @@ All errors return JSON:
 | `NotFound` | 404 | Unknown `/api/*` route (the API fallback). |
 | `RenderFailed` | 500 | Typst compile/encode failure. |
 
-`code` strings are part of the contract — keep them stable.
+`code` strings are part of the contract; keep them stable. Authentication adds `Unauthorized` (401)
+and `Forbidden` (403); see §11.
+
+## 11. Authentication
+
+Decision: [ADR-0017](adr/0017-app-authentication.md). Flat authentication (real user accounts, no
+roles): every authenticated user is equal and may manage users and API tokens.
+
+**Gating.** Every `/api` route requires authentication except `GET /api/health`,
+`POST /api/auth/login`, `POST /api/auth/setup`, `GET /api/auth/me`, `GET /api/openapi.json`, and
+`/api/docs`. A request with neither a valid session cookie nor a valid bearer token gets
+`401 Unauthorized`.
+
+**Credentials.** One middleware resolves the caller in order:
+
+- `Authorization: Bearer <token>`: machine/automation. The token is hashed and looked up in
+  `api_tokens`; a hit authenticates as a machine principal. Token requests skip the origin check.
+- Session cookie (`labeler_session`): browser. The cookie value is hashed and looked up in `sessions`
+  joined to `users`, checking expiry and that the user still exists.
+- Otherwise `401`.
+
+**Session cookie.** Opaque 256-bit random value, stored server-side only as a SHA-256 hash, set
+`HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when the effective scheme is https
+(`LABELER_TRUST_PROXY=true` honors `X-Forwarded-Proto` behind a TLS-terminating proxy). 30-day sliding
+expiry with throttled writes. Login rotates the session id; logout deletes the row and clears the
+cookie.
+
+**Origin check (CSRF).** Every cookie-authenticated state-changing request (POST/PUT/DELETE/PATCH),
+including `login`/`setup`/`logout`, must carry an `Origin` (or `Referer`) whose authority matches the
+request `Host`, else `403 Forbidden`. Bearer-token requests are exempt.
+
+**First-run setup.** While zero users exist, `POST /api/auth/setup` `{username, password}` creates the
+first account and logs it in; afterwards it returns `409`. For headless deploys, `LABELER_INIT_USER`/
+`LABELER_INIT_PASSWORD` seed the first user at startup when no users exist (see `docs/DEPLOY.md`).
+
+**API tokens.** A token is a random 256-bit secret (display prefix `lbl_`) returned once at creation and
+stored only as a SHA-256 hash. Automation sends it as `Authorization: Bearer $LABELER_API_TOKEN`.
+
+**Endpoints.**
+
+| Method | Path | Purpose | Success |
+| --- | --- | --- | --- |
+| POST | `/api/auth/setup` | Create the first user (only while zero users exist); logs in | `200` / `409` |
+| POST | `/api/auth/login` | Verify credentials; set a session cookie | `200` / `401` / `403` |
+| POST | `/api/auth/logout` | Delete the session; clear the cookie | `200` / `401` / `403` |
+| GET | `/api/auth/me` | Auth state for the SPA (`authed`, `needsSetup`, optional `me`) | `200` |
+| POST | `/api/auth/password` | Change own password (verifies current); revokes other sessions | `200` / `401` / `403` |
+| GET / POST | `/api/users` | List / create users (flat) | `200` / `201` |
+| DELETE | `/api/users/{id}` | Delete a user (cannot delete the last) | `204` / `404` / `409` |
+| GET / POST | `/api/tokens` | List tokens / create a token (secret shown once) | `200` / `201` |
+| DELETE | `/api/tokens/{id}` | Revoke a token | `204` / `404` |
+
+`GET /api/auth/me` is auth-exempt and always returns `200` with `{ authed, needsSetup, me? }`. Deleting
+a user cascades their sessions; changing a password revokes the user's other sessions but keeps the
+current one. Passwords are argon2id; secrets at rest (sessions, tokens) are SHA-256 hashes.
 
 ## Printing
 
@@ -383,6 +444,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-16**: App authentication (ADR-0017, #33). Flat user accounts (no roles): every `/api` route
+  now requires a session cookie or `Authorization: Bearer` token except `/api/health`,
+  `/api/auth/login`, `/api/auth/setup`, `/api/auth/me`, `/api/openapi.json`, and `/api/docs`. Adds
+  session cookies (opaque, hashed at rest, `SameSite=Lax` + Origin check on cookie state changes) for
+  browsers and API tokens for machines, first-run `POST /api/auth/setup` plus optional
+  `LABELER_INIT_USER`/`LABELER_INIT_PASSWORD` bootstrap, and `/api/auth/*`, `/api/users`, `/api/tokens`
+  endpoints (see §11). Breaking for existing clients: requests must now authenticate; `scripts/*.sh`
+  send a bearer token.
 - **2026-06-16**: Packaging & deployment (M6): a multi-stage `Dockerfile` (distroless), `docker-compose.yml`
   with seeded+owned named volumes, `.env.sample`, and `docs/DEPLOY.md` (build, volumes/backups, CUPS/IPP).
   No API change (ADR-0016; #18, #25, #26, #9).

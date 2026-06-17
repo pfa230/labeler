@@ -27,6 +27,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0014](0014-csv-import-grid.md) | CSV import editable grid | Accepted |
 | [0015](0015-settings-printers-ux.md) | Settings & Printers screen UX | Accepted |
 | [0016](0016-deployment-and-packaging.md) | Deployment and packaging | Accepted |
+| [0017](0017-app-authentication.md) | App authentication | Accepted |
 
 ## Adding an ADR
 
