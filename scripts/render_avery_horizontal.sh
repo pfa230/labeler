@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Requires LABELER_API_TOKEN in the environment: all /api routes need auth (ADR-0017).
+# Create a token in the UI (Settings) and export it before running this script.
 HOST=${HOST:-http://localhost:8080}
 OUT=${OUT:-avery-horizontal.pdf}
 
@@ -8,6 +10,7 @@ OUT=${OUT:-avery-horizontal.pdf}
 # slots and returns one paginated PDF.
 curl -sS -X POST "$HOST/api/batch" \
   -H 'content-type: application/json' \
+  -H "Authorization: Bearer ${LABELER_API_TOKEN:?set LABELER_API_TOKEN}" \
   -d '{
     "template":"avery5163",
     "mode":"download",

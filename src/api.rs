@@ -906,12 +906,62 @@ pub async fn import_csv(
     .await
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct Credentials {
     pub username: String,
     pub password: String,
 }
 
+/// Authentication state for the SPA, returned by `GET /auth/me`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct AuthStatus {
+    pub authed: bool,
+    #[serde(rename = "needsSetup")]
+    pub needs_setup: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub me: Option<UserSummary>,
+}
+
+/// A user as exposed by the API (never includes the password hash).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct UserSummary {
+    pub id: String,
+    pub username: String,
+}
+
+/// An API token's public metadata (the secret is only ever returned once, at creation).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct TokenSummary {
+    pub id: String,
+    pub name: String,
+    pub last_used_at: Option<String>,
+    pub created_at: String,
+}
+
+/// The one-time response to `POST /tokens`, carrying the plaintext secret.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct TokenCreated {
+    pub id: String,
+    pub name: String,
+    pub secret: String,
+}
+
+/// A trivial `{ "ok": true }` acknowledgement.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct OkResponse {
+    pub ok: bool,
+}
+
+#[utoipa::path(
+    post,
+    path = "/auth/setup",
+    tag = "auth",
+    request_body = Credentials,
+    responses(
+        (status = 200, description = "First user created and logged in", body = OkResponse),
+        (status = 409, description = "Setup already completed", body = ErrorResponse)
+    )
+)]
 pub async fn setup(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
@@ -932,6 +982,17 @@ pub async fn setup(
     start_session(&state, jar, &user.id, req_https.0).await
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/login",
+    tag = "auth",
+    request_body = Credentials,
+    responses(
+        (status = 200, description = "Logged in; sets a session cookie", body = OkResponse),
+        (status = 401, description = "Invalid credentials", body = ErrorResponse),
+        (status = 403, description = "Cross-origin request rejected", body = ErrorResponse)
+    )
+)]
 pub async fn login(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
@@ -978,6 +1039,16 @@ async fn start_session(
     Ok((jar, Json(serde_json::json!({"ok": true}))).into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Session cleared", body = OkResponse),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 403, description = "Cross-origin request rejected", body = ErrorResponse)
+    )
+)]
 pub async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Response {
     if let Some(c) = jar.get(crate::middleware::SESSION_COOKIE) {
         let _ = state
@@ -994,6 +1065,14 @@ pub async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Respo
 
 // `/auth/me` is AUTH-EXEMPT (it must answer for logged-OUT callers too), so it resolves auth itself
 // (optional) and always returns 200 with the auth state the SPA needs.
+#[utoipa::path(
+    get,
+    path = "/auth/me",
+    tag = "auth",
+    responses(
+        (status = 200, description = "Current auth state (authed flag, needsSetup, optional user)", body = AuthStatus)
+    )
+)]
 pub async fn me(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
@@ -1016,6 +1095,15 @@ pub async fn me(
     Ok(Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/users",
+    tag = "auth",
+    responses(
+        (status = 200, description = "List users", body = [UserSummary]),
+        (status = 401, description = "Not authenticated", body = ErrorResponse)
+    )
+)]
 pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let users = state.store().list_users().await.map_err(AppError::from)?;
     Ok(Json(
@@ -1027,6 +1115,17 @@ pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Response, 
     .into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/users",
+    tag = "auth",
+    request_body = Credentials,
+    responses(
+        (status = 201, description = "User created", body = UserSummary),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 409, description = "Username already exists", body = ErrorResponse)
+    )
+)]
 pub async fn create_user_h(
     State(state): State<Arc<AppState>>,
     Json(body): Json<Credentials>,
@@ -1057,6 +1156,18 @@ pub async fn create_user_h(
         .into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/users/{id}",
+    tag = "auth",
+    params(("id" = String, Path, description = "User ID")),
+    responses(
+        (status = 204, description = "User deleted"),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 404, description = "User not found", body = ErrorResponse),
+        (status = 409, description = "Cannot delete the last user", body = ErrorResponse)
+    )
+)]
 pub async fn delete_user_h(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1076,12 +1187,23 @@ pub async fn delete_user_h(
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct PasswordChange {
     pub current_password: String,
     pub new_password: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/auth/password",
+    tag = "auth",
+    request_body = PasswordChange,
+    responses(
+        (status = 200, description = "Password changed; other sessions revoked", body = OkResponse),
+        (status = 401, description = "Current password incorrect or not authenticated", body = ErrorResponse),
+        (status = 403, description = "An API token cannot change a password", body = ErrorResponse)
+    )
+)]
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
@@ -1120,11 +1242,20 @@ pub async fn change_password(
     Ok(Json(serde_json::json!({"ok": true})).into_response())
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct TokenCreate {
     pub name: String,
 }
 
+#[utoipa::path(
+    get,
+    path = "/tokens",
+    tag = "auth",
+    responses(
+        (status = 200, description = "List API tokens (never the secret)", body = [TokenSummary]),
+        (status = 401, description = "Not authenticated", body = ErrorResponse)
+    )
+)]
 pub async fn list_tokens(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let t = state.store().list_tokens().await.map_err(AppError::from)?;
     Ok(Json(
@@ -1137,6 +1268,16 @@ pub async fn list_tokens(State(state): State<Arc<AppState>>) -> Result<Response,
     .into_response())
 }
 
+#[utoipa::path(
+    post,
+    path = "/tokens",
+    tag = "auth",
+    request_body = TokenCreate,
+    responses(
+        (status = 201, description = "Token created; secret returned once", body = TokenCreated),
+        (status = 401, description = "Not authenticated", body = ErrorResponse)
+    )
+)]
 pub async fn create_token_h(
     State(state): State<Arc<AppState>>,
     Json(body): Json<TokenCreate>,
@@ -1155,6 +1296,17 @@ pub async fn create_token_h(
         .into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/tokens/{id}",
+    tag = "auth",
+    params(("id" = String, Path, description = "Token ID")),
+    responses(
+        (status = 204, description = "Token revoked"),
+        (status = 401, description = "Not authenticated", body = ErrorResponse),
+        (status = 404, description = "Token not found", body = ErrorResponse)
+    )
+)]
 pub async fn delete_token_h(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

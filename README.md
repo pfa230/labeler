@@ -52,7 +52,9 @@ All routes are under `/api` (the root is reserved for the web UI); unknown `/api
 - `GET /api/docs/` → Swagger UI
 
 `scripts/render_test.sh` and `scripts/render_avery_horizontal.sh` post sample requests to a running
-server and write a PDF.
+server and write a PDF. All `/api` routes require authentication (ADR-0017), so export
+`LABELER_API_TOKEN` (create one in the UI under Settings) before running them; the scripts send it as
+`Authorization: Bearer $LABELER_API_TOKEN`.
 
 ## Error model
 

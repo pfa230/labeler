@@ -48,6 +48,9 @@ overriding these:
 | `LABELER_DATA_DIR` | `data/` | `/app/data` | mount the `labeler-data` volume |
 | `LABELER_UI_DIR` | `ui/dist` | `/app/ui/dist` | baked |
 | `LABELER_ASSETS_DIR` | `assets/` | `/app/assets` (empty) | bind-mount a host assets dir (see below) |
+| `LABELER_INIT_USER` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
+| `LABELER_INIT_PASSWORD` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
+| `LABELER_TRUST_PROXY` | `false` | unset | `.env` (set `true` behind a TLS-terminating proxy) |
 
 Templates (`/app/templates`) and fonts (`/app/fonts`) are CWD-relative app paths fixed in the image;
 making them env-configurable is tracked in issue #38. The QR base URL is a runtime *setting* (Settings
@@ -68,6 +71,36 @@ Templates can reference a bundled image by path (`image.src`), resolved under th
 ```
 
 Templates that supply images as data URIs (`image.name`) need no assets directory.
+
+## Authentication
+
+Every `/api` route requires authentication (flat user accounts, ADR-0017). The first run is empty: open
+the UI and the first-run setup screen creates the first account, or seed it from the environment.
+
+- **First-run bootstrap.** Set `LABELER_INIT_USER` and `LABELER_INIT_PASSWORD` to create the first user
+  at startup when no users exist (a convenience for headless deploys). The password is read from the
+  environment and never logged. Both must be non-empty; the seed runs only while zero users exist, so
+  rotating these later has no effect. Prefer Docker secrets or an out-of-band `.env` over committing the
+  password.
+
+  ```env
+  LABELER_INIT_USER=admin
+  LABELER_INIT_PASSWORD=change-me-now
+  ```
+
+- **Secure cookie behind a proxy.** The session cookie is marked `Secure` only when the effective scheme
+  is https. If you terminate TLS at a reverse proxy and forward plain http to the container, set
+  `LABELER_TRUST_PROXY=true` so the service honors `X-Forwarded-Proto` and still issues a `Secure`
+  cookie. Leave it unset on a plain-http LAN (the cookie is then non-Secure, acceptable under LAN-trust).
+  Do not enable it unless a trusted proxy actually sets `X-Forwarded-Proto`, or a LAN client could spoof
+  the header.
+
+- **Automation uses API tokens.** Non-browser callers (scripts, the CSV importer, integrations) must
+  send `Authorization: Bearer $LABELER_API_TOKEN`. Create a token in the UI (Settings), store it as
+  `LABELER_API_TOKEN` in the caller's environment, and pass it on every request, e.g.
+  `curl -H "Authorization: Bearer $LABELER_API_TOKEN" .../api/templates`. The bundled `scripts/*.sh`
+  read `LABELER_API_TOKEN` from the environment. The Docker healthcheck stays on the exempt
+  `/api/health`, so it needs no token.
 
 ## Data, volumes, and backups
 
