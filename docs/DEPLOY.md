@@ -93,7 +93,9 @@ the UI and the first-run setup screen creates the first account, or seed it from
   `LABELER_TRUST_PROXY=true` so the service honors `X-Forwarded-Proto` and still issues a `Secure`
   cookie. Leave it unset on a plain-http LAN (the cookie is then non-Secure, acceptable under LAN-trust).
   Do not enable it unless a trusted proxy actually sets `X-Forwarded-Proto`, or a LAN client could spoof
-  the header.
+  the header. When `LABELER_TRUST_PROXY=true`, the proxy should also forward `X-Forwarded-Host` (the
+  original browser host); the CSRF origin check uses it so cookie-authenticated writes are not rejected
+  when the proxy rewrites `Host` to an internal value.
 
 - **Automation uses API tokens.** Non-browser callers (scripts, the CSV importer, integrations) must
   send `Authorization: Bearer $LABELER_API_TOKEN`. Create a token in the UI (Settings), store it as

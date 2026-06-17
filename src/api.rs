@@ -912,6 +912,24 @@ pub struct Credentials {
     pub password: String,
 }
 
+/// Validate a new account/password: non-empty username, password at least 8 chars. Returns 400 otherwise
+/// (prevents footguns like an empty-password account created via `/auth/setup`).
+fn validate_new_account(username: &str, password: &str) -> Result<(), AppError> {
+    if username.trim().is_empty() {
+        return Err(AppError::invalid_request("username must not be empty"));
+    }
+    validate_password(password)
+}
+
+fn validate_password(password: &str) -> Result<(), AppError> {
+    if password.len() < 8 {
+        return Err(AppError::invalid_request(
+            "password must be at least 8 characters",
+        ));
+    }
+    Ok(())
+}
+
 /// Authentication state for the SPA, returned by `GET /auth/me`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct AuthStatus {
@@ -972,6 +990,7 @@ pub async fn setup(
     if state.store().count_users().await.map_err(AppError::from)? > 0 {
         return Err(AppError::conflict("setup already completed"));
     }
+    validate_new_account(&body.username, &body.password)?;
     let hash = crate::auth::hash_password(&body.password)
         .map_err(|_| AppError::internal("hash failed"))?;
     let user = state
@@ -1130,6 +1149,7 @@ pub async fn create_user_h(
     State(state): State<Arc<AppState>>,
     Json(body): Json<Credentials>,
 ) -> Result<Response, AppError> {
+    validate_new_account(&body.username, &body.password)?;
     let _guard = state.write_lock.lock().await;
     // The write-lock serializes writers, so a check-then-insert is race-free here and yields a clean 409
     // instead of a 500 from the UNIQUE constraint.
@@ -1222,6 +1242,7 @@ pub async fn change_password(
     if !crate::auth::verify_password(&body.current_password, &user.password_hash) {
         return Err(AppError::unauthorized());
     }
+    validate_password(&body.new_password)?;
     let _guard = state.write_lock.lock().await;
     let hash = crate::auth::hash_password(&body.new_password)
         .map_err(|_| AppError::internal("hash failed"))?;

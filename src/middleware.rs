@@ -63,13 +63,22 @@ pub fn effective_https(
 }
 
 /// Reject a cookie-authenticated state-changing request whose Origin/Referer authority does not match
-/// Host. Parses the Origin/Referer as a URI and compares its authority (host:port) case-insensitively.
-fn origin_ok(req: &Request<Body>) -> bool {
-    let host = match req
-        .headers()
-        .get(header::HOST)
-        .and_then(|v| v.to_str().ok())
-    {
+/// the effective host. Parses the Origin/Referer as a URI and compares its authority (host:port)
+/// case-insensitively. Behind a trusted reverse proxy (which may rewrite `Host` to an internal value),
+/// the original external host is taken from `X-Forwarded-Host` so the browser's `Origin` still matches.
+fn origin_ok(req: &Request<Body>, trust_proxy: bool) -> bool {
+    let fwd_host = if trust_proxy {
+        req.headers()
+            .get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+    } else {
+        None
+    };
+    let host = match fwd_host.or_else(|| {
+        req.headers()
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+    }) {
         Some(h) => h,
         None => return false,
     };
@@ -102,7 +111,7 @@ pub async fn require_auth(
         // Even exempt endpoints get the origin check when they are cookie state-changing (login/setup CSRF).
         if is_state_changing(req.method())
             && req.headers().get(header::AUTHORIZATION).is_none()
-            && !origin_ok(&req)
+            && !origin_ok(&req, state.trust_proxy())
         {
             return AppError::forbidden("cross-origin request rejected").into_response();
         }
@@ -131,7 +140,7 @@ pub async fn require_auth(
     // 2) Session cookie (browser). Origin check on state-changing methods.
     let jar = CookieJar::from_headers(req.headers());
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
-        if is_state_changing(req.method()) && !origin_ok(&req) {
+        if is_state_changing(req.method()) && !origin_ok(&req, state.trust_proxy()) {
             return AppError::forbidden("cross-origin request rejected").into_response();
         }
         match state
