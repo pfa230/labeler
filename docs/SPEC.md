@@ -496,7 +496,6 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
-- **2026-06-17**: Single-workflow CI and packaging (ADR-0019, #37). Extends `.github/workflows/ci.yml` to run `rust` checks, `ui` checks, and a multi-stage Docker `image` build. The image build uses a build-and-load pattern, executes a containerized smoke test polling `/api/health` with diagnostic logging on timeout, and publishes to GHCR on branch pushes (`main`) and release tags (`v*`). Adds `.github/dependabot.yml` for automated `docker` and `github-actions` updates. Pins base Docker images to manifest-list digests.
 - **2026-06-17**: Homebox integration UI (#35). Settings > Connections manages connections (API key
   write-only: password field, redacted display, blank-on-edit keeps the stored key). New Connect page:
   pick a connection + template, browse the connector (generic schema-driven table/tree, typed filters,
