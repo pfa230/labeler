@@ -30,6 +30,9 @@ const CODE_INTERNAL: &str = "Internal";
 const CODE_BATCH_INVALID: &str = "BatchInvalid";
 const CODE_BATCH_TOO_LARGE: &str = "BatchTooLarge";
 const CODE_NOT_FOUND: &str = "NotFound";
+const CODE_UNAUTHORIZED: &str = "Unauthorized";
+const CODE_FORBIDDEN: &str = "Forbidden";
+const CODE_CONFLICT: &str = "Conflict";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -233,6 +236,23 @@ impl AppError {
             message,
             None,
         )
+    }
+
+    pub fn unauthorized() -> Self {
+        Self::new(
+            StatusCode::UNAUTHORIZED,
+            CODE_UNAUTHORIZED,
+            "authentication required",
+            None,
+        )
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, CODE_FORBIDDEN, message, None)
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, CODE_CONFLICT, message, None)
     }
 
     fn unsupported_media_type(message: impl Into<String>) -> Self {

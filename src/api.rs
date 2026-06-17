@@ -48,6 +48,7 @@ pub struct AppState {
     write_lock: Mutex<()>,
     store: Store,
     ui_dir: PathBuf,
+    trust_proxy: bool,
 }
 
 impl AppState {
@@ -60,6 +61,9 @@ impl AppState {
             ui_dir: std::env::var_os("LABELER_UI_DIR")
                 .map(Into::into)
                 .unwrap_or_else(|| PathBuf::from("ui/dist")),
+            trust_proxy: std::env::var("LABELER_TRUST_PROXY")
+                .map(|v| v == "true")
+                .unwrap_or(false),
         }
     }
 
@@ -74,6 +78,10 @@ impl AppState {
 
     pub fn store(&self) -> &Store {
         &self.store
+    }
+
+    pub fn trust_proxy(&self) -> bool {
+        self.trust_proxy
     }
 
     // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and
@@ -122,8 +130,12 @@ async fn openapi_json() -> Response {
 
 pub fn app(state: Arc<AppState>) -> Router {
     let assets = tower_http::services::ServeDir::new(state.ui_dir().join("assets"));
+    let api = api_router().layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::require_auth,
+    ));
     Router::new()
-        .nest("/api", api_router())
+        .nest("/api", api)
         .nest_service("/assets", assets)
         .fallback(fallback)
         .layer(TraceLayer::new_for_http())
