@@ -22,6 +22,20 @@ async fn main() {
     let store = Store::open(&data_dir.join("labeler.db"))
         .unwrap_or_else(|err| panic!("failed to open store: {err}"));
 
+    if let (Ok(u), Ok(p)) = (
+        std::env::var("LABELER_INIT_USER"),
+        std::env::var("LABELER_INIT_PASSWORD"),
+    ) {
+        if store.count_users().await.unwrap_or(0) == 0 && !u.is_empty() && !p.is_empty() {
+            let hash = labeler::auth::hash_password(&p).expect("hash init password");
+            store
+                .create_user(&u, &hash)
+                .await
+                .expect("create init user");
+            tracing::info!(user = %u, "bootstrapped initial user from env");
+        }
+    }
+
     let app = app(Arc::new(AppState::new(
         templates,
         "templates".into(),
