@@ -122,6 +122,11 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .route("/auth/password", post(change_password))
+        .route("/users", get(list_users).post(create_user_h))
+        .route("/users/{id}", axum::routing::delete(delete_user_h))
+        .route("/tokens", get(list_tokens).post(create_token_h))
+        .route("/tokens/{id}", axum::routing::delete(delete_token_h))
         // Serve the OpenAPI doc from an explicit route so it resolves at /api/openapi.json under the
         // `/api` nest (SwaggerUi's own `.url()` serving route gets double-prefixed when nested).
         .route("/openapi.json", get(openapi_json))
@@ -1009,6 +1014,161 @@ pub async fn me(
     }
     let needs_setup = state.store().count_users().await.map_err(AppError::from)? == 0;
     Ok(Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response())
+}
+
+pub async fn list_users(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+    let users = state.store().list_users().await.map_err(AppError::from)?;
+    Ok(Json(
+        users
+            .into_iter()
+            .map(|u| serde_json::json!({"id": u.id, "username": u.username}))
+            .collect::<Vec<_>>(),
+    )
+    .into_response())
+}
+
+pub async fn create_user_h(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<Credentials>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    // The write-lock serializes writers, so a check-then-insert is race-free here and yields a clean 409
+    // instead of a 500 from the UNIQUE constraint.
+    if state
+        .store()
+        .get_user_by_username(&body.username)
+        .await
+        .map_err(AppError::from)?
+        .is_some()
+    {
+        return Err(AppError::conflict("username already exists"));
+    }
+    let hash = crate::auth::hash_password(&body.password)
+        .map_err(|_| AppError::internal("hash failed"))?;
+    let u = state
+        .store()
+        .create_user(&body.username, &hash)
+        .await
+        .map_err(AppError::from)?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({"id": u.id, "username": u.username})),
+    )
+        .into_response())
+}
+
+pub async fn delete_user_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    if state.store().count_users().await.map_err(AppError::from)? <= 1 {
+        return Err(AppError::conflict("cannot delete the last user"));
+    }
+    if !state
+        .store()
+        .delete_user(&id)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::not_found(&id));
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct PasswordChange {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+pub async fn change_password(
+    State(state): State<Arc<AppState>>,
+    jar: CookieJar,
+    axum::Extension(p): axum::Extension<crate::middleware::Principal>,
+    Json(body): Json<PasswordChange>,
+) -> Result<Response, AppError> {
+    let crate::middleware::Principal::User { id, .. } = p else {
+        return Err(AppError::forbidden("token cannot change a password"));
+    };
+    let user = state
+        .store()
+        .get_user_by_id(&id)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(AppError::unauthorized)?;
+    if !crate::auth::verify_password(&body.current_password, &user.password_hash) {
+        return Err(AppError::unauthorized());
+    }
+    let _guard = state.write_lock.lock().await;
+    let hash = crate::auth::hash_password(&body.new_password)
+        .map_err(|_| AppError::internal("hash failed"))?;
+    state
+        .store()
+        .set_user_password(&id, &hash)
+        .await
+        .map_err(AppError::from)?;
+    let keep = jar
+        .get(crate::middleware::SESSION_COOKIE)
+        .map(|c| crate::auth::sha256_hex(c.value()))
+        .unwrap_or_default();
+    state
+        .store()
+        .delete_user_sessions_except(&id, &keep)
+        .await
+        .map_err(AppError::from)?;
+    Ok(Json(serde_json::json!({"ok": true})).into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct TokenCreate {
+    pub name: String,
+}
+
+pub async fn list_tokens(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+    let t = state.store().list_tokens().await.map_err(AppError::from)?;
+    Ok(Json(
+        t.into_iter()
+            .map(|t| {
+                serde_json::json!({"id": t.id, "name": t.name, "last_used_at": t.last_used_at, "created_at": t.created_at})
+            })
+            .collect::<Vec<_>>(),
+    )
+    .into_response())
+}
+
+pub async fn create_token_h(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<TokenCreate>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    let secret = format!("lbl_{}", crate::auth::random_secret());
+    let t = state
+        .store()
+        .create_token(&body.name, &crate::auth::sha256_hex(&secret))
+        .await
+        .map_err(AppError::from)?;
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(serde_json::json!({"id": t.id, "name": t.name, "secret": secret})),
+    )
+        .into_response())
+}
+
+pub async fn delete_token_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    if !state
+        .store()
+        .delete_token(&id)
+        .await
+        .map_err(AppError::from)?
+    {
+        return Err(AppError::not_found(&id));
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 // Effective-https extractor for the cookie Secure flag (proxy-aware), used by setup/login.
