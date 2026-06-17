@@ -147,6 +147,12 @@ fn api_router() -> Router<Arc<AppState>> {
                 .put(update_connection_h)
                 .delete(delete_connection_h),
         )
+        .route("/connections/{id}/schema", get(connection_schema))
+        .route("/connections/{id}/browse", post(connection_browse))
+        .route(
+            "/connections/{id}/materialize",
+            post(connection_materialize),
+        )
         .route("/settings", get(get_settings))
         .route("/settings/{key}", put(put_setting))
         .route("/render/label", post(render_label))
@@ -688,6 +694,98 @@ async fn delete_connection_h(
         return Err(AppError::not_found(&id));
     }
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+fn connector_status(
+    e: &crate::connector::ConnectorError,
+) -> (axum::http::StatusCode, &'static str, String) {
+    use crate::connector::ConnectorError::*;
+    use axum::http::StatusCode;
+    match e {
+        AuthFailed => (
+            StatusCode::BAD_GATEWAY,
+            "ConnectorAuthFailed",
+            "upstream authentication failed".into(),
+        ),
+        Forbidden => (
+            StatusCode::BAD_GATEWAY,
+            "ConnectorForbidden",
+            "upstream forbidden".into(),
+        ),
+        ConnectionFailed(m) => (StatusCode::BAD_GATEWAY, "ConnectorUnreachable", m.clone()),
+        InvalidFilter(m) => (StatusCode::BAD_REQUEST, "InvalidFilter", m.clone()),
+        UpstreamSchemaMismatch(m) => (StatusCode::BAD_GATEWAY, "UpstreamSchemaMismatch", m.clone()),
+        RateLimited => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "RateLimited",
+            "upstream rate limited".into(),
+        ),
+        BudgetExceeded => (
+            StatusCode::BAD_REQUEST,
+            "BudgetExceeded",
+            "too many rows requested".into(),
+        ),
+        Upstream(m) => (StatusCode::BAD_GATEWAY, "Upstream", m.clone()),
+    }
+}
+
+fn connector_err(e: crate::connector::ConnectorError) -> AppError {
+    let (status, code, msg) = connector_status(&e);
+    AppError::new(status, code, msg, None)
+}
+
+async fn load_conn_and_connector<'a>(
+    state: &'a AppState,
+    id: &str,
+) -> Result<(crate::store::Connection, &'a crate::connector::Connectors), AppError> {
+    let conn = state
+        .store()
+        .get_connection(id)
+        .await?
+        .ok_or_else(|| AppError::not_found(id))?;
+    let c = state
+        .connectors()
+        .get(&conn.connector)
+        .ok_or_else(|| AppError::invalid_request("unknown connector"))?;
+    Ok((conn, c))
+}
+
+async fn connection_schema(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let (conn, c) = load_conn_and_connector(&state, &id).await?;
+    let schema = c
+        .schema(&conn, state.egress())
+        .await
+        .map_err(connector_err)?;
+    Ok(Json(schema).into_response())
+}
+
+async fn connection_browse(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<crate::connector::BrowseRequest>,
+) -> Result<Response, AppError> {
+    let (conn, c) = load_conn_and_connector(&state, &id).await?;
+    let page = c
+        .browse(&conn, state.egress(), state.cursor_key(), req)
+        .await
+        .map_err(connector_err)?;
+    Ok(Json(page).into_response())
+}
+
+async fn connection_materialize(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<crate::connector::MaterializeRequest>,
+) -> Result<Response, AppError> {
+    let (conn, c) = load_conn_and_connector(&state, &id).await?;
+    let rows = c
+        .materialize(&conn, state.egress(), req)
+        .await
+        .map_err(connector_err)?;
+    Ok(Json(rows).into_response())
 }
 
 fn parse_csv_rows(
