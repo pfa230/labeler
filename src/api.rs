@@ -15,6 +15,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
+    connector::{BrowsePage, BrowseRequest, ConnectorSchema, LabelRow, MaterializeRequest},
     errors::AppError,
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, ReloadResponse,
@@ -602,7 +603,7 @@ pub async fn delete_printer(
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct ConnectionInput {
     pub connector: String,
     pub name: String,
@@ -624,12 +625,28 @@ fn connection_view(c: &crate::store::Connection) -> serde_json::Value {
     })
 }
 
-async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+#[utoipa::path(
+    get,
+    path = "/connections",
+    responses(
+        (status = 200, description = "List connections (credential redacted; only has_credential exposed)", body = Object)
+    )
+)]
+pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let cs = state.store().list_connections().await?;
     Ok(Json(cs.iter().map(connection_view).collect::<Vec<_>>()).into_response())
 }
 
-async fn create_connection(
+#[utoipa::path(
+    post,
+    path = "/connections",
+    request_body = ConnectionInput,
+    responses(
+        (status = 201, description = "Connection created (credential redacted in response)", body = Object),
+        (status = 400, description = "Invalid request", body = ErrorResponse)
+    )
+)]
+pub async fn create_connection(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ConnectionInput>,
 ) -> Result<Response, AppError> {
@@ -649,7 +666,16 @@ async fn create_connection(
     Ok((axum::http::StatusCode::CREATED, Json(connection_view(&c))).into_response())
 }
 
-async fn get_connection_h(
+#[utoipa::path(
+    get,
+    path = "/connections/{id}",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 200, description = "Connection (credential redacted)", body = Object),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    )
+)]
+pub async fn get_connection_h(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
@@ -661,7 +687,17 @@ async fn get_connection_h(
     Ok(Json(connection_view(&c)).into_response())
 }
 
-async fn update_connection_h(
+#[utoipa::path(
+    put,
+    path = "/connections/{id}",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = ConnectionInput,
+    responses(
+        (status = 200, description = "Connection updated (credential redacted)", body = Object),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    )
+)]
+pub async fn update_connection_h(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(body): Json<ConnectionInput>,
@@ -685,7 +721,16 @@ async fn update_connection_h(
     Ok(Json(connection_view(&c)).into_response())
 }
 
-async fn delete_connection_h(
+#[utoipa::path(
+    delete,
+    path = "/connections/{id}",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 204, description = "Connection deleted"),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    )
+)]
+pub async fn delete_connection_h(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
@@ -750,7 +795,17 @@ async fn load_conn_and_connector<'a>(
     Ok((conn, c))
 }
 
-async fn connection_schema(
+#[utoipa::path(
+    get,
+    path = "/connections/{id}/schema",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 200, description = "Connector schema (resources, fields, filters, relationships)", body = ConnectorSchema),
+        (status = 404, description = "Connection not found", body = ErrorResponse),
+        (status = 502, description = "Upstream failure", body = ErrorResponse)
+    )
+)]
+pub async fn connection_schema(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
@@ -762,7 +817,19 @@ async fn connection_schema(
     Ok(Json(schema).into_response())
 }
 
-async fn connection_browse(
+#[utoipa::path(
+    post,
+    path = "/connections/{id}/browse",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = BrowseRequest,
+    responses(
+        (status = 200, description = "A page of browse rows with an opaque cursor", body = BrowsePage),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse),
+        (status = 502, description = "Upstream failure", body = ErrorResponse)
+    )
+)]
+pub async fn connection_browse(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<crate::connector::BrowseRequest>,
@@ -775,7 +842,19 @@ async fn connection_browse(
     Ok(Json(page).into_response())
 }
 
-async fn connection_materialize(
+#[utoipa::path(
+    post,
+    path = "/connections/{id}/materialize",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = MaterializeRequest,
+    responses(
+        (status = 200, description = "Materialized label rows", body = [LabelRow]),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse),
+        (status = 502, description = "Upstream failure", body = ErrorResponse)
+    )
+)]
+pub async fn connection_materialize(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<crate::connector::MaterializeRequest>,
