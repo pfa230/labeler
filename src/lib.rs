@@ -3,6 +3,7 @@ pub mod auth;
 pub mod batch;
 mod convert;
 pub mod driver;
+pub mod egress;
 pub mod errors;
 pub mod middleware;
 pub mod models;
