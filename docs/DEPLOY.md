@@ -81,6 +81,7 @@ overriding these:
 | `LABELER_INIT_USER` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_INIT_PASSWORD` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_TRUST_PROXY` | `false` | unset | `.env` (set `true` behind a TLS-terminating proxy) |
+| `LABELER_JOB_LOG_RETENTION_DAYS` | `90` | from `.env` | `.env` (`0` disables job-log pruning) |
 
 Templates (`/app/templates`) and fonts (`/app/fonts`) are CWD-relative app paths fixed in the image;
 making them env-configurable is tracked in issue #38. The QR base URL is a runtime *setting* (Settings
