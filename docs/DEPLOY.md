@@ -21,6 +21,35 @@ docker compose up -d --build
 container that seeds and fixes ownership on the volumes, then starts the service. Health is at
 `GET /api/health`.
 
+## Run a published image (GHCR)
+
+CI publishes images to `ghcr.io/pfa230/labeler`:
+
+- `:edge` and `:sha-<short>` on every push to `main`.
+- `:X.Y.Z`, `:X.Y`, and `:latest` on a `vX.Y.Z` release tag.
+
+The repo is private, so the package is **private**: you must authenticate to pull. The pulling
+user/token needs **read access to the package** (for a personal-account private package, access is
+granted per user in the package settings; a classic PAT additionally needs the `read:packages` scope).
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <your-github-username> --password-stdin
+docker run -d -p 8080:8080 -v labeler-data:/app/data -v labeler-templates:/app/templates \
+  ghcr.io/pfa230/labeler:latest
+```
+
+To use Compose with the published image instead of building locally, change the `x-labeler-image`
+anchor in `docker-compose.yml` from the local-build form to:
+
+```yaml
+x-labeler-image: &labeler-image
+  image: ghcr.io/pfa230/labeler:latest
+```
+
+(removing `build: .` and `pull_policy: build`), then `docker compose up -d` (no `--build`). If the very
+first automated publish ever fails to link the package to the repo, open the package page on GitHub and
+use "Connect repository" / Manage Actions access to link it.
+
 ## Configuration
 
 Only two operator knobs, set in `.env` (Compose interpolates them):
