@@ -218,6 +218,79 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn connection_crud_endpoints_redact_credential() {
+        let app = build_app();
+        // create
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"hb_secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let v = json_response(res).await;
+        assert_eq!(v["has_credential"], true);
+        assert!(
+            v.get("credential").is_none(),
+            "credential must never be returned"
+        );
+        let id = v["id"].as_str().unwrap().to_string();
+        // list (no credential leaked)
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/connections")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let list = json_response(res).await;
+        assert_eq!(list.as_array().unwrap().len(), 1);
+        assert!(list[0].get("credential").is_none());
+        // update name
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"renamed","base_url":"http://hb.lan:7745"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // delete
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/connections/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
     async fn root_path_serves_spa_not_api() {
         // empty ui dir (no index.html): the old root API path is gone; /health is not the API.
         let dir = std::env::temp_dir().join(format!("labeler_ui_empty_{}", uniq()));
