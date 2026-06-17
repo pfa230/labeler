@@ -15,6 +15,7 @@ use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
+    connector::{BrowsePage, BrowseRequest, ConnectorSchema, LabelRow, MaterializeRequest},
     errors::AppError,
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, ReloadResponse,
@@ -50,6 +51,9 @@ pub struct AppState {
     store: Store,
     ui_dir: PathBuf,
     trust_proxy: bool,
+    egress: crate::egress::Egress,
+    connectors: crate::connector::ConnectorRegistry,
+    cursor_key: crate::connector::cursor::SigningKey,
 }
 
 impl AppState {
@@ -65,6 +69,9 @@ impl AppState {
             trust_proxy: std::env::var("LABELER_TRUST_PROXY")
                 .map(|v| v == "true")
                 .unwrap_or(false),
+            egress: crate::egress::Egress::new(),
+            connectors: crate::connector::ConnectorRegistry::default(),
+            cursor_key: crate::connector::cursor::SigningKey::random(),
         }
     }
 
@@ -83,6 +90,24 @@ impl AppState {
 
     pub fn trust_proxy(&self) -> bool {
         self.trust_proxy
+    }
+
+    pub fn egress(&self) -> &crate::egress::Egress {
+        &self.egress
+    }
+
+    pub fn connectors(&self) -> &crate::connector::ConnectorRegistry {
+        &self.connectors
+    }
+
+    pub fn cursor_key(&self) -> &crate::connector::cursor::SigningKey {
+        &self.cursor_key
+    }
+
+    #[cfg(test)]
+    pub fn with_loopback_egress(mut self) -> Self {
+        self.egress = crate::egress::Egress::with_loopback();
+        self
     }
 
     // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and
@@ -112,6 +137,22 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
+        )
+        .route(
+            "/connections",
+            get(list_connections).post(create_connection),
+        )
+        .route(
+            "/connections/{id}",
+            get(get_connection_h)
+                .put(update_connection_h)
+                .delete(delete_connection_h),
+        )
+        .route("/connections/{id}/schema", get(connection_schema))
+        .route("/connections/{id}/browse", post(connection_browse))
+        .route(
+            "/connections/{id}/materialize",
+            post(connection_materialize),
         )
         .route("/settings", get(get_settings))
         .route("/settings/{key}", put(put_setting))
@@ -560,6 +601,271 @@ pub async fn delete_printer(
     } else {
         Err(AppError::printer_not_found(id))
     }
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct ConnectionInput {
+    pub connector: String,
+    pub name: String,
+    pub base_url: String,
+    pub credential: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn connection_view(c: &crate::store::Connection) -> serde_json::Value {
+    serde_json::json!({
+        "id": c.id, "connector": c.connector, "name": c.name,
+        "base_url": c.base_url, "enabled": c.enabled,
+        "has_credential": !c.credential.is_empty()
+    })
+}
+
+#[utoipa::path(
+    get,
+    path = "/connections",
+    responses(
+        (status = 200, description = "List connections (credential redacted; only has_credential exposed)", body = Object)
+    )
+)]
+pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+    let cs = state.store().list_connections().await?;
+    Ok(Json(cs.iter().map(connection_view).collect::<Vec<_>>()).into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/connections",
+    request_body = ConnectionInput,
+    responses(
+        (status = 201, description = "Connection created (credential redacted in response)", body = Object),
+        (status = 400, description = "Invalid request", body = ErrorResponse)
+    )
+)]
+pub async fn create_connection(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ConnectionInput>,
+) -> Result<Response, AppError> {
+    if state.connectors().get(&body.connector).is_none() {
+        return Err(AppError::invalid_request("unknown connector"));
+    }
+    let cred = body.credential.unwrap_or_default();
+    if cred.is_empty() {
+        return Err(AppError::invalid_request("credential required"));
+    }
+    url::Url::parse(&body.base_url).map_err(|_| AppError::invalid_request("invalid base_url"))?;
+    let _g = state.write_lock.lock().await;
+    let c = state
+        .store()
+        .create_connection(&body.connector, &body.name, &body.base_url, &cred)
+        .await?;
+    Ok((axum::http::StatusCode::CREATED, Json(connection_view(&c))).into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/connections/{id}",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 200, description = "Connection (credential redacted)", body = Object),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    )
+)]
+pub async fn get_connection_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let c = state
+        .store()
+        .get_connection(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found(&id))?;
+    Ok(Json(connection_view(&c)).into_response())
+}
+
+#[utoipa::path(
+    put,
+    path = "/connections/{id}",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = ConnectionInput,
+    responses(
+        (status = 200, description = "Connection updated (credential redacted)", body = Object),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    )
+)]
+pub async fn update_connection_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<ConnectionInput>,
+) -> Result<Response, AppError> {
+    url::Url::parse(&body.base_url).map_err(|_| AppError::invalid_request("invalid base_url"))?;
+    let _g = state.write_lock.lock().await;
+    let cred = body.credential.filter(|c| !c.is_empty());
+    let ok = state
+        .store()
+        .update_connection(
+            &id,
+            &body.name,
+            &body.base_url,
+            cred.as_deref(),
+            body.enabled,
+        )
+        .await?;
+    if !ok {
+        return Err(AppError::not_found(&id));
+    }
+    let c = state.store().get_connection(&id).await?.unwrap();
+    Ok(Json(connection_view(&c)).into_response())
+}
+
+#[utoipa::path(
+    delete,
+    path = "/connections/{id}",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 204, description = "Connection deleted"),
+        (status = 404, description = "Connection not found", body = ErrorResponse)
+    )
+)]
+pub async fn delete_connection_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _g = state.write_lock.lock().await;
+    if !state.store().delete_connection(&id).await? {
+        return Err(AppError::not_found(&id));
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+fn connector_status(
+    e: &crate::connector::ConnectorError,
+) -> (axum::http::StatusCode, &'static str, String) {
+    use crate::connector::ConnectorError::*;
+    use axum::http::StatusCode;
+    match e {
+        AuthFailed => (
+            StatusCode::BAD_GATEWAY,
+            "ConnectorAuthFailed",
+            "upstream authentication failed".into(),
+        ),
+        Forbidden => (
+            StatusCode::BAD_GATEWAY,
+            "ConnectorForbidden",
+            "upstream forbidden".into(),
+        ),
+        ConnectionFailed(m) => (StatusCode::BAD_GATEWAY, "ConnectorUnreachable", m.clone()),
+        InvalidFilter(m) => (StatusCode::BAD_REQUEST, "InvalidFilter", m.clone()),
+        UpstreamSchemaMismatch(m) => (StatusCode::BAD_GATEWAY, "UpstreamSchemaMismatch", m.clone()),
+        RateLimited => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "RateLimited",
+            "upstream rate limited".into(),
+        ),
+        BudgetExceeded => (
+            StatusCode::BAD_REQUEST,
+            "BudgetExceeded",
+            "too many rows requested".into(),
+        ),
+        Upstream(m) => (StatusCode::BAD_GATEWAY, "Upstream", m.clone()),
+    }
+}
+
+fn connector_err(e: crate::connector::ConnectorError) -> AppError {
+    let (status, code, msg) = connector_status(&e);
+    AppError::new(status, code, msg, None)
+}
+
+async fn load_conn_and_connector<'a>(
+    state: &'a AppState,
+    id: &str,
+) -> Result<(crate::store::Connection, &'a crate::connector::Connectors), AppError> {
+    let conn = state
+        .store()
+        .get_connection(id)
+        .await?
+        .ok_or_else(|| AppError::not_found(id))?;
+    let c = state
+        .connectors()
+        .get(&conn.connector)
+        .ok_or_else(|| AppError::invalid_request("unknown connector"))?;
+    Ok((conn, c))
+}
+
+#[utoipa::path(
+    get,
+    path = "/connections/{id}/schema",
+    params(("id" = String, Path, description = "Connection ID")),
+    responses(
+        (status = 200, description = "Connector schema (resources, fields, filters, relationships)", body = ConnectorSchema),
+        (status = 404, description = "Connection not found", body = ErrorResponse),
+        (status = 502, description = "Upstream failure", body = ErrorResponse)
+    )
+)]
+pub async fn connection_schema(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let (conn, c) = load_conn_and_connector(&state, &id).await?;
+    let schema = c
+        .schema(&conn, state.egress())
+        .await
+        .map_err(connector_err)?;
+    Ok(Json(schema).into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/connections/{id}/browse",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = BrowseRequest,
+    responses(
+        (status = 200, description = "A page of browse rows with an opaque cursor", body = BrowsePage),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse),
+        (status = 502, description = "Upstream failure", body = ErrorResponse)
+    )
+)]
+pub async fn connection_browse(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<crate::connector::BrowseRequest>,
+) -> Result<Response, AppError> {
+    let (conn, c) = load_conn_and_connector(&state, &id).await?;
+    let page = c
+        .browse(&conn, state.egress(), state.cursor_key(), req)
+        .await
+        .map_err(connector_err)?;
+    Ok(Json(page).into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/connections/{id}/materialize",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = MaterializeRequest,
+    responses(
+        (status = 200, description = "Materialized label rows", body = [LabelRow]),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse),
+        (status = 502, description = "Upstream failure", body = ErrorResponse)
+    )
+)]
+pub async fn connection_materialize(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<crate::connector::MaterializeRequest>,
+) -> Result<Response, AppError> {
+    let (conn, c) = load_conn_and_connector(&state, &id).await?;
+    let rows = c
+        .materialize(&conn, state.egress(), req)
+        .await
+        .map_err(connector_err)?;
+    Ok(Json(rows).into_response())
 }
 
 fn parse_csv_rows(
