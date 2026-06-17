@@ -1,4 +1,5 @@
 pub mod api;
+pub mod auth;
 pub mod batch;
 mod convert;
 pub mod driver;
