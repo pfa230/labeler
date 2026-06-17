@@ -9,7 +9,7 @@ describe("connectors api", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("browseConnection posts the request and returns the page", async () => {
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
       json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 }),
     );
     vi.stubGlobal("fetch", fetchMock);
@@ -22,7 +22,7 @@ describe("connectors api", () => {
   });
 
   it("materializeConnection returns label rows", async () => {
-    const fetchMock = vi.fn(async () => json([{ source: { resource: "entities", key: "e1" }, data: { name: "Drill" } }]));
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => json([{ source: { resource: "entities", key: "e1" }, data: { name: "Drill" } }]));
     vi.stubGlobal("fetch", fetchMock);
     const rows = await materializeConnection("c1", { rows: [{ resource: "entities", key: "e1" }], fields: ["name"], expansion: "as_listed" });
     expect(rows[0].data.name).toBe("Drill");
