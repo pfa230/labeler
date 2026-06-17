@@ -216,8 +216,9 @@ Strategy from research: easiest-first by transport, raster/PDF adapted per famil
 
 | Capability | Tier | Notes |
 | --- | --- | --- |
-| API token auth | P2 | |
-| Single-user / trusted-LAN assumption | MVP | Matches self-hosted home/SMB norm. |
+| App authentication (flat user accounts) | DONE | Session cookies + API tokens; first-run setup; resolves #33 minus roles (ADR-0017). |
+| Roles / granular permissions / OIDC | Later | Deferred from the flat-auth scope. |
+| Single-user / trusted-LAN assumption | superseded | The 0.0.0.0 LAN-trust posture is replaced by app auth (ADR-0017). |
 | Multi-user, roles, audit | Out | Enterprise; explicit non-goal. |
 | Typst-source injection hardening (escaping) | MVP | Exists (escape helpers); keep as a security invariant since we generate Typst from user data. |
 
