@@ -5,11 +5,43 @@ Labeler ships as a single Docker image that serves the REST API and the web UI. 
 
 ## Requirements
 
-Docker Engine 20.10+ (for `host-gateway`) and Docker Compose v2 with support for `pull_policy: build` and
-long-form `depends_on` with `condition: service_completed_successfully` (Compose v2.x; verify your file
-parses with `docker compose config`).
+Docker Engine 20.10+ (for `host-gateway`) and Docker Compose v2.
 
-## Quick start
+---
+
+## Production deployment (GHCR Pre-built Image)
+
+For production, it is recommended to pull the pre-built image from GitHub Container Registry (GHCR) rather than compiling the source code on the production server.
+
+Since this is a **private** repository, authentication is required to pull the image:
+
+1. **Authenticate with GHCR:**
+   Create a Personal Access Token (PAT) with `read:packages` scope, and log in on your deployment host:
+   ```bash
+   echo "YOUR_PAT_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+   ```
+
+2. **Configure Compose:**
+   In production, you do not need the full repository source code. You can use `docker-compose.yml` and configure it to pull the image from `ghcr.io/pfa230/labeler`.
+   
+   To switch from a local build to pulling the image, replace the `x-labeler-image` anchor block at the top of your `docker-compose.yml`:
+   ```yaml
+   x-labeler-image: &labeler-image
+     image: ghcr.io/pfa230/labeler:latest  # or :edge, :1.2.3, etc.
+     pull_policy: always
+   ```
+
+3. **Start the service:**
+   ```bash
+   cp .env.sample .env        # optional; edit HOST_PORT / RUST_LOG
+   docker compose up -d
+   ```
+
+---
+
+## Local development build (from Source)
+
+To build the image locally from the checked-out source code:
 
 ```bash
 cp .env.sample .env        # optional; edit HOST_PORT / RUST_LOG
