@@ -78,20 +78,20 @@ pub struct ConnectorSchema {
     pub relationships: Vec<RelationshipSpec>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema, Clone, Debug)]
 pub struct RowRef {
     pub resource: String,
     pub key: String,
 }
 
-#[derive(serde::Serialize, utoipa::ToSchema)]
+#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
 #[serde(untagged)]
 pub enum CellValue {
     Text(String),
     Number(f64),
 }
 
-#[derive(serde::Serialize, utoipa::ToSchema)]
+#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
 pub struct DisplayRow {
     pub id: RowRef,
     pub cells: BTreeMap<String, CellValue>,
@@ -116,7 +116,7 @@ pub struct BrowseRequest {
     pub page_size: Option<u32>,
 }
 
-#[derive(serde::Serialize, utoipa::ToSchema)]
+#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
 pub struct BrowsePage {
     pub rows: Vec<DisplayRow>,
     pub next_cursor: Option<String>,
