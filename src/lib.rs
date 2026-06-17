@@ -1482,7 +1482,7 @@ mod auth_http_tests {
         app.clone()
             .oneshot(req_post_json(
                 "/api/auth/setup",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1490,7 +1490,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/auth/login",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1539,7 +1539,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/auth/setup",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1549,7 +1549,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/auth/setup",
-                r#"{"username":"b","password":"pw"}"#,
+                r#"{"username":"b","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1559,7 +1559,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/auth/login",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1601,6 +1601,19 @@ mod auth_http_tests {
     }
 
     #[tokio::test]
+    async fn setup_rejects_short_password() {
+        let app = test_app();
+        let res = app
+            .oneshot(req_post_json(
+                "/api/auth/setup",
+                r#"{"username":"a","password":"short"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn me_reports_needs_setup_then_authed() {
         let app = test_app();
         // zero users: me is exempt, 200, authed:false needsSetup:true
@@ -1613,7 +1626,7 @@ mod auth_http_tests {
         app.clone()
             .oneshot(req_post_json(
                 "/api/auth/setup",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1621,7 +1634,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/auth/login",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1651,7 +1664,7 @@ mod auth_http_tests {
         app.clone()
             .oneshot(req_post_json(
                 "/api/auth/setup",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1659,7 +1672,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/auth/login",
-                r#"{"username":"a","password":"pw"}"#,
+                r#"{"username":"a","password":"pw123456"}"#,
             ))
             .await
             .unwrap();
@@ -1695,7 +1708,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json_cookie(
                 "/api/users",
-                r#"{"username":"bob","password":"pw"}"#,
+                r#"{"username":"bob","password":"pw123456"}"#,
                 &cookie,
             ))
             .await
@@ -1715,7 +1728,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json_cookie(
                 "/api/users",
-                r#"{"username":"bob","password":"pw"}"#,
+                r#"{"username":"bob","password":"pw123456"}"#,
                 &cookie,
             ))
             .await
@@ -1752,7 +1765,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json_cookie(
                 "/api/auth/password",
-                r#"{"current_password":"nope","new_password":"new"}"#,
+                r#"{"current_password":"nope","new_password":"newpass12"}"#,
                 &cookie,
             ))
             .await
@@ -1763,7 +1776,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json_cookie(
                 "/api/auth/password",
-                r#"{"current_password":"pw","new_password":"new"}"#,
+                r#"{"current_password":"pw123456","new_password":"newpass12"}"#,
                 &cookie,
             ))
             .await
