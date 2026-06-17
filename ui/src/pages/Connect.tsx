@@ -205,7 +205,7 @@ function Composer({
         </div>
         <div>
           <button type="button" onClick={addRows} disabled={busy || selected.length === 0} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
-            Add {selected.length} rows
+            Add {selected.length} {selected.length === 1 ? "row" : "rows"}
           </button>
         </div>
       </section>
