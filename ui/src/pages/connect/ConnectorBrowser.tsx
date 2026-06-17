@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   browseConnection,
   type ConnectorSchema,
@@ -35,13 +35,16 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
 
   const selectedKeys = useMemo(() => new Set(selected.map(refKey)), [selected]);
 
-  // Fresh page whenever resource, applied filters, or parent changes. The `active` flag drops a stale
-  // request's result when the user switches resources/drills before it resolves. `resource` is memoized
-  // on resourceId, so this effect does not loop. Every `setState` runs inside the async body so
-  // `react-hooks/set-state-in-effect` does not fire (see src/lib/livePreview.ts for the same pattern).
+  // A monotonic request token shared by the fresh-load effect AND loadMore. Any new request bumps it,
+  // so a slower in-flight request (fresh OR append) is dropped once a newer one starts. This is what
+  // prevents a stale "Load more" from appending the previous resource's rows after a resource switch /
+  // drill / filter change (which would also corrupt the cursor). Every `setState` runs inside the async
+  // body so `react-hooks/set-state-in-effect` does not fire (see src/lib/livePreview.ts).
+  const reqToken = useRef(0);
+
   useEffect(() => {
     if (!resource) return;
-    let active = true;
+    const token = ++reqToken.current;
     (async () => {
       setBusy(true);
       setError(null);
@@ -51,23 +54,21 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
           ...(Object.keys(applied).length ? { filters: applied } : {}),
           ...(parent ? { parent: { relationship: parent.relationship, key: parent.key } } : {}),
         });
-        if (!active) return;
+        if (reqToken.current !== token) return;
         setRows(page.rows);
         setCursor(page.next_cursor);
         setHasMore(page.has_more);
       } catch (err) {
-        if (active) setError(err instanceof Error ? err.message : "Browse failed");
+        if (reqToken.current === token) setError(err instanceof Error ? err.message : "Browse failed");
       } finally {
-        if (active) setBusy(false);
+        if (reqToken.current === token) setBusy(false);
       }
     })();
-    return () => {
-      active = false;
-    };
   }, [connectionId, resource, applied, parent]);
 
   const loadMore = async () => {
     if (!resource || !cursor) return;
+    const token = ++reqToken.current;
     setBusy(true);
     setError(null);
     try {
@@ -77,13 +78,15 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
         ...(parent ? { parent: { relationship: parent.relationship, key: parent.key } } : {}),
         cursor,
       });
+      // Drop the append if a newer request (resource switch / fresh reload) has since started.
+      if (reqToken.current !== token) return;
       setRows((prev) => [...prev, ...page.rows]);
       setCursor(page.next_cursor);
       setHasMore(page.has_more);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Browse failed");
+      if (reqToken.current === token) setError(err instanceof Error ? err.message : "Browse failed");
     } finally {
-      setBusy(false);
+      if (reqToken.current === token) setBusy(false);
     }
   };
 

@@ -20,6 +20,13 @@ function stubFetch() {
       state = state.filter((c) => c.id !== id);
       return new Response(null, { status: 204 });
     }
+    if (url.startsWith("/api/connections/") && method === "PUT") {
+      const id = decodeURIComponent(url.slice("/api/connections/".length));
+      const b = JSON.parse(init!.body as string) as ConnectionInputBody;
+      // blank/omitted credential keeps the stored key (mirrors the backend semantics)
+      state = state.map((c) => (c.id === id ? { ...c, name: b.name, base_url: b.base_url, has_credential: c.has_credential || !!b.credential } : c));
+      return json(state.find((c) => c.id === id)!);
+    }
     if (url.startsWith("/api/connections") && method === "POST") {
       const b = JSON.parse(init!.body as string) as ConnectionInputBody;
       const c: C = { id: "id1", connector: b.connector, name: b.name, base_url: b.base_url, enabled: true, has_credential: !!b.credential };
@@ -67,5 +74,27 @@ describe("ConnectionsSection", () => {
     fireEvent.change(screen.getByLabelText(/base url/i), { target: { value: "http://hb.lan:7745" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(await screen.findByText(/api key is required/i)).toBeInTheDocument();
+  });
+
+  it("editing with a blank api key omits credential from the PUT (keeps the stored key)", async () => {
+    renderSection();
+    // seed a connection via create (with a key)
+    fireEvent.click(await screen.findByRole("button", { name: /add connection/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home" } });
+    fireEvent.change(screen.getByLabelText(/base url/i), { target: { value: "http://hb.lan:7745" } });
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "hb_secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText("Home")).toBeInTheDocument();
+    // edit: change only the name, leave the api key blank
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText("Renamed")).toBeInTheDocument();
+    const put = fetchMock.mock.calls.find(([, i]) => (i?.method ?? "GET") === "PUT");
+    expect(put).toBeTruthy();
+    const body = JSON.parse((put![1]!.body) as string) as ConnectionInputBody;
+    expect("credential" in body).toBe(false); // blank key MUST NOT be sent, so the backend keeps it
+    // the stored key is preserved (still "set")
+    expect(await screen.findByText("set")).toBeInTheDocument();
   });
 });
