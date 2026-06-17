@@ -3,8 +3,13 @@ use utoipa::OpenApi;
 use crate::{
     api,
     api::{
-        AuthStatus, Credentials, OkResponse, PasswordChange, TokenCreate, TokenCreated,
-        TokenSummary, UserSummary,
+        AuthStatus, ConnectionInput, Credentials, OkResponse, PasswordChange, TokenCreate,
+        TokenCreated, TokenSummary, UserSummary,
+    },
+    connector::{
+        BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
+        ExpansionPolicy, FieldSpec, FieldType, FilterSpec, FilterType, LabelRow,
+        MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, Tier, View,
     },
     models::{
         AutoSize, BatchRequest, BatchRowError, BatchSummary, Dimension, ErrorBody, ErrorResponse,
@@ -47,7 +52,15 @@ use crate::{
         api::delete_user_h,
         api::list_tokens,
         api::create_token_h,
-        api::delete_token_h
+        api::delete_token_h,
+        api::list_connections,
+        api::create_connection,
+        api::get_connection_h,
+        api::update_connection_h,
+        api::delete_connection_h,
+        api::connection_schema,
+        api::connection_browse,
+        api::connection_materialize
     ),
     servers((url = "/api")),
     components(
@@ -90,7 +103,26 @@ use crate::{
             UserSummary,
             TokenSummary,
             TokenCreated,
-            OkResponse
+            OkResponse,
+            ConnectionInput,
+            ConnectorSchema,
+            ResourceSpec,
+            FieldSpec,
+            FilterSpec,
+            RelationshipSpec,
+            View,
+            FieldType,
+            FilterType,
+            Tier,
+            RowRef,
+            CellValue,
+            DisplayRow,
+            BrowseRequest,
+            BrowseParent,
+            BrowsePage,
+            MaterializeRequest,
+            ExpansionPolicy,
+            LabelRow
         )
     ),
     tags(
