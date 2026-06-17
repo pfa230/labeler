@@ -496,6 +496,9 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-17**: Job-log retention (#29). The append-only `jobs` table is now pruned by age:
+  `LABELER_JOB_LOG_RETENTION_DAYS` (default 90, `0` disables) bounds history, enforced by a startup
+  prune plus a daily background task; a `ts` index was added. No API change.
 - **2026-06-17**: CI and image publishing (ADR-0019, #37). CI now also builds/tests the UI and builds +
   smoke-tests the Docker image; images publish to `ghcr.io/pfa230/labeler` (`:edge` + `:sha-` on `main`,
   `:X.Y.Z`/`:X.Y`/`:latest` on a `vX.Y.Z` tag) via the built-in `GITHUB_TOKEN`. Base images are pinned to
