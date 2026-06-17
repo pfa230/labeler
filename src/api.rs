@@ -50,6 +50,9 @@ pub struct AppState {
     store: Store,
     ui_dir: PathBuf,
     trust_proxy: bool,
+    egress: crate::egress::Egress,
+    connectors: crate::connector::ConnectorRegistry,
+    cursor_key: crate::connector::cursor::SigningKey,
 }
 
 impl AppState {
@@ -65,6 +68,9 @@ impl AppState {
             trust_proxy: std::env::var("LABELER_TRUST_PROXY")
                 .map(|v| v == "true")
                 .unwrap_or(false),
+            egress: crate::egress::Egress::new(),
+            connectors: crate::connector::ConnectorRegistry::default(),
+            cursor_key: crate::connector::cursor::SigningKey::random(),
         }
     }
 
@@ -83,6 +89,24 @@ impl AppState {
 
     pub fn trust_proxy(&self) -> bool {
         self.trust_proxy
+    }
+
+    pub fn egress(&self) -> &crate::egress::Egress {
+        &self.egress
+    }
+
+    pub fn connectors(&self) -> &crate::connector::ConnectorRegistry {
+        &self.connectors
+    }
+
+    pub fn cursor_key(&self) -> &crate::connector::cursor::SigningKey {
+        &self.cursor_key
+    }
+
+    #[cfg(test)]
+    pub fn with_loopback_egress(mut self) -> Self {
+        self.egress = crate::egress::Egress::with_loopback();
+        self
     }
 
     // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and
@@ -112,6 +136,16 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
+        )
+        .route(
+            "/connections",
+            get(list_connections).post(create_connection),
+        )
+        .route(
+            "/connections/{id}",
+            get(get_connection_h)
+                .put(update_connection_h)
+                .delete(delete_connection_h),
         )
         .route("/settings", get(get_settings))
         .route("/settings/{key}", put(put_setting))
@@ -560,6 +594,100 @@ pub async fn delete_printer(
     } else {
         Err(AppError::printer_not_found(id))
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct ConnectionInput {
+    pub connector: String,
+    pub name: String,
+    pub base_url: String,
+    pub credential: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn connection_view(c: &crate::store::Connection) -> serde_json::Value {
+    serde_json::json!({
+        "id": c.id, "connector": c.connector, "name": c.name,
+        "base_url": c.base_url, "enabled": c.enabled,
+        "has_credential": !c.credential.is_empty()
+    })
+}
+
+async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+    let cs = state.store().list_connections().await?;
+    Ok(Json(cs.iter().map(connection_view).collect::<Vec<_>>()).into_response())
+}
+
+async fn create_connection(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ConnectionInput>,
+) -> Result<Response, AppError> {
+    if state.connectors().get(&body.connector).is_none() {
+        return Err(AppError::invalid_request("unknown connector"));
+    }
+    let cred = body.credential.unwrap_or_default();
+    if cred.is_empty() {
+        return Err(AppError::invalid_request("credential required"));
+    }
+    url::Url::parse(&body.base_url).map_err(|_| AppError::invalid_request("invalid base_url"))?;
+    let _g = state.write_lock.lock().await;
+    let c = state
+        .store()
+        .create_connection(&body.connector, &body.name, &body.base_url, &cred)
+        .await?;
+    Ok((axum::http::StatusCode::CREATED, Json(connection_view(&c))).into_response())
+}
+
+async fn get_connection_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let c = state
+        .store()
+        .get_connection(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found(&id))?;
+    Ok(Json(connection_view(&c)).into_response())
+}
+
+async fn update_connection_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<ConnectionInput>,
+) -> Result<Response, AppError> {
+    let _g = state.write_lock.lock().await;
+    let cred = body.credential.filter(|c| !c.is_empty());
+    let ok = state
+        .store()
+        .update_connection(
+            &id,
+            &body.name,
+            &body.base_url,
+            cred.as_deref(),
+            body.enabled,
+        )
+        .await?;
+    if !ok {
+        return Err(AppError::not_found(&id));
+    }
+    let c = state.store().get_connection(&id).await?.unwrap();
+    Ok(Json(connection_view(&c)).into_response())
+}
+
+async fn delete_connection_h(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _g = state.write_lock.lock().await;
+    if !state.store().delete_connection(&id).await? {
+        return Err(AppError::not_found(&id));
+    }
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 fn parse_csv_rows(
