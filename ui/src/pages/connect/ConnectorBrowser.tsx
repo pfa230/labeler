@@ -54,6 +54,9 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
     (async () => {
       setBusy(true);
       setError(null);
+      setRows([]);
+      setCursor(null);
+      setHasMore(false);
       try {
         const page = await browseConnection(connectionId, {
           resource: resource.id,

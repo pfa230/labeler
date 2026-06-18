@@ -43,6 +43,7 @@ impl HomeboxConnector {
             ),
             field("modelNumber", "Model", FieldType::Text, Tier::Hydrated),
             field("serialNumber", "Serial", FieldType::Text, Tier::Hydrated),
+            field("item_url", "Homebox URL", FieldType::Text, Tier::Derived),
         ];
         let b = base(conn)?;
         let custom: Vec<String> = egress
@@ -91,6 +92,12 @@ impl HomeboxConnector {
                         field("name", "Name", FieldType::Text, Tier::Cheap),
                         field("description", "Description", FieldType::Text, Tier::Cheap),
                         field("itemCount", "Items", FieldType::Number, Tier::Cheap),
+                        field(
+                            "location_url",
+                            "Homebox URL",
+                            FieldType::Text,
+                            Tier::Derived,
+                        ),
                     ],
                     filters: vec![],
                 },
