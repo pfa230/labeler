@@ -26,12 +26,14 @@ export function defaultOptions(options?: Options): Record<string, string> {
   return sel;
 }
 
-// Every declared option present, defaulting to its first allowed value; an existing non-empty value for a
-// still-declared option is kept (so a CSV value or per-row edit survives), options not declared are dropped.
+// Every declared option present; an existing value for a still-declared option is kept verbatim (so a CSV
+// value or per-row edit survives, including a present-but-blank value, which must stay blank to fail
+// validation), options absent from `current` default to their first allowed value, options not declared
+// are dropped.
 export function reconcileRowOptions(current: Record<string, string>, options?: Options): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, vals] of Object.entries(options ?? {})) {
-    out[name] = current[name] ? current[name] : (vals[0] ?? "");
+    out[name] = name in current && current[name] !== undefined ? current[name] : (vals[0] ?? "");
   }
   return out;
 }
