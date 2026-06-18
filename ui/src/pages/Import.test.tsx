@@ -65,6 +65,9 @@ async function loadTemplateAndCsv() {
   const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
   fireEvent.change(csv, { target: { value: "sku,option.color\n1,red\n2,blue\n" } });
   fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+  // The editor now renders before the template detail resolves; wait for detail-gated controls (copies)
+  // so callers can interact with them synchronously.
+  await screen.findByLabelText(/copies/i);
 }
 
 describe("CSV Import screen", () => {
@@ -208,6 +211,96 @@ describe("CSV Import screen", () => {
     // No grid or Run buttons render, so nothing can be posted.
     expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
     expect(countCalls("/api/batch")).toBe(0);
+  });
+
+  it("loads a CSV with no template, then shows options + actions once a template is chosen", async () => {
+    renderPage();
+    await screen.findByRole("option", { name: "Tag" });
+    // Load a CSV before any template is selected.
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    // Data columns render; no template means no option controls and no Print/Download.
+    expect(await screen.findByText("1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /apply color to all rows/i })).not.toBeInTheDocument();
+    // Choosing a template reveals option columns + the action bar; the loaded rows persist.
+    fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
+    expect(await screen.findByRole("button", { name: /download/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /apply color to all rows/i })).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
+  it("keeps the CSV rows across a template switch", async () => {
+    renderPage();
+    await loadTemplateAndCsv();
+    expect(await screen.findByText("1")).toBeInTheDocument();
+    // Switch back to no template and to t1 again: rows survive (no remount discards them).
+    fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "" } });
+    expect(screen.getByText("1")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
+    expect(await screen.findByText("1")).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
+  });
+
+  it("defaults a per-row option to the first allowed value when the CSV omits it", async () => {
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku\n1\n" } }); // no option.color column
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    // color defaulted to its first allowed value ("red") on the row.
+    expect(body.labels[0]).toEqual({ data: { sku: "1" }, option: { color: "red" } });
+  });
+
+  it("applies an option to every row only on the Apply-to-all click", async () => {
+    renderPage();
+    await loadTemplateAndCsv(); // rows: color red, color blue
+    await screen.findByText("1");
+    // Merely changing the apply selector must NOT mutate any row.
+    const selector = screen.getByLabelText(/set all color/i) as HTMLSelectElement;
+    fireEvent.change(selector, { target: { value: "blue" } });
+    fireEvent.click(await screen.findByRole("button", { name: /^download$/i }));
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    let body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    expect(body.labels.map((l: { option: { color: string } }) => l.option.color)).toEqual(["red", "blue"]);
+    // Clicking Apply to all overwrites every row's color.
+    fireEvent.click(screen.getByRole("button", { name: /apply color to all rows/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(2));
+    body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    expect(body.labels.map((l: { option: { color: string } }) => l.option.color)).toEqual(["blue", "blue"]);
+  });
+
+  it("renders a single-valued option as a column without an Apply-to-all control", async () => {
+    // t2 declares a single-valued option; it must not get an Apply-to-all control.
+    const detail2 = { ...detail, id: "t2", name: "Tag2", options: { finish: ["matte"] } };
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/templates/t2")) return json(detail2);
+      if (url.startsWith("/api/templates")) return json({ templates: [{ id: "t2", name: "Tag2", description: "", unit: "mm", dpi: 300, format: detail2.format, options: detail2.options }] });
+      if (url.startsWith("/api/printers")) return json(printers);
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag2" });
+    fireEvent.change(picker, { target: { value: "t2" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku\n1\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+    // The option column header is present but no Apply-to-all control nor an inline editor for it.
+    expect(screen.getByText("option.finish")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /apply finish to all rows/i })).not.toBeInTheDocument();
   });
 
   it("blocks a CSV with more rows than the 500 cap at load", async () => {

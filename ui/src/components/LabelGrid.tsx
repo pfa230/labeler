@@ -90,7 +90,7 @@ export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChang
         const err = row.validation.option?.[name];
         return <span style={err ? cellErrorStyle : undefined} title={err}>{row.option[name] ?? ""}</span>;
       },
-      renderEditCell: disabled ? undefined : (p: RenderEditCellProps<LabelGridRow>) => OptionEditCell(p, optionValues[name] ?? []),
+      renderEditCell: disabled || (optionValues[name]?.length ?? 0) <= 1 ? undefined : (p: RenderEditCellProps<LabelGridRow>) => OptionEditCell(p, optionValues[name] ?? []),
     })),
     {
       key: "__annotation",
