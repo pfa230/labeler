@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
-import { defaultOptions, referencedFields } from "../../lib/templateFields";
+import { defaultOptions, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
 import { ApiError, fetchBlob, saveBlob, submitBatch } from "../../api/client";
 import { useToast } from "../../app/toast-context";
 import type { TemplateDetail, TemplateFormat } from "../../api/types";
@@ -24,10 +24,11 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
   const { push } = useToast();
 
   const isSheet = detail.format.type === "sheet";
-  const fields = referencedFields(detail.layout, value.option);
+  const reconciledOption = reconcileRowOptions(value.option, detail.options);
+  const fields = referencedFields(detail.layout, reconciledOption);
   const valid = fields.every((f) => (value.data[f] ?? "").length > 0);
   const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
-  const option = hasOptions ? value.option : undefined;
+  const option = hasOptions ? reconciledOption : undefined;
   const startSlot = isSheet ? value.startSlot : undefined;
   const label = { data: value.data, ...(option ? { option } : {}) };
 
