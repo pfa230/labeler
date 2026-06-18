@@ -11,7 +11,7 @@ const schema: ConnectorSchema = {
   version: "homebox-1",
   resources: [
     { id: "entities", label: "Items", view: "table",
-      columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap" }, { key: "entityType", label: "Type", ty: "badge", tier: "cheap" }],
+      columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap" }, { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap" }],
       filters: [{ key: "q", label: "Search", ty: "search" }] },
   ],
   relationships: [],
@@ -34,8 +34,8 @@ describe("ConnectorBrowser", () => {
   it("loads rows and toggles selection", async () => {
     vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
       json({ rows: [
-        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", entityType: "item" } },
-        { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", entityType: "location" } },
+        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
+        { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } },
       ], next_cursor: null, has_more: false, count: 2 })));
     render(<Harness />);
     expect(await screen.findByText("Drill")).toBeInTheDocument();
@@ -46,8 +46,8 @@ describe("ConnectorBrowser", () => {
   it("snapshots the row label on select and shows the summary", async () => {
     vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
       json({ rows: [
-        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", entityType: "item" } },
-        { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", entityType: "location" } },
+        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
+        { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } },
       ], next_cursor: null, has_more: false, count: 2 })));
     const onSelectedChange = vi.fn();
     render(<ConnectorBrowser connectionId="c1" schema={schema} selected={[]} onSelectedChange={onSelectedChange} />);
@@ -61,7 +61,7 @@ describe("ConnectorBrowser", () => {
   it("renders the visible/hidden summary for a non-empty selection", async () => {
     vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
       json({ rows: [
-        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", entityType: "item" } },
+        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
       ], next_cursor: null, has_more: false, count: 1 })));
     const selected: SelectedRow[] = [
       { resource: "entities", key: "e1", label: "Drill", lastSeen: 1 },
