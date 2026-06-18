@@ -413,7 +413,8 @@ selection is turned into label data with materialize.
   a `tier`: `cheap` (free from the list call), `hydrated` (needs a per-row fetch), or `derived`
   (computed). Filters (`FilterSpec`) are typed (`search`, `location_id`, `label_id`).
 - **`POST /connections/{id}/browse`** takes `{ resource, filters?, parent?, cursor?, page_size? }` and
-  returns `{ rows, next_cursor, has_more, count? }`. Each row is `{ id: { resource, key }, cells }`.
+  returns `{ rows, next_cursor, has_more, count? }`. Each row is `{ id: { resource, key }, cells, url? }`
+  (`url` is the row's link to its page in the source system, used to make the name clickable).
   Cursors are opaque, HMAC-signed, and bound to {connector, connection, resource, filter, page}; the
   signing key is per process lifetime, so cursors do not survive a restart (the UI re-browses).
 - **`POST /connections/{id}/materialize`** takes `{ rows: [{ resource, key }], fields, expansion }` and
@@ -428,11 +429,15 @@ Upstream failures surface as `502`; bad filters and budget overruns as `400`.
 **Using a connection (UI).** Settings > Connections adds and edits connections (connector, name, base
 URL, API key). The key is write-only: the API returns only `has_credential`, the form shows it as a
 password field, and editing with the field left blank keeps the stored key. The Connect page drives the
-flow: pick a connection and a template, browse the connector (a generic schema-driven table/tree with
-typed filters, cursor pagination, and direct drill-down via relationships), select rows, map template
-fields to connector columns, then materialize the selection into the label grid and download or print a
-batch. Materialize is capped at 200 rows per call; the grid/batch caps at 500 (§2.2). v1 renders the
-location tree flat, drills one level (direct), and expands as-listed.
+flow top to bottom: pick a connection (header), then a template and field mapping, then browse the
+connector (a generic schema-driven table with typed filters, cursor pagination, and direct drill-down via
+relationships) and select rows. Each row's name links to its page in the source system. Selection
+persists across filters, drill-down, and resource tabs; a persistent summary shows the whole selection
+with a visible/hidden split ("in this view" = currently-loaded rows) plus a reviewable, removable list
+grouped by resource, so a bulk add never silently includes unseen rows. Selecting is blocked at the
+200-row materialize cap. Materialize turns the selection into label-grid rows; the grid/batch caps at 500
+(§2.2). For Homebox specifically, the connector lists items and locations as two flat resources off the
+unified `/v1/entities` endpoint (`isLocation=false`/`true`); see [ADR-0021](adr/0021-homebox-connect-hardening.md).
 
 ## Printing
 
@@ -497,6 +502,13 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-18**: Homebox & Connect hardening (M7; ADR-0021; #60 #61 #62 #58 #59). The Homebox connector
+  lists items (`/v1/entities?isLocation=false`) and locations (`isLocation=true`) as two flat resources
+  (was a combined list + a `/entities/tree` locations view), with populated `description`/`itemCount`
+  columns. Browse rows carry a `url` (the Homebox page) and the Connect table renders the name as a link.
+  The Connect page header is Connection-only; template + field mapping moved above the browser. The
+  cross-view selection is now persistent and reviewable (visible/hidden split, removable list grouped by
+  resource, 200-row cap), so a bulk add never includes unseen rows.
 - **2026-06-18**: Renamed the key/value settings store to "variables" (ADR-0020, #52). API is now
   `GET /api/variables` + `PUT /api/variables/{key}`, interpolation is `{vars.X}` (was `{settings.X}`),
   and the UI section is "Variables". This frees "settings" for typed application config (#53). No
