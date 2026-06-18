@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../../app/toast";
-import { SettingsSection } from "./SettingsSection";
+import { VariablesSection } from "./VariablesSection";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -12,13 +12,13 @@ const json = (body: unknown, status = 200) =>
 function stubFetch(settings: Record<string, string>) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
-    if (url.startsWith("/api/settings/")) {
-      const key = decodeURIComponent(url.slice("/api/settings/".length));
+    if (url.startsWith("/api/variables/")) {
+      const key = decodeURIComponent(url.slice("/api/variables/".length));
       const value = JSON.parse(init!.body as string).value as string;
       settings[key] = value;
       return json({ value });
     }
-    if (url.startsWith("/api/settings")) return json({ ...settings });
+    if (url.startsWith("/api/variables")) return json({ ...settings });
     throw new Error(`unexpected fetch: ${url}`);
   });
 }
@@ -28,7 +28,7 @@ function renderSection() {
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <SettingsSection />
+        <VariablesSection />
       </ToastProvider>
     </QueryClientProvider>,
   );
@@ -36,9 +36,9 @@ function renderSection() {
 
 let fetchMock: ReturnType<typeof stubFetch>;
 const lastCall = (path: string) => [...fetchMock.mock.calls].reverse().find(([u]) => String(u).startsWith(path));
-const settingsGets = () => fetchMock.mock.calls.filter(([u]) => String(u) === "/api/settings").length;
+const settingsGets = () => fetchMock.mock.calls.filter(([u]) => String(u) === "/api/variables").length;
 
-describe("SettingsSection", () => {
+describe("VariablesSection", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
@@ -58,7 +58,7 @@ describe("SettingsSection", () => {
     expect(screen.getByText(/suggested/i)).toBeInTheDocument();
   });
 
-  it("saves an edited setting via PUT /settings/{key}", async () => {
+  it("saves an edited setting via PUT /variables/{key}", async () => {
     fetchMock = stubFetch({ company: "Acme" });
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
@@ -66,8 +66,8 @@ describe("SettingsSection", () => {
     const getsBefore = settingsGets();
     fireEvent.change(input, { target: { value: "Globex" } });
     fireEvent.click(screen.getByRole("button", { name: /save company/i }));
-    await waitFor(() => expect(lastCall("/api/settings/company")).toBeTruthy());
-    const call = lastCall("/api/settings/company")!;
+    await waitFor(() => expect(lastCall("/api/variables/company")).toBeTruthy());
+    const call = lastCall("/api/variables/company")!;
     expect((call[1] as RequestInit).method).toBe("PUT");
     expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ value: "Globex" });
     // Wait for the post-save refetch (so the mutation has settled and isPending is false), then the row
@@ -84,11 +84,11 @@ describe("SettingsSection", () => {
     fireEvent.change(screen.getByLabelText(/new setting value/i), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: /add setting/i }));
     expect(await screen.findByText(/must be non-empty and contain only/i)).toBeInTheDocument();
-    expect([...fetchMock.mock.calls].some(([u]) => String(u).startsWith("/api/settings/"))).toBe(false);
+    expect([...fetchMock.mock.calls].some(([u]) => String(u).startsWith("/api/variables/"))).toBe(false);
 
     fireEvent.change(screen.getByLabelText(/new setting key/i), { target: { value: "label_dpi" } });
     fireEvent.click(screen.getByRole("button", { name: /add setting/i }));
-    await waitFor(() => expect(lastCall("/api/settings/label_dpi")).toBeTruthy());
+    await waitFor(() => expect(lastCall("/api/variables/label_dpi")).toBeTruthy());
   });
 
   it("rejects adding a key that already exists (would strand its row)", async () => {
@@ -100,6 +100,6 @@ describe("SettingsSection", () => {
     fireEvent.change(screen.getByLabelText(/new setting value/i), { target: { value: "y" } });
     fireEvent.click(screen.getByRole("button", { name: /add setting/i }));
     expect(await screen.findByText(/already exists/i)).toBeInTheDocument();
-    expect([...fetchMock.mock.calls].some(([u]) => String(u).startsWith("/api/settings/qr_base_url"))).toBe(false);
+    expect([...fetchMock.mock.calls].some(([u]) => String(u).startsWith("/api/variables/qr_base_url"))).toBe(false);
   });
 });
