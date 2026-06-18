@@ -29,8 +29,9 @@ export interface RelationshipSpec { id: string; label: string; from: string; to:
 export interface ConnectorSchema { version: string; resources: ResourceSpec[]; relationships: RelationshipSpec[] }
 
 export interface RowRef { resource: string; key: string }
+export interface SelectedRow { resource: string; key: string; label: string; breadcrumb?: string; lastSeen: number }
 export type CellValue = string | number; // backend untagged Text|Number
-export interface DisplayRow { id: RowRef; cells: Record<string, CellValue> }
+export interface DisplayRow { id: RowRef; cells: Record<string, CellValue>; url?: string }
 export interface BrowseParent { relationship: string; key: string }
 export interface BrowseRequest {
   resource: string;
