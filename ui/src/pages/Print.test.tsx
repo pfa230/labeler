@@ -15,7 +15,22 @@ const detail = {
   layout: [{ type: "text", name: "message" }],
 };
 
-const list = { templates: [{ id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format }] };
+const detail2 = {
+  id: "t2",
+  name: "Card",
+  description: "",
+  unit: "mm",
+  dpi: 300,
+  format: { type: "single", width: 80, height: 24 },
+  layout: [{ type: "text", name: "message" }],
+};
+
+const list = {
+  templates: [
+    { id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format },
+    { id: "t2", name: "Card", description: "", unit: "mm", dpi: 300, format: detail2.format },
+  ],
+};
 const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null, enabled: true }];
 const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 
@@ -25,6 +40,9 @@ function stubFetch() {
     // Detail BEFORE list so the broad /api/templates branch doesn't swallow it.
     if (url.startsWith("/api/templates/t1")) {
       return new Response(JSON.stringify(detail), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (url.startsWith("/api/templates/t2")) {
+      return new Response(JSON.stringify(detail2), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (url.startsWith("/api/templates")) {
       return new Response(JSON.stringify(list), { status: 200, headers: { "content-type": "application/json" } });
@@ -127,5 +145,22 @@ describe("Print screen", () => {
   it("preselects the template from router state", async () => {
     renderPage({ template: "t1" });
     expect(await screen.findByLabelText("message")).toBeInTheDocument();
+  });
+
+  it("keeps entered fields when switching to a template sharing the field", async () => {
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+
+    const message = (await screen.findByLabelText("message")) as HTMLInputElement;
+    fireEvent.change(message, { target: { value: "hello" } });
+    expect(message.value).toBe("hello");
+
+    // Switch to t2, which also references "message"; the value must survive (no remount wipe).
+    fireEvent.change(picker, { target: { value: "t2" } });
+    const message2 = (await screen.findByLabelText("message")) as HTMLInputElement;
+    expect(message2.value).toBe("hello");
   });
 });

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
-import { defaultOptions, referencedFields } from "../../lib/templateFields";
+import { defaultOptions, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
 import { ApiError, fetchBlob, saveBlob, submitBatch } from "../../api/client";
 import { useToast } from "../../app/toast-context";
 import type { TemplateDetail, TemplateFormat } from "../../api/types";
@@ -11,7 +11,7 @@ type BatchFailures = { failures?: { index: number; code: string; message: string
 const buttonBase =
   "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 
-export function PrintForm({ detail }: { detail: TemplateDetail }) {
+export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
   const [value, setValue] = useState<FormValue>(() => ({
     data: {},
     option: defaultOptions(detail.options),
@@ -24,10 +24,11 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
   const { push } = useToast();
 
   const isSheet = detail.format.type === "sheet";
-  const fields = referencedFields(detail.layout, value.option);
+  const reconciledOption = reconcileRowOptions(value.option, detail.options);
+  const fields = referencedFields(detail.layout, reconciledOption);
   const valid = fields.every((f) => (value.data[f] ?? "").length > 0);
   const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
-  const option = hasOptions ? value.option : undefined;
+  const option = hasOptions ? reconciledOption : undefined;
   const startSlot = isSheet ? value.startSlot : undefined;
   const label = { data: value.data, ...(option ? { option } : {}) };
 
@@ -38,6 +39,7 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
 
   const onDownload = async () => {
     setFormError(null);
+    if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     setBusy(true);
     try {
       if (isSheet) {
@@ -66,6 +68,7 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
 
   const onPrint = async () => {
     setFormError(null);
+    if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     setBusy(true);
     try {
       const r = await submitBatch({
@@ -98,7 +101,7 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="flex flex-col gap-4">
-        <FieldForm detail={detail} value={value} onChange={setValue} />
+        <FieldForm detail={detail} value={{ ...value, option: reconciledOption }} onChange={setValue} />
 
         {formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}
 
@@ -122,7 +125,7 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
           <button
             type="button"
             onClick={onPrint}
-            disabled={busy || !value.printer || !valid}
+            disabled={busy || !value.printer || !valid || stale}
             className={buttonBase}
             style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
           >
@@ -131,7 +134,7 @@ export function PrintForm({ detail }: { detail: TemplateDetail }) {
           <button
             type="button"
             onClick={onDownload}
-            disabled={busy || !valid}
+            disabled={busy || !valid || stale}
             className={`${buttonBase} border`}
             style={{ borderColor: "var(--border)", color: "var(--ink)" }}
           >

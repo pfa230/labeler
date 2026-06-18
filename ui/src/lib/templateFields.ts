@@ -26,6 +26,18 @@ export function defaultOptions(options?: Options): Record<string, string> {
   return sel;
 }
 
+// Every declared option present; an existing value for a still-declared option is kept verbatim (so a CSV
+// value or per-row edit survives, including a present-but-blank value, which must stay blank to fail
+// validation), options absent from `current` default to their first allowed value, options not declared
+// are dropped.
+export function reconcileRowOptions(current: Record<string, string>, options?: Options): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [name, vals] of Object.entries(options ?? {})) {
+    out[name] = name in current && current[name] !== undefined ? current[name] : (vals[0] ?? "");
+  }
+  return out;
+}
+
 // A text/qr item carries EXACTLY ONE of name|value (backend invariant). Emit name if present, else value tokens.
 function walk(
   items: LayoutItem[],
