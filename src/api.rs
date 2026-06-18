@@ -1211,7 +1211,19 @@ pub async fn import_csv(
         .as_ref()
         .map(|o| o.allowed())
         .unwrap_or(&empty);
-    let labels: Vec<crate::models::LabelInput> = parse_csv_rows(&body)?
+    let parsed_rows = parse_csv_rows(&body)?;
+    // Per SPEC section E, an unknown option.<name> column is an error, not silently ignored.
+    for row in &parsed_rows {
+        for name in row.option.keys() {
+            if !declared.contains_key(name) {
+                return Err(AppError::invalid_request(format!(
+                    "CSV column 'option.{name}' is not a declared option of template '{}'",
+                    template.id
+                )));
+            }
+        }
+    }
+    let labels: Vec<crate::models::LabelInput> = parsed_rows
         .into_iter()
         .map(|row| {
             let mut option = std::collections::BTreeMap::new();

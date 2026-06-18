@@ -40,7 +40,7 @@ export function Print() {
           {t.error instanceof Error ? t.error.message : "Failed to load template"}
         </p>
       )}
-      {templateId !== "" && t.data && <PrintForm detail={t.data} />}
+      {templateId !== "" && t.data && <PrintForm detail={t.data} stale={t.isPlaceholderData} />}
     </div>
   );
 }

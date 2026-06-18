@@ -257,6 +257,26 @@ describe("CSV Import screen", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
+  it("preserves a row's raw CSV option across a no-template edit then template pick", async () => {
+    renderPage();
+    await screen.findByRole("option", { name: "Tag" });
+    // Load a CSV carrying option.color while NO template is selected (t1 is not yet known).
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku,option.color\n1,blue\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    // Edit the sku cell while still template-less: this commits the displayed option map for the row.
+    fireEvent.doubleClick(await screen.findByText("1")); // enter edit mode (react-data-grid default)
+    const skuCell = (await screen.findByLabelText("edit sku")) as HTMLInputElement;
+    fireEvent.change(skuCell, { target: { value: "9" } });
+    fireEvent.blur(skuCell);
+    // Now pick t1 (which declares color) and submit; the original raw color ("blue") must survive the edit.
+    fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
+    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    expect(body.labels[0]).toEqual({ data: { sku: "9" }, option: { color: "blue" } });
+  });
+
   it("defaults a per-row option to the first allowed value when the CSV omits it", async () => {
     renderPage();
     const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;

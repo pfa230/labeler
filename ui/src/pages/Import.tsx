@@ -29,7 +29,7 @@ export function Import() {
   const { push } = useToast();
 
   const [templateId, setTemplateId] = useState("");
-  const { data: detail } = useTemplate(templateId);
+  const { data: detail, isPlaceholderData } = useTemplate(templateId);
 
   return (
     <div className="flex flex-col gap-4">
@@ -45,17 +45,19 @@ export function Import() {
           ))}
         </select>
       </label>
-      <CsvEditor detail={detail} printers={(printers ?? []).filter((p) => p.enabled)} push={push} />
+      <CsvEditor detail={detail} stale={isPlaceholderData} printers={(printers ?? []).filter((p) => p.enabled)} push={push} />
     </div>
   );
 }
 
 function CsvEditor({
   detail,
+  stale,
   printers,
   push,
 }: {
   detail?: TemplateDetail;
+  stale?: boolean;
   printers: { id: string; name: string }[];
   push: (t: { kind: "ok" | "error"; message: string }) => void;
 }) {
@@ -70,6 +72,7 @@ function CsvEditor({
     setRows(next);
   };
   const [csvFields, setCsvFields] = useState<string[]>([]);
+  const [csvOptionCols, setCsvOptionCols] = useState<string[]>([]); // option.<name> columns parsed from the loaded CSV
   const [issues, setIssues] = useState<string[]>([]);
   const [applyValue, setApplyValue] = useState<Record<string, string>>({}); // chosen "Apply to all" value per option
   const [copies, setCopies] = useState(1);
@@ -84,10 +87,14 @@ function CsvEditor({
   const isSingleValued = (name: string) => (declaredOptions[name]?.length ?? 0) <= 1;
   const isSheet = detail?.format.type === "sheet";
 
-  // Effective per-row options against the CURRENT template: missing options default to first-allowed,
-  // values for options the current template no longer declares are dropped. Stored rows keep their raw
-  // option map; this view-time reconciliation is what makes a template switch correct without a remount.
+  // SUBMIT/validation view of a row's options against the CURRENT template: declared options only, missing
+  // ones default to first-allowed, values for options the current template no longer declares are dropped.
+  // Extra keys would be harmless to referencedFields/validation, but the backend wants a clean declared map.
   const effectiveOption = (row: LabelGridRow): Record<string, string> => reconcileRowOptions(row.option, declaredOptions);
+  // DISPLAY view: preserve the row's raw option map (so values for options not declared by the current
+  // template, e.g. from a CSV loaded before a template was picked, survive an edit and a switch-back),
+  // then overlay the declared options with their value-or-default. Spread raw FIRST so declared wins.
+  const displayOption = (row: LabelGridRow): Record<string, string> => ({ ...row.option, ...reconcileRowOptions(row.option, declaredOptions) });
 
   // Fields required for a row depend on THAT row's effective options (a CSV option.<name> column can
   // vary per row and gate different containers), so this is computed per row. With no template, no fields.
@@ -119,9 +126,16 @@ function CsvEditor({
     return !!v.field || !!v.option;
   };
   // Validation is derived fresh each render (never stored), so it cannot go stale when options change.
-  // Options are reconciled for display so the grid shows defaults; an edit then commits the reconciled value.
-  const viewRows: LabelGridRow[] = rows.map((row) => ({ ...row, option: effectiveOption(row), validation: validateRow(row) }));
+  // Options are displayed via displayOption: declared options show their value-or-default while raw
+  // values for not-currently-declared options are preserved, so an edit (which commits the displayed
+  // option map) does not drop CSV option values the current template happens not to declare.
+  const viewRows: LabelGridRow[] = rows.map((row) => ({ ...row, option: displayOption(row), validation: validateRow(row) }));
   const hasErrors = viewRows.some(rowInvalid);
+  // "Ignored" notices for CSV option.<name> columns the chosen template does not declare. Derived at
+  // render (not in loadFrom) so loading a CSV with no template then picking a template surfaces them.
+  const ignoredNotices = detail
+    ? csvOptionCols.filter((n) => !declaredNames.includes(n)).map((n) => `Column option.${n} is not a declared option and is ignored.`)
+    : [];
 
   const total = expandedCount(rows.length, copies);
   const overCap = total > MAX_BATCH_LABELS;
@@ -129,6 +143,7 @@ function CsvEditor({
   const clearGrid = () => {
     commitRows([]);
     setCsvFields([]);
+    setCsvOptionCols([]);
     setLoadedSource("");
   };
 
@@ -148,11 +163,11 @@ function CsvEditor({
       clearGrid();
       return;
     }
-    // Only flag "ignored" option columns once a template is chosen; with no template, a CSV option.<name>
-    // may match a template selected later, so keep its raw value and do not warn yet.
-    const undeclared = detail ? parsed.optionColumns.filter((n) => !declaredNames.includes(n)) : [];
+    // The "ignored option column" notice is derived at render from csvOptionCols (so it reacts to the
+    // template choice); here we only record parse issues and the parsed option columns.
     setCsvFields(parsed.fields);
-    setIssues([...parsed.issues, ...undeclared.map((n) => `Column option.${n} is not a declared option and is ignored.`)]);
+    setCsvOptionCols(parsed.optionColumns);
+    setIssues(parsed.issues);
     const built = parsed.rows.map<LabelGridRow>((r) => ({
       id: newId(),
       origin: "csv",
@@ -175,6 +190,7 @@ function CsvEditor({
   const run = async (mode: "download" | "print") => {
     setFormError(null);
     if (!detail) return; // no template selected: nothing to render/submit
+    if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     // Imperative submit guards (defense in depth; the buttons are also disabled for these, but the
     // disabled state lags a blur-commit by one render). Validate the live snapshot and the cap/printer.
     const snapshot = rowsRef.current;
@@ -306,9 +322,9 @@ function CsvEditor({
         </button>
       </div>
 
-      {issues.length > 0 && (
+      {(issues.length > 0 || ignoredNotices.length > 0) && (
         <ul className="text-sm" style={{ color: "var(--bad)" }}>
-          {issues.map((m) => (
+          {[...issues, ...ignoredNotices].map((m) => (
             <li key={m}>{m}</li>
           ))}
         </ul>
@@ -339,7 +355,7 @@ function CsvEditor({
                     disabled={busy}
                     onClick={() => {
                       const v = declaredOptions[name].includes(applyValue[name]) ? applyValue[name] : declaredOptions[name][0] ?? "";
-                      commitRows(rowsRef.current.map((r) => ({ ...r, option: { ...effectiveOption(r), [name]: v }, annotation: undefined })));
+                      commitRows(rowsRef.current.map((r) => ({ ...r, option: { ...displayOption(r), [name]: v }, annotation: undefined })));
                       setFormError(null);
                     }}
                     className={`${buttonBase} border`}
@@ -447,7 +463,7 @@ function CsvEditor({
             <button
               type="button"
               onClick={() => run("print")}
-              disabled={busy || overCap || hasErrors || !printer}
+              disabled={busy || overCap || hasErrors || !printer || stale}
               className={buttonBase}
               style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
             >
@@ -456,7 +472,7 @@ function CsvEditor({
             <button
               type="button"
               onClick={() => run("download")}
-              disabled={busy || overCap || hasErrors}
+              disabled={busy || overCap || hasErrors || stale}
               className={`${buttonBase} border`}
               style={{ borderColor: "var(--border)", color: "var(--ink)" }}
             >

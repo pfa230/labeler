@@ -48,6 +48,9 @@ describe("reconcileRowOptions", () => {
   it("keeps an existing value for a still-declared option", () => {
     expect(reconcileRowOptions({ orientation: "vertical" }, opts)).toEqual({ orientation: "vertical", outline: "yes" });
   });
+  it("keeps a present-but-blank value (so it stays invalid), only defaults absent options", () => {
+    expect(reconcileRowOptions({ orientation: "" }, opts)).toEqual({ orientation: "", outline: "yes" });
+  });
   it("drops options not declared by the template", () => {
     expect(reconcileRowOptions({ gone: "x", orientation: "vertical" }, opts)).toEqual({ orientation: "vertical", outline: "yes" });
   });

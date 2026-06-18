@@ -1039,6 +1039,27 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn import_csv_undeclared_option_column_returns_400() {
+        let app = build_app();
+        // avery5163 does not declare `bogus`; an undeclared option.<name> column must be rejected
+        // (per SPEC section E), not silently ignored.
+        let csv = "id,url,name,tags,description,option.bogus\n\
+            A1,https://x,Widget,t,desc,whatever\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/csv?template=avery5163")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn import_csv_disallowed_option_value_is_atomic() {
         let app = build_app();
         // A disallowed option value flows through the shared batch path and fails the row as
