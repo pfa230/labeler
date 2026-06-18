@@ -474,12 +474,19 @@ configuration (e.g. job-log retention) is a separate concern, kept out of the in
 **`POST /import/csv?template=<id>&mode=download|print&printer=<id>&format=png|pdf`** renders one label
 per CSV row. The request body is raw `text/csv`: the header row names the fields, each subsequent row
 supplies one label's `data` (all values are strings). A leading UTF-8 BOM is stripped, and the `csv`
-crate handles quoted fields. Output follows the template format via the shared `/batch` path: single
-templates yield per-row artifacts, sheet templates compose the rows into paginated pages.
+crate handles quoted fields. A header named `option.<name>` is routed to that row's template **option**
+(not `data`); any declared option the CSV omits defaults to its first allowed value, and a disallowed
+value fails the row (`BatchInvalid` / `InvalidOptionValue`). Output follows the template format via the
+shared `/batch` path: single templates yield per-row artifacts, sheet templates compose the rows into
+paginated pages.
 
-The web UI's CSV Import screen (`/import`, ADR-0014) is a separate client-side path: it parses and
-edits the CSV in the browser and posts resolved labels to `POST /api/batch`. It does not call
-`/api/import/csv`, which remains the self-contained automation endpoint.
+The web UI's CSV Import screen (`/import`, ADR-0014, ADR-0022) is a separate client-side path: it parses
+and edits the CSV in the browser and posts resolved labels to `POST /api/batch`. A CSV can be loaded
+before any template is chosen (data columns show; option columns and validation activate once a template
+is selected), and the loaded CSV survives switching templates. Every declared option is an always-present
+per-row column defaulting to its first allowed value (a CSV `option.<name>` value wins), with a per-option
+"Apply to all rows" control; single-valued options are read-only. It does not call `/api/import/csv`,
+which remains the self-contained automation endpoint.
 
 - **Structural CSV problems** are a whole-request precondition failure with `400` in **both** modes,
   reported before any rendering or printing: ragged rows (a row's field count differs from the header),
@@ -498,10 +505,17 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   recording each job, and **continues past** per-row print transport failures. It returns `200` with a
   `BatchSummary` `{ total, succeeded, failed: [{ index, error }], jobs }`. Unknown template/printer → 404;
   disabled printer → 409.
-- **Out of scope (v1):** per-row option selection, multipart upload.
+- **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
 
+- **2026-06-18**: Import & Print UX (M8; ADR-0022; #55 #56 #65 #57 #32). The CSV Import editor keeps a
+  loaded CSV across template switches and can load a CSV before any template is chosen; every declared
+  option is an always-present per-row column defaulting to its first allowed value, with a per-option
+  "Apply to all rows" control (single-valued options read-only). Switching templates on the Print page no
+  longer clears entered fields. Print/Download actions sit in a sticky bar so they stay reachable below a
+  long grid (Import + Connect). `POST /import/csv` accepts `option.<name>` columns (defaulting missing
+  declared options), reaching parity with the UI's per-row options.
 - **2026-06-18**: Homebox & Connect hardening (M7; ADR-0021; #60 #61 #62 #58 #59). The Homebox connector
   lists items (`/v1/entities?isLocation=false`) and locations (`isLocation=true`) as two flat resources
   (was a combined list + a `/entities/tree` locations view), with populated `description`/`itemCount`
