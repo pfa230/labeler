@@ -22,7 +22,7 @@ pub struct HealthResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct SettingValue {
+pub struct VariableValue {
     pub value: String,
 }
 

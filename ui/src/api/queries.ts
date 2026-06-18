@@ -37,16 +37,16 @@ export function useCreateTemplate() {
   });
 }
 
-export function useSettings() {
-  return useQuery({ queryKey: ["settings"], queryFn: () => getJson<Record<string, string>>("/settings") });
+export function useVariables() {
+  return useQuery({ queryKey: ["variables"], queryFn: () => getJson<Record<string, string>>("/variables") });
 }
 
-export function useUpsertSetting() {
+export function useUpsertVariable() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ key, value }: { key: string; value: string }) =>
-      sendJson<{ value: string }>("PUT", `/settings/${encodeURIComponent(key)}`, { value }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+      sendJson<{ value: string }>("PUT", `/variables/${encodeURIComponent(key)}`, { value }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["variables"] }),
   });
 }
 
