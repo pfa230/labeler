@@ -19,7 +19,7 @@ use crate::{
     errors::AppError,
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, ReloadResponse,
-        RenderLabelRequest, SettingValue, TemplateDetail, TemplateList,
+        RenderLabelRequest, TemplateDetail, TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -154,8 +154,8 @@ fn api_router() -> Router<Arc<AppState>> {
             "/connections/{id}/materialize",
             post(connection_materialize),
         )
-        .route("/settings", get(get_settings))
-        .route("/settings/{key}", put(put_setting))
+        .route("/variables", get(get_variables))
+        .route("/variables/{key}", put(put_variable))
         .route("/render/label", post(render_label))
         .route("/batch", post(batch))
         .route("/import/csv", post(import_csv))
@@ -512,41 +512,41 @@ pub async fn get_printer(
 
 #[utoipa::path(
     get,
-    path = "/settings",
-    responses((status = 200, description = "All settings", body = std::collections::BTreeMap<String, String>))
+    path = "/variables",
+    responses((status = 200, description = "All variables", body = std::collections::BTreeMap<String, String>))
 )]
-pub async fn get_settings(
+pub async fn get_variables(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<std::collections::BTreeMap<String, String>>, AppError> {
-    Ok(Json(state.store().all_settings().await?))
+    Ok(Json(state.store().all_variables().await?))
 }
 
 #[utoipa::path(
     put,
-    path = "/settings/{key}",
-    params(("key" = String, Path, description = "Setting key")),
-    request_body = SettingValue,
+    path = "/variables/{key}",
+    params(("key" = String, Path, description = "Variable key")),
+    request_body = VariableValue,
     responses(
-        (status = 200, description = "Setting stored", body = SettingValue),
+        (status = 200, description = "Variable stored", body = VariableValue),
         (status = 400, description = "Invalid key", body = ErrorResponse)
     )
 )]
-pub async fn put_setting(
+pub async fn put_variable(
     State(state): State<Arc<AppState>>,
     Path(key): Path<String>,
-    Json(body): Json<SettingValue>,
-) -> Result<Json<SettingValue>, AppError> {
+    Json(body): Json<VariableValue>,
+) -> Result<Json<VariableValue>, AppError> {
     if key.is_empty()
         || !key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     {
         return Err(AppError::invalid_request(format!(
-            "setting key '{key}' must be non-empty and contain only letters, digits, '_', '-' or '.'"
+            "variable key '{key}' must be non-empty and contain only letters, digits, '_', '-' or '.'"
         )));
     }
     let _guard = state.write_lock.lock().await;
-    state.store().set_setting(&key, &body.value).await?;
+    state.store().set_variable(&key, &body.value).await?;
     Ok(Json(body))
 }
 
@@ -950,7 +950,7 @@ async fn run_batch(
             "start_slot applies only to sheet templates",
         ));
     }
-    let settings = state.store().all_settings().await?;
+    let variables = state.store().all_variables().await?;
 
     match mode {
         crate::batch::BatchMode::Download => {
@@ -960,7 +960,7 @@ async fn run_batch(
                 mode,
                 format,
                 start_slot,
-                &settings,
+                &variables,
                 MAX_BATCH_LABELS,
             )?;
             let crate::batch::RenderedBatch::Download {
@@ -1009,7 +1009,7 @@ async fn run_batch(
                 mode,
                 Some(driver_format),
                 start_slot,
-                &settings,
+                &variables,
                 MAX_BATCH_LABELS,
             )?;
             let crate::batch::RenderedBatch::Print { units } = rendered else {
@@ -1142,14 +1142,14 @@ pub async fn render_label(
         ));
     }
 
-    let settings = state.store().all_settings().await?;
+    let variables = state.store().all_variables().await?;
     let (bytes, content_type) = match query.format.as_deref() {
         None | Some("") | Some("png") => (
-            render_single_label(template, &req.label.data, option_value, &settings)?,
+            render_single_label(template, &req.label.data, option_value, &variables)?,
             "image/png",
         ),
         Some("pdf") => (
-            render_single_label_pdf(template, &req.label.data, option_value, &settings)?,
+            render_single_label_pdf(template, &req.label.data, option_value, &variables)?,
             "application/pdf",
         ),
         Some(other) => {

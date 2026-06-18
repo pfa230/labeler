@@ -1221,7 +1221,7 @@ mod tests {
                 },
                 LayoutItem::Qr {
                     name: None,
-                    value: Some("{settings.qr_base_url}/{id}".to_string()),
+                    value: Some("{vars.qr_base_url}/{id}".to_string()),
                     placement: Placement {
                         at: Position([0.0, 0.0]),
                         size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
