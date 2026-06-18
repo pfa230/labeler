@@ -41,8 +41,8 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | POST | `/api/batch` | Render/print a batch of labels | `200` / `413` / `422` |
 | GET / POST | `/api/printers` | List / create printers | `200` / `201` |
 | GET / PUT / DELETE | `/api/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
-| GET | `/api/settings` | All settings as a key/value object | `200 {…}` |
-| PUT | `/api/settings/{key}` | Upsert a setting | `200` / `400` |
+| GET | `/api/variables` | All template variables as a key/value object | `200 {…}` |
+| PUT | `/api/variables/{key}` | Upsert a variable | `200` / `400` |
 | POST | `/api/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
 | POST | `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout` | First-run setup / login / logout | see §11 |
 | GET | `/api/auth/me` | SPA auth state | `200` |
@@ -294,8 +294,8 @@ Sizing/bounds logic is intentionally duplicated between validation (compile time
 `text` and `qr` items bind in one of two ways (exactly one of `name` / `value`):
 
 - `name` resolves a single data key against the request `data` map.
-- `value` is an interpolated template string. `{field}` resolves from `data`, `{settings.<key>}`
-  resolves from the settings store, and `{{` / `}}` emit literal braces. There are no operators or
+- `value` is an interpolated template string. `{field}` resolves from `data`, `{vars.<key>}`
+  resolves from the variables store, and `{{` / `}}` emit literal braces. There are no operators or
   functions; this is substitution only (ADR-0010). Interpolation applies to text content and QR content.
 
 A missing key or unresolved token is `422 MissingField`. JSON scalars are stringified
@@ -437,7 +437,7 @@ location tree flat, drills one level (direct), and expands as-listed.
 ## Printing
 
 Architecture: [ADR-0007](adr/0007-printer-architecture-and-transport-model.md). App state (printers,
-settings, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, default `data/`), behind a
+variables, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, default `data/`), behind a
 `store` module.
 
 - **Printers** are "machine" instances `{ id, name, kind, config, enabled }` with an opaque
@@ -454,14 +454,15 @@ settings, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, def
 - **Deferred:** printer status read-back, USB/browser printing. (Batch-to-printer and multi-page sheets
   are now delivered by `/batch`; `copies` is expanded client-side, so #28 is moot.)
 
-## Settings
+## Variables
 
-A generic key/value store backs integration settings, persisted in the SQLite `settings` table.
-`GET /settings` returns all pairs as a JSON object; `PUT /settings/{key}` with `{ "value": "…" }`
-upserts one (the key is a slug of letters, digits, `_`, `-`, `.`; otherwise `400`). Settings are
-readable from templates through `{settings.<key>}` interpolation (see §8). The only key used in
-Phase 1 is `qr_base_url`; the generic shape leaves room for later integration config (e.g. a Homebox
-URL/token).
+A generic key/value store holds template substitution variables, persisted in the SQLite `variables`
+table. `GET /variables` returns all pairs as a JSON object; `PUT /variables/{key}` with `{ "value": "…" }`
+upserts one (the key is a slug of letters, digits, `_`, `-`, `.`; otherwise `400`). Variables are
+readable from templates through `{vars.<key>}` interpolation (see §8). The only key used in
+Phase 1 is `qr_base_url`. This store is for *content* interpolated into labels; typed application
+configuration (e.g. job-log retention) is a separate concern, kept out of the interpolation namespace
+(ADR-0020).
 
 ## CSV import
 
@@ -496,6 +497,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-18**: Renamed the key/value settings store to "variables" (ADR-0020, #52). API is now
+  `GET /api/variables` + `PUT /api/variables/{key}`, interpolation is `{vars.X}` (was `{settings.X}`),
+  and the UI section is "Variables". This frees "settings" for typed application config (#53). No
+  behavior change; nothing was released under the old names.
 - **2026-06-17**: Job-log retention (#29). The append-only `jobs` table is now pruned by age:
   `LABELER_JOB_LOG_RETENTION_DAYS` (default 90, `0` disables) bounds history, enforced by a startup
   prune plus a daily background task; a `ts` index was added. No API change.

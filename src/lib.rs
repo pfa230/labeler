@@ -1386,16 +1386,16 @@ layout:
             .clone()
             .oneshot(json_req(
                 "PUT",
-                "/api/settings/qr_base_url",
+                "/api/variables/qr_base_url",
                 json!({ "value": "https://h/i" }).to_string(),
             ))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::OK);
 
-        let (status, settings) = get_json(&app, "/api/settings").await;
+        let (status, variables) = get_json(&app, "/api/variables").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(settings["qr_base_url"], "https://h/i");
+        assert_eq!(variables["qr_base_url"], "https://h/i");
     }
 
     #[tokio::test]

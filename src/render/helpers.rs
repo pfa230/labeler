@@ -21,12 +21,12 @@ pub(super) fn value_to_string(value: &JsonValue) -> String {
 }
 
 /// Substitution-only interpolation (ADR-0010). `{field}` resolves from `data` via `value_to_string`,
-/// `{settings.<key>}` from `settings`; `{{`/`}}` emit literal braces. An unresolved token or an
+/// `{vars.<key>}` from `variables`; `{{`/`}}` emit literal braces. An unresolved token or an
 /// unmatched brace is an error.
 pub(super) fn interpolate(
     template: &str,
     data: &HashMap<String, JsonValue>,
-    settings: &BTreeMap<String, String>,
+    variables: &BTreeMap<String, String>,
 ) -> Result<String, AppError> {
     let mut out = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
@@ -52,11 +52,11 @@ pub(super) fn interpolate(
                         "unterminated '{{' in template '{template}'"
                     )));
                 }
-                let resolved = if let Some(key) = token.strip_prefix("settings.") {
-                    settings
+                let resolved = if let Some(key) = token.strip_prefix("vars.") {
+                    variables
                         .get(key)
                         .cloned()
-                        .ok_or_else(|| AppError::missing_field(&format!("settings.{key}")))?
+                        .ok_or_else(|| AppError::missing_field(&format!("vars.{key}")))?
                 } else {
                     value_to_string(
                         data.get(&token)
@@ -574,41 +574,41 @@ mod interpolate_tests {
         ])
     }
 
-    fn settings() -> BTreeMap<String, String> {
+    fn variables() -> BTreeMap<String, String> {
         BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())])
     }
 
     #[test]
-    fn substitutes_field_and_setting() {
-        let out = interpolate("{settings.qr_base_url}/{id}", &data(), &settings()).unwrap();
+    fn substitutes_field_and_variable() {
+        let out = interpolate("{vars.qr_base_url}/{id}", &data(), &variables()).unwrap();
         assert_eq!(out, "https://h/i/A1");
     }
 
     #[test]
     fn stringifies_non_string_field() {
         assert_eq!(
-            interpolate("n={count}", &data(), &settings()).unwrap(),
+            interpolate("n={count}", &data(), &variables()).unwrap(),
             "n=3"
         );
     }
 
     #[test]
     fn literal_braces() {
-        assert_eq!(interpolate("{{x}}", &data(), &settings()).unwrap(), "{x}");
+        assert_eq!(interpolate("{{x}}", &data(), &variables()).unwrap(), "{x}");
     }
 
     #[test]
     fn missing_field_errors() {
-        assert!(interpolate("{nope}", &data(), &settings()).is_err());
+        assert!(interpolate("{nope}", &data(), &variables()).is_err());
     }
 
     #[test]
-    fn missing_setting_errors() {
-        assert!(interpolate("{settings.nope}", &data(), &settings()).is_err());
+    fn missing_variable_errors() {
+        assert!(interpolate("{vars.nope}", &data(), &variables()).is_err());
     }
 
     #[test]
     fn unmatched_brace_errors() {
-        assert!(interpolate("a{id", &data(), &settings()).is_err());
+        assert!(interpolate("a{id", &data(), &variables()).is_err());
     }
 }

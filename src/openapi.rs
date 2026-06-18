@@ -14,9 +14,9 @@ use crate::{
     models::{
         AutoSize, BatchRequest, BatchRowError, BatchSummary, Dimension, ErrorBody, ErrorResponse,
         Fit, FontSize, HealthResponse, HorizontalAlign, LabelInput, Layout, LayoutItem, Options,
-        Placement, Point, Position, QrParams, ReloadResponse, RenderLabelRequest, SettingValue,
-        SheetPosition, Size, SizeValue, TemplateDetail, TemplateFormat, TemplateList,
-        TemplateSummary, VerticalAlign,
+        Placement, Point, Position, QrParams, ReloadResponse, RenderLabelRequest, SheetPosition,
+        Size, SizeValue, TemplateDetail, TemplateFormat, TemplateList, TemplateSummary,
+        VariableValue, VerticalAlign,
     },
     store::Printer,
 };
@@ -37,8 +37,8 @@ use crate::{
         api::get_printer,
         api::replace_printer,
         api::delete_printer,
-        api::get_settings,
-        api::put_setting,
+        api::get_variables,
+        api::put_variable,
         api::render_label,
         api::batch,
         api::import_csv,
@@ -66,7 +66,7 @@ use crate::{
     components(
         schemas(
             HealthResponse,
-            SettingValue,
+            VariableValue,
             ReloadResponse,
             Printer,
             TemplateList,

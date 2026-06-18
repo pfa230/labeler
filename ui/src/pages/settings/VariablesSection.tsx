@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useSettings, useUpsertSetting } from "../../api/queries";
+import { useVariables, useUpsertVariable } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 
 const SUGGESTED_KEYS = ["qr_base_url"]; // not auto-seeded by the store; shown so the user can fill them
@@ -11,7 +11,7 @@ const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50
 
 function SettingRow({ settingKey, value, suggested }: { settingKey: string; value: string; suggested: boolean }) {
   const [draft, setDraft] = useState(value);
-  const upsert = useUpsertSetting();
+  const upsert = useUpsertVariable();
   const { push } = useToast();
   const dirty = draft !== value;
   return (
@@ -51,9 +51,9 @@ function SettingRow({ settingKey, value, suggested }: { settingKey: string; valu
   );
 }
 
-export function SettingsSection() {
-  const { data: settings, isError } = useSettings();
-  const upsert = useUpsertSetting();
+export function VariablesSection() {
+  const { data: settings, isError } = useVariables();
+  const upsert = useUpsertVariable();
   const { push } = useToast();
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
@@ -64,7 +64,7 @@ export function SettingsSection() {
   if (settings === undefined) {
     return (
       <section className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold">General settings</h2>
+        <h2 className="text-lg font-semibold">Variables</h2>
         <p className="text-sm" style={{ color: isError ? "var(--bad)" : "var(--muted)" }}>
           {isError ? "Failed to load settings." : "Loading settings..."}
         </p>
@@ -102,7 +102,7 @@ export function SettingsSection() {
 
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold">General settings</h2>
+      <h2 className="text-lg font-semibold">Variables</h2>
       <div className="flex flex-col gap-3">
         {keys.map((key) => (
           <SettingRow key={key} settingKey={key} value={stored[key] ?? ""} suggested={!(key in stored)} />
