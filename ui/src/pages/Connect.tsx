@@ -43,6 +43,9 @@ export function Connect() {
             {(connections ?? []).filter((c) => c.enabled).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
           </select>
         </label>
+      </div>
+
+      {connectionId && schema && (
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium">Template</span>
           <select aria-label="template" value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={inputClass} style={inputStyle}>
@@ -50,10 +53,6 @@ export function Connect() {
             {(templates?.templates ?? []).map((t) => (<option key={t.id} value={t.id}>{t.name}</option>))}
           </select>
         </label>
-      </div>
-
-      {connectionId && schema && (
-        <ConnectorBrowser key={connectionId} connectionId={connectionId} schema={schema} selected={selected} onSelectedChange={setSelected} />
       )}
 
       {connectionId && schema && detail && conn && (
@@ -66,6 +65,10 @@ export function Connect() {
           selected={selected}
           printers={(printers ?? []).filter((p) => p.enabled)}
         />
+      )}
+
+      {connectionId && schema && (
+        <ConnectorBrowser key={connectionId} connectionId={connectionId} schema={schema} selected={selected} onSelectedChange={setSelected} />
       )}
     </div>
   );
