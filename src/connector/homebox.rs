@@ -31,7 +31,6 @@ impl HomeboxConnector {
         let mut columns = vec![
             field("name", "Name", FieldType::Text, Tier::Cheap),
             field("description", "Description", FieldType::Text, Tier::Cheap),
-            field("entityType", "Type", FieldType::Badge, Tier::Cheap),
             field("assetId", "Asset ID", FieldType::Text, Tier::Cheap),
             field("quantity", "Quantity", FieldType::Number, Tier::Cheap),
             field("purchasePrice", "Price", FieldType::Money, Tier::Cheap),
@@ -64,7 +63,7 @@ impl HomeboxConnector {
             resources: vec![
                 ResourceSpec {
                     id: "entities".into(),
-                    label: "Items & Locations".into(),
+                    label: "Items".into(),
                     view: View::Table,
                     columns,
                     filters: vec![
@@ -88,7 +87,7 @@ impl HomeboxConnector {
                 ResourceSpec {
                     id: "locations".into(),
                     label: "Locations".into(),
-                    view: View::Tree,
+                    view: View::Table,
                     columns: vec![
                         field("name", "Name", FieldType::Text, Tier::Cheap),
                         field("description", "Description", FieldType::Text, Tier::Cheap),
@@ -139,25 +138,9 @@ impl HomeboxConnector {
             None => 1,
         };
 
-        if req.resource == "locations" {
-            let tree: serde_json::Value = egress
-                .get_json(
-                    &b,
-                    "/api/v1/entities/tree",
-                    &[("withItems".into(), "false".into())],
-                    &conn.credential,
-                )
-                .await?;
-            let rows = flatten_tree(&tree);
-            return Ok(BrowsePage {
-                rows,
-                next_cursor: None,
-                has_more: false,
-                count: None,
-            });
-        }
-
+        let is_location = req.resource == "locations";
         let mut query: Vec<(String, String)> = vec![
+            ("isLocation".into(), is_location.to_string()),
             ("page".into(), page.to_string()),
             ("pageSize".into(), page_size.to_string()),
         ];
@@ -176,7 +159,11 @@ impl HomeboxConnector {
         let resp: EntityList = egress
             .get_json(&b, "/api/v1/entities", &query, &conn.credential)
             .await?;
-        let rows: Vec<DisplayRow> = resp.items.iter().map(summary_to_row).collect();
+        let rows: Vec<DisplayRow> = resp
+            .items
+            .iter()
+            .map(|e| summary_to_row(e, &req.resource))
+            .collect();
         let total = resp.total.unwrap_or(0);
         let has_more = (page as u64) * (page_size as u64) < total;
         let next_cursor = has_more.then(|| {
@@ -254,8 +241,8 @@ struct EntitySummary {
     asset_id: Option<String>,
     #[serde(default)]
     quantity: Option<f64>,
-    #[serde(default, rename = "entityType")]
-    entity_type: Option<serde_json::Value>,
+    #[serde(default, rename = "itemCount")]
+    item_count: Option<f64>,
     #[serde(default)]
     parent: Option<serde_json::Value>,
 }
@@ -269,7 +256,7 @@ fn field(key: &str, label: &str, ty: FieldType, tier: Tier) -> FieldSpec {
     }
 }
 
-fn summary_to_row(e: &EntitySummary) -> DisplayRow {
+fn summary_to_row(e: &EntitySummary, resource: &str) -> DisplayRow {
     let mut cells = BTreeMap::new();
     cells.insert(
         "name".into(),
@@ -279,21 +266,23 @@ fn summary_to_row(e: &EntitySummary) -> DisplayRow {
         "description".into(),
         CellValue::Text(e.description.clone().unwrap_or_default()),
     );
-    cells.insert(
-        "assetId".into(),
-        CellValue::Text(e.asset_id.clone().unwrap_or_default()),
-    );
-    if let Some(q) = e.quantity {
-        cells.insert("quantity".into(), CellValue::Number(q));
+    if resource == "locations" {
+        if let Some(n) = e.item_count {
+            cells.insert("itemCount".into(), CellValue::Number(n));
+        }
+    } else {
+        cells.insert(
+            "assetId".into(),
+            CellValue::Text(e.asset_id.clone().unwrap_or_default()),
+        );
+        if let Some(q) = e.quantity {
+            cells.insert("quantity".into(), CellValue::Number(q));
+        }
+        cells.insert("location".into(), CellValue::Text(json_name(&e.parent)));
     }
-    cells.insert(
-        "entityType".into(),
-        CellValue::Text(type_name(&e.entity_type)),
-    );
-    cells.insert("location".into(), CellValue::Text(json_name(&e.parent)));
     DisplayRow {
         id: RowRef {
-            resource: "entities".into(),
+            resource: resource.into(),
             key: e.id.clone(),
         },
         cells,
@@ -344,35 +333,6 @@ fn extract_field(detail: &serde_json::Value, key: &str, base_url: &str, id: &str
     }
 }
 
-fn flatten_tree(tree: &serde_json::Value) -> Vec<DisplayRow> {
-    fn walk(node: &serde_json::Value, out: &mut Vec<DisplayRow>) {
-        if let Some(id) = node.get("id").and_then(|v| v.as_str()) {
-            let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("");
-            let mut cells = BTreeMap::new();
-            cells.insert("name".into(), CellValue::Text(name.to_string()));
-            out.push(DisplayRow {
-                id: RowRef {
-                    resource: "locations".into(),
-                    key: id.to_string(),
-                },
-                cells,
-            });
-        }
-        if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
-            for ch in children {
-                walk(ch, out);
-            }
-        }
-    }
-    let mut out = Vec::new();
-    if let Some(arr) = tree.as_array() {
-        for n in arr {
-            walk(n, &mut out);
-        }
-    }
-    out
-}
-
 fn hash_filters(req: &BrowseRequest) -> String {
     let parent = req.parent.as_ref().map(|p| p.key.as_str()).unwrap_or("");
     let mut parts: Vec<String> = req
@@ -388,7 +348,7 @@ fn hash_filters(req: &BrowseRequest) -> String {
 mod tests {
     use super::*;
     use crate::store::Connection;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn conn(base: &str) -> Connection {
@@ -519,40 +479,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn browse_locations_flattens_tree() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities/tree"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                {"id":"l1","name":"Garage","children":[{"id":"l2","name":"Shelf A","children":[]}]},
-                {"id":"l3","name":"Office","children":[]}
-            ])))
-            .mount(&server)
-            .await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
-        let page = HomeboxConnector
-            .browse(
-                &conn(&server.uri()),
-                &egress,
-                &key,
-                crate::connector::BrowseRequest {
-                    resource: "locations".into(),
-                    filters: Default::default(),
-                    parent: None,
-                    cursor: None,
-                    page_size: None,
-                },
-            )
-            .await
-            .unwrap();
-        // Garage + nested Shelf A + Office = 3 flattened rows.
-        assert_eq!(page.rows.len(), 3);
-        assert!(page.rows.iter().all(|r| r.id.resource == "locations"));
-        assert!(!page.has_more);
-    }
-
-    #[tokio::test]
     async fn materialize_rejects_traversal_key() {
         let egress = crate::egress::Egress::with_loopback();
         let err = HomeboxConnector
@@ -574,5 +500,69 @@ mod tests {
             err,
             crate::connector::ConnectorError::InvalidFilter(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn items_browse_sends_islocation_false() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .and(query_param("isLocation", "false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id":"e1","name":"Drill"}], "total": 1
+            })))
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::with_loopback();
+        let key = crate::connector::cursor::SigningKey::random();
+        let page = HomeboxConnector
+            .browse(
+                &conn(&server.uri()),
+                &egress,
+                &key,
+                crate::connector::BrowseRequest {
+                    resource: "entities".into(),
+                    filters: Default::default(),
+                    parent: None,
+                    cursor: None,
+                    page_size: Some(50),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0].id.resource, "entities");
+    }
+
+    #[tokio::test]
+    async fn locations_browse_sends_islocation_true_and_maps_cells() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .and(query_param("isLocation", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id":"l1","name":"Garage","description":"cold","itemCount": 7}], "total": 1
+            })))
+            .mount(&server).await;
+        let egress = crate::egress::Egress::with_loopback();
+        let key = crate::connector::cursor::SigningKey::random();
+        let page = HomeboxConnector
+            .browse(
+                &conn(&server.uri()),
+                &egress,
+                &key,
+                crate::connector::BrowseRequest {
+                    resource: "locations".into(),
+                    filters: Default::default(),
+                    parent: None,
+                    cursor: None,
+                    page_size: Some(50),
+                },
+            )
+            .await
+            .unwrap();
+        let row = &page.rows[0];
+        assert_eq!(row.id.resource, "locations");
+        assert!(matches!(row.cells.get("name"), Some(CellValue::Text(s)) if s == "Garage"));
+        assert!(matches!(row.cells.get("itemCount"), Some(CellValue::Number(n)) if *n == 7.0));
     }
 }
