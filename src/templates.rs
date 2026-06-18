@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path as FsPath, PathBuf},
@@ -27,12 +28,14 @@ pub struct TemplateDefinition {
 #[derive(Debug)]
 pub struct TemplateRegistry {
     templates: HashMap<String, TemplateDefinition>,
+    hashes: HashMap<String, String>,
 }
 
 impl TemplateRegistry {
     pub fn load_from_dir<P: AsRef<FsPath>>(dir: P) -> Result<Self, TemplateRegistryError> {
         let dir = dir.as_ref();
         let mut templates = HashMap::new();
+        let mut hashes = HashMap::new();
         let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
         let entries = std::fs::read_dir(dir).map_err(|source| TemplateRegistryError::Io {
             path: dir.to_path_buf(),
@@ -79,10 +82,14 @@ impl TemplateRegistry {
             }
 
             seen_paths.insert(template.id.clone(), path);
+            hashes.insert(
+                template.id.clone(),
+                hex::encode(Sha256::digest(contents.as_bytes())),
+            );
             templates.insert(template.id.clone(), template);
         }
 
-        Ok(Self { templates })
+        Ok(Self { templates, hashes })
     }
 
     pub fn len(&self) -> usize {
@@ -95,6 +102,11 @@ impl TemplateRegistry {
 
     pub fn get(&self, id: &str) -> Option<&TemplateDefinition> {
         self.templates.get(id)
+    }
+
+    /// Lowercase hex SHA-256 of the template's raw YAML, used as a strong ETag.
+    pub fn content_hash(&self, id: &str) -> Option<&str> {
+        self.hashes.get(id).map(String::as_str)
     }
 
     pub fn summaries(&self) -> Vec<TemplateSummary> {
@@ -898,5 +910,22 @@ layout: []
         let template = single_line_template(Position([0.0, 0.0]), Position([-1.0, 0.0]));
         let err = template.validate().expect_err("expected error");
         assert!(err.contains("negative coordinates"));
+    }
+
+    #[test]
+    fn registry_exposes_per_template_content_hash() {
+        let dir = std::env::temp_dir().join(format!("tmpl_hash_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        write_template(
+            &dir,
+            "a.yaml",
+            "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [10,5]\n    font_size: 6\n",
+        );
+        let reg = TemplateRegistry::load_from_dir(&dir).expect("load");
+        let hash = reg.content_hash("a").expect("hash present");
+        assert_eq!(hash.len(), 64, "sha-256 hex is 64 chars");
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(reg.content_hash("missing").is_none());
+        fs::remove_dir_all(&dir).ok();
     }
 }
