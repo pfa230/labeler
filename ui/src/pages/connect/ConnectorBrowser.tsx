@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   browseConnection,
   type ConnectorSchema,
   type DisplayRow,
   type RelationshipSpec,
   type ResourceSpec,
-  type RowRef,
+  type SelectedRow,
 } from "../../api/connectors";
 
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
@@ -15,11 +15,12 @@ const inputStyle = { background: "var(--surface)", borderColor: "var(--border)",
 export interface ConnectorBrowserProps {
   connectionId: string;
   schema: ConnectorSchema;
-  selected: RowRef[];
-  onSelectedChange: (refs: RowRef[]) => void;
+  selected: SelectedRow[];
+  onSelectedChange: (rows: SelectedRow[]) => void;
 }
 
-const refKey = (r: RowRef) => `${r.resource}:${r.key}`;
+const refKey = (r: { resource: string; key: string }) => `${r.resource}:${r.key}`;
+const MATERIALIZE_CAP = 200;
 
 export function ConnectorBrowser({ connectionId, schema, selected, onSelectedChange }: ConnectorBrowserProps) {
   const [resourceId, setResourceId] = useState(schema.resources[0]?.id ?? "");
@@ -34,6 +35,11 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   const [error, setError] = useState<string | null>(null);
 
   const selectedKeys = useMemo(() => new Set(selected.map(refKey)), [selected]);
+  const loadedKeys = useMemo(() => new Set(rows.map((r) => refKey(r.id))), [rows]);
+  const visibleSelected = selected.filter((s) => loadedKeys.has(refKey(s))).length;
+  const hiddenSelected = selected.length - visibleSelected;
+  const labelFor = (rid: string) => schema.resources.find((r) => r.id === rid)?.label ?? rid;
+  const byResourceCount = (rid: string) => selected.filter((s) => s.resource === rid).length;
 
   // A monotonic request token shared by the fresh-load effect AND loadMore. Any new request bumps it,
   // so a slower in-flight request (fresh OR append) is dropped once a newer one starts. This is what
@@ -90,10 +96,24 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
     }
   };
 
-  const toggle = (ref: RowRef) => {
-    if (selectedKeys.has(refKey(ref))) onSelectedChange(selected.filter((r) => refKey(r) !== refKey(ref)));
-    else onSelectedChange([...selected, ref]);
-  };
+  const toggle = useCallback((row: DisplayRow) => {
+    const id = refKey(row.id);
+    if (selectedKeys.has(id)) {
+      onSelectedChange(selected.filter((r) => refKey(r) !== id));
+    } else {
+      if (selected.length >= MATERIALIZE_CAP) return;
+      onSelectedChange([
+        ...selected,
+        {
+          resource: row.id.resource,
+          key: row.id.key,
+          label: String(row.cells.name ?? row.id.key),
+          breadcrumb: row.cells.location != null ? String(row.cells.location) : undefined,
+          lastSeen: Date.now(),
+        },
+      ]);
+    }
+  }, [selected, selectedKeys, onSelectedChange]);
 
   const relationshipFrom = (rid: string): RelationshipSpec | undefined => schema.relationships.find((rel) => rel.from === rid);
   const drill = (row: DisplayRow, rel: RelationshipSpec) => {
@@ -176,7 +196,8 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
                     type="checkbox"
                     aria-label={`select ${refKey(row.id)}`}
                     checked={selectedKeys.has(refKey(row.id))}
-                    onChange={() => toggle(row.id)}
+                    disabled={!selectedKeys.has(refKey(row.id)) && selected.length >= MATERIALIZE_CAP}
+                    onChange={() => toggle(row)}
                   />
                 </td>
                 {resource.columns.map((c) => (
@@ -207,8 +228,34 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
             Load more
           </button>
         )}
-        <span className="text-sm" style={{ color: "var(--muted)" }}>{selected.length} selected</span>
       </div>
+
+      {selected.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-md border p-3" style={{ borderColor: "var(--border)" }}>
+          <div className="flex items-center gap-3 text-sm">
+            <span className="font-medium">
+              {selected.length}/{MATERIALIZE_CAP} selected ({visibleSelected} in this view, {hiddenSelected} elsewhere)
+            </span>
+            <button type="button" className="underline" onClick={() => onSelectedChange([])} style={{ color: "var(--ink)" }}>Clear all</button>
+            {hiddenSelected > 0 && (
+              <button type="button" className="underline" onClick={() => onSelectedChange(selected.filter((s) => loadedKeys.has(refKey(s))))} style={{ color: "var(--ink)" }}>Clear hidden</button>
+            )}
+          </div>
+          {schema.resources.map((r) => byResourceCount(r.id) > 0 ? (
+            <div key={r.id} className="flex flex-col gap-1">
+              <span className="text-xs" style={{ color: "var(--muted)" }}>{labelFor(r.id)} ({byResourceCount(r.id)})</span>
+              <div className="flex flex-wrap gap-2">
+                {selected.filter((s) => s.resource === r.id).map((s) => (
+                  <span key={refKey(s)} className="inline-flex items-center gap-1 rounded border px-2 py-1 text-xs" style={{ borderColor: "var(--border)" }}>
+                    {s.label}{s.breadcrumb ? ` · ${s.breadcrumb}` : ""}
+                    <button type="button" aria-label={`remove ${s.label}`} onClick={() => onSelectedChange(selected.filter((x) => refKey(x) !== refKey(s)))} style={{ color: "var(--muted)" }}>×</button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null)}
+        </div>
+      )}
     </div>
   );
 }
