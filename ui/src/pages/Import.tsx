@@ -415,18 +415,8 @@ function CsvEditor({
             <button type="button" onClick={onReset} disabled={busy} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
               ↺ Reset
             </button>
-            <span className="text-sm" style={{ color: "var(--muted)" }}>
-              {total} labels
-            </span>
           </div>
           )}
-
-          {detail && overCap && (
-            <p style={{ color: "var(--bad)" }}>
-              {total} labels is over the 500-label limit. Reduce rows or copies.
-            </p>
-          )}
-          {detail && formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}
 
           <LabelGrid
             rows={viewRows}
@@ -453,7 +443,7 @@ function CsvEditor({
           />
 
           {detail && (
-          <div className="flex gap-3">
+          <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t py-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
             <button
               type="button"
               onClick={() => run("print")}
@@ -472,6 +462,9 @@ function CsvEditor({
             >
               Download
             </button>
+            <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
+            {overCap && <span style={{ color: "var(--bad)" }}>over the {MAX_BATCH_LABELS}-label limit</span>}
+            {formError && <span style={{ color: "var(--bad)" }}>{formError}</span>}
           </div>
           )}
         </>

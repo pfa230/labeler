@@ -143,6 +143,19 @@ describe("CSV Import screen", () => {
     expect(body.labels[0]).toEqual({ data: { sku: "1" }, option: { color: "red" } });
   });
 
+  it("shows Print/Download in the action bar; Print is gated on a printer, Download is not", async () => {
+    renderPage();
+    await loadTemplateAndCsv();
+    const print = await screen.findByRole("button", { name: /^print$/i });
+    const download = screen.getByRole("button", { name: /^download$/i });
+    // Both render; with no printer chosen, Print is disabled (gating) while Download stays enabled.
+    expect(print).toBeInTheDocument();
+    expect(print).toBeDisabled();
+    expect(download).toBeEnabled();
+    fireEvent.change(screen.getByLabelText(/printer/i), { target: { value: "p1" } });
+    await waitFor(() => expect(print).toBeEnabled());
+  });
+
   it("disables Run above the 500-label cap", async () => {
     renderPage();
     await loadTemplateAndCsv();
@@ -195,8 +208,8 @@ describe("CSV Import screen", () => {
     // index 0 maps to the first CSV row (sku=1): the annotation lands on that row.
     const failedRow = (await screen.findByText(/failed: missing sku/i)).closest('[role="row"]') as HTMLElement;
     expect(within(failedRow).getByText("1")).toBeInTheDocument();
-    // a form-level error (the <p>, not the row annotation span) is also shown.
-    expect(screen.getByText("missing sku", { selector: "p" })).toBeInTheDocument();
+    // a form-level error in the sticky action bar (not the row annotation, which reads "failed: missing sku").
+    expect(screen.getByText("missing sku", { selector: "span" })).toBeInTheDocument();
   });
 
   it("blocks a malformed CSV from being submitted", async () => {

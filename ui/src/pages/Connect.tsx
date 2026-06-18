@@ -252,11 +252,7 @@ function Composer({
                 {printers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
               </select>
             </label>
-            <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
           </div>
-
-          {overCap && <p style={{ color: "var(--bad)" }}>{total} labels is over the {MAX_BATCH_LABELS}-label limit. Reduce rows or copies.</p>}
-          {formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}
 
           <LabelGrid
             rows={viewRows}
@@ -273,9 +269,12 @@ function Composer({
             disabled={busy}
           />
 
-          <div className="flex gap-3">
+          <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t py-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
             <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>Print</button>
             <button type="button" onClick={() => run("download")} disabled={busy || overCap || hasErrors} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Download</button>
+            <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
+            {overCap && <span style={{ color: "var(--bad)" }}>over the {MAX_BATCH_LABELS}-label limit</span>}
+            {formError && <span style={{ color: "var(--bad)" }}>{formError}</span>}
           </div>
         </>
       )}
