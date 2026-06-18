@@ -32,6 +32,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0019](0019-ci-and-image-publishing.md) | CI and image publishing | Accepted |
 | [0020](0020-variables-vs-settings.md) | Variables vs settings (substitution vs app config) | Accepted |
 | [0021](0021-homebox-connect-hardening.md) | Homebox & Connect hardening (isLocation, row link, selection) | Accepted |
+| [0022](0022-import-option-model.md) | Import option model and template-switch persistence | Accepted |
 
 ## Adding an ADR
 

@@ -27,7 +27,7 @@ export function Connect() {
   const [connectionId, setConnectionId] = useState("");
   const { data: schema } = useConnectorSchema(connectionId);
   const [templateId, setTemplateId] = useState("");
-  const { data: detail } = useTemplate(templateId);
+  const { data: detail, isPlaceholderData } = useTemplate(templateId);
 
   const [selected, setSelected] = useState<SelectedRow[]>([]);
   const conn = (connections ?? []).find((c) => c.id === connectionId);
@@ -62,6 +62,7 @@ export function Connect() {
           connectorId={conn.connector}
           schema={schema}
           detail={detail}
+          stale={isPlaceholderData}
           selected={selected}
           printers={(printers ?? []).filter((p) => p.enabled)}
         />
@@ -75,12 +76,13 @@ export function Connect() {
 }
 
 function Composer({
-  connectionId, connectorId, schema, detail, selected, printers,
+  connectionId, connectorId, schema, detail, stale, selected, printers,
 }: {
   connectionId: string;
   connectorId: string;
   schema: ConnectorSchema;
   detail: TemplateDetail;
+  stale?: boolean;
   selected: SelectedRow[];
   printers: { id: string; name: string }[];
 }) {
@@ -143,6 +145,7 @@ function Composer({
 
   const run = async (mode: "download" | "print") => {
     setFormError(null);
+    if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
     if (snapshot.some(rowInvalid)) { setFormError("Fix the highlighted rows before running."); return; }
@@ -252,11 +255,7 @@ function Composer({
                 {printers.map((p) => (<option key={p.id} value={p.id}>{p.name}</option>))}
               </select>
             </label>
-            <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
           </div>
-
-          {overCap && <p style={{ color: "var(--bad)" }}>{total} labels is over the {MAX_BATCH_LABELS}-label limit. Reduce rows or copies.</p>}
-          {formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}
 
           <LabelGrid
             rows={viewRows}
@@ -273,9 +272,12 @@ function Composer({
             disabled={busy}
           />
 
-          <div className="flex gap-3">
-            <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>Print</button>
-            <button type="button" onClick={() => run("download")} disabled={busy || overCap || hasErrors} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Download</button>
+          <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t py-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
+            <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer || stale} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>Print</button>
+            <button type="button" onClick={() => run("download")} disabled={busy || overCap || hasErrors || stale} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Download</button>
+            <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
+            {overCap && <span style={{ color: "var(--bad)" }}>over the {MAX_BATCH_LABELS}-label limit</span>}
+            {formError && <span style={{ color: "var(--bad)" }}>{formError}</span>}
           </div>
         </>
       )}
