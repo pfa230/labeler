@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { referencedFields, referencedSettings, defaultOptions, imageFields } from "./templateFields";
+import { referencedFields, referencedSettings, defaultOptions, imageFields, reconcileRowOptions } from "./templateFields";
 import type { LayoutItem, Options } from "../api/types";
 
 const layout: LayoutItem[] = [
@@ -37,6 +37,19 @@ describe("imageFields", () => {
 describe("referencedSettings", () => {
   it("collects {settings.*} keys", () => {
     expect(referencedSettings(layout)).toContain("qr_base_url");
+  });
+});
+
+describe("reconcileRowOptions", () => {
+  const opts = { orientation: ["horizontal", "vertical"], outline: ["yes"] };
+  it("defaults missing options to the first allowed value", () => {
+    expect(reconcileRowOptions({}, opts)).toEqual({ orientation: "horizontal", outline: "yes" });
+  });
+  it("keeps an existing value for a still-declared option", () => {
+    expect(reconcileRowOptions({ orientation: "vertical" }, opts)).toEqual({ orientation: "vertical", outline: "yes" });
+  });
+  it("drops options not declared by the template", () => {
+    expect(reconcileRowOptions({ gone: "x", orientation: "vertical" }, opts)).toEqual({ orientation: "vertical", outline: "yes" });
   });
 });
 
