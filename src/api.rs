@@ -868,9 +868,12 @@ pub async fn connection_materialize(
     Ok(Json(rows).into_response())
 }
 
-fn parse_csv_rows(
-    body: &str,
-) -> Result<Vec<std::collections::HashMap<String, serde_json::Value>>, AppError> {
+struct ParsedCsvRow {
+    data: std::collections::HashMap<String, serde_json::Value>,
+    option: std::collections::BTreeMap<String, String>,
+}
+
+fn parse_csv_rows(body: &str) -> Result<Vec<ParsedCsvRow>, AppError> {
     let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
@@ -894,10 +897,15 @@ fn parse_csv_rows(
         let record =
             record.map_err(|err| AppError::invalid_request(format!("invalid CSV row: {err}")))?;
         let mut data = std::collections::HashMap::new();
+        let mut option = std::collections::BTreeMap::new();
         for (key, val) in headers.iter().zip(record.iter()) {
-            data.insert(key.to_string(), serde_json::Value::String(val.to_string()));
+            if let Some(name) = key.strip_prefix("option.") {
+                option.insert(name.to_string(), val.to_string());
+            } else {
+                data.insert(key.to_string(), serde_json::Value::String(val.to_string()));
+            }
         }
-        rows.push(data);
+        rows.push(ParsedCsvRow { data, option });
     }
     if rows.is_empty() {
         return Err(AppError::invalid_request("CSV has no data rows"));
@@ -1196,9 +1204,34 @@ pub async fn import_csv(
         .get(&params.template)
         .ok_or_else(|| AppError::template_not_found(params.template.clone()))?;
     let mode = parse_batch_mode(params.mode.as_deref().unwrap_or("download"))?;
+    // Declared options for this template (name -> allowed values); the first value is the default.
+    let empty = std::collections::BTreeMap::new();
+    let declared: &std::collections::BTreeMap<String, Vec<String>> = template
+        .options
+        .as_ref()
+        .map(|o| o.allowed())
+        .unwrap_or(&empty);
     let labels: Vec<crate::models::LabelInput> = parse_csv_rows(&body)?
         .into_iter()
-        .map(|data| crate::models::LabelInput { data, option: None })
+        .map(|row| {
+            let mut option = std::collections::BTreeMap::new();
+            for (name, vals) in declared {
+                let v = row.option.get(name).cloned();
+                let v = match v {
+                    Some(s) if !s.is_empty() => s,
+                    _ => vals.first().cloned().unwrap_or_default(),
+                };
+                option.insert(name.clone(), v);
+            }
+            crate::models::LabelInput {
+                data: row.data,
+                option: if option.is_empty() {
+                    None
+                } else {
+                    Some(option)
+                },
+            }
+        })
         .collect();
     run_batch(
         &state,

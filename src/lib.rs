@@ -1017,6 +1017,54 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[tokio::test]
+    async fn import_csv_routes_option_columns() {
+        let app = build_app();
+        // avery5163 declares orientation/outline. The `option.orientation` column routes into the
+        // per-row option selection, so the horizontal variant renders.
+        let csv = "id,url,name,tags,description,option.orientation,option.outline\n\
+            A1,https://x,Widget,t,desc,horizontal,yes\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/csv?template=avery5163&mode=download")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn import_csv_disallowed_option_value_is_atomic() {
+        let app = build_app();
+        // A disallowed option value flows through the shared batch path and fails the row as
+        // BatchInvalid with a per-row InvalidOptionValue (not a top-level InvalidOptionValue).
+        let csv = "id,url,name,tags,description,option.orientation\n\
+            A1,https://x,Widget,t,desc,sideways\n";
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import/csv?template=avery5163&mode=download")
+                    .header("content-type", "text/csv")
+                    .body(Body::from(csv))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"]
+            .as_array()
+            .expect("failures array");
+        assert_eq!(failures[0]["code"], "InvalidOptionValue");
+    }
+
     fn temp_templates_dir() -> std::path::PathBuf {
         let mut dir = std::env::temp_dir();
         let n = std::time::SystemTime::now()
