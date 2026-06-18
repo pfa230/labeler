@@ -43,7 +43,6 @@ impl HomeboxConnector {
             ),
             field("modelNumber", "Model", FieldType::Text, Tier::Hydrated),
             field("serialNumber", "Serial", FieldType::Text, Tier::Hydrated),
-            field("item_url", "Homebox URL", FieldType::Text, Tier::Derived),
         ];
         let b = base(conn)?;
         let custom: Vec<String> = egress
@@ -92,12 +91,6 @@ impl HomeboxConnector {
                         field("name", "Name", FieldType::Text, Tier::Cheap),
                         field("description", "Description", FieldType::Text, Tier::Cheap),
                         field("itemCount", "Items", FieldType::Number, Tier::Cheap),
-                        field(
-                            "location_url",
-                            "Homebox URL",
-                            FieldType::Text,
-                            Tier::Derived,
-                        ),
                     ],
                     filters: vec![],
                 },
@@ -162,7 +155,7 @@ impl HomeboxConnector {
         let rows: Vec<DisplayRow> = resp
             .items
             .iter()
-            .map(|e| summary_to_row(e, &req.resource))
+            .map(|e| summary_to_row(e, &req.resource, &conn.base_url))
             .collect();
         let total = resp.total.unwrap_or(0);
         let has_more = (page as u64) * (page_size as u64) < total;
@@ -256,7 +249,7 @@ fn field(key: &str, label: &str, ty: FieldType, tier: Tier) -> FieldSpec {
     }
 }
 
-fn summary_to_row(e: &EntitySummary, resource: &str) -> DisplayRow {
+fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayRow {
     let mut cells = BTreeMap::new();
     cells.insert(
         "name".into(),
@@ -286,6 +279,11 @@ fn summary_to_row(e: &EntitySummary, resource: &str) -> DisplayRow {
             key: e.id.clone(),
         },
         cells,
+        url: Some(format!(
+            "{}/entity/{}",
+            base_url.trim_end_matches('/'),
+            e.id
+        )),
     }
 }
 
@@ -531,6 +529,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(page.rows[0].id.resource, "entities");
+    }
+
+    #[tokio::test]
+    async fn browse_row_has_homebox_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id":"e1","name":"Drill"}], "total": 1
+            })))
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::with_loopback();
+        let key = crate::connector::cursor::SigningKey::random();
+        let c = conn(&server.uri());
+        let expected = format!("{}/entity/e1", c.base_url.trim_end_matches('/'));
+        let page = HomeboxConnector
+            .browse(
+                &c,
+                &egress,
+                &key,
+                crate::connector::BrowseRequest {
+                    resource: "entities".into(),
+                    filters: Default::default(),
+                    parent: None,
+                    cursor: None,
+                    page_size: Some(50),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.rows[0].url.as_deref(), Some(expected.as_str()));
     }
 
     #[tokio::test]

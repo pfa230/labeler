@@ -180,7 +180,15 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
                   />
                 </td>
                 {resource.columns.map((c) => (
-                  <td key={c.key} className={td}>{row.cells[c.key] ?? ""}</td>
+                  <td key={c.key} className={td}>
+                    {c.key === "name" && row.url ? (
+                      <a href={row.url} target="_blank" rel="noopener" className="underline" style={{ color: "var(--ink)" }}>
+                        {row.cells[c.key] ?? ""}
+                      </a>
+                    ) : (
+                      row.cells[c.key] ?? ""
+                    )}
+                  </td>
                 ))}
                 {rel && (
                   <td className={td}>

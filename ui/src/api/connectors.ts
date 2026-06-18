@@ -30,7 +30,7 @@ export interface ConnectorSchema { version: string; resources: ResourceSpec[]; r
 
 export interface RowRef { resource: string; key: string }
 export type CellValue = string | number; // backend untagged Text|Number
-export interface DisplayRow { id: RowRef; cells: Record<string, CellValue> }
+export interface DisplayRow { id: RowRef; cells: Record<string, CellValue>; url?: string }
 export interface BrowseParent { relationship: string; key: string }
 export interface BrowseRequest {
   resource: string;

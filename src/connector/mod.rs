@@ -95,6 +95,8 @@ pub enum CellValue {
 pub struct DisplayRow {
     pub id: RowRef,
     pub cells: BTreeMap<String, CellValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
