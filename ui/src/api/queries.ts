@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJson, sendJson, del } from "./client";
 import type { TemplateSummary, TemplateDetail, Printer } from "./types";
 
@@ -9,7 +9,12 @@ export function usePrinters() {
   return useQuery({ queryKey: ["printers"], queryFn: () => getJson<Printer[]>("/printers") });
 }
 export function useTemplate(id: string) {
-  return useQuery({ queryKey: ["template", id], queryFn: () => getJson<TemplateDetail>(`/templates/${id}`), enabled: !!id });
+  return useQuery({
+    queryKey: ["template", id],
+    queryFn: () => getJson<TemplateDetail>(`/templates/${id}`),
+    enabled: !!id,
+    placeholderData: keepPreviousData,
+  });
 }
 export function useTemplateSource(id: string) {
   return useQuery({
