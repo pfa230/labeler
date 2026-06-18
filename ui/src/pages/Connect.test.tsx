@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../app/toast";
@@ -58,6 +58,7 @@ describe("Connect", () => {
     fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
     fireEvent.click(await screen.findByLabelText("select entities:e1"));
     fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
-    expect(await screen.findByText("Drill")).toBeInTheDocument();
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(await within(grid).findByText("Drill")).toBeInTheDocument();
   });
 });

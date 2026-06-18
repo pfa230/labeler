@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type RowRef } from "../api/connectors";
+import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type SelectedRow } from "../api/connectors";
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
 import { referencedFields, defaultOptions } from "../lib/templateFields";
@@ -29,7 +29,7 @@ export function Connect() {
   const [templateId, setTemplateId] = useState("");
   const { data: detail } = useTemplate(templateId);
 
-  const [selected, setSelected] = useState<RowRef[]>([]);
+  const [selected, setSelected] = useState<SelectedRow[]>([]);
   const conn = (connections ?? []).find((c) => c.id === connectionId);
 
   return (
@@ -81,7 +81,7 @@ function Composer({
   connectorId: string;
   schema: ConnectorSchema;
   detail: TemplateDetail;
-  selected: RowRef[];
+  selected: SelectedRow[];
   printers: { id: string; name: string }[];
 }) {
   const { push } = useToast();
@@ -129,7 +129,7 @@ function Composer({
     setBusy(true);
     try {
       const fields = mappedConnectorKeys(mapping);
-      const materialized = await materializeConnection(connectionId, { rows: selected, fields, expansion: "as_listed" });
+      const materialized = await materializeConnection(connectionId, { rows: selected.map(({ resource, key }) => ({ resource, key })), fields, expansion: "as_listed" });
       const built = rowsFromMaterialized(materialized, mapping, connectorId, connectionId);
       commitRows([...rowsRef.current, ...built]);
       push({ kind: "ok", message: `Added ${built.length} rows` });
