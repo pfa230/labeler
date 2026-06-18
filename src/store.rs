@@ -123,6 +123,7 @@ fn migrations() -> Migrations<'static> {
         );",
         ),
         M::up("CREATE INDEX idx_jobs_ts ON jobs(ts);"),
+        M::up("ALTER TABLE settings RENAME TO variables;"),
     ])
 }
 
@@ -191,9 +192,9 @@ impl Store {
         Ok(affected > 0)
     }
 
-    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+    pub async fn get_variable(&self, key: &str) -> Result<Option<String>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut stmt = conn.prepare("SELECT value FROM variables WHERE key = ?1")?;
         let mut rows = stmt.query_map([key], |row| row.get::<_, String>(0))?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
@@ -201,21 +202,21 @@ impl Store {
         }
     }
 
-    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+    pub async fn set_variable(&self, key: &str, value: &str) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+            "INSERT INTO variables (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = ?2",
             rusqlite::params![key, value],
         )?;
         Ok(())
     }
 
-    pub async fn all_settings(
+    pub async fn all_variables(
         &self,
     ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt = conn.prepare("SELECT key, value FROM settings ORDER BY key")?;
+        let mut stmt = conn.prepare("SELECT key, value FROM variables ORDER BY key")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -613,15 +614,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settings_and_jobs() {
+    async fn variables_and_jobs() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.get_setting("k").await.unwrap().is_none());
-        store.set_setting("k", "v").await.unwrap();
-        assert_eq!(store.get_setting("k").await.unwrap().as_deref(), Some("v"));
-        store.set_setting("k", "v2").await.unwrap();
-        assert_eq!(store.get_setting("k").await.unwrap().as_deref(), Some("v2"));
+        assert!(store.get_variable("k").await.unwrap().is_none());
+        store.set_variable("k", "v").await.unwrap();
+        assert_eq!(store.get_variable("k").await.unwrap().as_deref(), Some("v"));
+        store.set_variable("k", "v2").await.unwrap();
+        assert_eq!(
+            store.get_variable("k").await.unwrap().as_deref(),
+            Some("v2")
+        );
 
-        let all = store.all_settings().await.unwrap();
+        let all = store.all_variables().await.unwrap();
         assert_eq!(all.get("k").map(String::as_str), Some("v2"));
 
         store
