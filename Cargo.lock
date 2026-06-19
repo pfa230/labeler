@@ -2008,6 +2008,7 @@ dependencies = [
  "hex",
  "hmac",
  "http-body-util",
+ "image",
  "ipp",
  "qrcode",
  "rand 0.8.6",
