@@ -747,11 +747,98 @@ impl<'a> RenderContext<'a> {
     }
 }
 
+/// 1×1 transparent PNG data URI — a valid stand-in for data-bound image fields.
+pub const SAMPLE_PNG_DATA_URI: &str =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/// Collect `{token}` names from a string, skipping `{{`/`}}` escapes and `vars.*` tokens.
+fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '{' {
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            continue;
+        }
+        let mut token = String::new();
+        for tc in chars.by_ref() {
+            if tc == '}' {
+                if !token.starts_with("vars.") {
+                    out.push(token);
+                }
+                break;
+            }
+            token.push(tc);
+        }
+    }
+}
+
+fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Vec<String>) {
+    for item in items {
+        match item {
+            LayoutItem::Text { name, value, .. } | LayoutItem::Qr { name, value, .. } => {
+                if let Some(n) = name {
+                    text.push(n.clone());
+                }
+                if let Some(v) = value {
+                    collect_data_tokens(v, text);
+                }
+            }
+            LayoutItem::Image { name, src, .. } => {
+                if let Some(n) = name {
+                    image.push(n.clone());
+                }
+                if let Some(s) = src {
+                    collect_data_tokens(s, image);
+                }
+            }
+            LayoutItem::Container { items, .. } => walk_placeholder(items, text, image),
+            LayoutItem::Line { .. } => {}
+        }
+    }
+}
+
+/// Build non-empty placeholder data for every referenced data field. Image fields get a 1×1 PNG;
+/// other fields get their own name as a stand-in. `{vars.*}` is excluded (resolved from the store).
+pub fn placeholder_data(template: &TemplateDefinition) -> HashMap<String, JsonValue> {
+    let Layout::Items(items) = &template.layout;
+    let mut text = Vec::new();
+    let mut image = Vec::new();
+    walk_placeholder(items, &mut text, &mut image);
+    let mut data = HashMap::new();
+    for f in text {
+        data.entry(f.clone())
+            .or_insert_with(|| JsonValue::String(f));
+    }
+    for f in image {
+        // image wins over a same-named text guess
+        data.insert(f, JsonValue::String(SAMPLE_PNG_DATA_URI.to_string()));
+    }
+    data
+}
+
+/// First allowed value per declared option, or None when the template declares no options.
+pub fn default_option_selection(template: &TemplateDefinition) -> Option<BTreeMap<String, String>> {
+    let options = template.options.as_ref()?;
+    let selection: BTreeMap<String, String> = options
+        .allowed()
+        .iter()
+        .filter_map(|(name, values)| values.first().map(|v| (name.clone(), v.clone())))
+        .collect();
+    if selection.is_empty() {
+        None
+    } else {
+        Some(selection)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        count_pdf_pages, render_sheet_pages, render_single_label, render_single_label_pdf,
-        render_thumbnail_png,
+        count_pdf_pages, default_option_selection, placeholder_data, render_sheet_pages,
+        render_single_label, render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
     };
     use crate::models::{
         Alignment, Dimension, Fit, FontSize, Frame, LabelInput, Layout, LayoutItem, Options,
@@ -1383,5 +1470,106 @@ mod tests {
             }]),
             version: None,
         }
+    }
+
+    #[test]
+    fn placeholder_data_fills_fields_excludes_vars_and_marks_images() {
+        use crate::models::{Alignment, Fit, FontSize, Position, Size, SizeValue};
+        let template = TemplateDefinition {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            unit: "mm".into(),
+            dpi: 96,
+            format: TemplateFormat::Single {
+                width: crate::models::Dimension::Fixed(40.0),
+                height: crate::models::Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![
+                LayoutItem::Text {
+                    name: Some("title".into()),
+                    value: None,
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    font_size: FontSize::Fixed(6.0),
+                    multiline: false,
+                    alignment: Alignment::default(),
+                },
+                LayoutItem::Qr {
+                    name: None,
+                    value: Some("{url} {vars.base}".into()),
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    params: None,
+                },
+                LayoutItem::Image {
+                    name: Some("logo".into()),
+                    src: None,
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    fit: Fit::default(),
+                },
+            ]),
+            version: None,
+        };
+        let data = placeholder_data(&template);
+        assert_eq!(data.get("title").and_then(|v| v.as_str()), Some("title"));
+        assert_eq!(data.get("url").and_then(|v| v.as_str()), Some("url"));
+        assert!(!data.contains_key("base"), "vars.* must be excluded");
+        assert!(!data.contains_key("vars.base"), "vars.* must be excluded");
+        assert_eq!(
+            data.get("logo").and_then(|v| v.as_str()),
+            Some(SAMPLE_PNG_DATA_URI)
+        );
+    }
+
+    #[test]
+    fn default_option_selection_picks_first_values() {
+        use crate::models::{Dimension, Options};
+        let template = TemplateDefinition {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            unit: "mm".into(),
+            dpi: 96,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(40.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: Some(Options(BTreeMap::from([
+                (
+                    "color".to_string(),
+                    vec!["red".to_string(), "blue".to_string()],
+                ),
+                ("size".to_string(), vec!["small".to_string()]),
+            ]))),
+            layout: Layout::Items(vec![]),
+            version: None,
+        };
+        let sel = default_option_selection(&template).expect("has options");
+        assert_eq!(sel.get("color").map(String::as_str), Some("red"));
+        assert_eq!(sel.get("size").map(String::as_str), Some("small"));
+
+        let no_opts = TemplateDefinition {
+            options: None,
+            ..template
+        };
+        assert!(default_option_selection(&no_opts).is_none());
     }
 }
