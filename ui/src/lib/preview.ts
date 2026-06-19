@@ -3,7 +3,7 @@ import { fetchBlob, submitBatch } from "../api/client";
 import { defaultOptions, imageFields, referencedFields } from "./templateFields";
 import type { TemplateDetail } from "../api/types";
 
-// A 1x1 transparent PNG data URI — a valid sample for data-bound image fields (backend parses a data URI).
+// A 1x1 transparent PNG data URI: a valid sample for data-bound image fields (backend parses a data URI).
 const SAMPLE_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 

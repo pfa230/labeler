@@ -382,7 +382,7 @@ mod http_tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["code"], "NotFound");
 
-        // a missing asset is a 404 (NOT the SPA html) — assets must not be shadowed by index.html
+        // a missing asset is a 404 (NOT the SPA html); assets must not be shadowed by index.html
         let res = app
             .clone()
             .oneshot(
@@ -553,6 +553,71 @@ mod http_tests {
         assert!(second.headers().get("etag").is_some(), "304 carries etag");
         let body = bytes_response(second).await;
         assert!(body.is_empty(), "304 body must be empty");
+    }
+
+    #[tokio::test]
+    async fn thumbnail_etag_rotates_on_content_change() {
+        // Uses a temp dir + build_app_in so the replace (PUT) writes to a throwaway
+        // directory and never mutates the on-disk templates/ fixtures.
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("tpl.yaml"), template_yaml("tpl")).unwrap();
+        let app = build_app_in(&dir);
+
+        // E1: etag for original template content.
+        let res1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/tpl/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+        let etag1 = res1
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Replace with a modified version (different font_size changes the content hash).
+        let changed = template_yaml("tpl").replace("font_size: 10.0", "font_size: 8.0");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/tpl", "PUT", changed))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // E2: etag after replace must differ because the YAML content changed.
+        let res2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/tpl/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        let etag2 = res2
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        assert_ne!(
+            etag1, etag2,
+            "ETag must rotate after template content changes"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]

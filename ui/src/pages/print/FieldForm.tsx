@@ -119,7 +119,7 @@ export function FieldForm({
           className={inputClass}
           style={inputStyle}
         >
-          <option value="">— none (download only) —</option>
+          <option value="">none (download only)</option>
           {enabledPrinters.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
