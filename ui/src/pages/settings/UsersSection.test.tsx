@@ -19,6 +19,7 @@ function stubFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url.startsWith("/api/auth/me")) return json({ authed: true, needsSetup: false, me: { id: "u1", username: "alice" } });
     if (url.startsWith("/api/users/") && method === "DELETE") {
       const id = decodeURIComponent(url.slice("/api/users/".length));
       if (state.length <= 1) return json({ error: { code: "Conflict", message: "cannot delete the last user" } }, 409);
@@ -101,10 +102,22 @@ describe("UsersSection", () => {
     await waitFor(() => expect(screen.queryByText("bob")).not.toBeInTheDocument());
   });
 
+  it("disables delete for the current user", async () => {
+    renderSection();
+    const aliceRow = (await screen.findByText("alice")).closest("tr") as HTMLElement;
+    const bobRow = (await screen.findByText("bob")).closest("tr") as HTMLElement;
+    expect(within(aliceRow).getByText(/\(you\)/i)).toBeInTheDocument();
+    expect(within(aliceRow).getByRole("button", { name: /^delete$/i })).toBeDisabled();
+    expect(within(bobRow).getByRole("button", { name: /^delete$/i })).toBeEnabled();
+  });
+
   it("shows the last-user 409 message from a rejected delete", async () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = (init?.method ?? "GET").toUpperCase();
+      // me is a different principal than "solo" so the self-delete guard does not disable the button;
+      // this test exercises the UI's surfacing of the backend last-user 409.
+      if (url.startsWith("/api/auth/me")) return json({ authed: true, needsSetup: false, me: { id: "admin", username: "admin" } });
       if (url.startsWith("/api/users/") && method === "DELETE") {
         return json({ error: { code: "Conflict", message: "cannot delete the last user" } }, 409);
       }
@@ -123,6 +136,7 @@ describe("UsersSection", () => {
     const pwMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = (init?.method ?? "GET").toUpperCase();
+      if (url.startsWith("/api/auth/me")) return json({ authed: true, needsSetup: false, me: { id: "u1", username: "alice" } });
       if (url.startsWith("/api/auth/password") && method === "POST") return json({ ok: true });
       if (url.startsWith("/api/users")) return json([{ id: "u1", username: "alice" }]);
       throw new Error(`unexpected fetch: ${url}`);
