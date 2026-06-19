@@ -1340,13 +1340,13 @@ mod tests {
         let img = image::load_from_memory(&png).expect("decode png");
         // label 10x5 mm at 96 dpi ≈ 37.8 x 18.9 px; paper would be ~378 px. Assert it is the label box.
         assert!(
-            img.width() < 100,
-            "width {} should be label-sized, not paper",
+            img.width() > 20 && img.width() < 60,
+            "width {} should be ~38px (label 10mm@96dpi), not paper-sized",
             img.width()
         );
         assert!(
-            img.height() < 50,
-            "height {} should be label-sized",
+            img.height() > 10 && img.height() < 30,
+            "height {} should be ~19px (label 5mm@96dpi), not paper-sized",
             img.height()
         );
     }
