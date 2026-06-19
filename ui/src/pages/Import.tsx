@@ -14,6 +14,8 @@ import {
 } from "../lib/labelGrid";
 import { parseCsv } from "../lib/csv";
 import { LabelGrid } from "../components/LabelGrid";
+import { PreviewPane } from "../components/PreviewPane";
+import { useRowPreview } from "../lib/rowPreview";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
 import type { TemplateDetail } from "../api/types";
@@ -80,6 +82,7 @@ function CsvEditor({
   const [printer, setPrinter] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
   const declaredOptions = detail?.options ?? {};
   const declaredNames = Object.keys(declaredOptions);
@@ -131,6 +134,25 @@ function CsvEditor({
   // option map) does not drop CSV option values the current template happens not to declare.
   const viewRows: LabelGridRow[] = rows.map((row) => ({ ...row, option: displayOption(row), validation: validateRow(row) }));
   const hasErrors = viewRows.some(rowInvalid);
+
+  // Keep selectedRowId pointing at a valid row. If the current selection has been removed or is no
+  // longer in rows, fall back to the first valid row (or undefined when none exist). This is a derived
+  // fallback computed each render so no effect is needed: the canonical state is `selectedRowId`.
+  const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
+  const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
+
+  // Build the resolved label for the selected row using the same resolution the submit path uses,
+  // so the preview matches the actual rendered output.
+  const selRow = rows.find((r) => r.id === resolvedSelectedId);
+  const previewLabel = selRow ? resolveLabels([{ ...selRow, option: effectiveOption(selRow) }], {}, 1)[0] : undefined;
+
+  const preview = useRowPreview({
+    templateId: detail?.id ?? "",
+    format: isSheet ? "sheet" : "single",
+    label: detail ? previewLabel : undefined,
+    startSlot: isSheet ? startSlot : undefined,
+  });
+
   // "Ignored" notices for CSV option.<name> columns the chosen template does not declare. Derived at
   // render (not in loadFrom) so loading a CSV with no template then picking a template surfaces them.
   const ignoredNotices = detail
@@ -456,7 +478,13 @@ function CsvEditor({
               setFormError(null);
             }}
             disabled={busy}
+            selectedRowId={resolvedSelectedId}
+            onSelectRow={setSelectedRowId}
           />
+
+          {detail && (
+          <PreviewPane name={detail.name} format={isSheet ? "sheet" : "single"} preview={preview} />
+          )}
 
           {detail && (
           <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t py-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
