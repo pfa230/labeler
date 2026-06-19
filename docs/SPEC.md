@@ -86,6 +86,12 @@ previously-loaded set, so a bad file never takes the service down.
   receive `304 Not Modified`. Error codes: `404 TemplateNotFound` for unknown ids, `422` for
   render/interpolation failures.
 
+The CSV Import and Homebox Connect pages render an on-demand, selected-row preview using the same
+endpoints: `POST /render/label` for single templates, `POST /batch` (mode `download`, one label) for
+sheet templates. The preview reuses the full option-resolution path (the same one download/print use),
+so the preview matches the actual rendered output. A preview failure (non-2xx) surfaces inline in the
+`PreviewPane` and never disables Download or Print.
+
 API-managed templates are written as `<id>.yaml` under the templates dir (atomic temp-then-rename), and
 `id` must contain only letters, digits, `-`, or `_` (path-traversal guard). Parse errors and validation
 failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned store is Phase 2
@@ -519,6 +525,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-18**: Selected-row preview in Import and Connect (M9; #64). The CSV Import and Homebox
+  Connect pages display an on-demand preview for the selected grid row, rendered via `POST /render/label`
+  (single templates) or `POST /batch` (sheet templates). Preview failures are shown inline and never
+  gate Download or Print.
 - **2026-06-18**: Label thumbnails (M9; ADR-0023; #73). `GET /templates/{id}/thumbnail` renders a
   single-label PNG preview using placeholder data, with content-hash ETag for cheap 304 revalidation.
   Sheets render one slot, not a full sheet. Variables resolve from the store; default option selection

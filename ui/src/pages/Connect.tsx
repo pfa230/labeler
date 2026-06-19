@@ -9,6 +9,8 @@ import {
   duplicateRow, removeRow, type LabelGridRow,
 } from "../lib/labelGrid";
 import { LabelGrid } from "../components/LabelGrid";
+import { PreviewPane } from "../components/PreviewPane";
+import { useRowPreview } from "../lib/rowPreview";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
 import type { TemplateDetail } from "../api/types";
@@ -101,6 +103,7 @@ function Composer({
   const [printer, setPrinter] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
   const declaredOptions = detail.options ?? {};
   const declaredNames = Object.keys(declaredOptions);
@@ -120,6 +123,23 @@ function Composer({
   const rowInvalid = (row: LabelGridRow): boolean => !!validateRow(row).field;
   const viewRows = rows.map((row) => ({ ...row, validation: validateRow(row) }));
   const hasErrors = viewRows.some(rowInvalid);
+
+  // Keep selectedRowId pointing at a valid row. Fall back to first valid (or undefined) derived each
+  // render so no effect is needed: the canonical state is `selectedRowId`.
+  const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
+  const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
+
+  // Build the resolved label for the selected row using the same resolution the submit path uses.
+  // Connect uses a global manualOptions overlay (not per-row effectiveOption like Import).
+  const selRow = rows.find((r) => r.id === resolvedSelectedId);
+  const previewLabel = selRow ? resolveLabels([selRow], manualOptions, 1)[0] : undefined;
+
+  const preview = useRowPreview({
+    templateId: detail.id,
+    format: isSheet ? "sheet" : "single",
+    label: previewLabel,
+    startSlot: isSheet ? startSlot : undefined,
+  });
   const total = expandedCount(rows.length, copies);
   const overCap = total > MAX_BATCH_LABELS;
 
@@ -270,7 +290,11 @@ function Composer({
             onDuplicate={(id) => { commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
             onRemove={(id) => { commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
             disabled={busy}
+            selectedRowId={resolvedSelectedId}
+            onSelectRow={setSelectedRowId}
           />
+
+          <PreviewPane name={detail.name} format={isSheet ? "sheet" : "single"} preview={preview} />
 
           <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t py-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
             <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer || stale} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>Print</button>
