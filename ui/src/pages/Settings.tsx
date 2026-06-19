@@ -6,7 +6,7 @@ import { TokensSection } from "./settings/TokensSection";
 
 export function Settings() {
   return (
-    <div className="flex flex-col gap-8">
+    <div className="flex max-w-3xl flex-col gap-8">
       <h1 className="text-2xl font-semibold">Settings</h1>
       <VariablesSection />
       <PrintersSection />
