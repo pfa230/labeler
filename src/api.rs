@@ -157,6 +157,8 @@ fn api_router() -> Router<Arc<AppState>> {
         )
         .route("/variables", get(get_variables))
         .route("/variables/{key}", put(put_variable))
+        .route("/settings", get(get_settings))
+        .route("/settings/{key}", put(put_setting).delete(delete_setting))
         .route("/render/label", post(render_label))
         .route("/batch", post(batch))
         .route("/import/csv", post(import_csv))
@@ -601,6 +603,104 @@ pub async fn put_variable(
     let _guard = state.write_lock.lock().await;
     state.store().set_variable(&key, &body.value).await?;
     Ok(Json(body))
+}
+
+/// A resolved application setting: its effective value and whether that is the in-code default.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ResolvedSetting {
+    pub value: serde_json::Value,
+    pub is_default: bool,
+}
+
+/// Request body for `PUT /settings/{key}`: the new value, validated per setting.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct SettingValue {
+    pub value: serde_json::Value,
+}
+
+#[utoipa::path(
+    get,
+    path = "/settings",
+    tag = "settings",
+    responses((status = 200, description = "Resolved application settings", body = std::collections::BTreeMap<String, ResolvedSetting>))
+)]
+pub async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+    use std::collections::BTreeMap;
+    let stored = state
+        .store()
+        .get_setting(crate::settings::JOB_LOG_RETENTION_DAYS)
+        .await?;
+    let is_default = stored.is_none();
+    let days = crate::settings::resolve_retention_days_from(stored)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let mut out: BTreeMap<String, ResolvedSetting> = BTreeMap::new();
+    out.insert(
+        crate::settings::JOB_LOG_RETENTION_DAYS.to_string(),
+        ResolvedSetting {
+            value: serde_json::json!(days),
+            is_default,
+        },
+    );
+    Ok(Json(out).into_response())
+}
+
+#[utoipa::path(
+    put,
+    path = "/settings/{key}",
+    tag = "settings",
+    params(("key" = String, Path, description = "Setting key")),
+    request_body = SettingValue,
+    responses(
+        (status = 200, description = "Override stored", body = ResolvedSetting),
+        (status = 400, description = "Invalid value", body = ErrorResponse),
+        (status = 404, description = "Unknown setting", body = ErrorResponse)
+    )
+)]
+pub async fn put_setting(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+    Json(body): Json<SettingValue>,
+) -> Result<Response, AppError> {
+    if !crate::settings::is_known(&key) {
+        return Err(AppError::setting_not_found(&key));
+    }
+    let canonical =
+        crate::settings::validate(&key, &body.value).map_err(AppError::invalid_request)?;
+    let _guard = state.write_lock.lock().await;
+    state.store().set_setting(&key, &canonical).await?;
+    // canonical is the validated integer text; reflect it back as a JSON number
+    let value: serde_json::Value = canonical
+        .parse::<u32>()
+        .map(serde_json::Value::from)
+        .unwrap_or(body.value);
+    Ok(Json(ResolvedSetting {
+        value,
+        is_default: false,
+    })
+    .into_response())
+}
+
+#[utoipa::path(
+    delete,
+    path = "/settings/{key}",
+    tag = "settings",
+    params(("key" = String, Path, description = "Setting key")),
+    responses(
+        (status = 204, description = "Reset to default"),
+        (status = 404, description = "Unknown setting", body = ErrorResponse)
+    )
+)]
+pub async fn delete_setting(
+    State(state): State<Arc<AppState>>,
+    Path(key): Path<String>,
+) -> Result<Response, AppError> {
+    if !crate::settings::is_known(&key) {
+        return Err(AppError::setting_not_found(&key));
+    }
+    let _guard = state.write_lock.lock().await;
+    // idempotent: a known setting that was never overridden is already at its default
+    state.store().delete_setting(&key).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 #[utoipa::path(

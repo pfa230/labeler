@@ -345,6 +345,7 @@ All errors return JSON:
 | `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). |
 | `NotFound` | 404 | Unknown `/api/*` route (the API fallback). |
 | `RenderFailed` | 500 | Typst compile/encode failure. |
+| `SettingNotFound` | 404 | Unknown application setting key. |
 
 `code` strings are part of the contract; keep them stable. Authentication adds `Unauthorized` (401)
 and `Forbidden` (403); see §11.
@@ -486,6 +487,23 @@ readable from templates through `{vars.<key>}` interpolation (see §8). The only
 Phase 1 is `qr_base_url`. This store is for *content* interpolated into labels; typed application
 configuration (e.g. job-log retention) is a separate concern, kept out of the interpolation namespace
 (ADR-0020).
+
+## Settings
+
+Application settings are typed configuration, stored separately from `variables` and never interpolated
+into labels. `GET /api/settings` returns the resolved value for every known setting with an `is_default`
+flag, so the effective config is always visible; a row is written only when an operator overrides a
+default. `PUT /api/settings/{key}` validates the value per setting, and `DELETE /api/settings/{key}`
+resets it to the in-code default (idempotent). Unknown keys are `404 SettingNotFound`.
+
+| Method | Path | Purpose | Status |
+| --- | --- | --- | --- |
+| GET | `/api/settings` | Resolved app settings (effective value + `is_default` per key) | `200` |
+| PUT | `/api/settings/{key}` | Set an override (validated per setting) | `200` / `400` / `404` |
+| DELETE | `/api/settings/{key}` | Reset a setting to its in-code default (idempotent) | `204` / `404` |
+
+The only setting today is `job_log_retention_days` (default `90`; `0` disables job-log pruning). The
+daily prune reads the live value, so changes take effect without a restart.
 
 ## CSV import
 

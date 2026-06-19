@@ -1992,6 +1992,18 @@ mod auth_http_tests {
             .unwrap()
     }
 
+    fn req_put_json_cookie(uri: &str, body: &str, cookie: &str) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("origin", "http://localhost")
+            .header("cookie", cookie)
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
     fn req_delete_cookie(uri: &str, cookie: &str) -> Request<Body> {
         Request::builder()
             .method("DELETE")
@@ -2339,5 +2351,118 @@ mod auth_http_tests {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn settings_resolve_override_and_reset() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+
+        // GET shows the in-code default, flagged is_default
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["job_log_retention_days"]["value"], 90);
+        assert_eq!(body["job_log_retention_days"]["is_default"], true);
+
+        // PUT an override
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/settings/job_log_retention_days",
+                r#"{"value":30}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["value"], 30);
+        assert_eq!(body["is_default"], false);
+
+        // GET now reflects the override
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["job_log_retention_days"]["value"], 30);
+        assert_eq!(body["job_log_retention_days"]["is_default"], false);
+
+        // DELETE resets to default and is 204
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(
+                "/api/settings/job_log_retention_days",
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["job_log_retention_days"]["is_default"], true);
+
+        // DELETE again is still 204 (idempotent, registry-keyed)
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(
+                "/api/settings/job_log_retention_days",
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn settings_reject_bad_value_and_unknown_key() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+
+        // float, string, negative all 400
+        for bad in [r#"{"value":90.0}"#, r#"{"value":"90"}"#, r#"{"value":-1}"#] {
+            let res = app
+                .clone()
+                .oneshot(req_put_json_cookie(
+                    "/api/settings/job_log_retention_days",
+                    bad,
+                    &cookie,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad value {bad}");
+            assert_eq!(body_json(res).await["error"]["code"], "InvalidRequest");
+        }
+
+        // unknown key on PUT and DELETE is 404 SettingNotFound
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/settings/nope",
+                r#"{"value":1}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_json(res).await["error"]["code"], "SettingNotFound");
+
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie("/api/settings/nope", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_json(res).await["error"]["code"], "SettingNotFound");
     }
 }
