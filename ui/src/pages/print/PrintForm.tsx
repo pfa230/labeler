@@ -81,7 +81,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
       });
       if (r.kind === "summary") {
         const { succeeded, total, failed } = r.summary;
-        const detailMsg = failed.length ? `: ${failed[0].error}` : "";
+        const detailMsg = failed.length ? ` — ${failed[0].error}` : "";
         push({ kind: failed.length ? "error" : "ok", message: `Printed ${succeeded}/${total}${detailMsg}` });
       }
     } catch (err) {
