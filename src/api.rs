@@ -456,10 +456,13 @@ pub async fn thumbnail(
     let template = registry
         .get(&id)
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let etag = format!("\"{}\"", registry.content_hash(&id).unwrap_or_default());
+    let hash = registry
+        .content_hash(&id)
+        .expect("content_hash present for a loaded template");
+    let etag = format!("\"{}\"", hash);
 
     if let Some(inm) = headers.get(axum::http::header::IF_NONE_MATCH) {
-        if inm.to_str().map(|v| v == etag).unwrap_or(false) {
+        if inm.to_str().map(|v| v == "*" || v == etag).unwrap_or(false) {
             return Ok((
                 axum::http::StatusCode::NOT_MODIFIED,
                 [(axum::http::header::ETAG, etag.as_str())],
