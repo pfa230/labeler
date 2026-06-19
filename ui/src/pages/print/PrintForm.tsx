@@ -4,7 +4,8 @@ import { useLivePreview } from "../../lib/livePreview";
 import { defaultOptions, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
 import { ApiError, fetchBlob, saveBlob, submitBatch } from "../../api/client";
 import { useToast } from "../../app/toast-context";
-import type { TemplateDetail, TemplateFormat } from "../../api/types";
+import type { TemplateDetail } from "../../api/types";
+import { PreviewPane } from "../../components/PreviewPane";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
 
@@ -143,39 +144,8 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
         </div>
       </div>
 
-      <PreviewPane detail={detail} preview={preview} />
+      <PreviewPane name={detail.name} format={detail.format.type} preview={preview} />
     </div>
   );
 }
 
-function PreviewPane({
-  detail,
-  preview,
-}: {
-  detail: TemplateDetail;
-  preview: { url?: string; error?: string; loading: boolean };
-}) {
-  const isSheet = (detail.format as TemplateFormat).type === "sheet";
-  return (
-    <div
-      className="flex min-h-48 items-center justify-center rounded-lg border p-4"
-      style={{ background: "var(--bg)", borderColor: "var(--border)" }}
-    >
-      {preview.loading && <p style={{ color: "var(--muted)" }}>rendering preview…</p>}
-      {!preview.loading && preview.error && (
-        <p style={{ color: "var(--bad)" }}>Preview failed: {preview.error}</p>
-      )}
-      {!preview.loading && !preview.error && preview.url && !isSheet && (
-        <img src={preview.url} alt={`${detail.name} preview`} className="max-h-96 max-w-full" />
-      )}
-      {!preview.loading && !preview.error && preview.url && isSheet && (
-        <object data={preview.url} type="application/pdf" className="h-96 w-full" aria-label={`${detail.name} preview`}>
-          <a href={preview.url}>Open sheet preview</a>
-        </object>
-      )}
-      {!preview.loading && !preview.error && !preview.url && (
-        <p style={{ color: "var(--muted)" }}>Fill the required fields to preview.</p>
-      )}
-    </div>
-  );
-}

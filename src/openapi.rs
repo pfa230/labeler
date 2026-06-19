@@ -30,6 +30,7 @@ use crate::{
         api::reload_templates,
         api::get_template,
         api::template_source,
+        api::thumbnail,
         api::replace_template,
         api::delete_template,
         api::list_printers,

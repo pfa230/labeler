@@ -3,6 +3,33 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { LabelGrid } from "./LabelGrid";
 import type { LabelGridRow } from "../lib/labelGrid";
 
+const selectionBaseProps = {
+  rows: [
+    { id: "r1", origin: "csv" as const, data: { title: "a" }, option: {}, validation: {} },
+    { id: "r2", origin: "csv" as const, data: { title: "b" }, option: {}, validation: {} },
+  ] satisfies LabelGridRow[],
+  fields: ["title"],
+  optionNames: [],
+  optionValues: {},
+  onRowsChange: vi.fn(),
+  onDuplicate: vi.fn(),
+  onRemove: vi.fn(),
+};
+
+describe("LabelGrid selection", () => {
+  it("calls onSelectRow when a row's preview radio is clicked", () => {
+    const onSelectRow = vi.fn();
+    render(<LabelGrid {...selectionBaseProps} selectedRowId="r1" onSelectRow={onSelectRow} />);
+    fireEvent.click(screen.getByLabelText("preview row 2"));
+    expect(onSelectRow).toHaveBeenCalledWith("r2");
+  });
+
+  it("renders no preview radios when onSelectRow is absent", () => {
+    render(<LabelGrid {...selectionBaseProps} />);
+    expect(screen.queryByLabelText("preview row 1")).toBeNull();
+  });
+});
+
 function rows(): LabelGridRow[] {
   return [
     { id: "a", origin: "csv", data: { sku: "1" }, option: { color: "red" }, validation: {} },

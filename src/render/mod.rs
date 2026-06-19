@@ -52,24 +52,41 @@ fn compile_single_doc(
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
 ) -> Result<PagedDocument, AppError> {
-    let TemplateFormat::Single { width, height } = &template.format else {
+    if !matches!(template.format, TemplateFormat::Single { .. }) {
         return Err(AppError::unsupported_format(
             "render_label only supports single format",
         ));
+    }
+    compile_label_doc(template, data, option, settings)
+}
+
+/// Compile a single label for any template: a `Single` uses its width/height; a `Sheet`
+/// renders one slot at label_width/label_height. Shared by `compile_single_doc` (after its
+/// Single-only guard) and the thumbnail path.
+fn compile_label_doc(
+    template: &TemplateDefinition,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+    settings: &BTreeMap<String, String>,
+) -> Result<PagedDocument, AppError> {
+    let (width_units, height_units) = match &template.format {
+        TemplateFormat::Single { width, height } => {
+            (resolve_dimension(width)?, resolve_dimension(height)?)
+        }
+        TemplateFormat::Sheet {
+            label_width,
+            label_height,
+            ..
+        } => (*label_width, *label_height),
     };
-
-    let page_width_units = resolve_dimension(width)?;
-    let page_height_units = resolve_dimension(height)?;
     let unit = &template.unit;
-
     let selected_option = normalize_option(template, option)?;
     let items = select_layout_items(template)?;
-
     let images = RefCell::new(ImageCollector::default());
 
     let mut source = String::new();
-    let page_width = format_length(page_width_units, unit)?;
-    let page_height = format_length(page_height_units, unit)?;
+    let page_width = format_length(width_units, unit)?;
+    let page_height = format_length(height_units, unit)?;
     writeln!(
         source,
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
@@ -79,8 +96,8 @@ fn compile_single_doc(
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     let context = RenderContext::new(
-        page_width_units,
-        page_height_units,
+        width_units,
+        height_units,
         unit,
         data,
         selected_option,
@@ -89,8 +106,25 @@ fn compile_single_doc(
     );
     source.push_str(&context.render_items(items)?);
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
-
     compile_paged(source, images.into_inner().files)
+}
+
+/// Render a single representative label to PNG. For sheets, renders one slot.
+pub fn render_thumbnail_png(
+    template: &TemplateDefinition,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+    settings: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, AppError> {
+    let doc = compile_label_doc(template, data, option, settings)?;
+    let page = doc
+        .pages
+        .first()
+        .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
+    let pixmap = typst_render::render(page, template.dpi as f32 / 72.0);
+    pixmap
+        .encode_png()
+        .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
 }
 
 pub fn render_single_label(
@@ -713,10 +747,103 @@ impl<'a> RenderContext<'a> {
     }
 }
 
+/// 1×1 transparent PNG data URI: a valid stand-in for data-bound image fields.
+pub const SAMPLE_PNG_DATA_URI: &str =
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+
+/// Collect `{token}` field names from a well-formed template string.
+///
+/// Skips `{{` escapes, empty tokens (`{}`), and `vars.*` tokens (resolved from the
+/// settings store, not from request data). This is not a full `interpolate` parser:
+/// it does not error on malformed input such as unterminated `{` or `}}`; templates
+/// that are actually malformed fail later at render time.
+fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '{' {
+            continue;
+        }
+        if chars.peek() == Some(&'{') {
+            chars.next();
+            continue;
+        }
+        let mut token = String::new();
+        for tc in chars.by_ref() {
+            if tc == '}' {
+                if !token.is_empty() && !token.starts_with("vars.") {
+                    out.push(token);
+                }
+                break;
+            }
+            token.push(tc);
+        }
+    }
+}
+
+fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Vec<String>) {
+    for item in items {
+        match item {
+            LayoutItem::Text { name, value, .. } | LayoutItem::Qr { name, value, .. } => {
+                if let Some(n) = name {
+                    text.push(n.clone());
+                }
+                if let Some(v) = value {
+                    collect_data_tokens(v, text);
+                }
+            }
+            LayoutItem::Image { name, src, .. } => {
+                if let Some(n) = name {
+                    image.push(n.clone());
+                }
+                if let Some(s) = src {
+                    collect_data_tokens(s, image);
+                }
+            }
+            LayoutItem::Container { items, .. } => walk_placeholder(items, text, image),
+            LayoutItem::Line { .. } => {}
+        }
+    }
+}
+
+/// Build non-empty placeholder data for every referenced data field. Image fields get a 1×1 PNG;
+/// other fields get their own name as a stand-in. `{vars.*}` is excluded (resolved from the store).
+pub fn placeholder_data(template: &TemplateDefinition) -> HashMap<String, JsonValue> {
+    let Layout::Items(items) = &template.layout;
+    let mut text = Vec::new();
+    let mut image = Vec::new();
+    walk_placeholder(items, &mut text, &mut image);
+    let mut data = HashMap::new();
+    for f in text {
+        data.entry(f.clone())
+            .or_insert_with(|| JsonValue::String(f));
+    }
+    for f in image {
+        // image wins over a same-named text guess
+        data.insert(f, JsonValue::String(SAMPLE_PNG_DATA_URI.to_string()));
+    }
+    data
+}
+
+/// First allowed value per declared option, or None when the template declares no options.
+pub fn default_option_selection(template: &TemplateDefinition) -> Option<BTreeMap<String, String>> {
+    let options = template.options.as_ref()?;
+    let selection: BTreeMap<String, String> = options
+        .allowed()
+        .iter()
+        .filter_map(|(name, values)| values.first().map(|v| (name.clone(), v.clone())))
+        .collect();
+    if selection.is_empty() {
+        None
+    } else {
+        Some(selection)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        count_pdf_pages, render_sheet_pages, render_single_label, render_single_label_pdf,
+        count_pdf_pages, default_option_selection, placeholder_data, render_sheet_pages,
+        render_single_label, render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
     };
     use crate::models::{
         Alignment, Dimension, Fit, FontSize, Frame, LabelInput, Layout, LayoutItem, Options,
@@ -1294,5 +1421,202 @@ mod tests {
 
         // Missing qr_base_url setting is an error.
         assert!(render_single_label(template, &data, None, &no_settings()).is_err());
+    }
+
+    #[test]
+    fn render_thumbnail_of_sheet_is_label_sized() {
+        let template = sheet_template_10x5_on_100x100();
+        let data = HashMap::new();
+        let settings = BTreeMap::new();
+        let png = render_thumbnail_png(&template, &data, None, &settings).expect("png");
+        let img = image::load_from_memory(&png).expect("decode png");
+        // label 10x5 mm at 96 dpi ≈ 37.8 x 18.9 px; paper would be ~378 px. Assert it is the label box.
+        assert!(
+            img.width() > 20 && img.width() < 60,
+            "width {} should be ~38px (label 10mm@96dpi), not paper-sized",
+            img.width()
+        );
+        assert!(
+            img.height() > 10 && img.height() < 30,
+            "height {} should be ~19px (label 5mm@96dpi), not paper-sized",
+            img.height()
+        );
+    }
+
+    fn sheet_template_10x5_on_100x100() -> TemplateDefinition {
+        use crate::models::{Alignment, FontSize, Position, SheetPosition, Size, SizeValue};
+        TemplateDefinition {
+            id: "s".into(),
+            name: "s".into(),
+            description: String::new(),
+            unit: "mm".into(),
+            dpi: 96,
+            format: TemplateFormat::Sheet {
+                paper_width: 100.0,
+                paper_height: 100.0,
+                label_width: 10.0,
+                label_height: 5.0,
+                positions: vec![SheetPosition([0.0, 0.0])],
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("hi".into()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        }
+    }
+
+    #[test]
+    fn placeholder_data_fills_fields_excludes_vars_and_marks_images() {
+        use crate::models::{Alignment, Fit, FontSize, Position, Size, SizeValue};
+        let template = TemplateDefinition {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            unit: "mm".into(),
+            dpi: 96,
+            format: TemplateFormat::Single {
+                width: crate::models::Dimension::Fixed(40.0),
+                height: crate::models::Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![
+                LayoutItem::Text {
+                    name: Some("title".into()),
+                    value: None,
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    font_size: FontSize::Fixed(6.0),
+                    multiline: false,
+                    alignment: Alignment::default(),
+                },
+                LayoutItem::Qr {
+                    name: None,
+                    value: Some("{url} {vars.base}".into()),
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    params: None,
+                },
+                LayoutItem::Image {
+                    name: Some("logo".into()),
+                    src: None,
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    fit: Fit::default(),
+                },
+            ]),
+            version: None,
+        };
+        let data = placeholder_data(&template);
+        assert_eq!(data.get("title").and_then(|v| v.as_str()), Some("title"));
+        assert_eq!(data.get("url").and_then(|v| v.as_str()), Some("url"));
+        assert!(!data.contains_key("base"), "vars.* must be excluded");
+        assert!(!data.contains_key("vars.base"), "vars.* must be excluded");
+        assert_eq!(
+            data.get("logo").and_then(|v| v.as_str()),
+            Some(SAMPLE_PNG_DATA_URI)
+        );
+    }
+
+    #[test]
+    fn placeholder_data_skips_empty_token() {
+        use crate::models::{Alignment, FontSize, Position, Size, SizeValue};
+        let template = TemplateDefinition {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            unit: "mm".into(),
+            dpi: 96,
+            format: TemplateFormat::Single {
+                width: crate::models::Dimension::Fixed(40.0),
+                height: crate::models::Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("{} {real}".into()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(40.0), SizeValue::Value(20.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        let data = placeholder_data(&template);
+        assert!(
+            !data.contains_key(""),
+            "empty token must not produce an empty-string key"
+        );
+        assert_eq!(
+            data.get("real").and_then(|v| v.as_str()),
+            Some("real"),
+            "real token must be collected"
+        );
+    }
+
+    #[test]
+    fn default_option_selection_picks_first_values() {
+        use crate::models::{Dimension, Options};
+        let template = TemplateDefinition {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            unit: "mm".into(),
+            dpi: 96,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(40.0),
+                height: Dimension::Fixed(20.0),
+            },
+            options: Some(Options(BTreeMap::from([
+                (
+                    "color".to_string(),
+                    vec!["red".to_string(), "blue".to_string()],
+                ),
+                ("size".to_string(), vec!["small".to_string()]),
+            ]))),
+            layout: Layout::Items(vec![]),
+            version: None,
+        };
+        let sel = default_option_selection(&template).expect("has options");
+        assert_eq!(sel.get("color").map(String::as_str), Some("red"));
+        assert_eq!(sel.get("size").map(String::as_str), Some("small"));
+
+        let no_opts = TemplateDefinition {
+            options: None,
+            ..template
+        };
+        assert!(default_option_selection(&no_opts).is_none());
     }
 }
