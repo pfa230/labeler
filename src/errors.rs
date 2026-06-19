@@ -33,6 +33,7 @@ const CODE_NOT_FOUND: &str = "NotFound";
 const CODE_UNAUTHORIZED: &str = "Unauthorized";
 const CODE_FORBIDDEN: &str = "Forbidden";
 const CODE_CONFLICT: &str = "Conflict";
+const CODE_SETTING_NOT_FOUND: &str = "SettingNotFound";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -107,6 +108,15 @@ impl AppError {
             CODE_NOT_FOUND,
             format!("no API route for '{path}'"),
             Some(json!({ "path": path })),
+        )
+    }
+
+    pub fn setting_not_found(key: &str) -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            CODE_SETTING_NOT_FOUND,
+            format!("No setting named '{key}'"),
+            Some(json!({ "setting": key })),
         )
     }
 
