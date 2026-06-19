@@ -16,23 +16,31 @@ function FormatBadge({ type }: { type: string }) {
 }
 
 function TemplateCard({ template }: { template: TemplateSummary }) {
+  const [failed, setFailed] = useState(false);
   return (
     <Link
       to={`/templates/${template.id}`}
       className="flex flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2"
       style={{ background: "var(--surface)", borderColor: "var(--border)" }}
     >
-      <div
-        className="flex aspect-[3/1] items-center justify-center rounded-md border text-xs"
-        style={{
-          background: "var(--bg)",
-          borderColor: "var(--border)",
-          color: "var(--muted)",
-        }}
-        aria-hidden="true"
-      >
-        preview
-      </div>
+      {failed ? (
+        <div
+          className="flex aspect-[3/1] items-center justify-center rounded-md border text-xs"
+          style={{ background: "var(--bg)", borderColor: "var(--border)", color: "var(--muted)" }}
+          aria-hidden="true"
+        >
+          preview
+        </div>
+      ) : (
+        <img
+          src={`/api/templates/${template.id}/thumbnail`}
+          alt={`${template.name} preview`}
+          loading="lazy"
+          onError={() => setFailed(true)}
+          className="aspect-[3/1] w-full rounded-md border object-contain"
+          style={{ background: "var(--bg)", borderColor: "var(--border)" }}
+        />
+      )}
       <div className="flex items-center justify-between gap-2">
         <h2 className="font-semibold" style={{ color: "var(--ink)" }}>
           {template.name}
