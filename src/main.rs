@@ -38,29 +38,21 @@ async fn main() {
 
     let state = Arc::new(AppState::new(templates, "templates".into(), store));
 
-    // Job-log retention: prune rows older than LABELER_JOB_LOG_RETENTION_DAYS (default 90; 0 disables).
-    let retention_days: u32 = match std::env::var("LABELER_JOB_LOG_RETENTION_DAYS") {
-        Ok(v) => v.parse().unwrap_or_else(|_| {
-            tracing::warn!(value = %v, "invalid LABELER_JOB_LOG_RETENTION_DAYS; using default 90");
-            90
-        }),
-        Err(_) => 90,
-    };
-    if retention_days > 0 {
-        // Prune once now so a restarted instance applies retention immediately.
-        match state.store().prune_jobs(retention_days).await {
-            Ok(n) => tracing::info!(deleted = n, retention_days, "pruned job log at startup"),
-            Err(err) => tracing::warn!(%err, "startup job-log prune failed"),
-        }
-        // Then re-prune daily. interval_at starts one period out so this does not double-prune the
-        // startup run (tokio's interval() first tick fires immediately). Detached: process exit ends it.
+    // Job-log retention is an app setting (see ADR-0024), resolved live each run; no env var.
+    // Prune once at startup, then daily. The ticker always runs because the setting can change at runtime.
+    match labeler::settings::prune_job_log_once(state.store()).await {
+        Ok(n) => tracing::info!(deleted = n, "pruned job log at startup"),
+        Err(err) => tracing::warn!(%err, "startup job-log prune failed"),
+    }
+    {
         let prune_state = state.clone();
         tokio::spawn(async move {
             let period = std::time::Duration::from_secs(24 * 60 * 60);
+            // interval_at starts one period out so this does not double-prune the startup run.
             let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
             loop {
                 ticker.tick().await;
-                match prune_state.store().prune_jobs(retention_days).await {
+                match labeler::settings::prune_job_log_once(prune_state.store()).await {
                     Ok(n) => tracing::info!(deleted = n, "pruned job log"),
                     Err(err) => tracing::warn!(%err, "job-log prune failed"),
                 }

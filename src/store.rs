@@ -720,6 +720,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prune_job_log_once_reads_live_override() {
+        use crate::settings::{prune_job_log_once, JOB_LOG_RETENTION_DAYS};
+        let store = Store::open_in_memory().unwrap();
+        // one row aged 200 days
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO jobs (ts, template, status) VALUES (datetime('now','-200 days'), 'tpl', 'ok')",
+                [],
+            )
+            .unwrap();
+        }
+        // override retention to 0 (disabled): the old row survives
+        store
+            .set_setting(JOB_LOG_RETENTION_DAYS, "0")
+            .await
+            .unwrap();
+        assert_eq!(prune_job_log_once(&store).await.unwrap(), 0);
+        // remove the override: default 90 now prunes the 200-day-old row
+        store.delete_setting(JOB_LOG_RETENTION_DAYS).await.unwrap();
+        assert_eq!(prune_job_log_once(&store).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn app_settings_roundtrip() {
         let store = Store::open_in_memory().unwrap();
         // absent key reads as None
