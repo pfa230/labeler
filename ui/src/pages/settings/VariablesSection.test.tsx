@@ -47,7 +47,7 @@ describe("VariablesSection", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows existing settings and the suggested qr_base_url row when absent", async () => {
+  it("shows existing variables and the suggested qr_base_url row when absent", async () => {
     fetchMock = stubFetch({ company: "Acme" });
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
@@ -58,7 +58,7 @@ describe("VariablesSection", () => {
     expect(screen.getByText(/suggested/i)).toBeInTheDocument();
   });
 
-  it("saves an edited setting via PUT /variables/{key}", async () => {
+  it("saves an edited variable via PUT /variables/{key}", async () => {
     fetchMock = stubFetch({ company: "Acme" });
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
@@ -76,18 +76,18 @@ describe("VariablesSection", () => {
     expect(screen.getByRole("button", { name: /save company/i })).toBeDisabled();
   });
 
-  it("adds a custom setting and rejects an invalid key client-side", async () => {
+  it("adds a custom variable and rejects an invalid key client-side", async () => {
     fetchMock = stubFetch({});
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
-    fireEvent.change(await screen.findByLabelText(/new setting key/i), { target: { value: "bad key" } });
-    fireEvent.change(screen.getByLabelText(/new setting value/i), { target: { value: "x" } });
-    fireEvent.click(screen.getByRole("button", { name: /add setting/i }));
+    fireEvent.change(await screen.findByLabelText(/new variable key/i), { target: { value: "bad key" } });
+    fireEvent.change(screen.getByLabelText(/new variable value/i), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: /add variable/i }));
     expect(await screen.findByText(/must be non-empty and contain only/i)).toBeInTheDocument();
     expect([...fetchMock.mock.calls].some(([u]) => String(u).startsWith("/api/variables/"))).toBe(false);
 
-    fireEvent.change(screen.getByLabelText(/new setting key/i), { target: { value: "label_dpi" } });
-    fireEvent.click(screen.getByRole("button", { name: /add setting/i }));
+    fireEvent.change(screen.getByLabelText(/new variable key/i), { target: { value: "label_dpi" } });
+    fireEvent.click(screen.getByRole("button", { name: /add variable/i }));
     await waitFor(() => expect(lastCall("/api/variables/label_dpi")).toBeTruthy());
   });
 
@@ -96,9 +96,9 @@ describe("VariablesSection", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
     await screen.findByLabelText("qr_base_url");
-    fireEvent.change(screen.getByLabelText(/new setting key/i), { target: { value: "qr_base_url" } });
-    fireEvent.change(screen.getByLabelText(/new setting value/i), { target: { value: "y" } });
-    fireEvent.click(screen.getByRole("button", { name: /add setting/i }));
+    fireEvent.change(screen.getByLabelText(/new variable key/i), { target: { value: "qr_base_url" } });
+    fireEvent.change(screen.getByLabelText(/new variable value/i), { target: { value: "y" } });
+    fireEvent.click(screen.getByRole("button", { name: /add variable/i }));
     expect(await screen.findByText(/already exists/i)).toBeInTheDocument();
     expect([...fetchMock.mock.calls].some(([u]) => String(u).startsWith("/api/variables/qr_base_url"))).toBe(false);
   });
