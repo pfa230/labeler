@@ -499,6 +499,9 @@ mod http_tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
+        assert!(res.headers().get("etag").is_some(), "etag header present");
+        let body = bytes_response(res).await;
+        assert_eq!(&body[1..4], b"PNG", "PNG magic bytes");
     }
 
     #[tokio::test]
@@ -547,6 +550,9 @@ mod http_tests {
             .await
             .unwrap();
         assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert!(second.headers().get("etag").is_some(), "304 carries etag");
+        let body = bytes_response(second).await;
+        assert!(body.is_empty(), "304 body must be empty");
     }
 
     #[tokio::test]
