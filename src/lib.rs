@@ -467,6 +467,89 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn thumbnail_single_returns_png() {
+        let app = build_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/brother24mm/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
+        assert!(res.headers().get("etag").is_some(), "etag header present");
+        let body = bytes_response(res).await;
+        assert_eq!(&body[1..4], b"PNG", "PNG magic bytes");
+    }
+
+    #[tokio::test]
+    async fn thumbnail_sheet_returns_png() {
+        let app = build_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/avery5163/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
+    }
+
+    #[tokio::test]
+    async fn thumbnail_unknown_template_is_404() {
+        let app = build_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/does-not-exist/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn thumbnail_if_none_match_returns_304() {
+        let app = build_app();
+        let first = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/brother24mm/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let etag = first
+            .headers()
+            .get("etag")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let second = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/brother24mm/thumbnail")
+                    .header("if-none-match", etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+    }
+
+    #[tokio::test]
     async fn templates_lists_available_templates() {
         let app = build_app();
         let response = app
