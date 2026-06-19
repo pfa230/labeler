@@ -3,8 +3,8 @@ use utoipa::OpenApi;
 use crate::{
     api,
     api::{
-        AuthStatus, ConnectionInput, Credentials, OkResponse, PasswordChange, TokenCreate,
-        TokenCreated, TokenSummary, UserSummary,
+        AuthStatus, ConnectionInput, Credentials, OkResponse, PasswordChange, ResolvedSetting,
+        SettingValue, TokenCreate, TokenCreated, TokenSummary, UserSummary,
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
@@ -40,6 +40,9 @@ use crate::{
         api::delete_printer,
         api::get_variables,
         api::put_variable,
+        api::get_settings,
+        api::put_setting,
+        api::delete_setting,
         api::render_label,
         api::batch,
         api::import_csv,
@@ -68,6 +71,8 @@ use crate::{
         schemas(
             HealthResponse,
             VariableValue,
+            ResolvedSetting,
+            SettingValue,
             ReloadResponse,
             Printer,
             TemplateList,
@@ -128,7 +133,8 @@ use crate::{
     ),
     tags(
         (name = "labeler", description = "Label rendering service"),
-        (name = "auth", description = "Authentication, users, and API tokens")
+        (name = "auth", description = "Authentication, users, and API tokens"),
+        (name = "settings", description = "Typed application configuration")
     )
 )]
 pub struct ApiDoc;

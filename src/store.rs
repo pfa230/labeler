@@ -124,6 +124,7 @@ fn migrations() -> Migrations<'static> {
         ),
         M::up("CREATE INDEX idx_jobs_ts ON jobs(ts);"),
         M::up("ALTER TABLE settings RENAME TO variables;"),
+        M::up("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"),
     ])
 }
 
@@ -217,6 +218,47 @@ impl Store {
     ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare("SELECT key, value FROM variables ORDER BY key")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = std::collections::BTreeMap::new();
+        for row in rows {
+            let (k, v) = row?;
+            out.insert(k, v);
+        }
+        Ok(out)
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare("SELECT value FROM app_settings WHERE key = ?1")?;
+        let mut rows = stmt.query_map([key], |row| row.get::<_, String>(0))?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub async fn delete_setting(&self, key: &str) -> Result<bool, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        Ok(conn.execute("DELETE FROM app_settings WHERE key = ?1", [key])? > 0)
+    }
+
+    pub async fn all_settings(
+        &self,
+    ) -> Result<std::collections::BTreeMap<String, String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare("SELECT key, value FROM app_settings ORDER BY key")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -675,6 +717,74 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(remaining, 1);
+    }
+
+    #[tokio::test]
+    async fn prune_job_log_once_reads_live_override() {
+        use crate::settings::{prune_job_log_once, JOB_LOG_RETENTION_DAYS};
+        let store = Store::open_in_memory().unwrap();
+        // one row aged 200 days
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO jobs (ts, template, status) VALUES (datetime('now','-200 days'), 'tpl', 'ok')",
+                [],
+            )
+            .unwrap();
+        }
+        // override retention to 0 (disabled): the old row survives
+        store
+            .set_setting(JOB_LOG_RETENTION_DAYS, "0")
+            .await
+            .unwrap();
+        assert_eq!(prune_job_log_once(&store).await.unwrap(), 0);
+        // remove the override: default 90 now prunes the 200-day-old row
+        store.delete_setting(JOB_LOG_RETENTION_DAYS).await.unwrap();
+        assert_eq!(prune_job_log_once(&store).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn app_settings_roundtrip() {
+        let store = Store::open_in_memory().unwrap();
+        // absent key reads as None
+        assert_eq!(
+            store.get_setting("job_log_retention_days").await.unwrap(),
+            None
+        );
+        // set then get
+        store
+            .set_setting("job_log_retention_days", "30")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_setting("job_log_retention_days").await.unwrap(),
+            Some("30".to_string())
+        );
+        // upsert overwrites
+        store
+            .set_setting("job_log_retention_days", "45")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get_setting("job_log_retention_days").await.unwrap(),
+            Some("45".to_string())
+        );
+        // all_settings lists the override row
+        let all = store.all_settings().await.unwrap();
+        assert_eq!(all.get("job_log_retention_days"), Some(&"45".to_string()));
+        // delete returns true when a row existed, false when it did not
+        assert!(store
+            .delete_setting("job_log_retention_days")
+            .await
+            .unwrap());
+        assert!(!store
+            .delete_setting("job_log_retention_days")
+            .await
+            .unwrap());
+        assert_eq!(
+            store.get_setting("job_log_retention_days").await.unwrap(),
+            None
+        );
     }
 }
 
