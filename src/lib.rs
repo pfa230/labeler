@@ -12,6 +12,7 @@ pub mod openapi;
 pub mod parse;
 mod raw;
 pub mod render;
+pub mod settings;
 pub mod store;
 pub mod templates;
 
