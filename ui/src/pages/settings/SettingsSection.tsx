@@ -27,8 +27,18 @@ export function SettingsSection() {
   }
 
   const resolved = settings[KEY];
-  const current = draft ?? String(resolved?.value ?? "");
-  const dirty = draft !== null && draft !== String(resolved?.value ?? "");
+
+  if (resolved === undefined) {
+    return (
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-semibold">Job log</h2>
+        <p className="text-sm" style={{ color: "var(--bad)" }}>Setting unavailable.</p>
+      </section>
+    );
+  }
+
+  const current = draft ?? String(resolved.value ?? "");
+  const dirty = draft !== null && draft !== String(resolved.value ?? "");
 
   return (
     <section className="flex flex-col gap-4">
@@ -37,7 +47,7 @@ export function SettingsSection() {
         <label className="flex flex-col gap-1">
           <span className="font-mono text-sm font-medium">
             {KEY}
-            {resolved?.is_default && (
+            {resolved.is_default && (
               <span className="ml-2 text-xs" style={{ color: "var(--muted)" }}>(default)</span>
             )}
           </span>
@@ -68,7 +78,7 @@ export function SettingsSection() {
         >
           Save
         </button>
-        {!resolved?.is_default && (
+        {!resolved.is_default && (
           <button
             type="button"
             disabled={reset.isPending}

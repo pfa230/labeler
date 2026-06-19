@@ -55,6 +55,7 @@ describe("SettingsSection", () => {
     const input = (await screen.findByLabelText(/job_log_retention_days/i)) as HTMLInputElement;
     expect(input.value).toBe("90");
     expect(screen.getByText(/default/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /reset/i })).not.toBeInTheDocument();
   });
 
   it("saves an override via PUT", async () => {
