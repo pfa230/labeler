@@ -74,4 +74,18 @@ describe("Templates list", () => {
     expect(screen.getByText("Avery 5163")).toBeInTheDocument();
     expect(screen.queryByText("Brother 24mm")).not.toBeInTheDocument();
   });
+
+  it("renders a thumbnail image per card pointing at the thumbnail endpoint", async () => {
+    renderPage();
+    const img = await screen.findByAltText("Brother 24mm preview");
+    expect(img).toHaveAttribute("src", "/api/templates/brother24mm/thumbnail");
+    expect(img.tagName).toBe("IMG");
+  });
+
+  it("falls back to a placeholder when the thumbnail image fails to load", async () => {
+    renderPage();
+    const img = await screen.findByAltText("Avery 5163 preview");
+    fireEvent.error(img);
+    expect(screen.getByText("preview", { selector: "div" })).toBeInTheDocument();
+  });
 });
