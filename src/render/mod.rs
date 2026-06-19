@@ -751,7 +751,12 @@ impl<'a> RenderContext<'a> {
 pub const SAMPLE_PNG_DATA_URI: &str =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
-/// Collect `{token}` names from a string, skipping `{{`/`}}` escapes and `vars.*` tokens.
+/// Collect `{token}` field names from a well-formed template string.
+///
+/// Skips `{{` escapes, empty tokens (`{}`), and `vars.*` tokens (resolved from the
+/// settings store, not from request data). This is not a full `interpolate` parser:
+/// it does not error on malformed input such as unterminated `{` or `}}` — templates
+/// that are actually malformed fail later at render time.
 fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -765,7 +770,7 @@ fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
         let mut token = String::new();
         for tc in chars.by_ref() {
             if tc == '}' {
-                if !token.starts_with("vars.") {
+                if !token.is_empty() && !token.starts_with("vars.") {
                     out.push(token);
                 }
                 break;
@@ -1536,6 +1541,48 @@ mod tests {
         assert_eq!(
             data.get("logo").and_then(|v| v.as_str()),
             Some(SAMPLE_PNG_DATA_URI)
+        );
+    }
+
+    #[test]
+    fn placeholder_data_skips_empty_token() {
+        use crate::models::{Alignment, FontSize, Position, Size, SizeValue};
+        let template = TemplateDefinition {
+            id: "t".into(),
+            name: "t".into(),
+            description: String::new(),
+            unit: "mm".into(),
+            dpi: 96,
+            format: TemplateFormat::Single {
+                width: crate::models::Dimension::Fixed(40.0),
+                height: crate::models::Dimension::Fixed(20.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("{} {real}".into()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(40.0), SizeValue::Value(20.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        let data = placeholder_data(&template);
+        assert!(
+            !data.contains_key(""),
+            "empty token must not produce an empty-string key"
+        );
+        assert_eq!(
+            data.get("real").and_then(|v| v.as_str()),
+            Some("real"),
+            "real token must be collected"
         );
     }
 
