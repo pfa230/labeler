@@ -20,7 +20,7 @@ export interface LabelGridProps {
 }
 
 const cellErrorStyle = { color: "var(--bad)" } as const;
-// Namespaced column keys so a CSV/template field literally named "actions"/"annotation"/"data:x"
+// Namespaced column keys so a CSV/template field literally named "actions"/"annotation"/"data:x"/"__preview"
 // cannot collide with the grid's own columns. Keys are decoded back to field/option names in the cells.
 const DATA_PREFIX = "data:";
 const OPTION_PREFIX = "option:";

@@ -747,7 +747,7 @@ impl<'a> RenderContext<'a> {
     }
 }
 
-/// 1×1 transparent PNG data URI — a valid stand-in for data-bound image fields.
+/// 1×1 transparent PNG data URI: a valid stand-in for data-bound image fields.
 pub const SAMPLE_PNG_DATA_URI: &str =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
@@ -755,7 +755,7 @@ pub const SAMPLE_PNG_DATA_URI: &str =
 ///
 /// Skips `{{` escapes, empty tokens (`{}`), and `vars.*` tokens (resolved from the
 /// settings store, not from request data). This is not a full `interpolate` parser:
-/// it does not error on malformed input such as unterminated `{` or `}}` — templates
+/// it does not error on malformed input such as unterminated `{` or `}}`; templates
 /// that are actually malformed fail later at render time.
 fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
     let mut chars = s.chars().peekable();
