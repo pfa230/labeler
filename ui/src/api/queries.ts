@@ -46,6 +46,35 @@ export function useVariables() {
   return useQuery({ queryKey: ["variables"], queryFn: () => getJson<Record<string, string>>("/variables") });
 }
 
+export interface ResolvedSetting {
+  value: number;
+  is_default: boolean;
+}
+
+export function useSettings() {
+  return useQuery({
+    queryKey: ["settings"],
+    queryFn: () => getJson<Record<string, ResolvedSetting>>("/settings"),
+  });
+}
+
+export function useUpdateSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, value }: { key: string; value: number }) =>
+      sendJson<ResolvedSetting>("PUT", `/settings/${encodeURIComponent(key)}`, { value }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
+export function useResetSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) => del(`/settings/${encodeURIComponent(key)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+}
+
 export function useUpsertVariable() {
   const qc = useQueryClient();
   return useMutation({
