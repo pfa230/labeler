@@ -545,6 +545,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-19**: Typed app settings (M10; ADR-0024; #53). `GET/PUT/DELETE /api/settings` expose
+  resolved application config, stored separately from `variables` and never interpolated. First
+  setting: `job_log_retention_days` (default 90; 0 disables). The daily job-log prune reads the live
+  value; the `LABELER_JOB_LOG_RETENTION_DAYS` env var is removed.
 - **2026-06-19**: `DELETE /api/users/{id}` now rejects deleting your own account `409` (M10; #72);
   it would cascade the caller's own session and silently log them out. The Users UI disables the
   current user's delete control. Completed the `settings` to `variables` UI rename (M10; #71).
@@ -575,7 +579,7 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   and the UI section is "Variables". This frees "settings" for typed application config (#53). No
   behavior change; nothing was released under the old names.
 - **2026-06-17**: Job-log retention (#29). The append-only `jobs` table is now pruned by age:
-  `LABELER_JOB_LOG_RETENTION_DAYS` (default 90, `0` disables) bounds history, enforced by a startup
+  `job_log_retention_days` (default 90, `0` disables) bounds history, enforced by a startup
   prune plus a daily background task; a `ts` index was added. No API change.
 - **2026-06-17**: CI and image publishing (ADR-0019, #37). CI now also builds/tests the UI and builds +
   smoke-tests the Docker image; images publish to `ghcr.io/pfa230/labeler` (`:edge` + `:sha-` on `main`,

@@ -58,7 +58,6 @@ Only two operator knobs, set in `.env` (Compose interpolates them):
 | --- | --- | --- |
 | `HOST_PORT` | `8080` | Host port published to the container's fixed internal port 8080. |
 | `RUST_LOG` | `labeler=info,tower_http=info` | Log filter (tracing EnvFilter syntax). |
-| `LABELER_JOB_LOG_RETENTION_DAYS` | `90` | Days of print-job log history to keep; older rows are pruned at startup and daily. `0` disables pruning. |
 
 Everything else is fixed inside the image: the container always listens on `8080` (`PORT` is reserved so
 the healthcheck stays valid; remap the host side with `HOST_PORT`), data lives at `/app/data`, the UI at
@@ -81,7 +80,6 @@ overriding these:
 | `LABELER_INIT_USER` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_INIT_PASSWORD` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_TRUST_PROXY` | `false` | unset | `.env` (set `true` behind a TLS-terminating proxy) |
-| `LABELER_JOB_LOG_RETENTION_DAYS` | `90` | from `.env` | `.env` (`0` disables job-log pruning) |
 
 Templates (`/app/templates`) and fonts (`/app/fonts`) are CWD-relative app paths fixed in the image;
 making them env-configurable is tracked in issue #38. The QR base URL is a runtime *setting* (Settings
