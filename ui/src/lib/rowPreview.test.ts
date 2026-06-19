@@ -2,8 +2,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { useRowPreview } from "./rowPreview";
 
+const revokeObjectURL = vi.fn();
+
 beforeEach(() => {
-  vi.stubGlobal("URL", { createObjectURL: () => "blob:x", revokeObjectURL: vi.fn() } as unknown as typeof URL);
+  revokeObjectURL.mockReset();
+  vi.stubGlobal("URL", {
+    createObjectURL: () => "blob:x",
+    revokeObjectURL,
+  } as unknown as typeof URL);
 });
 
 describe("useRowPreview", () => {
@@ -27,5 +33,19 @@ describe("useRowPreview", () => {
     expect(result.current.loading).toBe(false);
     expect(result.current.url).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("revokes object URL when label transitions from defined to undefined", async () => {
+    const fetchMock = vi.fn(async () => new Response(new Blob([new Uint8Array([1])]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result, rerender } = renderHook(
+      (label: { data: { title: string } } | undefined) =>
+        useRowPreview({ templateId: "t", format: "single", label }),
+      { initialProps: { data: { title: "x" } } },
+    );
+    await waitFor(() => expect(result.current.url).toBe("blob:x"));
+    revokeObjectURL.mockReset();
+    rerender(undefined);
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:x"));
   });
 });

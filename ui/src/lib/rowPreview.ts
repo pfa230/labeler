@@ -54,6 +54,10 @@ export function useRowPreview(input: RowPreviewInput): PreviewState {
     return () => {
       cancelled = true;
       controller.abort();
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = undefined;
+      }
     };
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps -- input captured via `key`
 
