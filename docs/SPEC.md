@@ -394,13 +394,15 @@ stored only as a SHA-256 hash. Automation sends it as `Authorization: Bearer $LA
 | GET | `/api/auth/me` | Auth state for the SPA (`authed`, `needsSetup`, optional `me`) | `200` |
 | POST | `/api/auth/password` | Change own password (verifies current); revokes other sessions | `200` / `401` / `403` |
 | GET / POST | `/api/users` | List / create users (flat) | `200` / `201` |
-| DELETE | `/api/users/{id}` | Delete a user (cannot delete the last) | `204` / `404` / `409` |
+| DELETE | `/api/users/{id}` | Delete a user (cannot delete the last user or your own account) | `204` / `404` / `409` |
 | GET / POST | `/api/tokens` | List tokens / create a token (secret shown once) | `200` / `201` |
 | DELETE | `/api/tokens/{id}` | Revoke a token | `204` / `404` |
 
 `GET /api/auth/me` is auth-exempt and always returns `200` with `{ authed, needsSetup, me? }`. Deleting
-a user cascades their sessions; changing a password revokes the user's other sessions but keeps the
-current one. Passwords are argon2id; secrets at rest (sessions, tokens) are SHA-256 hashes.
+a user cascades their sessions; a user cannot delete their own account (it would cascade the caller's
+own session and silently log them out), so that request is rejected `409`. Changing a password revokes
+the user's other sessions but keeps the current one. Passwords are argon2id; secrets at rest (sessions,
+tokens) are SHA-256 hashes.
 
 ## 12. Integrations (connectors)
 
@@ -525,6 +527,9 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-19**: `DELETE /api/users/{id}` now rejects deleting your own account `409` (M10; #72);
+  it would cascade the caller's own session and silently log them out. The Users UI disables the
+  current user's delete control. Completed the `settings` to `variables` UI rename (M10; #71).
 - **2026-06-18**: Selected-row preview in Import and Connect (M9; #64). The CSV Import and Homebox
   Connect pages display an on-demand preview for the selected grid row, rendered via `POST /render/label`
   (single templates) or `POST /batch` (sheet templates). Preview failures are shown inline and never

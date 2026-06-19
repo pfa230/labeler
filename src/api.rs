@@ -1589,16 +1589,24 @@ pub async fn create_user_h(
         (status = 204, description = "User deleted"),
         (status = 401, description = "Not authenticated", body = ErrorResponse),
         (status = 404, description = "User not found", body = ErrorResponse),
-        (status = 409, description = "Cannot delete the last user", body = ErrorResponse)
+        (status = 409, description = "Cannot delete the last user or your own account", body = ErrorResponse)
     )
 )]
 pub async fn delete_user_h(
     State(state): State<Arc<AppState>>,
+    axum::Extension(p): axum::Extension<crate::middleware::Principal>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let _guard = state.write_lock.lock().await;
     if state.store().count_users().await.map_err(AppError::from)? <= 1 {
         return Err(AppError::conflict("cannot delete the last user"));
+    }
+    // Deleting your own account cascades your session (FK ON DELETE CASCADE), silently logging you out;
+    // block it so the action is refused with a clear message rather than bouncing the caller to login.
+    if let crate::middleware::Principal::User { id: me, .. } = &p {
+        if me == &id {
+            return Err(AppError::conflict("cannot delete your own account"));
+        }
     }
     if !state
         .store()

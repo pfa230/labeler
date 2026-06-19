@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useUsers, useCreateUser, useDeleteUser, useChangePassword } from "../../api/queries";
+import { useAuth } from "../../api/auth";
 import { useToast } from "../../app/toast-context";
 import type { UserSummary } from "../../api/queries";
 
@@ -62,16 +63,28 @@ function AddUserForm() {
   );
 }
 
-function UserRow({ user }: { user: UserSummary }) {
+function UserRow({ user, isSelf }: { user: UserSummary; isSelf: boolean }) {
   const [confirming, setConfirming] = useState(false);
   const remove = useDeleteUser();
   const { push } = useToast();
   const td = "px-3 py-2 text-sm";
   return (
     <tr style={{ borderTop: "1px solid var(--border)" }}>
-      <td className={td}>{user.username}</td>
+      <td className={td}>
+        {user.username}
+        {isSelf && <span className="ml-2 text-xs" style={{ color: "var(--muted)" }}>(you)</span>}
+      </td>
       <td className={`${td} flex gap-2`}>
-        {confirming ? (
+        {isSelf ? (
+          <button
+            type="button"
+            disabled
+            title="You cannot delete your own account"
+            style={{ color: "var(--muted)" }}
+          >
+            Delete
+          </button>
+        ) : confirming ? (
           <>
             <button
               type="button"
@@ -155,6 +168,8 @@ function ChangePasswordForm() {
 
 export function UsersSection() {
   const { data: users, isPending, isError } = useUsers();
+  const { data: auth } = useAuth();
+  const meId = auth?.me?.id;
   const th = "px-3 py-2 text-left text-xs font-medium";
 
   return (
@@ -177,7 +192,7 @@ export function UsersSection() {
           </thead>
           <tbody>
             {(users ?? []).map((u) => (
-              <UserRow key={u.id} user={u} />
+              <UserRow key={u.id} user={u} isSelf={u.id === meId} />
             ))}
           </tbody>
         </table>

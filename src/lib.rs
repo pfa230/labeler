@@ -2239,6 +2239,37 @@ mod auth_http_tests {
     }
 
     #[tokio::test]
+    async fn delete_own_account_conflicts() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        // add a second user so the last-user guard does not fire; the self-delete guard must be what 409s
+        app.clone()
+            .oneshot(req_post_json_cookie(
+                "/api/users",
+                r#"{"username":"b","password":"pw123456"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        // resolve my own id via /auth/me, then try to delete it
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/auth/me", &cookie))
+            .await
+            .unwrap();
+        let me = body_json(res).await;
+        let my_id = me["me"]["id"].as_str().unwrap().to_string();
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(&format!("/api/users/{my_id}"), &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["message"], "cannot delete your own account");
+    }
+
+    #[tokio::test]
     async fn change_password_verifies_current() {
         let app = test_app();
         let cookie = setup_login_cookie(&app).await;
