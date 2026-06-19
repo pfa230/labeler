@@ -35,6 +35,7 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | POST | `/api/templates/reload` | Re-scan the templates dir | `200 {"count":N}` / `422` |
 | GET | `/api/templates/{id}` | Full template detail incl. layout | `200` / `404` |
 | GET | `/api/templates/{id}/source` | Raw stored template YAML | `200 text/yaml` / `400` / `404` |
+| GET | `/api/templates/{id}/thumbnail` | Rendered PNG preview with placeholder data | `200 image/png` / `304` / `404` / `422` |
 | PUT | `/api/templates/{id}` | Replace a template (raw YAML body) | `200` / `400` / `404` / `422` |
 | DELETE | `/api/templates/{id}` | Delete a template | `204` / `404` |
 | POST | `/api/render/label` | Render one label for preview (`?format=png\|pdf`) | `200 image/png` or `application/pdf` |
@@ -75,6 +76,21 @@ previously-loaded set, so a bad file never takes the service down.
 - `DELETE /templates/{id}` removes the template.
 - `GET /templates/{id}/source` returns the raw stored YAML (`text/yaml`) for the read-only source view;
   `400` on an invalid id, `404` if the file is missing.
+- `GET /templates/{id}/thumbnail` renders a representative PNG for the template using placeholder data
+  (each field filled with its field name, each QR code encoded with its field name). For `single`
+  templates it renders the one label. For `sheet` templates it renders a single label slot (not a full
+  sheet) so the preview is label-sized regardless of format. Variables (`{vars.X}`) are resolved from
+  the store; undefined variable references cause a `422`. The default option selection (first allowed
+  value per option key) is used automatically. The response carries `ETag` (a quoted SHA-256 of the
+  template YAML) and `Cache-Control: no-cache`; callers that send `If-None-Match` with a matching ETag
+  receive `304 Not Modified`. Error codes: `404 TemplateNotFound` for unknown ids, `422` for
+  render/interpolation failures.
+
+The CSV Import and Homebox Connect pages render an on-demand, selected-row preview using the same
+endpoints: `POST /render/label` for single templates, `POST /batch` (mode `download`, one label) for
+sheet templates. The preview reuses the full option-resolution path (the same one download/print use),
+so the preview matches the actual rendered output. A preview failure (non-2xx) surfaces inline in the
+`PreviewPane` and never disables Download or Print.
 
 API-managed templates are written as `<id>.yaml` under the templates dir (atomic temp-then-rename), and
 `id` must contain only letters, digits, `-`, or `_` (path-traversal guard). Parse errors and validation
@@ -509,6 +525,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-18**: Selected-row preview in Import and Connect (M9; #64). The CSV Import and Homebox
+  Connect pages display an on-demand preview for the selected grid row, rendered via `POST /render/label`
+  (single templates) or `POST /batch` (sheet templates). Preview failures are shown inline and never
+  gate Download or Print.
+- **2026-06-18**: Label thumbnails (M9; ADR-0023; #73). `GET /templates/{id}/thumbnail` renders a
+  single-label PNG preview using placeholder data, with content-hash ETag for cheap 304 revalidation.
+  Sheets render one slot, not a full sheet. Variables resolve from the store; default option selection
+  applied automatically.
 - **2026-06-18**: Import & Print UX (M8; ADR-0022; #55 #56 #65 #57 #32). The CSV Import editor keeps a
   loaded CSV across template switches and can load a CSV before any template is chosen; every declared
   option is an always-present per-row column defaulting to its first allowed value, with a per-option

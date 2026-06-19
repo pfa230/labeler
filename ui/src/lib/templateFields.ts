@@ -60,7 +60,7 @@ function walk(
   }
 }
 
-// Data fields the (option-selected) layout references — text/qr name|value tokens (excluding settings.*).
+// Data fields the (option-selected) layout references: text/qr name|value tokens (excluding settings.*).
 export function referencedFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
   const set = new Set<string>();
   walk(layout, selected, (t) => { if (!t.startsWith("settings.")) set.add(t); }, () => {});

@@ -15,10 +15,12 @@ export interface LabelGridProps {
   onDuplicate: (id: string) => void;
   onRemove: (id: string) => void;
   disabled?: boolean; // read-only while a batch is in flight (no editing/duplicate/remove)
+  selectedRowId?: string; // which row feeds the label preview
+  onSelectRow?: (id: string) => void; // when provided, a leading radio column is rendered
 }
 
 const cellErrorStyle = { color: "var(--bad)" } as const;
-// Namespaced column keys so a CSV/template field literally named "actions"/"annotation"/"data:x"
+// Namespaced column keys so a CSV/template field literally named "actions"/"annotation"/"data:x"/"__preview"
 // cannot collide with the grid's own columns. Keys are decoded back to field/option names in the cells.
 const DATA_PREFIX = "data:";
 const OPTION_PREFIX = "option:";
@@ -62,9 +64,32 @@ function OptionEditCell(
   );
 }
 
-export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChange, onDuplicate, onRemove, disabled }: LabelGridProps) {
+export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChange, onDuplicate, onRemove, disabled, selectedRowId, onSelectRow }: LabelGridProps) {
   // Memoized so react-data-grid does not recalculate columns on every render (it keys off array identity).
-  const columns = useMemo<Column<LabelGridRow>[]>(() => [
+  const columns = useMemo<Column<LabelGridRow>[]>(() => {
+    const selectColumn: Column<LabelGridRow> | null = onSelectRow
+      ? {
+          key: "__preview",
+          name: "",
+          width: 36,
+          renderCell: ({ row }: RenderCellProps<LabelGridRow>) => {
+            const idx = rows.findIndex((r) => r.id === row.id);
+            return (
+              <input
+                type="radio"
+                name="preview-row"
+                aria-label={`preview row ${idx + 1}`}
+                checked={row.id === selectedRowId}
+                onChange={() => onSelectRow(row.id)}
+                disabled={disabled}
+              />
+            );
+          },
+        }
+      : null;
+
+    return [
+    ...(selectColumn ? [selectColumn] : []),
     ...fields.map<Column<LabelGridRow>>((field) => ({
       key: `${DATA_PREFIX}${field}`,
       name: field,
@@ -120,7 +145,8 @@ export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChang
         </span>
       ),
     },
-  ], [fields, optionNames, optionValues, onDuplicate, onRemove, disabled]);
+    ];
+  }, [fields, optionNames, optionValues, onDuplicate, onRemove, disabled, rows, selectedRowId, onSelectRow]);
 
   return (
     <DataGrid

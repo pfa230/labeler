@@ -133,6 +133,7 @@ fn api_router() -> Router<Arc<AppState>> {
                 .delete(delete_template),
         )
         .route("/templates/{id}/source", get(template_source))
+        .route("/templates/{id}/thumbnail", get(thumbnail))
         .route("/printers", get(list_printers).post(create_printer))
         .route(
             "/printers/{id}",
@@ -431,6 +432,58 @@ pub async fn template_source(
         axum::http::StatusCode::OK,
         [("content-type", "text/yaml; charset=utf-8")],
         yaml,
+    )
+        .into_response())
+}
+
+#[utoipa::path(
+    get,
+    path = "/templates/{id}/thumbnail",
+    params(("id" = String, Path, description = "Template id")),
+    responses(
+        (status = 200, description = "Rendered PNG thumbnail", content_type = "image/png", body = Vec<u8>),
+        (status = 304, description = "Not modified (ETag match)"),
+        (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 422, description = "Render/interpolation error", body = ErrorResponse),
+    )
+)]
+pub async fn thumbnail(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let registry = state.templates.load_full();
+    let template = registry
+        .get(&id)
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+    let hash = registry
+        .content_hash(&id)
+        .expect("content_hash present for a loaded template");
+    let etag = format!("\"{}\"", hash);
+
+    if let Some(inm) = headers.get(axum::http::header::IF_NONE_MATCH) {
+        if inm.to_str().map(|v| v == "*" || v == etag).unwrap_or(false) {
+            return Ok((
+                axum::http::StatusCode::NOT_MODIFIED,
+                [(axum::http::header::ETAG, etag.as_str())],
+            )
+                .into_response());
+        }
+    }
+
+    let data = crate::render::placeholder_data(template);
+    let option = crate::render::default_option_selection(template);
+    let variables = state.store().all_variables().await?;
+    let png = crate::render::render_thumbnail_png(template, &data, option.as_ref(), &variables)?;
+
+    Ok((
+        axum::http::StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, "image/png"),
+            (axum::http::header::ETAG, etag.as_str()),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
+        png,
     )
         .into_response())
 }

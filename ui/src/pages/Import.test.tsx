@@ -22,12 +22,20 @@ const summary = { total: 2, succeeded: 2, failed: [], jobs: 1 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 // Optional `batch` override lets a test return a custom /api/batch response (failures, 422, etc.).
-function stubFetch(batch?: (body: Record<string, unknown>) => Response) {
+// Optional `renderLabel` override lets a test control the /api/render/label response.
+function stubFetch(
+  batch?: (body: Record<string, unknown>) => Response,
+  renderLabel?: () => Response,
+) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith("/api/templates/t1")) return json(detail);
     if (url.startsWith("/api/templates")) return json(list);
     if (url.startsWith("/api/printers")) return json(printers);
+    if (url.startsWith("/api/render/label")) {
+      if (renderLabel) return renderLabel();
+      return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+    }
     if (url.startsWith("/api/batch")) {
       const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, unknown>;
       if (batch) return batch(body);
@@ -347,5 +355,37 @@ describe("CSV Import screen", () => {
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     expect(await screen.findByText(/limit is 500/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
+  });
+
+  it("renders a preview for the selected row and keeps actions enabled on preview error", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+    // First render/label call succeeds; subsequent calls error to test the "keeps actions enabled" branch.
+    let renderCallCount = 0;
+    fetchMock = stubFetch(undefined, () => {
+      renderCallCount += 1;
+      if (renderCallCount === 1) {
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      }
+      return new Response(JSON.stringify({ error: { code: "RenderError", message: "bad row" } }), {
+        status: 422,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await loadTemplateAndCsv();
+
+    // Default selection is the first valid row, so a render/label call fires immediately.
+    await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
+
+    // Select row 2 -> another render fires (which will error per our stub).
+    const before = countCalls("/api/render/label");
+    fireEvent.click(screen.getByLabelText("preview row 2"));
+    await waitFor(() => expect(countCalls("/api/render/label")).toBe(before + 1));
+
+    // Download stays enabled even though the preview endpoint errored.
+    expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
   });
 });

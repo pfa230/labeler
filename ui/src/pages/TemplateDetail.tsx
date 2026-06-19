@@ -2,7 +2,8 @@ import { Link, useParams } from "react-router-dom";
 import { useTemplate, useTemplateSource } from "../api/queries";
 import { useTemplatePreview } from "../lib/preview";
 import { referencedFields, referencedSettings } from "../lib/templateFields";
-import type { Dimension, TemplateDetail as TemplateDetailModel, TemplateFormat } from "../api/types";
+import type { Dimension, TemplateFormat } from "../api/types";
+import { PreviewPane } from "../components/PreviewPane";
 
 function dim(d: Dimension): string {
   if (typeof d === "number") return String(d);
@@ -27,33 +28,12 @@ function Chip({ children }: { children: React.ReactNode }) {
   );
 }
 
-function PreviewPane({ detail }: { detail: TemplateDetailModel }) {
-  const { url, error, loading } = useTemplatePreview(detail);
-  return (
-    <div
-      className="flex min-h-48 items-center justify-center rounded-lg border p-4"
-      style={{ background: "var(--bg)", borderColor: "var(--border)" }}
-    >
-      {loading && <p style={{ color: "var(--muted)" }}>rendering preview…</p>}
-      {!loading && error && (
-        <p style={{ color: "var(--bad)" }}>Preview failed: {error}</p>
-      )}
-      {!loading && !error && url && detail.format.type === "single" && (
-        <img src={url} alt={`${detail.name} preview`} className="max-h-96 max-w-full" />
-      )}
-      {!loading && !error && url && detail.format.type === "sheet" && (
-        <object data={url} type="application/pdf" className="h-96 w-full" aria-label={`${detail.name} preview`}>
-          <a href={url}>Open sheet preview</a>
-        </object>
-      )}
-    </div>
-  );
-}
 
 export function TemplateDetail() {
   const { id = "" } = useParams();
   const { data: detail, isLoading, isError, error } = useTemplate(id);
   const { data: source } = useTemplateSource(id);
+  const { url: previewUrl, error: previewError, loading: previewLoading } = useTemplatePreview(detail);
 
   if (isLoading) return <p style={{ color: "var(--muted)" }}>loading…</p>;
   if (isError || !detail) {
@@ -86,7 +66,7 @@ export function TemplateDetail() {
         </Link>
       </div>
 
-      <PreviewPane detail={detail} />
+      <PreviewPane name={detail.name} format={detail.format.type} preview={{ url: previewUrl, error: previewError, loading: previewLoading }} />
 
       <section className="flex flex-col gap-2">
         <h2 className="text-lg font-semibold">Details</h2>
