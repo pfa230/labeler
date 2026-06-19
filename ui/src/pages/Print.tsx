@@ -24,7 +24,7 @@ export function Print() {
           className="w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
           style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
         >
-          <option value="">select a template</option>
+          <option value="">— select a template —</option>
           {(templates.data?.templates ?? []).map((tpl) => (
             <option key={tpl.id} value={tpl.id}>
               {tpl.name}
