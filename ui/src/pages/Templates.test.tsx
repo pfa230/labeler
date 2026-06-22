@@ -7,7 +7,7 @@ import { Templates } from "./Templates";
 
 const templates = [
   {
-    id: "brother24mm",
+    id: "brother_24mm_qr",
     name: "Brother 24mm",
     description: "Continuous label roll",
     unit: "mm",
@@ -78,7 +78,7 @@ describe("Templates list", () => {
   it("renders a thumbnail image per card pointing at the thumbnail endpoint", async () => {
     renderPage();
     const img = await screen.findByAltText("Brother 24mm preview");
-    expect(img).toHaveAttribute("src", "/api/templates/brother24mm/thumbnail");
+    expect(img).toHaveAttribute("src", "/api/templates/brother_24mm_qr/thumbnail");
     expect(img.tagName).toBe("IMG");
   });
 

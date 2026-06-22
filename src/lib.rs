@@ -431,7 +431,7 @@ mod http_tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/templates/brother24mm/source")
+                    .uri("/api/templates/brother_24mm_qr/source")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -449,7 +449,7 @@ mod http_tests {
         );
         let body = bytes_response(response).await;
         let body = String::from_utf8(body).expect("utf8 body");
-        assert!(body.contains("id: brother24mm"), "body: {body}");
+        assert!(body.contains("id: brother_24mm_qr"), "body: {body}");
     }
 
     #[tokio::test]
@@ -473,7 +473,7 @@ mod http_tests {
         let res = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/templates/brother24mm/thumbnail")
+                    .uri("/api/templates/brother_24mm_qr/thumbnail")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -527,7 +527,7 @@ mod http_tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/templates/brother24mm/thumbnail")
+                    .uri("/api/templates/brother_24mm_qr/thumbnail")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -543,7 +543,7 @@ mod http_tests {
         let second = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/templates/brother24mm/thumbnail")
+                    .uri("/api/templates/brother_24mm_qr/thumbnail")
                     .header("if-none-match", etag)
                     .body(Body::empty())
                     .unwrap(),
@@ -642,7 +642,7 @@ mod http_tests {
             .filter_map(|item| item.get("id").and_then(|id| id.as_str()))
             .collect();
         assert!(ids.contains(&"avery5163"));
-        assert!(ids.contains(&"brother12mm"));
+        assert!(ids.contains(&"brother_12mm"));
     }
 
     #[tokio::test]
@@ -686,7 +686,7 @@ mod http_tests {
     async fn render_png() {
         let app = build_app();
         let label_payload = json!({
-            "template": "brother12mm",
+            "template": "brother_12mm",
             "data": {
                 "message": "Hello",
                 "code": "QR-123"
@@ -719,7 +719,7 @@ mod http_tests {
     async fn batch_single_download_returns_zip() {
         let app = build_app();
         let payload = json!({
-            "template": "brother24mm",
+            "template": "brother_24mm_qr",
             "mode": "download",
             "labels": [
                 { "data": { "message": "Hello", "code": "QR-1" } },
@@ -778,7 +778,7 @@ mod http_tests {
     async fn batch_invalid_label_returns_422() {
         let app = build_app();
         let payload = json!({
-            "template": "brother24mm",
+            "template": "brother_24mm_qr",
             "mode": "download",
             "labels": [
                 { "data": { "message": "Hello", "code": "QR-1" } },
@@ -800,7 +800,7 @@ mod http_tests {
         let app = build_app();
         create_fake_printer(&app, "ok-printer", false).await;
         let payload = json!({
-            "template": "brother24mm",
+            "template": "brother_24mm_qr",
             "mode": "print",
             "printer": "ok-printer",
             "labels": [
@@ -825,7 +825,7 @@ mod http_tests {
         let app = build_app();
         create_fake_printer(&app, "bad-printer", true).await;
         let payload = json!({
-            "template": "brother24mm",
+            "template": "brother_24mm_qr",
             "mode": "print",
             "printer": "bad-printer",
             "labels": [
@@ -918,7 +918,7 @@ mod http_tests {
     async fn batch_start_slot_single_400() {
         let app = build_app();
         let payload = json!({
-            "template": "brother24mm",
+            "template": "brother_24mm_qr",
             "mode": "download",
             "start_slot": 1,
             "labels": [
@@ -936,7 +936,7 @@ mod http_tests {
     async fn render_label_pdf() {
         let app = build_app();
         let payload = json!({
-            "template": "brother12mm",
+            "template": "brother_12mm",
             "data": { "message": "Hello", "code": "QR-123" }
         });
         let response = app
@@ -965,7 +965,7 @@ mod http_tests {
     async fn render_label_unknown_format_returns_400() {
         let app = build_app();
         let payload = json!({
-            "template": "brother12mm",
+            "template": "brother_12mm",
             "data": { "message": "Hello", "code": "QR-123" }
         });
         let response = app
@@ -1012,7 +1012,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother_24mm_qr")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1039,7 +1039,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother_24mm_qr")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1065,7 +1065,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother_24mm_qr")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1080,14 +1080,14 @@ mod http_tests {
     #[tokio::test]
     async fn import_csv_missing_field_is_atomic() {
         let app = build_app();
-        // brother24mm needs `message` and `code`. The CSV omits the `code` column, so every row
+        // brother_24mm_qr needs `message` and `code`. The CSV omits the `code` column, so every row
         // fails to render and the atomic batch aborts with a BatchInvalid before any output.
         let csv = "message\nHello\nWorld\n";
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=brother24mm")
+                    .uri("/api/import/csv?template=brother_24mm_qr")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1114,7 +1114,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=brother24mm&mode=print&printer=ok-printer")
+                    .uri("/api/import/csv?template=brother_24mm_qr&mode=print&printer=ok-printer")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1133,7 +1133,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=brother24mm&mode=print&printer=bad-printer")
+                    .uri("/api/import/csv?template=brother_24mm_qr&mode=print&printer=bad-printer")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1162,7 +1162,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=brother24mm&mode=print")
+                    .uri("/api/import/csv?template=brother_24mm_qr&mode=print")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
