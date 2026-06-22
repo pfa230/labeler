@@ -199,6 +199,33 @@ fn inter_font() -> Result<&'static Font, AppError> {
     Ok(FONT.get().expect("font initialized"))
 }
 
+/// Largest font in [min_size, max_size] (0.5pt steps) at which `text` fits the box, else min_size.
+pub(super) fn largest_fitting_font(
+    text: &str,
+    multiline: bool,
+    min_size: f32,
+    max_size: f32,
+    width_units: f32,
+    height_units: f32,
+    unit: &str,
+) -> f32 {
+    let font = match inter_font() {
+        Ok(f) => f,
+        Err(_) => return min_size,
+    };
+    let width_pt = units_to_pt(width_units, unit);
+    let height_pt = units_to_pt(height_units, unit);
+    let step = 0.5f32;
+    let mut size = max_size;
+    while size >= min_size - f32::EPSILON {
+        if text_fits(font, text, multiline, size, width_pt, height_pt) {
+            return size;
+        }
+        size -= step;
+    }
+    min_size
+}
+
 pub(super) fn fit_text_to_box(
     text: &str,
     multiline: bool,
@@ -209,27 +236,30 @@ pub(super) fn fit_text_to_box(
     unit: &str,
 ) -> Result<(f32, String), AppError> {
     let font = inter_font()?;
+    let fitted = largest_fitting_font(
+        text,
+        multiline,
+        min_size,
+        max_size,
+        width_units,
+        height_units,
+        unit,
+    );
     let width_pt = units_to_pt(width_units, unit);
     let height_pt = units_to_pt(height_units, unit);
-    let step = 0.5f32;
-    let mut size = max_size;
-    while size >= min_size - f32::EPSILON {
-        if text_fits(font, text, multiline, size, width_pt, height_pt) {
-            if multiline {
-                let lines = wrap_text(font, text, size, width_pt);
-                return Ok((size, lines.join("\n")));
-            }
-            return Ok((size, text.to_string()));
+    if text_fits(font, text, multiline, fitted, width_pt, height_pt) {
+        if multiline {
+            let lines = wrap_text(font, text, fitted, width_pt);
+            return Ok((fitted, lines.join("\n")));
         }
-        size -= step;
+        return Ok((fitted, text.to_string()));
     }
-    let size = min_size;
     let trimmed = if multiline {
-        trim_multiline(font, text, size, width_pt, height_pt)
+        trim_multiline(font, text, fitted, width_pt, height_pt)
     } else {
-        trim_single_line(font, text, size, width_pt)
+        trim_single_line(font, text, fitted, width_pt)
     };
-    Ok((size, trimmed))
+    Ok((fitted, trimmed))
 }
 
 fn text_fits(
@@ -558,6 +588,31 @@ mod tests {
         let dir = unique_dir("missing");
         assert!(resolve_image_asset(&dir, "nope.png").is_err());
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod helpers_tests {
+    use super::largest_fitting_font;
+
+    #[test]
+    fn largest_fitting_font_picks_max_then_steps_down() {
+        assert_eq!(
+            largest_fitting_font("Hi", false, 6.0, 20.0, 200.0, 50.0, "mm"),
+            20.0
+        );
+        assert_eq!(
+            largest_fitting_font(
+                "A long label that cannot fit",
+                false,
+                6.0,
+                20.0,
+                2.0,
+                3.0,
+                "mm"
+            ),
+            6.0
+        );
     }
 }
 
