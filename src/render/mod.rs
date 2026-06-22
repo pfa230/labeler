@@ -834,10 +834,20 @@ impl<'a> RenderContext<'a> {
                 }
             }
         }
-        let (width, height) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?;
         let point = placement.at.point();
         let left = point.x;
+        // On a dynamic-width (auto-length) label, an auto-width container must span only
+        // the remaining width from its left edge, not the full frame width. This matches the
+        // measurement pass which budgets (budget_w - at.x) - padding for the container.
+        let width = if self.auto_length.is_some() && placement.size.0[0].is_auto() {
+            (self.frame_width_units - left).max(0.0)
+        } else {
+            self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+                .0
+        };
+        let height = self
+            .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+            .1;
         let bottom = point.y;
         let top = bottom + height;
 
