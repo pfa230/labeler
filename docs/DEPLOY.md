@@ -80,6 +80,7 @@ overriding these:
 | `LABELER_INIT_USER` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_INIT_PASSWORD` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_TRUST_PROXY` | `false` | unset | `.env` (set `true` behind a TLS-terminating proxy) |
+| `LABELER_NO_AUTH` | unset | unset | `.env` (set `true` for single-user LAN-trust homelab; see Authentication) |
 
 Templates (`/app/templates`) and fonts (`/app/fonts`) are CWD-relative app paths fixed in the image;
 making them env-configurable is tracked in issue #38. The QR base URL is a runtime *setting* (Settings
@@ -125,6 +126,17 @@ the UI and the first-run setup screen creates the first account, or seed it from
   the header. When `LABELER_TRUST_PROXY=true`, the proxy should also forward `X-Forwarded-Host` (the
   original browser host); the CSRF origin check uses it so cookie-authenticated writes are not rejected
   when the proxy rewrites `Host` to an internal value.
+
+- **No-auth mode (LAN-trust homelab).** `LABELER_NO_AUTH=true` removes the login wall for single-user
+  LAN-trust use. The data API is open to anyone on the network (including the stored Homebox API key);
+  the credential-management endpoints (`/auth/setup`, `/auth/login`, `/auth/logout`, `/auth/password`,
+  `/users`, `/tokens`) return `403` so no durable credential can be created while this is set, and a
+  relaxed origin check still rejects browser drive-by writes with a mismatched `Origin`. Leave unset
+  (the default) to require login. Deliberate opt-in only.
+
+  ```env
+  LABELER_NO_AUTH=true
+  ```
 
 - **Automation uses API tokens.** Non-browser callers (scripts, the CSV importer, integrations) must
   send `Authorization: Bearer $LABELER_API_TOKEN`. Create a token in the UI (Settings), store it as

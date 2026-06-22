@@ -1918,6 +1918,14 @@ mod auth_http_tests {
         )))
     }
 
+    fn test_app_no_auth() -> axum::Router {
+        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let store = Store::open_in_memory().expect("store");
+        app(Arc::new(
+            AppState::new(templates, "templates".into(), store).with_no_auth(true),
+        ))
+    }
+
     fn req_get(uri: &str) -> Request<Body> {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
@@ -2476,5 +2484,101 @@ mod auth_http_tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         assert_eq!(body_json(res).await["error"]["code"], "SettingNotFound");
+    }
+
+    #[tokio::test]
+    async fn no_auth_opens_protected_data_route() {
+        // default mode: a protected route without credentials is 401
+        let app = test_app();
+        let res = app.oneshot(req_get("/api/variables")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        // no-auth mode: the same route is open
+        let app = test_app_no_auth();
+        let res = app.oneshot(req_get("/api/variables")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn no_auth_disables_credential_management() {
+        // every POST on the credential surface (including login/logout) is 403
+        let posts = [
+            ("/api/auth/setup", r#"{"username":"a","password":"x"}"#),
+            ("/api/auth/login", r#"{"username":"a","password":"x"}"#),
+            ("/api/auth/logout", r#"{}"#),
+            (
+                "/api/auth/password",
+                r#"{"current_password":"a","new_password":"b"}"#,
+            ),
+            ("/api/users", r#"{"username":"a","password":"x"}"#),
+            ("/api/tokens", r#"{"name":"t"}"#),
+        ];
+        for (path, body) in posts {
+            let app = test_app_no_auth();
+            let res = app.oneshot(req_post_json(path, body)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "POST {path}");
+            assert_eq!(body_json(res).await["error"]["code"], "Forbidden");
+        }
+        // GET reads of the credential surface are also blocked
+        for path in ["/api/users", "/api/tokens"] {
+            let app = test_app_no_auth();
+            let res = app.oneshot(req_get(path)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "GET {path}");
+        }
+        // DELETE on the credential sub-paths is blocked (no cookie needed: is_auth_managed fires first)
+        for path in ["/api/users/someid", "/api/tokens/someid"] {
+            let app = test_app_no_auth();
+            let req = Request::builder()
+                .method("DELETE")
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let res = app.oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "DELETE {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn no_auth_me_reports_local_even_with_stale_cookie() {
+        // no cookie
+        let app = test_app_no_auth();
+        let res = app.oneshot(req_get("/api/auth/me")).await.unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["authed"], true);
+        assert_eq!(body["needsSetup"], false);
+        assert_eq!(body["me"]["id"], "local");
+        assert_eq!(body["noAuth"], true);
+        // a stale/bogus cookie must NOT change the reported identity (branch runs before resolve_optional)
+        let app = test_app_no_auth();
+        let res = app
+            .oneshot(req_get_cookie("/api/auth/me", "labeler_session=bogus"))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["me"]["id"], "local");
+        assert_eq!(body["noAuth"], true);
+    }
+
+    #[tokio::test]
+    async fn no_auth_relaxed_origin_check() {
+        // state-changing request with NO Origin succeeds (non-browser caller)
+        let app = test_app_no_auth();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/templates/reload")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // same request with a MISMATCHED Origin is rejected
+        let app = test_app_no_auth();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/templates/reload")
+            .header("host", "localhost")
+            .header("origin", "http://evil.example")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 }
