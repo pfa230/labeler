@@ -1,7 +1,7 @@
 import { Link, useParams } from "react-router-dom";
 import { useTemplate, useTemplateSource } from "../api/queries";
 import { useTemplatePreview } from "../lib/preview";
-import { referencedFields, referencedSettings } from "../lib/templateFields";
+import { referencedFields, referencedVariables } from "../lib/templateFields";
 import type { Dimension, TemplateFormat } from "../api/types";
 import { PreviewPane } from "../components/PreviewPane";
 
@@ -45,9 +45,9 @@ export function TemplateDetail() {
   }
 
   // Reference view: show the union of fields across all option branches (empty selection = ungated),
-  // consistent with referencedSettings which is also ungated.
+  // consistent with referencedVariables which is also ungated.
   const fields = referencedFields(detail.layout, {});
-  const settings = referencedSettings(detail.layout);
+  const variables = referencedVariables(detail.layout);
 
   return (
     <div className="flex flex-col gap-6">
@@ -126,11 +126,11 @@ export function TemplateDetail() {
         )}
       </section>
 
-      {settings.length > 0 && (
+      {variables.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h2 className="text-lg font-semibold">Settings used</h2>
+          <h2 className="text-lg font-semibold">Variables used</h2>
           <div className="flex flex-wrap gap-2">
-            {settings.map((s) => (
+            {variables.map((s) => (
               <Chip key={s}>{s}</Chip>
             ))}
           </div>
