@@ -82,9 +82,9 @@ All errors are JSON with a stable schema:
 
 ## Documentation
 
-- [`docs/SPEC.md`](docs/SPEC.md) — full, living specification (API, template schema, layout model,
+- [`docs/SPEC.md`](docs/SPEC.md): full, living specification (API, template schema, layout model,
   coordinate system, options, errors).
-- [`docs/adr/`](docs/adr/) — architecture decision records.
+- [`docs/adr/`](docs/adr/): architecture decision records.
 
 Work items are tracked as GitHub issues.
 
@@ -96,4 +96,5 @@ cargo clippy --all-targets --all-features
 cargo test
 ```
 
-See [`CLAUDE.md`](CLAUDE.md) for architecture notes and contribution conventions.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow and conventions; the architecture
+is documented in [`docs/SPEC.md`](docs/SPEC.md) and the [ADRs](docs/adr/).
