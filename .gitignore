@@ -17,7 +17,11 @@ venv/
 # Runtime app-state (SQLite)
 /data/
 
-*.pdf.superpowers/
+*.pdf
+.superpowers/
+/test-data/
+/templates/test.yaml
+*.db
 
 ui/node_modules
 ui/dist
