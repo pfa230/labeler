@@ -87,7 +87,7 @@ export function Shell() {
           ))}
         </ul>
         <div className="mt-auto flex flex-col gap-3 pt-4">
-          {auth?.me && (
+          {auth?.me && !auth?.noAuth && (
             <div className="flex items-center justify-between gap-2 px-3">
               <span className="truncate text-sm" style={{ color: "var(--muted)" }} aria-label="current user">
                 {auth.me.username}
