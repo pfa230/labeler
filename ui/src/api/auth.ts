@@ -9,6 +9,7 @@ export interface AuthState {
   authed: boolean;
   needsSetup: boolean;
   me?: Me;
+  noAuth?: boolean;
 }
 
 export function useAuth() {
