@@ -1,5 +1,7 @@
 use crate::errors::AppError;
-use crate::models::{Alignment, Dimension, HorizontalAlign, Point, QrParams, VerticalAlign};
+use crate::models::{
+    Alignment, Dimension, FontSize, HorizontalAlign, Point, QrParams, VerticalAlign,
+};
 use base64::Engine as _;
 use fontdue::Font;
 use qrcode::render::svg;
@@ -199,6 +201,33 @@ fn inter_font() -> Result<&'static Font, AppError> {
     Ok(FONT.get().expect("font initialized"))
 }
 
+/// Largest font in [min_size, max_size] (0.5pt steps) at which `text` fits the box, else min_size.
+pub(super) fn largest_fitting_font(
+    text: &str,
+    multiline: bool,
+    min_size: f32,
+    max_size: f32,
+    width_units: f32,
+    height_units: f32,
+    unit: &str,
+) -> f32 {
+    let font = match inter_font() {
+        Ok(f) => f,
+        Err(_) => return min_size,
+    };
+    let width_pt = units_to_pt(width_units, unit);
+    let height_pt = units_to_pt(height_units, unit);
+    let step = 0.5f32;
+    let mut size = max_size;
+    while size >= min_size - f32::EPSILON {
+        if text_fits(font, text, multiline, size, width_pt, height_pt) {
+            return size;
+        }
+        size -= step;
+    }
+    min_size
+}
+
 pub(super) fn fit_text_to_box(
     text: &str,
     multiline: bool,
@@ -209,27 +238,30 @@ pub(super) fn fit_text_to_box(
     unit: &str,
 ) -> Result<(f32, String), AppError> {
     let font = inter_font()?;
+    let fitted = largest_fitting_font(
+        text,
+        multiline,
+        min_size,
+        max_size,
+        width_units,
+        height_units,
+        unit,
+    );
     let width_pt = units_to_pt(width_units, unit);
     let height_pt = units_to_pt(height_units, unit);
-    let step = 0.5f32;
-    let mut size = max_size;
-    while size >= min_size - f32::EPSILON {
-        if text_fits(font, text, multiline, size, width_pt, height_pt) {
-            if multiline {
-                let lines = wrap_text(font, text, size, width_pt);
-                return Ok((size, lines.join("\n")));
-            }
-            return Ok((size, text.to_string()));
+    if text_fits(font, text, multiline, fitted, width_pt, height_pt) {
+        if multiline {
+            let lines = wrap_text(font, text, fitted, width_pt);
+            return Ok((fitted, lines.join("\n")));
         }
-        size -= step;
+        return Ok((fitted, text.to_string()));
     }
-    let size = min_size;
     let trimmed = if multiline {
-        trim_multiline(font, text, size, width_pt, height_pt)
+        trim_multiline(font, text, fitted, width_pt, height_pt)
     } else {
-        trim_single_line(font, text, size, width_pt)
+        trim_single_line(font, text, fitted, width_pt)
     };
-    Ok((size, trimmed))
+    Ok((fitted, trimmed))
 }
 
 fn text_fits(
@@ -379,6 +411,58 @@ fn units_to_pt(value: f32, unit: &str) -> f32 {
         "in" => value * 72.0,
         "mm" => value * 72.0 / 25.4,
         _ => value,
+    }
+}
+
+fn pt_to_units(value_pt: f32, unit: &str) -> f32 {
+    match unit {
+        "in" => value_pt / 72.0,
+        "mm" => value_pt * 25.4 / 72.0,
+        _ => value_pt,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct MeasuredText {
+    pub font: f32,
+    pub text: String,
+    pub width: f32,
+}
+
+/// Single-line auto-length fit: choose the font, return the natural width (clamped to the budget) and the
+/// possibly-ellipsized text. Range shrinks max to min then ellipsizes; Fixed measures at its size then
+/// ellipsizes. Width is in template units.
+pub(super) fn fit_text_auto_length(
+    raw_text: &str,
+    font_size: &FontSize,
+    budget_w_units: f32,
+    box_h_units: f32,
+    unit: &str,
+) -> Result<MeasuredText, AppError> {
+    let font = inter_font()?;
+    let line = to_nonbreaking(raw_text.lines().next().unwrap_or(""));
+    let budget_pt = units_to_pt(budget_w_units, unit);
+    let height_pt = units_to_pt(box_h_units, unit);
+    let size = match font_size {
+        FontSize::Fixed(s) => *s,
+        FontSize::Range { min, max } => {
+            largest_fitting_font(&line, false, *min, *max, budget_w_units, box_h_units, unit)
+        }
+    };
+    if text_fits(font, &line, false, size, budget_pt, height_pt) {
+        let w = pt_to_units(text_width(font, &line, size), unit).min(budget_w_units);
+        Ok(MeasuredText {
+            font: size,
+            text: line,
+            width: w,
+        })
+    } else {
+        let trimmed = trim_single_line(font, &line, size, budget_pt);
+        Ok(MeasuredText {
+            font: size,
+            text: trimmed,
+            width: budget_w_units,
+        })
     }
 }
 
@@ -558,6 +642,75 @@ mod tests {
         let dir = unique_dir("missing");
         assert!(resolve_image_asset(&dir, "nope.png").is_err());
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod helpers_tests {
+    use super::{fit_text_auto_length, largest_fitting_font};
+    use crate::models::FontSize;
+
+    #[test]
+    fn largest_fitting_font_picks_max_then_steps_down() {
+        assert_eq!(
+            largest_fitting_font("Hi", false, 6.0, 20.0, 200.0, 50.0, "mm"),
+            20.0
+        );
+        assert_eq!(
+            largest_fitting_font(
+                "A long label that cannot fit",
+                false,
+                6.0,
+                20.0,
+                2.0,
+                3.0,
+                "mm"
+            ),
+            6.0
+        );
+    }
+
+    #[test]
+    fn auto_length_short_text_is_content_width() {
+        let m = fit_text_auto_length(
+            "Hi",
+            &FontSize::Range {
+                min: 6.0,
+                max: 20.0,
+            },
+            200.0,
+            50.0,
+            "mm",
+        )
+        .unwrap();
+        assert_eq!(m.font, 20.0);
+        assert!(m.width > 0.0 && m.width < 200.0);
+        assert_eq!(m.text, "Hi");
+    }
+
+    #[test]
+    fn auto_length_overflow_ellipsizes_at_min_and_uses_budget() {
+        let m = fit_text_auto_length(
+            "An extremely long label that cannot possibly fit even at the minimum font size",
+            &FontSize::Range {
+                min: 6.0,
+                max: 20.0,
+            },
+            8.0,
+            3.0,
+            "mm",
+        )
+        .unwrap();
+        assert_eq!(m.font, 6.0);
+        assert!(m.text.ends_with("...") || m.text.ends_with('\u{2026}'));
+        assert!((m.width - 8.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn auto_length_fixed_font_no_shrink() {
+        let m = fit_text_auto_length("Hi", &FontSize::Fixed(12.0), 200.0, 50.0, "mm").unwrap();
+        assert_eq!(m.font, 12.0);
+        assert_eq!(m.text, "Hi");
     }
 }
 
