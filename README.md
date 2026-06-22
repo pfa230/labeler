@@ -35,8 +35,9 @@ See [`docs/DEPLOY.md`](docs/DEPLOY.md) for configuration, persistent volumes and
 printing setup.
 
 YAML templates are loaded from `templates/` at startup; an invalid template stops the service from
-starting. Starter templates: `avery5163` (US Letter sheet) and `brother12mm` / `brother18mm` /
-`brother24mm` (continuous tape).
+starting. Starter templates: `avery5163` (US Letter sheet) and the Brother continuous-tape set
+`brother_12mm` / `brother_18mm` / `brother_24mm` (text only) plus `brother_18mm_qr` / `brother_24mm_qr`
+(QR + text).
 
 ## Endpoints
 
