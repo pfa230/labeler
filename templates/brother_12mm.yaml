@@ -1,0 +1,28 @@
+id: brother_12mm
+name: Brother 12mm Continuous Label (text only)
+description: Continuous tape, 12mm nominal (9.9mm printable at 180 dpi), text only
+unit: mm
+dpi: 180
+format:
+  type: single
+  width:
+    min: 10.0
+    max: 100.0
+  height: 9.9
+layout:
+  - type: container
+    at: [0.0, 0.0]
+    size: [100.0, 9.9]
+    padding: 1.0
+    items:
+      - type: text
+        name: message
+        at: [0.0, 0.0]
+        size: [98.0, 7.9]
+        font_size:
+          min: 6.0
+          max: 18.0
+        multiline: true
+        alignment:
+          horizontal: center
+          vertical: center
