@@ -173,8 +173,35 @@ impl TemplateDefinition {
                 }
             }
         }
+        // Require both bounds on a dynamic-width single before computing layout bounds,
+        // so the caller gets the correct error rather than an out-of-bounds panic.
+        if let TemplateFormat::Single {
+            width: Dimension::Dynamic { min, max },
+            ..
+        } = &self.format
+        {
+            if min.is_none() || max.is_none() {
+                return Err(
+                    "a dynamic-width single template must specify both width.min and width.max"
+                        .to_string(),
+                );
+            }
+        }
+
         let bounds = layout_bounds(&self.format)?;
-        validate_layout(&self.layout, self.options.as_ref(), bounds.as_ref())?;
+        let is_dynamic_width = matches!(
+            &self.format,
+            TemplateFormat::Single {
+                width: Dimension::Dynamic { .. },
+                ..
+            }
+        );
+        validate_layout(
+            &self.layout,
+            self.options.as_ref(),
+            bounds.as_ref(),
+            is_dynamic_width,
+        )?;
 
         match &self.format {
             TemplateFormat::Sheet {
@@ -254,9 +281,10 @@ fn validate_layout(
     layout: &Layout,
     options: Option<&Options>,
     bounds: Option<&LayoutBounds>,
+    is_dynamic_width: bool,
 ) -> Result<(), String> {
     match layout {
-        Layout::Items(items) => validate_layout_items(items, bounds, options),
+        Layout::Items(items) => validate_layout_items(items, bounds, options, is_dynamic_width),
     }
 }
 
@@ -264,6 +292,7 @@ fn validate_layout_items(
     items: &[LayoutItem],
     bounds: Option<&LayoutBounds>,
     options: Option<&Options>,
+    is_dynamic_width: bool,
 ) -> Result<(), String> {
     let mut seen_names = HashSet::new();
     for item in items {
@@ -275,7 +304,7 @@ fn validate_layout_items(
                 return Err(format!("duplicate layout item name '{}'", name));
             }
         }
-        validate_layout_item(item, bounds, options)?;
+        validate_layout_item(item, bounds, options, is_dynamic_width)?;
     }
     Ok(())
 }
@@ -294,6 +323,7 @@ fn validate_layout_item(
     item: &LayoutItem,
     layout_bounds: Option<&LayoutBounds>,
     options: Option<&Options>,
+    is_dynamic_width: bool,
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
@@ -303,11 +333,12 @@ fn validate_layout_item(
         } => {
             validate_position(&placement.at)?;
             validate_rotation(&placement.rotate)?;
+            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
                 placement.max_w,
                 placement.max_h,
-                layout_bounds,
+                auto_bounds.as_ref().or(layout_bounds),
                 false,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -318,11 +349,12 @@ fn validate_layout_item(
         } => {
             validate_position(&placement.at)?;
             validate_rotation(&placement.rotate)?;
+            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
                 placement.max_w,
                 placement.max_h,
-                layout_bounds,
+                auto_bounds.as_ref().or(layout_bounds),
                 false,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -342,11 +374,12 @@ fn validate_layout_item(
         LayoutItem::Image { placement, .. } => {
             validate_position(&placement.at)?;
             validate_rotation(&placement.rotate)?;
+            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
                 placement.max_w,
                 placement.max_h,
-                layout_bounds,
+                auto_bounds.as_ref().or(layout_bounds),
                 false,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -364,10 +397,10 @@ fn validate_layout_item(
                 return Err("line start and end must differ".to_string());
             }
             if let Some(bounds) = layout_bounds {
+                // On dynamic-width singles, lines are only bounds-checked in y.
                 for point in [start, end] {
-                    if point.x > bounds.width + LINE_EPSILON
-                        || point.y > bounds.height + LINE_EPSILON
-                    {
+                    let x_ok = is_dynamic_width || point.x <= bounds.width + LINE_EPSILON;
+                    if !x_ok || point.y > bounds.height + LINE_EPSILON {
                         return Err("line must fit within layout bounds".to_string());
                     }
                 }
@@ -382,11 +415,12 @@ fn validate_layout_item(
         } => {
             validate_position(&placement.at)?;
             validate_rotation(&placement.rotate)?;
+            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
                 placement.max_w,
                 placement.max_h,
-                layout_bounds,
+                auto_bounds.as_ref().or(layout_bounds),
                 true,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -424,10 +458,33 @@ fn validate_layout_item(
             let inner_width = width - padding.left - padding.right;
             let inner_height = height - padding.top - padding.bottom;
             let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
-            validate_layout_items(items, Some(&container_bounds), options)?;
+            // Children of a container are always bounded by the container, not the template.
+            validate_layout_items(items, Some(&container_bounds), options, false)?;
         }
     }
     Ok(())
+}
+
+/// When `is_dynamic_width` is true, returns adjusted bounds where the width is reduced
+/// by `at.x` so that an `auto` size resolves to the remaining width from the item's x offset.
+/// Returns `None` when the adjustment is not needed (fixed-width or zero offset).
+fn auto_resolve_bounds(
+    layout_bounds: Option<&LayoutBounds>,
+    at: &Position,
+    is_dynamic_width: bool,
+) -> Option<LayoutBounds> {
+    if !is_dynamic_width {
+        return None;
+    }
+    let bounds = layout_bounds?;
+    let at_x = at.point().x;
+    if at_x == 0.0 {
+        return None;
+    }
+    Some(LayoutBounds {
+        width: (bounds.width - at_x).max(0.0),
+        height: bounds.height,
+    })
 }
 
 fn validate_position(at: &Position) -> Result<(), String> {
@@ -910,6 +967,87 @@ layout: []
         let template = single_line_template(Position([0.0, 0.0]), Position([-1.0, 0.0]));
         let err = template.validate().expect_err("expected error");
         assert!(err.contains("negative coordinates"));
+    }
+
+    #[test]
+    fn dynamic_width_single_requires_both_bounds() {
+        // Only min is set; max is None. Validate should reject this.
+        let template = TemplateDefinition {
+            id: "tape".to_string(),
+            name: "Tape".to_string(),
+            description: "tape".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: None,
+                },
+                height: Dimension::Fixed(12.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("hello".to_string()),
+                placement: crate::models::Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        let err = template.validate().expect_err("expected error");
+        assert!(
+            err.contains("must specify both width.min and width.max"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn dynamic_width_single_auto_width_item_at_offset_validates_ok() {
+        // Dynamic-width single with both bounds; a container at at.x=5 with auto width.
+        // Auto width should resolve to max_width - at.x = 100 - 5 = 95, which fits.
+        let template = TemplateDefinition {
+            id: "tape2".to_string(),
+            name: "Tape2".to_string(),
+            description: "tape".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(12.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Container {
+                placement: crate::models::Placement {
+                    at: Position([5.0, 0.0]),
+                    size: Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(12.0),
+                    ]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![],
+            }]),
+            version: None,
+        };
+        template
+            .validate()
+            .expect("dynamic-width single with auto-width container at offset should validate OK");
     }
 
     #[test]
