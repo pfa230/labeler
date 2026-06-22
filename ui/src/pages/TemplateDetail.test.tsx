@@ -6,7 +6,7 @@ import { ToastProvider } from "../app/toast";
 import { TemplateDetail } from "./TemplateDetail";
 
 const detail = {
-  id: "brother24mm",
+  id: "brother_24mm_qr",
   name: "Brother 24mm Continuous Label",
   description: "Continuous label roll (24mm width)",
   unit: "mm",
@@ -18,17 +18,17 @@ const detail = {
   ],
 };
 
-const source = "id: brother24mm\nname: Brother 24mm Continuous Label\n";
+const source = "id: brother_24mm_qr\nname: Brother 24mm Continuous Label\n";
 
 function stubFetch() {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
-      if (url.endsWith("/api/templates/brother24mm/source")) {
+      if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
         return new Response(source, { status: 200, headers: { "content-type": "text/yaml" } });
       }
-      if (url.endsWith("/api/templates/brother24mm")) {
+      if (url.endsWith("/api/templates/brother_24mm_qr")) {
         return new Response(JSON.stringify(detail), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -50,7 +50,7 @@ function renderPage() {
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter initialEntries={["/templates/brother24mm"]}>
+        <MemoryRouter initialEntries={["/templates/brother_24mm_qr"]}>
           <Routes>
             <Route path="/templates/:id" element={<TemplateDetail />} />
           </Routes>
@@ -78,6 +78,6 @@ describe("Template detail", () => {
     await screen.findByText("Brother 24mm Continuous Label");
     const toggle = await screen.findByText(/raw yaml/i);
     fireEvent.click(toggle);
-    expect(await screen.findByText(/id: brother24mm/)).toBeInTheDocument();
+    expect(await screen.findByText(/id: brother_24mm_qr/)).toBeInTheDocument();
   });
 });

@@ -101,9 +101,8 @@ failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned s
 
 ```json
 {
-  "template": "brother12mm",
-  "data": { "message": "Hello", "code": "QR-123" },
-  "option": { "variant": "default" }
+  "template": "brother_18mm_qr",
+  "data": { "message": "Hello", "code": "QR-123" }
 }
 ```
 
