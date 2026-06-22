@@ -28,12 +28,9 @@ CI publishes images to `ghcr.io/pfa230/labeler`:
 - `:edge` and `:sha-<short>` on every push to `main`.
 - `:X.Y.Z`, `:X.Y`, and `:latest` on a `vX.Y.Z` release tag.
 
-The repo is private, so the package is **private**: you must authenticate to pull. The pulling
-user/token needs **read access to the package** (for a personal-account private package, access is
-granted per user in the package settings; a classic PAT additionally needs the `read:packages` scope).
+The package is public; pull it without authenticating:
 
 ```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u <your-github-username> --password-stdin
 docker run -d -p 8080:8080 -v labeler-data:/app/data -v labeler-templates:/app/templates \
   ghcr.io/pfa230/labeler:latest
 ```
