@@ -405,6 +405,15 @@ own session and silently log them out), so that request is rejected `409`. Chang
 the user's other sessions but keeps the current one. Passwords are argon2id; secrets at rest (sessions,
 tokens) are SHA-256 hashes.
 
+Passwords must be non-empty (no length minimum). Setting `LABELER_NO_AUTH=true` turns authentication off
+for LAN-trust homelab use (never the default): data routes are open via an internal local principal,
+but the credential-management endpoints (`/auth/setup`, `/auth/login`, `/auth/logout`, `/auth/password`,
+`/users`, `/tokens`) return `403` so no durable credential can be created through the API while auth is
+off (the operator `LABELER_INIT_USER` startup bootstrap is unaffected), and a relaxed origin check still
+rejects browser drive-by writes with a mismatched `Origin`. `GET /api/auth/me`
+then returns `{ authed: true, needsSetup: false, me: { id: "local", username: "local" }, noAuth: true }`,
+and the SPA hides the login wall and credential-management UI.
+
 ## 12. Integrations (connectors)
 
 Decision: [ADR-0018](adr/0018-api-integration-spine.md). A connector pulls label data straight from an
@@ -545,6 +554,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-21**: Loosened auth for homelab (M10; ADR-0025; #54). Dropped the 8-char password minimum
+  (non-empty only). Added optional `LABELER_NO_AUTH=true`: the auth subsystem is off (open data routes,
+  credential management returns `403`, relaxed origin check), with `noAuth: true` on `/auth/me`. Auth
+  stays the default.
 - **2026-06-19**: Typed app settings (M10; ADR-0024; #53). `GET/PUT/DELETE /api/settings` expose
   resolved application config, stored separately from `variables` and never interpolated. First
   setting: `job_log_retention_days` (default 90; 0 disables). The daily job-log prune reads the live

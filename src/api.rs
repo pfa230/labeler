@@ -51,6 +51,7 @@ pub struct AppState {
     store: Store,
     ui_dir: PathBuf,
     trust_proxy: bool,
+    no_auth: bool,
     egress: crate::egress::Egress,
     connectors: crate::connector::ConnectorRegistry,
     cursor_key: crate::connector::cursor::SigningKey,
@@ -69,6 +70,9 @@ impl AppState {
             trust_proxy: std::env::var("LABELER_TRUST_PROXY")
                 .map(|v| v == "true")
                 .unwrap_or(false),
+            no_auth: std::env::var("LABELER_NO_AUTH")
+                .map(|v| v == "true")
+                .unwrap_or(false),
             egress: crate::egress::Egress::new(),
             connectors: crate::connector::ConnectorRegistry::default(),
             cursor_key: crate::connector::cursor::SigningKey::random(),
@@ -77,6 +81,11 @@ impl AppState {
 
     pub fn with_ui_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.ui_dir = dir.into();
+        self
+    }
+
+    pub fn with_no_auth(mut self, no_auth: bool) -> Self {
+        self.no_auth = no_auth;
         self
     }
 
@@ -90,6 +99,10 @@ impl AppState {
 
     pub fn trust_proxy(&self) -> bool {
         self.trust_proxy
+    }
+
+    pub fn no_auth(&self) -> bool {
+        self.no_auth
     }
 
     pub fn egress(&self) -> &crate::egress::Egress {
@@ -1416,8 +1429,8 @@ pub struct Credentials {
     pub password: String,
 }
 
-/// Validate a new account/password: non-empty username, password at least 8 chars. Returns 400 otherwise
-/// (prevents footguns like an empty-password account created via `/auth/setup`).
+/// Validate a new account/password: non-empty username, non-empty password. Returns 400 otherwise
+/// (an empty password is a footgun; run with LABELER_NO_AUTH instead of an empty-password account).
 fn validate_new_account(username: &str, password: &str) -> Result<(), AppError> {
     if username.trim().is_empty() {
         return Err(AppError::invalid_request("username must not be empty"));
@@ -1426,15 +1439,14 @@ fn validate_new_account(username: &str, password: &str) -> Result<(), AppError> 
 }
 
 fn validate_password(password: &str) -> Result<(), AppError> {
-    if password.len() < 8 {
-        return Err(AppError::invalid_request(
-            "password must be at least 8 characters",
-        ));
+    if password.is_empty() {
+        return Err(AppError::invalid_request("password must not be empty"));
     }
     Ok(())
 }
 
 /// Authentication state for the SPA, returned by `GET /auth/me`.
+/// This type is the OpenAPI schema only; the `me` handler constructs the JSON response directly with `serde_json::json!`, so changes here must be mirrored in the handler.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct AuthStatus {
     pub authed: bool,
@@ -1442,6 +1454,8 @@ pub struct AuthStatus {
     pub needs_setup: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub me: Option<UserSummary>,
+    #[serde(rename = "noAuth", skip_serializing_if = "std::ops::Not::not")]
+    pub no_auth: bool,
 }
 
 /// A user as exposed by the API (never includes the password hash).
@@ -1600,6 +1614,15 @@ pub async fn me(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Response, AppError> {
+    if state.no_auth() {
+        return Ok(Json(serde_json::json!({
+            "authed": true,
+            "needsSetup": false,
+            "me": {"id": "local", "username": "local"},
+            "noAuth": true
+        }))
+        .into_response());
+    }
     if let Some(p) = crate::middleware::resolve_optional(&state, &headers).await {
         let me = match p {
             crate::middleware::Principal::User { id, username } => {
@@ -1607,6 +1630,10 @@ pub async fn me(
             }
             crate::middleware::Principal::Token { .. } => {
                 serde_json::json!({"id": "token", "username": "api-token"})
+            }
+            // resolve_optional never returns Local, but the match must be exhaustive.
+            crate::middleware::Principal::Local => {
+                serde_json::json!({"id": "local", "username": "local"})
             }
         };
         return Ok(

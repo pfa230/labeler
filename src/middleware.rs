@@ -19,6 +19,7 @@ pub const SESSION_COOKIE: &str = "labeler_session";
 pub enum Principal {
     User { id: String, username: String },
     Token { id: String },
+    Local,
 }
 
 /// Paths that never require auth. IMPORTANT: this middleware is layered on the router that is then
@@ -101,12 +102,72 @@ fn origin_ok(req: &Request<Body>, trust_proxy: bool) -> bool {
     }
 }
 
+/// Credential-management paths (stripped of the `/api` prefix). In no-auth mode every method on these is
+/// rejected, so no durable user or token can be created, changed, listed, or deleted while auth is off.
+/// `/auth/me` is intentionally excluded (it must answer in no-auth mode).
+fn is_auth_managed(path: &str) -> bool {
+    matches!(
+        path,
+        "/auth/setup" | "/auth/login" | "/auth/logout" | "/auth/password" | "/users" | "/tokens"
+    ) || path.starts_with("/users/")
+        || path.starts_with("/tokens/")
+}
+
+/// Relaxed origin check for no-auth mode: reject only when an Origin/Referer IS present and its authority
+/// does not match the host; allow when absent (non-browser callers like curl or scripts). This preserves
+/// drive-by CSRF protection without a session. Mirrors `origin_ok`'s host/authority extraction but treats
+/// a missing Origin as allowed rather than rejected.
+fn origin_present_and_mismatched(req: &Request<Body>, trust_proxy: bool) -> bool {
+    let fwd_host = if trust_proxy {
+        req.headers()
+            .get("x-forwarded-host")
+            .and_then(|v| v.to_str().ok())
+    } else {
+        None
+    };
+    let host = match fwd_host.or_else(|| {
+        req.headers()
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+    }) {
+        Some(h) => h,
+        None => return false,
+    };
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .or_else(|| req.headers().get(header::REFERER))
+        .and_then(|v| v.to_str().ok());
+    let origin = match origin {
+        Some(o) => o,
+        None => return false, // no Origin: non-browser caller, allow
+    };
+    match origin.parse::<axum::http::Uri>() {
+        Ok(uri) => !uri
+            .authority()
+            .map(|a| a.as_str().eq_ignore_ascii_case(host))
+            .unwrap_or(false),
+        Err(_) => true, // unparseable Origin: reject
+    }
+}
+
 pub async fn require_auth(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
     next: Next,
 ) -> Response {
     let path = req.uri().path().to_string();
+    if state.no_auth() {
+        if is_auth_managed(&path) {
+            return AppError::forbidden("authentication is disabled").into_response();
+        }
+        if is_state_changing(req.method())
+            && origin_present_and_mismatched(&req, state.trust_proxy())
+        {
+            return AppError::forbidden("cross-origin request rejected").into_response();
+        }
+        return run_with(req, next, Principal::Local).await;
+    }
     if is_auth_exempt(&path) {
         // Even exempt endpoints get the origin check when they are cookie state-changing (login/setup CSRF).
         if is_state_changing(req.method())
