@@ -2,17 +2,18 @@ mod helpers;
 
 use crate::errors::AppError;
 use crate::models::{
-    Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Size, SizeValue,
+    Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Size, SizeValue,
     TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
-    assets_root, build_qr_svg, escape_typst_string, fit_text_to_box, format_length, interpolate,
-    parse_image_data_uri, resolve_dimension, resolve_image_asset, to_nonbreaking, to_page_coords,
-    typst_alignment, typst_font_options, value_to_string,
+    assets_root, build_qr_svg, escape_typst_string, fit_text_auto_length, fit_text_to_box,
+    format_length, interpolate, parse_image_data_uri, resolve_dimension, resolve_image_asset,
+    to_nonbreaking, to_page_coords, typst_alignment, typst_font_options, value_to_string,
+    MeasuredText,
 };
 use serde_json::Value as JsonValue;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use typst::layout::PagedDocument;
@@ -69,7 +70,13 @@ fn compile_label_doc(
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
 ) -> Result<PagedDocument, AppError> {
-    let (width_units, height_units) = match &template.format {
+    let unit = &template.unit;
+    let selected_option = normalize_option(template, option)?;
+    let items = select_layout_items(template)?;
+    let images = RefCell::new(ImageCollector::default());
+
+    // Resolve initial width/height; Dynamic single may be overridden after measurement.
+    let (mut width_units, height_units) = match &template.format {
         TemplateFormat::Single { width, height } => {
             (resolve_dimension(width)?, resolve_dimension(height)?)
         }
@@ -79,10 +86,49 @@ fn compile_label_doc(
             ..
         } => (*label_width, *label_height),
     };
-    let unit = &template.unit;
-    let selected_option = normalize_option(template, option)?;
-    let items = select_layout_items(template)?;
-    let images = RefCell::new(ImageCollector::default());
+
+    // For dynamic-width single templates, run a measurement pass and clamp the page width.
+    let measured: Vec<MeasuredText>;
+    let cursor_cell: Cell<usize>;
+
+    if let TemplateFormat::Single {
+        width: Dimension::Dynamic { min, max },
+        ..
+    } = &template.format
+    {
+        let max_w =
+            max.ok_or_else(|| AppError::unsupported_format("dynamic single width requires max"))?;
+        let min_w =
+            min.ok_or_else(|| AppError::unsupported_format("dynamic single width requires min"))?;
+        let mut m: Vec<MeasuredText> = Vec::new();
+        {
+            let probe = RenderContext::new(
+                (max_w, height_units),
+                unit,
+                data,
+                selected_option,
+                settings,
+                &images,
+                None,
+            );
+            let content_extent = probe.measure(items, max_w, &mut m)?;
+            width_units = content_extent.clamp(min_w, max_w);
+        }
+        measured = m;
+        cursor_cell = Cell::new(0usize);
+    } else {
+        measured = Vec::new();
+        cursor_cell = Cell::new(0usize);
+    }
+
+    let auto_length = if measured.is_empty() {
+        None
+    } else {
+        Some(AutoLength {
+            texts: &measured,
+            cursor: &cursor_cell,
+        })
+    };
 
     let mut source = String::new();
     let page_width = format_length(width_units, unit)?;
@@ -96,15 +142,23 @@ fn compile_label_doc(
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     let context = RenderContext::new(
-        width_units,
-        height_units,
+        (width_units, height_units),
         unit,
         data,
         selected_option,
         settings,
         &images,
+        auto_length,
     );
     source.push_str(&context.render_items(items)?);
+    // Assert we consumed exactly the texts we measured.
+    if cursor_cell.get() != measured.len() && !measured.is_empty() {
+        return Err(AppError::render_failed(format!(
+            "auto-length cursor mismatch: consumed {} of {} measured texts",
+            cursor_cell.get(),
+            measured.len()
+        )));
+    }
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
     compile_paged(source, images.into_inner().files)
 }
@@ -217,13 +271,13 @@ pub fn render_sheet_pages(
             }
         };
         let context = RenderContext::new(
-            *label_width,
-            *label_height,
+            (*label_width, *label_height),
             unit,
             &lbl.data,
             selected_option,
             settings,
             &images,
+            None,
         );
         match context.render_items(items) {
             Ok(content) => rendered.push(content),
@@ -336,6 +390,13 @@ fn normalize_option<'a>(
     }
 }
 
+/// State threaded through the render pass for dynamic-width auto-length labels.
+/// Both fields are `None` for fixed-width labels and sheets.
+struct AutoLength<'a> {
+    texts: &'a [MeasuredText],
+    cursor: &'a Cell<usize>,
+}
+
 struct RenderContext<'a> {
     frame_width_units: f32,
     frame_height_units: f32,
@@ -344,27 +405,138 @@ struct RenderContext<'a> {
     selected_option: Option<&'a BTreeMap<String, String>>,
     settings: &'a BTreeMap<String, String>,
     images: &'a RefCell<ImageCollector>,
+    auto_length: Option<AutoLength<'a>>,
 }
 
 impl<'a> RenderContext<'a> {
     fn new(
-        frame_width_units: f32,
-        frame_height_units: f32,
+        frame: (f32, f32),
         unit: &'a str,
         data: &'a HashMap<String, JsonValue>,
         selected_option: Option<&'a BTreeMap<String, String>>,
         settings: &'a BTreeMap<String, String>,
         images: &'a RefCell<ImageCollector>,
+        auto_length: Option<AutoLength<'a>>,
     ) -> Self {
         Self {
-            frame_width_units,
-            frame_height_units,
+            frame_width_units: frame.0,
+            frame_height_units: frame.1,
             unit,
             data,
             selected_option,
             settings,
             images,
+            auto_length,
         }
+    }
+
+    /// Walk items computing content right-extent and recording auto-width text fits (pre-order).
+    /// `budget_w` is the available width: page max at the top frame, inner width inside a container.
+    fn measure(
+        &self,
+        items: &[LayoutItem],
+        budget_w: f32,
+        out: &mut Vec<MeasuredText>,
+    ) -> Result<f32, AppError> {
+        let mut extent = 0.0f32;
+        for item in items {
+            let right = match item {
+                LayoutItem::Text {
+                    name,
+                    value,
+                    placement,
+                    font_size,
+                    ..
+                } => {
+                    let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
+                    let at = placement.at.point();
+                    let size_w = &placement.size.0[0];
+                    let box_h = placement.size.0[1]
+                        .value()
+                        .unwrap_or(self.frame_height_units - at.y);
+                    if size_w.is_auto() {
+                        let budget = (budget_w - at.x).max(0.0);
+                        let m = fit_text_auto_length(&text, font_size, budget, box_h, self.unit)?;
+                        let w = m.width;
+                        out.push(m);
+                        at.x + w
+                    } else {
+                        at.x + size_w.value().unwrap_or(0.0)
+                    }
+                }
+                LayoutItem::Qr { placement, .. } | LayoutItem::Image { placement, .. } => {
+                    let at_x = placement.at.point().x;
+                    let w = placement.size.0[0]
+                        .value()
+                        .unwrap_or((budget_w - at_x).max(0.0));
+                    at_x + w
+                }
+                LayoutItem::Line { at, to, .. } => at.point().x.max(to.point().x),
+                LayoutItem::Container {
+                    placement,
+                    option,
+                    padding,
+                    items,
+                    ..
+                } => {
+                    if let Some(opt) = option {
+                        if let Some(sel) = self.selected_option {
+                            let matches = opt.iter().all(|(n, v)| sel.get(n) == Some(v));
+                            if !matches {
+                                continue;
+                            }
+                        }
+                    }
+                    let at_x = placement.at.point().x;
+                    let size_w = &placement.size.0[0];
+                    if size_w.is_auto() {
+                        // auto-width container: width determined by children + padding
+                        let inner_budget =
+                            ((budget_w - at_x) - padding.left - padding.right).max(0.0);
+                        let inner_h = (self.frame_height_units
+                            - placement.at.point().y
+                            - padding.top
+                            - padding.bottom)
+                            .max(0.0);
+                        let ctx = RenderContext::new(
+                            (inner_budget, inner_h),
+                            self.unit,
+                            self.data,
+                            self.selected_option,
+                            self.settings,
+                            self.images,
+                            None,
+                        );
+                        let child_extent = ctx.measure(items, inner_budget, out)?;
+                        at_x + padding.left + child_extent + padding.right
+                    } else {
+                        // fixed-width container: right extent is at.x + explicit width
+                        let explicit_w = size_w.value().unwrap_or(0.0);
+                        let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
+                        let inner_h = {
+                            let size_h = &placement.size.0[1];
+                            let explicit_h = size_h
+                                .value()
+                                .unwrap_or(self.frame_height_units - placement.at.point().y);
+                            (explicit_h - padding.top - padding.bottom).max(0.0)
+                        };
+                        let ctx = RenderContext::new(
+                            (inner_w, inner_h),
+                            self.unit,
+                            self.data,
+                            self.selected_option,
+                            self.settings,
+                            self.images,
+                            None,
+                        );
+                        ctx.measure(items, inner_w, out)?;
+                        at_x + explicit_w
+                    }
+                }
+            };
+            extent = extent.max(right);
+        }
+        Ok(extent)
     }
 
     fn render_items(&self, items: &[LayoutItem]) -> Result<String, AppError> {
@@ -460,10 +632,47 @@ impl<'a> RenderContext<'a> {
             to_nonbreaking(&text)
         };
 
-        let (width, box_height_units) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let point = placement.at.point();
         let left = point.x;
+
+        // When auto-length is active and this text item has auto width, consume the next measured fit.
+        if let Some(al) = &self.auto_length {
+            if placement.size.0[0].is_auto() {
+                let idx = al.cursor.get();
+                let m = al.texts.get(idx).ok_or_else(|| {
+                    AppError::render_failed(format!("auto-length cursor overrun at index {idx}"))
+                })?;
+                al.cursor.set(idx + 1);
+
+                let box_height_units = self.resolve_size_value(
+                    &placement.size.0[1],
+                    placement.max_h,
+                    Some(self.frame_height_units - point.y),
+                    "height",
+                )?;
+                let bottom = point.y;
+                let top = bottom + box_height_units;
+                let escaped = escape_typst_string(&m.text);
+                let dx = format_length(left, self.unit)?;
+                let dy = format_length(self.frame_height_units - top, self.unit)?;
+                let box_width = format_length(m.width, self.unit)?;
+                let box_height = format_length(box_height_units, self.unit)?;
+                let align = typst_alignment(alignment);
+                let content = format!("#align({align})[#text(\"{escaped}\", size: {}pt)]", m.font);
+                let content = self.wrap_rotation(content, placement.rotate);
+                writeln!(
+                    out,
+                    "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
+                )
+                .map_err(|err| {
+                    AppError::render_failed(format!("failed to build typst source: {err}"))
+                })?;
+                return Ok(());
+            }
+        }
+
+        let (width, box_height_units) =
+            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let bottom = point.y;
         let top = bottom + box_height_units;
         let (size, text) = match font_size {
@@ -634,14 +843,18 @@ impl<'a> RenderContext<'a> {
 
         let inner_width = width - padding.left - padding.right;
         let inner_height = height - padding.top - padding.bottom;
+        let child_auto_length = self.auto_length.as_ref().map(|al| AutoLength {
+            texts: al.texts,
+            cursor: al.cursor,
+        });
         let context = RenderContext::new(
-            inner_width,
-            inner_height,
+            (inner_width, inner_height),
             self.unit,
             self.data,
             self.selected_option,
             self.settings,
             self.images,
+            child_auto_length,
         );
         let child_source = context.render_items(items)?;
         let content = if padding == &crate::models::Padding::ZERO {
