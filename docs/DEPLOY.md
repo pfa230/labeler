@@ -232,16 +232,6 @@ COPY --from=ca /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates
 requiring authentication will be reachable but fail with 401/403. Basic-auth and a custom-CA option are
 tracked in issue #39.
 
-### Why not mount the host CUPS socket?
-
-A common Docker pattern bind-mounts the host's `/var/run/cups/cups.sock` (or uses `--network host`) so a
-container can drive host CUPS queues. Labeler does not use that: it is an IPP *network* client (it speaks
-IPP over TCP to a `uri`), not a libcups/socket client, so a mounted socket would never be used. The
-network-IPP approach is portable (identical on Linux, macOS, and Windows Docker) and needs no privileged
-access; the tradeoff is that the printer or CUPS endpoint must be reachable over the network (the
-prerequisites above), whereas a socket mount would only work on a Linux host with that exact host's
-queues. The socket-mount / host-network option is therefore intentionally not provided.
-
 ## Architectures
 
 The image builds for the host architecture. For arm64 (e.g. Raspberry Pi):
