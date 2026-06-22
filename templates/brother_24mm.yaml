@@ -12,17 +12,17 @@ format:
 layout:
   - type: container
     at: [0.0, 0.0]
-    size: [120.0, 18.1]
+    size: [auto, 18.1]
     padding: 1.0
     items:
       - type: text
         name: message
         at: [0.0, 0.0]
-        size: [118.0, 16.1]
+        size: [auto, 16.1]
         font_size:
           min: 10.0
           max: 32.0
-        multiline: true
+        multiline: false
         alignment:
           horizontal: center
           vertical: center

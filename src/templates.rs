@@ -339,7 +339,7 @@ fn validate_layout_item(
                 placement.max_w,
                 placement.max_h,
                 auto_bounds.as_ref().or(layout_bounds),
-                false,
+                is_dynamic_width,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
             validate_font_size(font_size)?;
@@ -458,8 +458,10 @@ fn validate_layout_item(
             let inner_width = width - padding.left - padding.right;
             let inner_height = height - padding.top - padding.bottom;
             let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
-            // Children of a container are always bounded by the container, not the template.
-            validate_layout_items(items, Some(&container_bounds), options, false)?;
+            // Children of an auto-width container on a dynamic-width single may also use auto
+            // width; they resolve to the container inner width at render time.
+            let child_dynamic = is_dynamic_width && placement.size.0[0].is_auto();
+            validate_layout_items(items, Some(&container_bounds), options, child_dynamic)?;
         }
     }
     Ok(())
