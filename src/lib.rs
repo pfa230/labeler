@@ -2096,16 +2096,28 @@ mod auth_http_tests {
     }
 
     #[tokio::test]
-    async fn setup_rejects_short_password() {
+    async fn setup_rejects_empty_password_but_allows_short() {
+        // empty password is rejected
         let app = test_app();
         let res = app
             .oneshot(req_post_json(
                 "/api/auth/setup",
-                r#"{"username":"a","password":"short"}"#,
+                r#"{"username":"a","password":""}"#,
             ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // a short (non-empty) password is now accepted (no 8-char floor)
+        let app = test_app();
+        let res = app
+            .oneshot(req_post_json(
+                "/api/auth/setup",
+                r#"{"username":"a","password":"x"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

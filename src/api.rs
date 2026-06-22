@@ -1416,8 +1416,8 @@ pub struct Credentials {
     pub password: String,
 }
 
-/// Validate a new account/password: non-empty username, password at least 8 chars. Returns 400 otherwise
-/// (prevents footguns like an empty-password account created via `/auth/setup`).
+/// Validate a new account/password: non-empty username, non-empty password. Returns 400 otherwise
+/// (an empty password is a footgun; run with LABELER_NO_AUTH instead of an empty-password account).
 fn validate_new_account(username: &str, password: &str) -> Result<(), AppError> {
     if username.trim().is_empty() {
         return Err(AppError::invalid_request("username must not be empty"));
@@ -1426,10 +1426,8 @@ fn validate_new_account(username: &str, password: &str) -> Result<(), AppError> 
 }
 
 fn validate_password(password: &str) -> Result<(), AppError> {
-    if password.len() < 8 {
-        return Err(AppError::invalid_request(
-            "password must be at least 8 characters",
-        ));
+    if password.is_empty() {
+        return Err(AppError::invalid_request("password must not be empty"));
     }
     Ok(())
 }
