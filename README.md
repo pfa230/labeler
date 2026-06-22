@@ -41,9 +41,10 @@ See [`docs/DEPLOY.md`](docs/DEPLOY.md) for configuration, persistent volumes and
 printing setup.
 
 YAML templates are loaded from `templates/` at startup; an invalid template stops the service from
-starting. Starter templates: `avery5163` (US Letter sheet) and the Brother continuous-tape set
+starting. Starter templates: `avery5163` (US Letter sheet); the Brother continuous-tape set
 `brother_12mm` / `brother_18mm` / `brother_24mm` (text only) plus `brother_18mm_qr` / `brother_24mm_qr`
-(QR + text).
+(QR + text); and `homebox-qr`, a Homebox asset label whose QR links to an item, demonstrating variable
+interpolation.
 
 ## Endpoints
 
