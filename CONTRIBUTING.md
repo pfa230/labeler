@@ -1,8 +1,11 @@
 # Contributing
 
-Thanks for your interest. This is a small self-hosted label service (Rust/axum + a React UI).
+Thanks for your interest. Labeler is a small self-hosted label-rendering service: a Rust/axum backend
+and a React + TypeScript UI.
 
-## Dev gates (run before any change is done)
+## Building and testing
+
+Run these before submitting a change.
 
 Backend:
 ```bash
@@ -10,6 +13,7 @@ cargo fmt
 cargo clippy --all-targets --all-features
 cargo test
 ```
+
 Frontend (from `ui/`):
 ```bash
 npm run lint
@@ -17,15 +21,15 @@ npx vitest run
 npm run build
 ```
 
-## Templates are visual
+## Templates render to images
 
-A template YAML that parses and renders without error is not proof it looks right. When authoring or
+A template that parses without error is not proof it looks right. When adding or changing a template,
+render it (`POST /api/render/label?format=png`) and check the output against your intent (alignment,
+text fit, no clipping) before and after your change.
 
-locally) and inspect the image against intent, then fix and re-render until correct.
+## Proposing changes
 
-## Workflow
-
-
-`Refs #N` / `Fixes #N`. The living spec is [`docs/SPEC.md`](docs/SPEC.md); decisions are
-[Architecture Decision Records](docs/adr/); the capability tiers are
+Open an issue to discuss a bug or feature, then submit a pull request that references it. The API and
+template schema are specified in [`docs/SPEC.md`](docs/SPEC.md); design decisions are recorded as
+[Architecture Decision Records](docs/adr/); the capability tiers are in
 [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
