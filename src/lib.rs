@@ -715,6 +715,50 @@ mod http_tests {
         assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n");
     }
 
+    async fn render_png_bytes(app: &axum::Router, template: &str, data: Value) -> Vec<u8> {
+        let payload = json!({ "template": template, "data": data });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/render/label")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "render failed for {template}"
+        );
+        bytes_response(response).await
+    }
+
+    #[tokio::test]
+    async fn dynamic_tape_is_auto_length() {
+        let app = build_app();
+        let png_width =
+            |bytes: &[u8]| u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+        let short = render_png_bytes(&app, "brother_12mm", json!({"message": "hi"})).await;
+        let long = render_png_bytes(
+            &app,
+            "brother_12mm",
+            json!({"message": "a considerably longer message that grows the tape"}),
+        )
+        .await;
+        assert_eq!(&short[..8], b"\x89PNG\r\n\x1a\n", "short is not a PNG");
+        assert_eq!(&long[..8], b"\x89PNG\r\n\x1a\n", "long is not a PNG");
+        assert!(
+            png_width(&long) > png_width(&short),
+            "expected long ({}) > short ({})",
+            png_width(&long),
+            png_width(&short),
+        );
+    }
+
     #[tokio::test]
     async fn batch_single_download_returns_zip() {
         let app = build_app();
