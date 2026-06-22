@@ -26,8 +26,9 @@ an optional no-auth mode.
     no handler can mistake the caller for a real stored user.
   - The credential-management surface (`/auth/setup`, `/auth/login`, `/auth/logout`, `/auth/password`,
     `/users`, `/tokens` and their sub-paths) returns `403 "authentication is disabled"`, so no durable
-    user or token can be created or changed while auth is off. Turning auth back on therefore leaves no
-    seeded backdoor.
+    user or token can be created or changed through the API while auth is off. Turning auth back on
+    therefore leaves no API-seeded backdoor. (The operator-controlled `LABELER_INIT_USER` startup
+    bootstrap is unaffected and not reachable through the open API.)
   - A relaxed origin check still rejects state-changing requests whose Origin/Referer is present and
     mismatched, while allowing no-Origin (non-browser) callers; this preserves drive-by CSRF protection
     without a session.

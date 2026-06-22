@@ -408,8 +408,9 @@ tokens) are SHA-256 hashes.
 Passwords must be non-empty (no length minimum). Setting `LABELER_NO_AUTH=true` turns authentication off
 for LAN-trust homelab use (never the default): data routes are open via an internal local principal,
 but the credential-management endpoints (`/auth/setup`, `/auth/login`, `/auth/logout`, `/auth/password`,
-`/users`, `/tokens`) return `403` so no durable credential can be created while auth is off, and a
-relaxed origin check still rejects browser drive-by writes with a mismatched `Origin`. `GET /api/auth/me`
+`/users`, `/tokens`) return `403` so no durable credential can be created through the API while auth is
+off (the operator `LABELER_INIT_USER` startup bootstrap is unaffected), and a relaxed origin check still
+rejects browser drive-by writes with a mismatched `Origin`. `GET /api/auth/me`
 then returns `{ authed: true, needsSetup: false, me: { id: "local", username: "local" }, noAuth: true }`,
 and the SPA hides the login wall and credential-management UI.
 
