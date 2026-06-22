@@ -25,5 +25,4 @@ npm run build
 
 Open an issue to discuss a bug or feature, then submit a pull request that references it. The API and
 template schema are specified in [`docs/SPEC.md`](docs/SPEC.md); design decisions are recorded as
-[Architecture Decision Records](docs/adr/); the capability tiers are in
-[`docs/CAPABILITIES.md`](docs/CAPABILITIES.md).
+[Architecture Decision Records](docs/adr/); the project vision is in [`docs/VISION.md`](docs/VISION.md).
