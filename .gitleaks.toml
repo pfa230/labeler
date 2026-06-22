@@ -1,0 +1,7 @@
+# Reproducible config for the gitleaks secret scan (local + CI).
+# History scanned clean on 2026-06-22 (295 commits, no leaks). Add justified
+# false positives to [allowlist] with a comment if any ever surface.
+title = "labeler gitleaks config"
+
+[extend]
+useDefault = true
