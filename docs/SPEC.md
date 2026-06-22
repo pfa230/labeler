@@ -553,6 +553,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-21**: Corrected the bundled Brother tape templates (M11; #66/#67). Replaced the three
+  300-dpi templates with a five-template set at 180 dpi using the real TZe printable heights
+  (9.9/15.8/18.1mm): `brother_12mm`/`brother_18mm`/`brother_24mm` (text only) and
+  `brother_18mm_qr`/`brother_24mm_qr` (QR left + padded text). Established the render -> inspect -> fix
+  loop as the definition of done for template work.
 - **2026-06-21**: Loosened auth for homelab (M10; ADR-0025; #54). Dropped the 8-char password minimum
   (non-empty only). Added optional `LABELER_NO_AUTH=true`: the auth subsystem is off (open data routes,
   credential management returns `403`, relaxed origin check), with `noAuth: true` on `/auth/me`. Auth
