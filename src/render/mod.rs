@@ -8,9 +8,9 @@ use crate::models::{
 use crate::templates::TemplateDefinition;
 use helpers::{
     assets_root, build_qr_svg, escape_typst_string, fit_text_auto_length, fit_text_to_box,
-    format_length, interpolate, parse_image_data_uri, resolve_dimension, resolve_image_asset,
-    to_nonbreaking, to_page_coords, typst_alignment, typst_font_options, value_to_string,
-    MeasuredText,
+    format_length, interpolate, line_height_units, parse_image_data_uri, resolve_dimension,
+    resolve_image_asset, to_nonbreaking, to_page_coords, typst_alignment, typst_font_options,
+    value_to_string, MeasuredText,
 };
 use serde_json::Value as JsonValue;
 use std::cell::{Cell, RefCell};
@@ -644,21 +644,26 @@ impl<'a> RenderContext<'a> {
                 })?;
                 al.cursor.set(idx + 1);
 
-                let box_height_units = self.resolve_size_value(
+                // The text's allotted vertical slot (`size` height or the remaining frame height).
+                let slot_h = self.resolve_size_value(
                     &placement.size.0[1],
                     placement.max_h,
                     Some(self.frame_height_units - point.y),
                     "height",
                 )?;
-                let bottom = point.y;
-                let top = bottom + box_height_units;
+                // Vertically center the single line by sizing the box to the line height and offsetting
+                // it within the slot. Typst `#align(horizon)` does not apply inside a `#box`, so we
+                // position the tight box ourselves. The box width is the measured (tight) text width, so
+                // horizontal alignment is moot.
+                let line_h = line_height_units(m.font, self.unit)?;
+                let slot_top = self.frame_height_units - point.y - slot_h;
+                let dy_units = slot_top + ((slot_h - line_h) / 2.0).max(0.0);
                 let escaped = escape_typst_string(&m.text);
                 let dx = format_length(left, self.unit)?;
-                let dy = format_length(self.frame_height_units - top, self.unit)?;
+                let dy = format_length(dy_units, self.unit)?;
                 let box_width = format_length(m.width, self.unit)?;
-                let box_height = format_length(box_height_units, self.unit)?;
-                let align = typst_alignment(alignment);
-                let content = format!("#align({align})[#text(\"{escaped}\", size: {}pt)]", m.font);
+                let box_height = format_length(line_h, self.unit)?;
+                let content = format!("#text(\"{escaped}\", size: {}pt)", m.font);
                 let content = self.wrap_rotation(content, placement.rotate);
                 writeln!(
                     out,
