@@ -10,9 +10,6 @@ A REST service that renders labels from declarative YAML templates. It produces 
 docker run -p 8080:8080 ghcr.io/pfa230/labeler:edge
 ```
 
-The full API and template schema are in [`docs/SPEC.md`](docs/SPEC.md); see
-[`CONTRIBUTING.md`](CONTRIBUTING.md) to develop, and [`SECURITY.md`](SECURITY.md) to report issues.
-
 ## Run
 
 ```bash
@@ -80,14 +77,6 @@ All errors are JSON with a stable schema:
 }
 ```
 
-## Documentation
-
-- [`docs/SPEC.md`](docs/SPEC.md): full, living specification (API, template schema, layout model,
-  coordinate system, options, errors).
-- [`docs/adr/`](docs/adr/): architecture decision records.
-
-Work items are tracked as GitHub issues.
-
 ## Development
 
 ```bash
@@ -96,5 +85,5 @@ cargo clippy --all-targets --all-features
 cargo test
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development workflow and conventions; the architecture
-is documented in [`docs/SPEC.md`](docs/SPEC.md) and the [ADRs](docs/adr/).
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the contributor workflow. The full API and template spec is in
+[`docs/SPEC.md`](docs/SPEC.md); design decisions are recorded as [ADRs](docs/adr/).

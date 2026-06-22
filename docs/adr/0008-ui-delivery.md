@@ -6,7 +6,7 @@
 
 The service is a Rust/axum JSON REST API with no web UI yet. Milestone M5 adds the basic operational UI
 (template browse + preview, render/print form, CSV import, settings/printers). A "decent, responsive,
-themeable UI that avoids the generic, templated look" is an explicit product goal, and a rich GUI template
+themeable UI that avoids a generic, templated look" is an explicit product goal, and a rich GUI template
 editor is on the roadmap (Later); the editor research pointed at pdfme/Konva, which are React-centric.
 The product also values being a lightweight, single-container, self-hosted deploy.
 
@@ -38,8 +38,7 @@ single-binary appeal.
   recompile Rust. Production serves the built bundle.
 
 - **Styling.** Tailwind CSS plus headless components (Radix / shadcn-style) for a custom, non-generic,
-  responsive look. The exact component library is an
-  M5 implementation detail, not fixed here.
+  responsive look. The exact component library is an M5 implementation detail, not fixed here.
 
 ## Consequences
 

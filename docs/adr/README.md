@@ -4,7 +4,7 @@ This directory records the significant architectural decisions for Labeler, usin
 [Michael Nygard's ADR format](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions).
 
 An ADR captures a single decision: its context, the choice made, and the consequences. ADRs are
-immutable once **Accepted** — to change a decision, add a new ADR that supersedes the old one (mark the
+immutable once **Accepted**: to change a decision, add a new ADR that supersedes the old one (mark the
 old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 
 ## Index
@@ -33,6 +33,10 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0020](0020-variables-vs-settings.md) | Variables vs settings (substitution vs app config) | Accepted |
 | [0021](0021-homebox-connect-hardening.md) | Homebox & Connect hardening (isLocation, row link, selection) | Accepted |
 | [0022](0022-import-option-model.md) | Import option model and template-switch persistence | Accepted |
+| [0023](0023-template-thumbnail-endpoint.md) | Template thumbnail endpoint | Accepted |
+| [0024](0024-app-settings-storage-and-api.md) | App settings storage and API | Accepted |
+| [0025](0025-optional-no-auth-mode.md) | Optional no-auth mode for homelab | Accepted |
+| [0026](0026-auto-length-dynamic-width.md) | Auto-length dynamic-width single labels (continuous tape) | Accepted |
 
 ## Adding an ADR
 

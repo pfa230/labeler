@@ -52,7 +52,7 @@ use "Connect repository" / Manage Actions access to link it.
 
 ## Configuration
 
-Only two operator knobs, set in `.env` (Compose interpolates them):
+The common knobs, set in `.env` (Compose interpolates them); the full environment contract follows:
 
 | Var | Default | Meaning |
 | --- | --- | --- |
@@ -83,8 +83,8 @@ overriding these:
 | `LABELER_NO_AUTH` | unset | unset | `.env` (set `true` for single-user LAN-trust homelab; see Authentication) |
 
 Templates (`/app/templates`) and fonts (`/app/fonts`) are CWD-relative app paths fixed in the image;
-making them env-configurable is tracked in issue #38. The QR base URL is a runtime *setting* (Settings
-screen / `PUT /api/settings/qr_base_url`), not an env var.
+making them env-configurable is tracked in issue #38. The QR base URL is a runtime *variable* (the
+Variables section of the Settings screen, or `PUT /api/variables/qr_base_url`), not an env var.
 
 ### Image assets (templates using `image.src`)
 
