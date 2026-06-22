@@ -26,8 +26,8 @@ npm --prefix ui run dev            # Vite dev server (proxies /api to cargo run 
 npm --prefix ui run build          # build to ui/dist (then `cargo run` serves it at /)
 ```
 
-In production the binary serves `ui/dist` (override the dir with `LABELER_UI_DIR`). The Docker
-multi-stage build bundles the UI (see Deployment below).
+In production the binary serves `ui/dist`; the Docker multi-stage build bundles the UI (see Deployment
+below).
 
 ## Deployment
 
