@@ -1,4 +1,4 @@
-# Labeler — Specification
+# Labeler: Specification
 
 **Status:** Living document. Update this file on every major decision or behavior change, and record
 the decision as an ADR under [`docs/adr/`](adr/).
@@ -44,6 +44,8 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | GET / PUT / DELETE | `/api/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
 | GET | `/api/variables` | All template variables as a key/value object | `200 {…}` |
 | PUT | `/api/variables/{key}` | Upsert a variable | `200` / `400` |
+| GET | `/api/settings` | Resolved app settings (effective value + `is_default` per key) | `200` |
+| PUT / DELETE | `/api/settings/{key}` | Set an override / reset to default | `200` / `204` / `400` / `404` |
 | POST | `/api/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
 | POST | `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout` | First-run setup / login / logout | see §11 |
 | GET | `/api/auth/me` | SPA auth state | `200` |
@@ -56,6 +58,9 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | POST | `/api/connections/{id}/materialize` | Selected rows to label data | `200` / `400` / `404` / `502` |
 | GET | `/api/openapi.json` | OpenAPI 3 document | `200` |
 | GET | `/api/docs/` | Swagger UI (trailing slash) | `200` |
+
+Route references in the sections below are written relative to `/api` for brevity (e.g. `POST /batch`
+means `POST /api/batch`).
 
 The server binds `0.0.0.0:$PORT` (default `8080`). **Every `/api` route requires authentication** (a
 session cookie or a `Authorization: Bearer` token) except `/api/health`, `/api/auth/login`,

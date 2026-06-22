@@ -1,4 +1,4 @@
-# Labeler — Capability List
+# Labeler: Capability List
 
 **Status:** Living document. This is the capability inventory that drives `SPEC.md` and the work plan.
 It is derived from research into commercial systems (BarTender, NiceLabel/Loftware, TEKLYNX, Brady,
@@ -25,7 +25,8 @@ that cannot run headless in a container.
 
 - **Raster/PDF-first rendering.** We already render with Typst to PNG (single) and PDF (sheet). Treat
   that rendered output as canonical and adapt it per printer (PNG to ZPL graphic, PNG raster to Brother
-  QL, PDF to CUPS). This avoids authoring per-vendor command languages by hand. See [§7](#7-printer-integration-and-transport).
+  QL, PDF to CUPS). This avoids authoring per-vendor command languages by hand. See
+[section G](#g-printer-integration-and-transport).
 - **Network and CUPS before USB.** Printing from inside Docker is easy for network/IP printers and
   CUPS over a socket, and hard for direct USB. Ship the easy transports first.
 - **Decouple data from design.** A template binds named fields; data arrives later from a request,
@@ -198,7 +199,7 @@ Strategy from research: easiest-first by transport, raster/PDF adapted per famil
 | Printer management screen | P2 | |
 | Template editor (see §C) | Later | Deprioritized; backend/rendering, basic UI, and integrations first. |
 | Integration settings (Homebox URL/token, QR base URL, webhook) | P2 | |
-| Decent, responsive, themeable UI | MVP | "Decent UI" is an explicit goal; avoid generic, templated look. |
+| Decent, responsive, themeable UI | MVP | A polished UI is an explicit goal; avoid a generic, templated look. |
 
 ### L. Deployment and operations
 
