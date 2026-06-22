@@ -28,7 +28,7 @@ CI publishes images to `ghcr.io/pfa230/labeler`:
 - `:edge` and `:sha-<short>` on every push to `main`.
 - `:X.Y.Z`, `:X.Y`, and `:latest` on a `vX.Y.Z` release tag.
 
-The package is public; pull it without authenticating:
+Pull and run it:
 
 ```bash
 docker run -d -p 8080:8080 -v labeler-data:/app/data -v labeler-templates:/app/templates \
