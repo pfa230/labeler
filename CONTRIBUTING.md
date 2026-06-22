@@ -21,12 +21,6 @@ npx vitest run
 npm run build
 ```
 
-## Templates render to images
-
-A template that parses without error is not proof it looks right. When adding or changing a template,
-render it (`POST /api/render/label?format=png`) and check the output against your intent (alignment,
-text fit, no clipping) before and after your change.
-
 ## Proposing changes
 
 Open an issue to discuss a bug or feature, then submit a pull request that references it. The API and
