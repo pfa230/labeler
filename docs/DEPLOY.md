@@ -62,10 +62,11 @@ the healthcheck stays valid; remap the host side with `HOST_PORT`), data lives a
 
 ### Full environment contract
 
-The application itself is fully env-driven with safe defaults and starts with zero required
-configuration. The Docker image pins the deployment-sensitive variables so the healthcheck and volume
-paths stay consistent; change behavior through `HOST_PORT`/`RUST_LOG` and the volume mounts, not by
-overriding these:
+The application is fully env-driven with safe defaults and needs no configuration to start. In the
+image, the path and port variables are pinned so the healthcheck and volume mounts line up (change those
+by remapping `HOST_PORT` or mounting volumes, not by setting the variable directly); the rest
+(`RUST_LOG` and the auth/proxy knobs) are set in `.env`. The `Change via` column gives the right lever
+for each:
 
 | Var | App default | In the image | Change via |
 | --- | --- | --- | --- |
