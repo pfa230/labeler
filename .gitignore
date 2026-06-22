@@ -19,6 +19,8 @@ venv/
 
 *.pdf
 .superpowers/
+# Local-only brainstorm specs + implementation plans (superpowers workflow); not published.
+docs/superpowers/
 /test-data/
 /templates/test.yaml
 *.db
