@@ -202,9 +202,14 @@ format:
   height: 12.0                        # Dimension
 ```
 
-A `Dimension` is either a fixed number, or a dynamic object `{ min?, max? }` (at least one required).
-Dynamic dimensions currently resolve to `max` (falling back to `min`) for both layout bounds and the
-rendered page size.
+A `Dimension` is either a fixed number, or a dynamic object `{ min, max }` (both required when used
+on `format.width` of a `single` template). A `single` template with a dynamic `format.width` is
+**auto-length**: the label width is determined at render time by measuring the content, clamping to
+`[min, max]`, and choosing the largest font that fits the budget (then ellipsis if still over). `auto`
+item width on a dynamic-width label resolves to the content width (`label_width - at.x`). Multiline
+text (`multiline: true`) on a dynamic-width single is not allowed (deferred to #78). Both `min` and
+`max` must be present; a missing bound is `422 TemplateInvalid`. Sheet templates and fixed-width
+single templates are unaffected. See [ADR-0026](adr/0026-auto-length-dynamic-width.md).
 
 **`sheet`** — a grid of identical label slots on a fixed page:
 
@@ -233,7 +238,9 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 | `rotate` | number (deg) | — | Rotates the rendered item. |
 
 `auto` size resolves to `max_w`/`max_h` if present; for `container` it falls back to the parent frame's
-dimension. A non-`auto` numeric size must be > 0. (`line` does not use `size`; see §4.1.)
+dimension. On a dynamic-width `single` template (§3.1), `auto` width resolves to the content width
+(`label_width - at.x`) derived from the pre-render measurement pass. A non-`auto` numeric size must
+be > 0. (`line` does not use `size`; see §4.1.)
 
 ### 4.1 Item types
 
@@ -339,6 +346,7 @@ All errors return JSON:
 | `InvalidOptionValue` | 422 | Option selection not allowed by the template. |
 | `MissingField` | 422 | A referenced `data` field is absent. |
 | `UnsupportedLayoutItem` | 422 | Layout item cannot be rendered (e.g. bad size/qr param). |
+| `TemplateInvalid` | 422 | Template fails structural validation: multiline text on a dynamic-width `single`, or a dynamic `format.width` missing one bound. |
 | `UnsupportedFormat` | 422 | Endpoint/format mismatch or unknown unit. |
 | `BatchInvalid` | 422 | One or more `/batch` labels failed render-validation; `details.failures` lists them. |
 | `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). |
@@ -553,6 +561,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-22**: Continuous-tape (`single` with `width: {min,max}`) labels are now auto-length (M11;
+  ADR-0026; #77): the label fits its single-line content clamped to `[min,max]` (largest font that fits,
+  then ellipsis), instead of always rendering at `max`. Multiline text on a dynamic-width template is now
+  rejected (multi-line tape is #78); a dynamic-width single must declare both bounds.
 - **2026-06-21**: Corrected the bundled Brother tape templates (M11; #66/#67). Replaced the three
   300-dpi templates with a five-template set at 180 dpi using the real TZe printable heights
   (9.9/15.8/18.1mm): `brother_12mm`/`brother_18mm`/`brother_24mm` (text only) and
