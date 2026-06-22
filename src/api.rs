@@ -1446,6 +1446,7 @@ fn validate_password(password: &str) -> Result<(), AppError> {
 }
 
 /// Authentication state for the SPA, returned by `GET /auth/me`.
+/// This type is the OpenAPI schema only; the `me` handler constructs the JSON response directly with `serde_json::json!`, so changes here must be mirrored in the handler.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct AuthStatus {
     pub authed: bool,
