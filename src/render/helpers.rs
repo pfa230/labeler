@@ -406,6 +406,13 @@ fn line_height(font: &Font, size: f32) -> f32 {
         .unwrap_or(size * 1.2)
 }
 
+/// One line's height at `size` (points), expressed in template units. Used to vertically center a
+/// single line of text inside a fixed box (Typst `#align(horizon)` does not apply inside a `#box`).
+pub(super) fn line_height_units(size: f32, unit: &str) -> Result<f32, AppError> {
+    let font = inter_font()?;
+    Ok(pt_to_units(line_height(font, size), unit))
+}
+
 fn units_to_pt(value: f32, unit: &str) -> f32 {
     match unit {
         "in" => value * 72.0,
