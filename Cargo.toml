@@ -2,6 +2,10 @@
 name = "labeler"
 version = "0.1.0"
 edition = "2021"
+description = "Self-hosted REST service that renders labels from declarative YAML templates."
+license = "MIT"
+repository = "https://github.com/pfa230/labeler"
+publish = false
 
 [dependencies]
 axum = "0.8"
