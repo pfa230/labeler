@@ -1,0 +1,28 @@
+id: brother_18mm
+name: Brother 18mm Continuous Label (text only)
+description: Continuous tape, 18mm nominal (15.8mm printable at 180 dpi), text only
+unit: mm
+dpi: 180
+format:
+  type: single
+  width:
+    min: 10.0
+    max: 100.0
+  height: 15.8
+layout:
+  - type: container
+    at: [0.0, 0.0]
+    size: [100.0, 15.8]
+    padding: 1.0
+    items:
+      - type: text
+        name: message
+        at: [0.0, 0.0]
+        size: [98.0, 13.8]
+        font_size:
+          min: 8.0
+          max: 28.0
+        multiline: true
+        alignment:
+          horizontal: center
+          vertical: center

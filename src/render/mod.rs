@@ -1310,7 +1310,13 @@ mod tests {
             ("message".to_string(), json!("Hello world")),
             ("code".to_string(), json!("QR-1")),
         ]);
-        for id in ["brother12mm", "brother18mm", "brother24mm"] {
+        for id in [
+            "brother_12mm",
+            "brother_18mm",
+            "brother_18mm_qr",
+            "brother_24mm",
+            "brother_24mm_qr",
+        ] {
             let template = registry.get(id).unwrap_or_else(|| panic!("template {id}"));
             let png =
                 render_single_label(template, &data, None, &no_settings()).expect("render tape");
