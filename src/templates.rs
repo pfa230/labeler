@@ -186,6 +186,13 @@ impl TemplateDefinition {
                         .to_string(),
                 );
             }
+            // Multiline text is incompatible with dynamic width, which has no fixed column width to wrap against.
+            if layout_has_multiline(&self.layout) {
+                return Err(
+                    "multiline text is not allowed on a dynamic-width (auto-length) template; see #78"
+                        .to_string(),
+                );
+            }
         }
 
         let bounds = layout_bounds(&self.format)?;
@@ -659,6 +666,18 @@ impl From<&TemplateDefinition> for TemplateDetail {
     }
 }
 
+fn layout_has_multiline(layout: &Layout) -> bool {
+    match layout {
+        Layout::Items(items) => items.iter().any(|item| match item {
+            LayoutItem::Text { multiline, .. } => *multiline,
+            LayoutItem::Container { items, .. } => {
+                layout_has_multiline(&Layout::Items(items.clone()))
+            }
+            _ => false,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{TemplateDefinition, TemplateRegistry};
@@ -1050,6 +1069,116 @@ layout: []
         template
             .validate()
             .expect("dynamic-width single with auto-width container at offset should validate OK");
+    }
+
+    #[test]
+    fn dynamic_width_single_rejects_multiline_text() {
+        let template = TemplateDefinition {
+            id: "tape_multiline".to_string(),
+            name: "Tape Multiline".to_string(),
+            description: "tape".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(12.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("hello".to_string()),
+                placement: crate::models::Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: true,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        let err = template.validate().expect_err("expected error");
+        assert!(
+            err.contains("multiline text is not allowed on a dynamic-width"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn dynamic_width_single_allows_single_line_text() {
+        let template = TemplateDefinition {
+            id: "tape_single_line".to_string(),
+            name: "Tape Single Line".to_string(),
+            description: "tape".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(12.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("hello".to_string()),
+                placement: crate::models::Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        template
+            .validate()
+            .expect("dynamic-width single with multiline: false should validate OK");
+    }
+
+    #[test]
+    fn fixed_width_single_allows_multiline_text() {
+        let template = TemplateDefinition {
+            id: "fixed_multiline".to_string(),
+            name: "Fixed Multiline".to_string(),
+            description: "fixed".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(50.0),
+                height: Dimension::Fixed(12.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("hello".to_string()),
+                placement: crate::models::Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(40.0), SizeValue::Value(6.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: true,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        template
+            .validate()
+            .expect("fixed-width single with multiline: true should validate OK");
     }
 
     #[test]
