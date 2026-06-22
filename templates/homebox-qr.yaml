@@ -17,11 +17,11 @@ layout:
   - type: text
     value: "{message}"
     at: [27.0, 0.0]
-    size: [80.0, 24.0]
+    size: [auto, 24.0]
     font_size:
       min: 10.0
       max: 28.0
-    multiline: true
+    multiline: false
     alignment:
       horizontal: left
       vertical: center
