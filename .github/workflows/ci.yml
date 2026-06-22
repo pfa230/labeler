@@ -169,4 +169,4 @@ jobs:
           curl -sSfL "${base}/gitleaks_${VERSION}_checksums.txt" -o checksums.txt
           grep "${tarball}" checksums.txt | sha256sum -c -
           tar xzf "${tarball}" gitleaks
-          ./gitleaks git --redact --config .gitleaks.toml .
+          ./gitleaks git --redact .
