@@ -1,32 +1,11 @@
 /target
-
-# Rust
 **/*.rs.bk
-
-# Python virtual envs
-.venv/
-venv/
-
-# OS/editor
-.DS_Store
-.idea/
-.vscode/
-*.swp
-*.swo
 
 # Runtime app-state (SQLite)
 /data/
 
 *.pdf
-.superpowers/
-# Local-only brainstorm specs + implementation plans (superpowers workflow); not published.
-docs/superpowers/
-/test-data/
-/templates/test.yaml
 *.db
 
 ui/node_modules
 ui/dist
-
-/CLAUDE.md
-/AGENTS.md
