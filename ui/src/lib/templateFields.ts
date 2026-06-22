@@ -1,6 +1,6 @@
 import type { LayoutItem, Options } from "../api/types";
 
-// Best-effort token parse of an interpolation string (NOT validation): `{field}` / `{settings.key}`,
+// Best-effort token parse of an interpolation string (NOT validation): `{field}` / `{vars.key}`,
 // honoring `{{`/`}}` escapes. Unmatched braces are ignored here (the backend rejects them at render time).
 function tokens(s: string): string[] {
   const out: string[] = [];
@@ -60,10 +60,10 @@ function walk(
   }
 }
 
-// Data fields the (option-selected) layout references: text/qr name|value tokens (excluding settings.*).
+// Data fields the (option-selected) layout references: text/qr name|value tokens (excluding vars.*).
 export function referencedFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
   const set = new Set<string>();
-  walk(layout, selected, (t) => { if (!t.startsWith("settings.")) set.add(t); }, () => {});
+  walk(layout, selected, (t) => { if (!t.startsWith("vars.")) set.add(t); }, () => {});
   return [...set];
 }
 
@@ -74,13 +74,13 @@ export function imageFields(layout: LayoutItem[], selected: Record<string, strin
   return [...set];
 }
 
-// {settings.*} keys referenced anywhere in the layout (not option-gated; discovery across all branches).
-export function referencedSettings(layout: LayoutItem[]): string[] {
+// {vars.*} keys referenced anywhere in the layout (not option-gated; discovery across all branches).
+export function referencedVariables(layout: LayoutItem[]): string[] {
   const set = new Set<string>();
   const rec = (items: LayoutItem[]) => {
     for (const it of items) {
       if ((it.type === "text" || it.type === "qr") && it.value) {
-        for (const t of tokens(it.value)) if (t.startsWith("settings.")) set.add(t.slice("settings.".length));
+        for (const t of tokens(it.value)) if (t.startsWith("vars.")) set.add(t.slice("vars.".length));
       } else if (it.type === "container") rec(it.items);
     }
   };
