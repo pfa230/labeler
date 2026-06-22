@@ -4,6 +4,15 @@ A REST service that renders labels from declarative YAML templates. It produces 
 (for continuous-roll printers) or a sheet of labels as PDF (for pre-cut label sheets), by generating
 [Typst](https://typst.app/) source on the fly and compiling it in-process.
 
+## Quickstart (Docker)
+
+```bash
+docker run -p 8080:8080 ghcr.io/pfa230/labeler:edge
+```
+
+The full API and template schema are in [`docs/SPEC.md`](docs/SPEC.md); see
+[`CONTRIBUTING.md`](CONTRIBUTING.md) to develop, and [`SECURITY.md`](SECURITY.md) to report issues.
+
 ## Run
 
 ```bash
