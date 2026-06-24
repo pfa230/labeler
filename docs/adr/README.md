@@ -37,6 +37,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0024](0024-app-settings-storage-and-api.md) | App settings storage and API | Accepted |
 | [0025](0025-optional-no-auth-mode.md) | Optional no-auth mode for homelab | Accepted |
 | [0026](0026-auto-length-dynamic-width.md) | Auto-length dynamic-width single labels (continuous tape) | Accepted |
+| [0027](0027-multi-arch-image-publishing.md) | Multi-arch image publishing (amd64 + arm64) | Accepted |
 
 ## Adding an ADR
 

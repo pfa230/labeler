@@ -234,6 +234,6 @@ tracked in issue #39.
 
 ## Architectures
 
-The image builds for the host architecture. For arm64 (e.g. Raspberry Pi):
-`docker buildx build --platform linux/arm64 -t labeler:latest .`. First-class multi-arch publishing is
-tracked in issue #36.
+Images are published as a multi-arch manifest list covering `linux/amd64` and `linux/arm64`, so
+`docker pull ghcr.io/pfa230/labeler:<tag>` resolves the right variant automatically on x86 servers and
+on arm64 boards (Raspberry Pi 4/5, Apple-silicon dev boxes). No arch-specific tag or flag is needed.
