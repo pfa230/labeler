@@ -5,7 +5,7 @@ RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
-FROM rust:1-bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS build
+FROM rust:1-bookworm@sha256:6d19f49541d185805745b8baa781b1fd482118c81a3154510ee18dcce985d005 AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
