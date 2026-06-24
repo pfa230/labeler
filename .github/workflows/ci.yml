@@ -251,6 +251,7 @@ jobs:
           docker buildx imagetools create "${tag_args[@]}" "${refs[@]}"
 
           primary=$(printf '%s\n' "$TAGS" | head -n1)
+          [ -n "$primary" ] || { echo "no tags computed; nothing to inspect"; exit 1; }
           echo "inspecting $primary"
           docker buildx imagetools inspect "$primary"
           archs=$(docker buildx imagetools inspect "$primary" --raw | jq -r '.manifests[].platform.architecture' | sort -u)
