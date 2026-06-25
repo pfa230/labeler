@@ -183,7 +183,8 @@ export function UsersSection() {
       ) : (users ?? []).length === 0 ? (
         <p className="text-sm" style={{ color: "var(--muted)" }}>No users.</p>
       ) : (
-        <table className="w-full border-collapse">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
           <thead>
             <tr>
               <th className={th} style={{ color: "var(--muted)" }}>Username</th>
@@ -195,7 +196,8 @@ export function UsersSection() {
               <UserRow key={u.id} user={u} isSelf={u.id === meId} />
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       )}
 
       <AddUserForm />

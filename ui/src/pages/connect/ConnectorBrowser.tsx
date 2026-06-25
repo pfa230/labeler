@@ -181,7 +181,8 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
       {busy && rows.length === 0 && <p className="text-sm" style={{ color: "var(--muted)" }}>Loading...</p>}
 
       {resource && (
-        <table className="w-full border-collapse">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
           <thead>
             <tr>
               <th className={th} style={{ color: "var(--muted)" }}></th>
@@ -222,7 +223,8 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
               </tr>
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       )}
 
       <div className="flex items-center gap-3">
