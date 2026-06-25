@@ -15,6 +15,7 @@ pub mod render;
 pub mod settings;
 pub mod store;
 pub mod templates;
+pub mod ui_freshness;
 
 pub use api::{app, AppState};
 pub use templates::TemplateRegistry;
