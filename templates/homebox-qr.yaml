@@ -16,11 +16,22 @@ layout:
     size: [24.0, 24.0]
   - type: text
     value: "{message}"
-    at: [27.0, 0.0]
-    size: [auto, 24.0]
+    at: [27.0, 6.0]
+    size: [auto, 18.0]
     font_size:
       min: 10.0
       max: 28.0
+    multiline: false
+    alignment:
+      horizontal: left
+      vertical: center
+  - type: text
+    value: "{datetime.iso_date}"
+    at: [27.0, 0.0]
+    size: [auto, 5.0]
+    font_size:
+      min: 6.0
+      max: 9.0
     multiline: false
     alignment:
       horizontal: left

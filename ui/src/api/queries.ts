@@ -47,7 +47,7 @@ export function useVariables() {
 }
 
 export interface ResolvedSetting {
-  value: number;
+  value: unknown; // JSON: number for retention, Record<string,string> for datetime_formats
   is_default: boolean;
 }
 
@@ -61,10 +61,14 @@ export function useSettings() {
 export function useUpdateSetting() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ key, value }: { key: string; value: number }) =>
+    mutationFn: ({ key, value }: { key: string; value: unknown }) =>
       sendJson<ResolvedSetting>("PUT", `/settings/${encodeURIComponent(key)}`, { value }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
   });
+}
+
+export function previewDatetimeFormat(pattern: string) {
+  return sendJson<{ sample: string }>("POST", "/datetime-formats/preview", { pattern });
 }
 
 export function useResetSetting() {

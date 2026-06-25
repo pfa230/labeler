@@ -5,6 +5,7 @@ import { ConnectionsSection } from "./settings/ConnectionsSection";
 import { UsersSection } from "./settings/UsersSection";
 import { TokensSection } from "./settings/TokensSection";
 import { SettingsSection } from "./settings/SettingsSection";
+import { DatetimeFormatsSection } from "./settings/DatetimeFormatsSection";
 
 export function Settings() {
   const { data: auth } = useAuth();
@@ -13,6 +14,7 @@ export function Settings() {
       <h1 className="text-2xl font-semibold">Settings</h1>
       <VariablesSection />
       <SettingsSection />
+      <DatetimeFormatsSection />
       <PrintersSection />
       <ConnectionsSection />
       {!auth?.noAuth && (
