@@ -63,3 +63,19 @@ describe("tokens robustness", () => {
     expect(referencedFields(malformed, {})).not.toContain("id");
   });
 });
+
+describe("referencedFields datetime exclusion", () => {
+  it("excludes datetime and datetime.* tokens from referenced fields", () => {
+    const items: LayoutItem[] = [
+      { type: "text", value: "{datetime.short_date} {datetime}" },
+      { type: "text", value: "{datetimefoo}" },
+      { type: "text", value: "{product_id}" },
+    ];
+    const f = referencedFields(items, {});
+    expect(f).not.toContain("datetime");
+    expect(f).not.toContain("datetime.short_date");
+    expect(f).not.toContain("short_date");
+    expect(f).toContain("datetimefoo"); // only exact "datetime" and the "datetime." prefix are excluded
+    expect(f).toContain("product_id");
+  });
+});

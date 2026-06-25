@@ -3,6 +3,7 @@ pub mod auth;
 pub mod batch;
 pub mod connector;
 mod convert;
+pub mod datetime_fmt;
 pub mod driver;
 pub mod egress;
 pub mod errors;
@@ -1933,6 +1934,43 @@ layout:
                     .body(Body::from(
                         r#"{"resource":"entities","cursor":"garbage.token"}"#,
                     ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn datetime_preview_returns_sample_and_rejects_bad_pattern() {
+        let app = build_app();
+        // valid pattern => 200 with a non-empty sample
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/datetime-formats/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"pattern":"%Y"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_response(res).await;
+        assert!(
+            body["sample"].as_str().is_some_and(|s| !s.is_empty()),
+            "expected a non-empty sample"
+        );
+        // invalid pattern (%!) => 400
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/datetime-formats/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"pattern":"%!"}"#))
                     .unwrap(),
             )
             .await

@@ -14,7 +14,7 @@ function stubFetch(noAuth: boolean) {
     if (url.startsWith("/api/auth/me"))
       return json({ authed: true, needsSetup: false, me: { id: "local", username: "local" }, noAuth });
     if (url.startsWith("/api/settings"))
-      return json({ job_log_retention_days: { value: 90, is_default: true } });
+      return json({ job_log_retention_days: { value: 90, is_default: true }, datetime_formats: { value: {}, is_default: true } });
     if (url.startsWith("/api/variables")) return json({ qr_base_url: "https://x" });
     if (url.startsWith("/api/printers")) return json([]);
     if (url.startsWith("/api/connections")) return json([]);

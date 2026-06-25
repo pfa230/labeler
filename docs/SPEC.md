@@ -321,9 +321,24 @@ Sizing/bounds logic is intentionally duplicated between validation (compile time
 `text` and `qr` items bind in one of two ways (exactly one of `name` / `value`):
 
 - `name` resolves a single data key against the request `data` map.
-- `value` is an interpolated template string. `{field}` resolves from `data`, `{vars.<key>}`
-  resolves from the variables store, and `{{` / `}}` emit literal braces. There are no operators or
-  functions; this is substitution only (ADR-0010). Interpolation applies to text content and QR content.
+- `value` is an interpolated template string. Tokens are resolved in precedence order, then `{{`
+  and `}}` emit literal braces. There are no operators or functions; this is substitution only
+  (ADR-0010). Interpolation applies to text content and QR content.
+
+**Token types and precedence** (highest to lowest):
+
+1. **`{datetime}`** (bare) resolves to the current local date formatted as ISO `%Y-%m-%d`
+   (e.g. `2026-06-25`). Always succeeds; no configuration required.
+2. **`{datetime.<name>}`** resolves a named strftime format from the `datetime_formats` app setting
+   (e.g. `{datetime.iso_date_time}` with the default `iso_date_time` format yields
+   `2026-06-25 14:30`). An unknown `<name>` is `422 MissingField`. The `datetime` namespace is
+   reserved; a data field or variable with the same name is shadowed. See [ADR-0028](adr/0028-datetime-interpolation-token.md).
+3. **`{vars.<key>}`** resolves from the variables store.
+4. **`{field}`** resolves from the request `data` map.
+
+`now` is captured once per render request (a single `Local::now()` call), so every datetime token
+on a multi-label sheet shows the same instant. The server-local timezone (controlled by `TZ`)
+applies.
 
 A missing key or unresolved token is `422 MissingField`. JSON scalars are stringified
 (`value_to_string`): strings as-is, numbers/bools via their textual form, `null` as empty, other values
@@ -523,8 +538,15 @@ resets it to the in-code default (idempotent). Unknown keys are `404 SettingNotF
 | PUT | `/api/settings/{key}` | Set an override (validated per setting) | `200` / `400` / `404` |
 | DELETE | `/api/settings/{key}` | Reset a setting to its in-code default (idempotent) | `204` / `404` |
 
-The only setting today is `job_log_retention_days` (default `90`; `0` disables job-log pruning). The
-daily prune reads the live value, so changes take effect without a restart.
+Known settings:
+
+- **`job_log_retention_days`** (default `90`; `0` disables job-log pruning). The daily prune reads
+  the live value, so changes take effect without a restart.
+- **`datetime_formats`** (default: a JSON object with five seeded entries). A JSON object mapping
+  format names to strftime patterns. Patterns are validated via `chrono::format::StrftimeItems` at
+  write time; an invalid pattern is `400`. Used by `{datetime.<name>}` interpolation (see §8).
+  Seeded defaults: `iso_date` (`%Y-%m-%d`), `iso_date_time` (`%Y-%m-%d %H:%M`),
+  `short_date` (`%m/%d/%Y`), `long_date` (`%B %-d, %Y`), `time` (`%H:%M`).
 
 ## CSV import
 
@@ -566,6 +588,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-25**: Current-time interpolation token (#76; ADR-0028). `{datetime}` (bare) resolves to
+  the current local date in ISO format (`%Y-%m-%d`). `{datetime.<name>}` resolves a named strftime
+  format from the new `datetime_formats` app setting (default: five seeded entries). An unknown name
+  is `422 MissingField`. Token precedence: datetime, then `vars.`, then data. `now` is captured once
+  per render request. See §8 (updated token list) and the Settings section (`datetime_formats`).
 - **2026-06-22**: Continuous-tape (`single` with `width: {min,max}`) labels are now auto-length (M11;
   ADR-0026; #77): the label fits its single-line content clamped to `[min,max]` (largest font that fits,
   then ellipsis), instead of always rendering at `max`. Multiline text on a dynamic-width template is now
