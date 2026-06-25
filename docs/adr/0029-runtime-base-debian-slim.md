@@ -48,31 +48,31 @@ distroless. A label renderer has strictly less reason to.
   backward compatible, but bumping both keeps the stack on one current release and avoids drift.)
 - **Not Alpine.** Alpine's musl can surprise native dependencies and would change the build target;
   debian-slim keeps glibc parity with the build stage and matches the Vaultwarden precedent.
-- **Non-root stays:** `USER 65532:65532` (numeric; the image already `COPY --chown=65532:65532`s
-  `/app/data` and `/app/templates`). debian-slim has no predefined `nonroot` user, so the numeric UID is
-  used directly.
+- **Run as PUID/PGID (the homelab convention), not a fixed UID.** The container starts as root; a small
+  `docker-entrypoint.sh` chowns the writable dirs (`/app/data`, `/app/templates`) to `PUID:PGID`
+  (default `1000:1000`) and drops privileges via `gosu` before exec'ing the binary. Operators set
+  `PUID`/`PGID` to their host user (`id -u`/`id -g`) so named volumes and host bind-mounts line up, the
+  same model linuxserver images use. This is now possible because debian-slim has a shell (distroless
+  could not run an entrypoint, which is what forced the old root init container). The earlier draft of
+  this ADR used a fixed `USER 65532:65532` (a distroless leftover, an alien UID for a homelab image);
+  that was wrong for this audience and is replaced by PUID/PGID.
 - **Healthcheck becomes app-native:** a `labeler healthcheck` subcommand (GET `127.0.0.1:8080/api/health`,
   exit 0/1; reuses the existing `reqwest`) replaces the BusyBox `wget`. This is base-image-agnostic, needs
   no extra package, and is the option ADR-0016 deferred. (debian-slim ships no `wget`/`curl`, so an
   app-native check is also the cleanest way to avoid an `apt` layer purely for the probe.)
-- **Drop `labeler-init`.** For a **fresh, empty, Docker-managed named volume** (the default compose path),
-  Docker seeds it from the image's content *and ownership* on first mount, and the image already
-  `--chown=65532:65532`s `/app/data` and `/app/templates`, so the non-root app can write (SQLite at
-  `/app/data`, template temp-then-rename at `/app/templates`). The separate root chown container is
-  redundant (and was only possible because `:debug` provided a shell). Removing it also removes the
-  compose `depends_on` on it. **Caveat:** this seeding does NOT apply to a pre-existing non-empty volume,
-  an `external:`/restored volume, or a host bind mount; a root-owned existing mount would fail at runtime.
-  Document that operators bind-mounting a host dir must make it writable by UID 65532 (this is the gap
-  PUID/PGID would close, see below).
+- **Drop `labeler-init`.** Its only job was to chown the volumes for the non-root app, and the PUID/PGID
+  entrypoint now does exactly that, every start, for named volumes, bind mounts, and pre-existing
+  root-owned volumes alike. The separate root chown container is redundant (it only existed because
+  distroless had no entrypoint shell). Removing it also removes the compose `depends_on` on it.
 - **Install `ca-certificates`.** distroless/cc bundled it; `debian:trixie-slim` does not. The app's own
   `reqwest 0.12` uses `rustls-tls` with bundled `webpki-roots` (connector HTTPS needs no system store),
   but the `ipp` printing crate pulls `reqwest 0.13` -> `rustls-platform-verifier`, which uses the **system
   CA store** on Linux. Since the app supports `ipps://` printers (`src/driver.rs`) and DEPLOY promises
   public-CA `ipps://` works, the runtime stage must `apt-get install -y --no-install-recommends
   ca-certificates && rm -rf /var/lib/apt/lists/*`. (Not optional, as the first draft implied.)
-- **PUID/PGID host-UID mapping is NOT adopted now.** The fixed-`65532` + seeded-volume model works and is
-  simpler. A shell entrypoint is now available, so PUID/PGID can be added later if host-UID matching is
-  requested; recorded as a possible future enhancement, not part of this decision.
+- **`gosu` is added** to the runtime image (one apt package) for the privilege drop. The numeric
+  `gosu PUID:PGID` form needs no `/etc/passwd` entry, and `exec` keeps the binary as PID 1 so signals
+  (graceful `docker stop`) reach it.
 
 ## Consequences
 
