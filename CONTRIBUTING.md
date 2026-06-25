@@ -24,7 +24,8 @@ npm run build
 For active UI work, use the Vite dev server (`npm --prefix ui run dev`, port 5173, proxies `/api` to the
 backend on `:8080`); it never touches `ui/dist`. `cargo run` instead serves the prebuilt SPA from
 `ui/dist` and does not rebuild it, so run `npm --prefix ui run build` after UI changes or it serves a
-stale bundle. The server warns at startup when `ui/dist` is missing or older than `ui/src`.
+stale bundle. The server warns at startup when `ui/dist` is missing or older than `ui/src` (skipped when
+`LABELER_UI_DIR` is set, as in the container image).
 
 ## Proposing changes
 
