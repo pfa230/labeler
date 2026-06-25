@@ -1819,7 +1819,7 @@ mod tests {
                 },
                 LayoutItem::Qr {
                     name: None,
-                    value: Some("{url} {vars.base}".into()),
+                    value: Some("{url} {vars.base} {datetime} {datetime.short_date}".into()),
                     placement: Placement {
                         at: Position([0.0, 0.0]),
                         size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
@@ -1849,6 +1849,18 @@ mod tests {
         assert_eq!(data.get("url").and_then(|v| v.as_str()), Some("url"));
         assert!(!data.contains_key("base"), "vars.* must be excluded");
         assert!(!data.contains_key("vars.base"), "vars.* must be excluded");
+        assert!(
+            !data.contains_key("datetime"),
+            "datetime namespace must be excluded"
+        );
+        assert!(
+            !data.contains_key("datetime.short_date"),
+            "datetime namespace must be excluded"
+        );
+        assert!(
+            !data.contains_key("short_date"),
+            "datetime namespace must be excluded"
+        );
         assert_eq!(
             data.get("logo").and_then(|v| v.as_str()),
             Some(SAMPLE_PNG_DATA_URI)
