@@ -145,6 +145,16 @@ mod tests {
     }
 
     #[test]
+    fn missing_dist_when_dist_empty() {
+        let tmp = TempDir::new("empty");
+        let src = tmp.path().join("ui/src");
+        let dist = tmp.path().join("ui/dist");
+        write_file(&src, "App.tsx", t_old());
+        fs::create_dir_all(&dist).unwrap(); // exists but contains no files
+        assert_eq!(ui_dist_status(&src, &dist), UiDistStatus::MissingDist);
+    }
+
+    #[test]
     fn unknown_when_src_absent() {
         let tmp = TempDir::new("nosrc");
         let src = tmp.path().join("ui/src"); // never created
