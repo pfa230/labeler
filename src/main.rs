@@ -3,8 +3,38 @@ use std::{net::SocketAddr, sync::Arc};
 use labeler::{app, store::Store, AppState, TemplateRegistry};
 use tracing_subscriber::EnvFilter;
 
+/// Container HEALTHCHECK: probe the local `/api/health` endpoint and exit 0 (healthy) or 1.
+/// Lets the runtime image carry no shell or `wget`/`curl` (see ADR-0029). Runs before tracing
+/// init so it stays quiet, and exits the process directly.
+async fn run_healthcheck() -> i32 {
+    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
+    let url = format!("http://127.0.0.1:{port}/api/health");
+    let client = reqwest::Client::new();
+    match client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => 0,
+        Ok(resp) => {
+            eprintln!("healthcheck: {url} returned {}", resp.status());
+            1
+        }
+        Err(err) => {
+            eprintln!("healthcheck: {url} failed: {err}");
+            1
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    // `labeler healthcheck` is the container HEALTHCHECK command; handle it before anything else.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        std::process::exit(run_healthcheck().await);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
