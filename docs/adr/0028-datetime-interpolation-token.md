@@ -53,8 +53,9 @@ The formatted date string appears in the label; the pattern never does.
 - **Resolution at render time:** format names are resolved from the mutable settings store at render
   time (not at template-load time). This is consistent with how `vars.` tokens work. It means an
   operator can change a format and the next render picks it up without a reload.
-- **Chrono dependency:** formatting uses the `chrono` crate (already present via `typst-as-lib`
-  dependencies). `Local::now()` is the time source.
+- **Chrono dependency:** `chrono` is added as a direct dependency (issue #76), with
+  `default-features = false, features = ["clock", "std"]` for `Local::now()` and strftime
+  formatting/validation.
 
 ## Consequences
 
