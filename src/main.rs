@@ -12,7 +12,9 @@ async fn main() {
         )
         .init();
 
-    let templates = TemplateRegistry::load_from_dir("templates")
+    let templates_dir =
+        labeler::resolve_dir(std::env::var_os("LABELER_TEMPLATES_DIR"), "templates");
+    let templates = TemplateRegistry::load_from_dir(&templates_dir)
         .unwrap_or_else(|err| panic!("failed to load templates: {err}"));
     tracing::info!(count = templates.len(), "templates loaded");
 
@@ -57,7 +59,7 @@ async fn main() {
         }
     }
 
-    let state = Arc::new(AppState::new(templates, "templates".into(), store));
+    let state = Arc::new(AppState::new(templates, templates_dir, store));
 
     // Job-log retention is an app setting (see ADR-0024), resolved live each run; no env var.
     // Prune once at startup, then daily. The ticker always runs because the setting can change at runtime.

@@ -73,6 +73,8 @@ for each:
 | `PORT` | `8080` | fixed `8080` (reserved) | remap the host side with `HOST_PORT` |
 | `RUST_LOG` | `labeler=info,tower_http=info` | from `.env` | `.env` |
 | `LABELER_DATA_DIR` | `data/` | `/app/data` | mount the `labeler-data` volume |
+| `LABELER_TEMPLATES_DIR` | `templates/` | `/app/templates` | mount the `labeler-templates` volume |
+| `LABELER_FONTS_DIR` | `fonts/` | `/app/fonts` | baked (bind-mount to override; the dir must contain `InterVariable.ttf`) |
 | `LABELER_UI_DIR` | `ui/dist` | `/app/ui/dist` | baked |
 | `LABELER_ASSETS_DIR` | `assets/` | `/app/assets` (empty) | bind-mount a host assets dir (see below) |
 | `LABELER_INIT_USER` | unset | unset | `.env` (first-run bootstrap; see Authentication) |

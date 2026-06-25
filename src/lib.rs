@@ -21,6 +21,33 @@ pub mod ui_freshness;
 pub use api::{app, AppState};
 pub use templates::TemplateRegistry;
 
+/// Resolve a directory from an optional env value, falling back to a CWD-relative default.
+/// Callers pass `std::env::var_os("LABELER_...")`; keeping the env read out of here makes it testable.
+pub fn resolve_dir(value: Option<std::ffi::OsString>, default: &str) -> std::path::PathBuf {
+    value
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(default))
+}
+
+#[cfg(test)]
+mod resolve_dir_tests {
+    use super::resolve_dir;
+    use std::path::PathBuf;
+
+    #[test]
+    fn defaults_when_absent() {
+        assert_eq!(resolve_dir(None, "fonts"), PathBuf::from("fonts"));
+    }
+
+    #[test]
+    fn uses_env_value_when_present() {
+        assert_eq!(
+            resolve_dir(Some("/custom/fonts".into()), "fonts"),
+            PathBuf::from("/custom/fonts")
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::store::Store;
