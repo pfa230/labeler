@@ -3,6 +3,7 @@ pub mod auth;
 pub mod batch;
 pub mod connector;
 mod convert;
+pub mod datetime_fmt;
 pub mod driver;
 pub mod egress;
 pub mod errors;
