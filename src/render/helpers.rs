@@ -185,7 +185,8 @@ pub(super) fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32
 }
 
 pub(super) fn typst_font_options() -> TypstKitFontOptions {
-    TypstKitFontOptions::default().include_dirs(["fonts"])
+    let dir = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts");
+    TypstKitFontOptions::default().include_dirs([dir])
 }
 
 fn inter_font() -> Result<&'static Font, AppError> {
@@ -193,8 +194,7 @@ fn inter_font() -> Result<&'static Font, AppError> {
     if let Some(font) = FONT.get() {
         return Ok(font);
     }
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("fonts")
+    let path = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts")
         .join("InterVariable.ttf");
     let bytes = std::fs::read(&path)
         .map_err(|err| AppError::render_failed(format!("failed to read font: {err}")))?;

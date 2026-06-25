@@ -178,7 +178,8 @@ one job). `failed[].index` is the zero-based label index.
 
 ## 3. Template schema
 
-Templates are `*.yaml` / `*.yml` files in the `templates/` directory. Top-level fields:
+Templates are `*.yaml` / `*.yml` files in the templates directory (`LABELER_TEMPLATES_DIR`, default
+`templates/`). Top-level fields:
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -346,9 +347,10 @@ via JSON.
 
 ## 9. Fonts
 
-Inter is the only bundled font. It is embedded through `typst-kit` plus `fonts/InterVariable.ttf`
-(also loaded by `fontdue` for text measurement). Typst is configured to use `"Inter Variable"`,
-falling back to `"Inter"`.
+Inter is the only bundled font. It is embedded through `typst-kit` plus `InterVariable.ttf`
+(also loaded by `fontdue` for text measurement). The fonts directory is `LABELER_FONTS_DIR` (default
+`fonts/`); a custom fonts dir must contain `InterVariable.ttf`. Typst is configured to use
+`"Inter Variable"`, falling back to `"Inter"`.
 
 ## 10. Error model
 
@@ -587,6 +589,12 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-25**: The templates and fonts directories are now env-configurable (#38) via
+  `LABELER_TEMPLATES_DIR` (default `templates/`) and `LABELER_FONTS_DIR` (default `fonts/`), mirroring
+  `LABELER_DATA_DIR`/`LABELER_UI_DIR`. A custom fonts dir must contain `InterVariable.ttf` (used by both
+  Typst glyph search and `fontdue` measurement). Defaults are unchanged, so existing deploys and the
+  container image are unaffected.
 
 - **2026-06-25**: Current-time interpolation token (#76; ADR-0028). `{datetime}` (bare) resolves to
   the current local date in ISO format (`%Y-%m-%d`). `{datetime.<name>}` resolves a named strftime
