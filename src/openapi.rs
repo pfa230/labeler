@@ -3,8 +3,9 @@ use utoipa::OpenApi;
 use crate::{
     api,
     api::{
-        AuthStatus, ConnectionInput, Credentials, OkResponse, PasswordChange, ResolvedSetting,
-        SettingValue, TokenCreate, TokenCreated, TokenSummary, UserSummary,
+        AuthStatus, ConnectionInput, Credentials, DatetimePreviewRequest, DatetimePreviewResponse,
+        OkResponse, PasswordChange, ResolvedSetting, SettingValue, TokenCreate, TokenCreated,
+        TokenSummary, UserSummary,
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
@@ -43,6 +44,7 @@ use crate::{
         api::get_settings,
         api::put_setting,
         api::delete_setting,
+        api::preview_datetime_format,
         api::render_label,
         api::batch,
         api::import_csv,
@@ -73,6 +75,8 @@ use crate::{
             VariableValue,
             ResolvedSetting,
             SettingValue,
+            DatetimePreviewRequest,
+            DatetimePreviewResponse,
             ReloadResponse,
             Printer,
             TemplateList,
