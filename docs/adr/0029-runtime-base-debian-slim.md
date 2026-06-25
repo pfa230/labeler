@@ -4,11 +4,11 @@ Date: 2026-06-25
 
 ## Status
 
-Proposed. Supersedes the runtime-base-image decision in
-[ADR-0016](0016-deployment-and-packaging.md) (the rest of ADR-0016 stands). Implementation and the
-clean-boot verification are tracked in issue #91. The base-image `@sha256` pins in
-[ADR-0019](0019-ci-and-image-publishing.md) and [ADR-0027](0027-multi-arch-image-publishing.md) change
-to the debian-slim digest when this is implemented; Dependabot continues to bump it.
+Accepted. Supersedes the runtime-base-image decision in
+[ADR-0016](0016-deployment-and-packaging.md) (the rest of ADR-0016 stands). Issue #91. The base-image
+`@sha256` pins (now `debian:trixie-slim` runtime and `rust:1-trixie` build) are maintained by Dependabot
+as before. The full clean-boot verification (a `docker compose up` on fresh volumes, an `ipps://` public
+-CA check) runs in CI's image build + smoke test on push.
 
 ## Context
 

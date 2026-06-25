@@ -17,9 +17,10 @@ docker compose up -d --build
 # open http://localhost:8080
 ```
 
-`docker compose up` builds the image locally (`pull_policy: build`), runs a one-shot `labeler-init`
-container that seeds and fixes ownership on the volumes, then starts the service. Health is at
-`GET /api/health`.
+`docker compose up` builds the image locally (`pull_policy: build`) and starts the service. The named
+volumes are seeded from the image (the image already owns `/app/data` and `/app/templates` to the
+non-root UID 65532, and Docker copies that content and ownership into a fresh volume on first mount), so
+no separate init container is needed. Health is at `GET /api/health`.
 
 ## Run a published image (GHCR)
 
@@ -171,19 +172,22 @@ Restore by extracting the tarballs back into the volumes (app stopped), e.g.
 
 ### Bind mounts (advanced)
 
-The default uses named volumes. If you bind-mount host directories instead, note that `labeler-init`
-runs `chown -R 65532:65532` on the mounted paths, which rewrites the *host* directory ownership. Either
-accept that, or pre-`chown` the host dirs to `65532:65532` and remove the `labeler-init` service. A
-bind-mounted templates dir does not get the starters; copy them in if you want them. An empty templates
-dir is not an error, the service just starts with zero templates.
+The default uses named volumes, which Docker seeds from the image with the correct non-root ownership. If
+you bind-mount host directories instead, that seeding does not happen: pre-`chown` the host dirs to
+`65532:65532` so the non-root app can write them, or run the container as your host UID. A bind-mounted
+templates dir does not get the starters; copy them in if you want them. An empty templates dir is not an
+error, the service just starts with zero templates.
 
 ## Debugging
 
-The image uses distroless `:debug`, which includes a BusyBox shell:
+The runtime image is `debian:trixie-slim`, which has a normal shell:
 
 ```bash
-docker compose exec labeler /busybox/sh
+docker compose exec labeler sh
 ```
+
+(It is a slim image: `wget`/`curl` are not installed. Add ad-hoc tools in the running container with
+`apt-get update && apt-get install -y --no-install-recommends curl`, which does not persist.)
 
 This is not a full distro and has no package manager.
 
@@ -210,24 +214,23 @@ on a non-loopback interface (or `Port 631` on all interfaces); allow the Docker 
 from inside the container (this is a coarse TCP/HTTP probe, not a print test):
 
 ```bash
-docker compose exec labeler /busybox/wget -S -O- http://host.docker.internal:631/
+docker compose exec labeler sh -c 'apt-get update >/dev/null && apt-get install -y --no-install-recommends curl >/dev/null && curl -sS -o- http://host.docker.internal:631/'
 ```
 
 Any HTTP response (even `401`/`403`/`405`, since CUPS may deny the web root or have the web UI disabled)
 proves the port is reachable; a connection refused or timeout means it is not. Actual printing is then
 validated by registering the queue's `ipp://...` URI and sending a label.
 
-**TLS (`ipps://`).** Verification uses the image's public CA bundle. A self-signed CUPS certificate will
-fail. For MVP, use `ipp://` on a trusted LAN. To trust a private CA, build a derived image (distroless
-has no `update-ca-certificates`):
+**TLS (`ipps://`).** Verification uses the image's public CA bundle (the runtime image installs
+`ca-certificates`). A self-signed CUPS certificate will fail. For MVP, use `ipp://` on a trusted LAN. To
+trust a private CA, build a derived image (debian-slim has `update-ca-certificates`):
 
 ```dockerfile
-FROM debian:bookworm-slim AS ca
-COPY my-ca.crt /usr/local/share/ca-certificates/my-ca.crt
-RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates
-
 FROM labeler:latest
-COPY --from=ca /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+USER root
+COPY my-ca.crt /usr/local/share/ca-certificates/my-ca.crt
+RUN update-ca-certificates
+USER 65532:65532
 ```
 
 **Authenticated queues are not supported in MVP.** The printer config is just `{ uri }`; a queue
