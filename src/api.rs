@@ -489,7 +489,15 @@ pub async fn thumbnail(
     let data = crate::render::placeholder_data(template);
     let option = crate::render::default_option_selection(template);
     let variables = state.store().all_variables().await?;
-    let png = crate::render::render_thumbnail_png(template, &data, option.as_ref(), &variables)?;
+    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let dt = crate::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now: chrono::Local::now(),
+    };
+    let png =
+        crate::render::render_thumbnail_png(template, &data, option.as_ref(), &variables, &dt)?;
 
     Ok((
         axum::http::StatusCode::OK,
@@ -1125,6 +1133,17 @@ async fn run_batch(
         ));
     }
     let variables = state.store().all_variables().await?;
+    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let dt = crate::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now: chrono::Local::now(),
+    };
+    let env = crate::batch::BatchEnv {
+        settings: &variables,
+        datetime: &dt,
+    };
 
     match mode {
         crate::batch::BatchMode::Download => {
@@ -1134,7 +1153,7 @@ async fn run_batch(
                 mode,
                 format,
                 start_slot,
-                &variables,
+                &env,
                 MAX_BATCH_LABELS,
             )?;
             let crate::batch::RenderedBatch::Download {
@@ -1183,7 +1202,7 @@ async fn run_batch(
                 mode,
                 Some(driver_format),
                 start_slot,
-                &variables,
+                &env,
                 MAX_BATCH_LABELS,
             )?;
             let crate::batch::RenderedBatch::Print { units } = rendered else {
@@ -1317,13 +1336,20 @@ pub async fn render_label(
     }
 
     let variables = state.store().all_variables().await?;
+    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let dt = crate::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now: chrono::Local::now(),
+    };
     let (bytes, content_type) = match query.format.as_deref() {
         None | Some("") | Some("png") => (
-            render_single_label(template, &req.label.data, option_value, &variables)?,
+            render_single_label(template, &req.label.data, option_value, &variables, &dt)?,
             "image/png",
         ),
         Some("pdf") => (
-            render_single_label_pdf(template, &req.label.data, option_value, &variables)?,
+            render_single_label_pdf(template, &req.label.data, option_value, &variables, &dt)?,
             "application/pdf",
         ),
         Some(other) => {

@@ -16,6 +16,12 @@ pub enum BatchMode {
     Print,
 }
 
+/// Render-time environment: variables map and datetime resolver threaded through batch rendering.
+pub struct BatchEnv<'a> {
+    pub settings: &'a BTreeMap<String, String>,
+    pub datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
+}
+
 /// One print job's bytes plus the label indices it covers (single: one label; sheet: all labels).
 #[derive(Debug)]
 pub struct PrintUnit {
@@ -41,7 +47,7 @@ pub fn render_batch(
     mode: BatchMode,
     format: Option<&str>,
     start_slot: u32,
-    settings: &BTreeMap<String, String>,
+    env: &BatchEnv,
     max_labels: usize,
 ) -> Result<RenderedBatch, AppError> {
     if labels.len() > max_labels {
@@ -52,12 +58,8 @@ pub fn render_batch(
     }
 
     match &template.format {
-        TemplateFormat::Single { .. } => {
-            render_single_batch(template, labels, mode, format, settings)
-        }
-        TemplateFormat::Sheet { .. } => {
-            render_sheet_batch(template, labels, mode, start_slot, settings)
-        }
+        TemplateFormat::Single { .. } => render_single_batch(template, labels, mode, format, env),
+        TemplateFormat::Sheet { .. } => render_sheet_batch(template, labels, mode, start_slot, env),
     }
 }
 
@@ -66,7 +68,7 @@ fn render_single_batch(
     labels: &[LabelInput],
     mode: BatchMode,
     format: Option<&str>,
-    settings: &BTreeMap<String, String>,
+    env: &BatchEnv,
 ) -> Result<RenderedBatch, AppError> {
     let fmt = format.unwrap_or("png");
     let ext: &'static str = match fmt {
@@ -83,8 +85,20 @@ fn render_single_batch(
     let mut failures: Vec<BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
         let res = match ext {
-            "pdf" => render_single_label_pdf(template, &lbl.data, lbl.option.as_ref(), settings),
-            _ => render_single_label(template, &lbl.data, lbl.option.as_ref(), settings),
+            "pdf" => render_single_label_pdf(
+                template,
+                &lbl.data,
+                lbl.option.as_ref(),
+                env.settings,
+                env.datetime,
+            ),
+            _ => render_single_label(
+                template,
+                &lbl.data,
+                lbl.option.as_ref(),
+                env.settings,
+                env.datetime,
+            ),
         };
         match res {
             Ok(bytes) => artifacts.push(bytes),
@@ -142,9 +156,9 @@ fn render_sheet_batch(
     labels: &[LabelInput],
     mode: BatchMode,
     start_slot: u32,
-    settings: &BTreeMap<String, String>,
+    env: &BatchEnv,
 ) -> Result<RenderedBatch, AppError> {
-    let pdf = render_sheet_pages(template, labels, start_slot, settings)?;
+    let pdf = render_sheet_pages(template, labels, start_slot, env.settings, env.datetime)?;
     match mode {
         BatchMode::Download => Ok(RenderedBatch::Download {
             bytes: pdf,
@@ -206,8 +220,18 @@ mod tests {
         }
     }
 
-    fn no_settings() -> BTreeMap<String, String> {
-        BTreeMap::new()
+    fn no_env() -> BatchEnv<'static> {
+        use std::sync::OnceLock;
+        static EMPTY_SETTINGS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+        static EMPTY_FORMATS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+        static DT: OnceLock<crate::datetime_fmt::DateTimeResolver<'static>> = OnceLock::new();
+        let settings = EMPTY_SETTINGS.get_or_init(BTreeMap::new);
+        let formats = EMPTY_FORMATS.get_or_init(BTreeMap::new);
+        let datetime = DT.get_or_init(|| crate::datetime_fmt::DateTimeResolver {
+            formats,
+            now: chrono::Local::now(),
+        });
+        BatchEnv { settings, datetime }
     }
 
     #[test]
@@ -219,7 +243,7 @@ mod tests {
             BatchMode::Download,
             Some("png"),
             0,
-            &no_settings(),
+            &no_env(),
             500,
         )
         .unwrap();
@@ -245,7 +269,7 @@ mod tests {
             BatchMode::Print,
             None,
             0,
-            &no_settings(),
+            &no_env(),
             500,
         )
         .unwrap();
@@ -273,7 +297,7 @@ mod tests {
             BatchMode::Download,
             Some("png"),
             0,
-            &no_settings(),
+            &no_env(),
             500,
         )
         .unwrap_err();
@@ -290,7 +314,7 @@ mod tests {
             BatchMode::Print,
             Some("pdf"),
             0,
-            &no_settings(),
+            &no_env(),
             500,
         )
         .unwrap();
@@ -308,7 +332,7 @@ mod tests {
             BatchMode::Print,
             Some("png"),
             0,
-            &no_settings(),
+            &no_env(),
             500,
         )
         .unwrap();
@@ -331,7 +355,7 @@ mod tests {
             BatchMode::Download,
             Some("png"),
             0,
-            &no_settings(),
+            &no_env(),
             500,
         )
         .unwrap_err();
@@ -347,7 +371,7 @@ mod tests {
             BatchMode::Download,
             Some("png"),
             0,
-            &no_settings(),
+            &no_env(),
             1,
         )
         .unwrap_err();

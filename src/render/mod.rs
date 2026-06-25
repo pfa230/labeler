@@ -51,14 +51,14 @@ fn compile_single_doc(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
-    settings: &BTreeMap<String, String>,
+    env: &RenderEnv,
 ) -> Result<PagedDocument, AppError> {
     if !matches!(template.format, TemplateFormat::Single { .. }) {
         return Err(AppError::unsupported_format(
             "render_label only supports single format",
         ));
     }
-    compile_label_doc(template, data, option, settings)
+    compile_label_doc(template, data, option, env)
 }
 
 /// Compile a single label for any template: a `Single` uses its width/height; a `Sheet`
@@ -68,7 +68,7 @@ fn compile_label_doc(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
-    settings: &BTreeMap<String, String>,
+    env: &RenderEnv,
 ) -> Result<PagedDocument, AppError> {
     let unit = &template.unit;
     let selected_option = normalize_option(template, option)?;
@@ -107,7 +107,7 @@ fn compile_label_doc(
                 unit,
                 data,
                 selected_option,
-                settings,
+                env,
                 &images,
                 None,
             );
@@ -146,7 +146,7 @@ fn compile_label_doc(
         unit,
         data,
         selected_option,
-        settings,
+        env,
         &images,
         auto_length,
     );
@@ -169,8 +169,10 @@ pub fn render_thumbnail_png(
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
-    let doc = compile_label_doc(template, data, option, settings)?;
+    let env = RenderEnv { settings, datetime };
+    let doc = compile_label_doc(template, data, option, &env)?;
     let page = doc
         .pages
         .first()
@@ -186,8 +188,10 @@ pub fn render_single_label(
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
-    let doc = compile_single_doc(template, data, option, settings)?;
+    let env = RenderEnv { settings, datetime };
+    let doc = compile_single_doc(template, data, option, &env)?;
     let page = doc
         .pages
         .first()
@@ -204,8 +208,10 @@ pub fn render_single_label_pdf(
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
-    let doc = compile_single_doc(template, data, option, settings)?;
+    let env = RenderEnv { settings, datetime };
+    let doc = compile_single_doc(template, data, option, &env)?;
     typst_pdf::pdf(&doc, &Default::default())
         .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))
 }
@@ -215,7 +221,9 @@ pub fn render_sheet_pages(
     labels: &[LabelInput],
     start_slot: u32,
     settings: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
+    let env = RenderEnv { settings, datetime };
     let TemplateFormat::Sheet {
         paper_width,
         paper_height,
@@ -275,7 +283,7 @@ pub fn render_sheet_pages(
             unit,
             &lbl.data,
             selected_option,
-            settings,
+            &env,
             &images,
             None,
         );
@@ -397,13 +405,20 @@ struct AutoLength<'a> {
     cursor: &'a Cell<usize>,
 }
 
+/// Render-time environment: the variables map and the datetime resolver, passed together through
+/// every render call so related configuration travels as a unit.
+struct RenderEnv<'a> {
+    settings: &'a BTreeMap<String, String>,
+    datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
+}
+
 struct RenderContext<'a> {
     frame_width_units: f32,
     frame_height_units: f32,
     unit: &'a str,
     data: &'a HashMap<String, JsonValue>,
     selected_option: Option<&'a BTreeMap<String, String>>,
-    settings: &'a BTreeMap<String, String>,
+    env: &'a RenderEnv<'a>,
     images: &'a RefCell<ImageCollector>,
     auto_length: Option<AutoLength<'a>>,
 }
@@ -414,7 +429,7 @@ impl<'a> RenderContext<'a> {
         unit: &'a str,
         data: &'a HashMap<String, JsonValue>,
         selected_option: Option<&'a BTreeMap<String, String>>,
-        settings: &'a BTreeMap<String, String>,
+        env: &'a RenderEnv<'a>,
         images: &'a RefCell<ImageCollector>,
         auto_length: Option<AutoLength<'a>>,
     ) -> Self {
@@ -424,7 +439,7 @@ impl<'a> RenderContext<'a> {
             unit,
             data,
             selected_option,
-            settings,
+            env,
             images,
             auto_length,
         }
@@ -503,7 +518,7 @@ impl<'a> RenderContext<'a> {
                             self.unit,
                             self.data,
                             self.selected_option,
-                            self.settings,
+                            self.env,
                             self.images,
                             None,
                         );
@@ -525,7 +540,7 @@ impl<'a> RenderContext<'a> {
                             self.unit,
                             self.data,
                             self.selected_option,
-                            self.settings,
+                            self.env,
                             self.images,
                             None,
                         );
@@ -605,7 +620,9 @@ impl<'a> RenderContext<'a> {
                     .get(name)
                     .ok_or_else(|| AppError::missing_field(name))?,
             )),
-            (None, Some(value)) => interpolate(value, self.data, self.settings),
+            (None, Some(value)) => {
+                interpolate(value, self.data, self.env.settings, self.env.datetime)
+            }
             (None, None) => Err(AppError::render_failed(format!(
                 "{kind} item has neither name nor value"
             ))),
@@ -867,7 +884,7 @@ impl<'a> RenderContext<'a> {
             self.unit,
             self.data,
             self.selected_option,
-            self.settings,
+            self.env,
             self.images,
             child_auto_length,
         );
@@ -998,7 +1015,11 @@ fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
         let mut token = String::new();
         for tc in chars.by_ref() {
             if tc == '}' {
-                if !token.is_empty() && !token.starts_with("vars.") {
+                if !token.is_empty()
+                    && !token.starts_with("vars.")
+                    && token != "datetime"
+                    && !token.starts_with("datetime.")
+                {
                     out.push(token);
                 }
                 break;
@@ -1085,6 +1106,16 @@ mod tests {
         BTreeMap::new()
     }
 
+    fn no_datetime() -> crate::datetime_fmt::DateTimeResolver<'static> {
+        use std::sync::OnceLock;
+        static EMPTY: OnceLock<std::collections::BTreeMap<String, String>> = OnceLock::new();
+        let formats = EMPTY.get_or_init(std::collections::BTreeMap::new);
+        crate::datetime_fmt::DateTimeResolver {
+            formats,
+            now: chrono::Local::now(),
+        }
+    }
+
     fn two_slot_sheet() -> TemplateDefinition {
         TemplateDefinition {
             id: "sheet2".to_string(),
@@ -1128,8 +1159,14 @@ mod tests {
     #[test]
     fn sheet_pages_paginate_overflow() {
         let labels = vec![sheet_label("a"), sheet_label("b"), sheet_label("c")];
-        let pdf =
-            render_sheet_pages(&two_slot_sheet(), &labels, 0, &no_settings()).expect("render");
+        let pdf = render_sheet_pages(
+            &two_slot_sheet(),
+            &labels,
+            0,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render");
         assert!(pdf.starts_with(b"%PDF"));
         assert_eq!(count_pdf_pages(&pdf), 2);
     }
@@ -1137,8 +1174,14 @@ mod tests {
     #[test]
     fn sheet_pages_respect_start_slot() {
         let labels = vec![sheet_label("a"), sheet_label("b")];
-        let pdf =
-            render_sheet_pages(&two_slot_sheet(), &labels, 1, &no_settings()).expect("render");
+        let pdf = render_sheet_pages(
+            &two_slot_sheet(),
+            &labels,
+            1,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render");
         assert!(pdf.starts_with(b"%PDF"));
         assert_eq!(count_pdf_pages(&pdf), 2);
     }
@@ -1152,7 +1195,14 @@ mod tests {
                 option: None,
             },
         ];
-        let err = render_sheet_pages(&two_slot_sheet(), &labels, 0, &no_settings()).unwrap_err();
+        let err = render_sheet_pages(
+            &two_slot_sheet(),
+            &labels,
+            0,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .unwrap_err();
         assert_eq!(err.code(), "BatchInvalid");
     }
 
@@ -1191,8 +1241,14 @@ mod tests {
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
         let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
-        let png = render_single_label(&template, &data, Some(&selection), &no_settings())
-            .expect("render label");
+        let png = render_single_label(
+            &template,
+            &data,
+            Some(&selection),
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -1271,8 +1327,14 @@ mod tests {
             ("code".to_string(), json!("QR-123")),
         ]);
         let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
-        let png = render_single_label(&template, &data, Some(&selection), &no_settings())
-            .expect("render label with qr");
+        let png = render_single_label(
+            &template,
+            &data,
+            Some(&selection),
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -1316,7 +1378,8 @@ mod tests {
             option: None,
         }];
 
-        let pdf = render_sheet_pages(&template, &labels, 0, &no_settings()).expect("render sheet");
+        let pdf = render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime())
+            .expect("render sheet");
 
         assert!(!pdf.is_empty(), "rendered PDF is empty");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
@@ -1360,8 +1423,8 @@ mod tests {
             "logo".to_string(),
             json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
         )]);
-        let png =
-            render_single_label(&template, &data, None, &no_settings()).expect("render image");
+        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("render image");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -1369,7 +1432,9 @@ mod tests {
     fn render_image_missing_data_errors() {
         let template = image_single_template();
         let data = HashMap::new();
-        assert!(render_single_label(&template, &data, None, &no_settings()).is_err());
+        assert!(
+            render_single_label(&template, &data, None, &no_settings(), &no_datetime()).is_err()
+        );
     }
 
     #[test]
@@ -1379,7 +1444,9 @@ mod tests {
             "logo".to_string(),
             json!("data:image/png;base64,@@@not-base64@@@"),
         )]);
-        assert!(render_single_label(&template, &data, None, &no_settings()).is_err());
+        assert!(
+            render_single_label(&template, &data, None, &no_settings(), &no_datetime()).is_err()
+        );
     }
 
     #[test]
@@ -1419,8 +1486,8 @@ mod tests {
             )]),
             option: None,
         }];
-        let pdf =
-            render_sheet_pages(&template, &labels, 0, &no_settings()).expect("render sheet image");
+        let pdf = render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime())
+            .expect("render sheet image");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
@@ -1451,7 +1518,8 @@ mod tests {
         );
         let template = image_single_template();
         let data = HashMap::from([("logo".to_string(), json!(uri))]);
-        let png = render_single_label(&template, &data, None, &no_settings()).expect("render svg");
+        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("render svg");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -1478,6 +1546,7 @@ mod tests {
             &data,
             None,
             &no_settings(),
+            &no_datetime(),
         )
         .expect("render static src");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -1487,7 +1556,8 @@ mod tests {
             &image_single_template_with_src("missing.png"),
             &data,
             None,
-            &no_settings()
+            &no_settings(),
+            &no_datetime(),
         )
         .is_err());
 
@@ -1525,8 +1595,8 @@ mod tests {
             version: None,
         };
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let pdf =
-            render_single_label_pdf(&template, &data, None, &no_settings()).expect("render pdf");
+        let pdf = render_single_label_pdf(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("render pdf");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
@@ -1546,8 +1616,8 @@ mod tests {
             "brother_24mm_qr",
         ] {
             let template = registry.get(id).unwrap_or_else(|| panic!("template {id}"));
-            let png =
-                render_single_label(template, &data, None, &no_settings()).expect("render tape");
+            let png = render_single_label(template, &data, None, &no_settings(), &no_datetime())
+                .expect("render tape");
             assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         }
     }
@@ -1597,11 +1667,14 @@ mod tests {
         };
         let data = HashMap::from([("id".to_string(), json!("A1"))]);
         let settings = BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())]);
-        let png = render_single_label(&template, &data, None, &settings).expect("render interp");
+        let png = render_single_label(&template, &data, None, &settings, &no_datetime())
+            .expect("render interp");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
         // Missing setting is an error.
-        assert!(render_single_label(&template, &data, None, &no_settings()).is_err());
+        assert!(
+            render_single_label(&template, &data, None, &no_settings(), &no_datetime()).is_err()
+        );
     }
 
     #[test]
@@ -1635,8 +1708,8 @@ mod tests {
         };
         // Typst-hostile payload: markup that would call into the system if not escaped.
         let data = HashMap::from([("x".to_string(), json!(r#""]#sys.version[ \ end"#))]);
-        let png =
-            render_single_label(&template, &data, None, &no_settings()).expect("render escaped");
+        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("render escaped");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -1650,11 +1723,14 @@ mod tests {
             ("message".to_string(), json!("Widget")),
         ]);
         let settings = BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())]);
-        let png = render_single_label(template, &data, None, &settings).expect("render homebox-qr");
+        let png = render_single_label(template, &data, None, &settings, &no_datetime())
+            .expect("render homebox-qr");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
         // Missing qr_base_url setting is an error.
-        assert!(render_single_label(template, &data, None, &no_settings()).is_err());
+        assert!(
+            render_single_label(template, &data, None, &no_settings(), &no_datetime()).is_err()
+        );
     }
 
     #[test]
@@ -1662,7 +1738,8 @@ mod tests {
         let template = sheet_template_10x5_on_100x100();
         let data = HashMap::new();
         let settings = BTreeMap::new();
-        let png = render_thumbnail_png(&template, &data, None, &settings).expect("png");
+        let png =
+            render_thumbnail_png(&template, &data, None, &settings, &no_datetime()).expect("png");
         let img = image::load_from_memory(&png).expect("decode png");
         // label 10x5 mm at 96 dpi ≈ 37.8 x 18.9 px; paper would be ~378 px. Assert it is the label box.
         assert!(
@@ -1817,6 +1894,48 @@ mod tests {
             data.get("real").and_then(|v| v.as_str()),
             Some("real"),
             "real token must be collected"
+        );
+    }
+
+    #[test]
+    fn interpolate_datetime_tokens() {
+        use crate::datetime_fmt::DateTimeResolver;
+        use chrono::TimeZone;
+        use std::collections::{BTreeMap, HashMap};
+
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 6, 25, 14, 30, 0)
+            .single()
+            .unwrap();
+        let formats = BTreeMap::from([("short_date".to_string(), "%m/%d/%Y".to_string())]);
+        let dt = DateTimeResolver {
+            formats: &formats,
+            now,
+        };
+        let vars = BTreeMap::new();
+        // bare datetime => ISO date
+        let mut data: HashMap<String, serde_json::Value> = HashMap::new();
+        assert_eq!(
+            super::helpers::interpolate("d={datetime}", &data, &vars, &dt).unwrap(),
+            "d=2026-06-25"
+        );
+        // named format
+        assert_eq!(
+            super::helpers::interpolate("{datetime.short_date}", &data, &vars, &dt).unwrap(),
+            "06/25/2026"
+        );
+        // unknown named format => error
+        assert!(super::helpers::interpolate("{datetime.nope}", &data, &vars, &dt).is_err());
+        // a data field named `datetime` is shadowed by the token
+        data.insert("datetime".to_string(), serde_json::json!("SHADOWED"));
+        assert_eq!(
+            super::helpers::interpolate("{datetime}", &data, &vars, &dt).unwrap(),
+            "2026-06-25"
+        );
+        // literal braces unaffected
+        assert_eq!(
+            super::helpers::interpolate("{{datetime}}", &data, &vars, &dt).unwrap(),
+            "{datetime}"
         );
     }
 

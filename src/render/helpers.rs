@@ -22,13 +22,16 @@ pub(super) fn value_to_string(value: &JsonValue) -> String {
     }
 }
 
-/// Substitution-only interpolation (ADR-0010). `{field}` resolves from `data` via `value_to_string`,
-/// `{vars.<key>}` from `variables`; `{{`/`}}` emit literal braces. An unresolved token or an
-/// unmatched brace is an error.
+/// Substitution-only interpolation (ADR-0010).
+///
+/// Resolution precedence: `{datetime}` / `{datetime.NAME}` from the resolver first, then
+/// `{vars.<key>}` from `variables`, then `{field}` from `data` via `value_to_string`.
+/// `{{`/`}}` emit literal braces. An unresolved token or an unmatched brace is an error.
 pub(super) fn interpolate(
     template: &str,
     data: &HashMap<String, JsonValue>,
     variables: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<String, AppError> {
     let mut out = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
@@ -54,7 +57,9 @@ pub(super) fn interpolate(
                         "unterminated '{{' in template '{template}'"
                     )));
                 }
-                let resolved = if let Some(key) = token.strip_prefix("vars.") {
+                let resolved = if let Some(dt) = datetime.resolve(&token) {
+                    dt?
+                } else if let Some(key) = token.strip_prefix("vars.") {
                     variables
                         .get(key)
                         .cloned()
@@ -726,6 +731,7 @@ mod interpolate_tests {
     use super::interpolate;
     use serde_json::json;
     use std::collections::{BTreeMap, HashMap};
+    use std::sync::OnceLock;
 
     fn data() -> HashMap<String, serde_json::Value> {
         HashMap::from([
@@ -738,37 +744,55 @@ mod interpolate_tests {
         BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())])
     }
 
+    fn no_datetime() -> crate::datetime_fmt::DateTimeResolver<'static> {
+        static EMPTY: OnceLock<BTreeMap<String, String>> = OnceLock::new();
+        let formats = EMPTY.get_or_init(BTreeMap::new);
+        crate::datetime_fmt::DateTimeResolver {
+            formats,
+            now: chrono::Local::now(),
+        }
+    }
+
     #[test]
     fn substitutes_field_and_variable() {
-        let out = interpolate("{vars.qr_base_url}/{id}", &data(), &variables()).unwrap();
+        let out = interpolate(
+            "{vars.qr_base_url}/{id}",
+            &data(),
+            &variables(),
+            &no_datetime(),
+        )
+        .unwrap();
         assert_eq!(out, "https://h/i/A1");
     }
 
     #[test]
     fn stringifies_non_string_field() {
         assert_eq!(
-            interpolate("n={count}", &data(), &variables()).unwrap(),
+            interpolate("n={count}", &data(), &variables(), &no_datetime()).unwrap(),
             "n=3"
         );
     }
 
     #[test]
     fn literal_braces() {
-        assert_eq!(interpolate("{{x}}", &data(), &variables()).unwrap(), "{x}");
+        assert_eq!(
+            interpolate("{{x}}", &data(), &variables(), &no_datetime()).unwrap(),
+            "{x}"
+        );
     }
 
     #[test]
     fn missing_field_errors() {
-        assert!(interpolate("{nope}", &data(), &variables()).is_err());
+        assert!(interpolate("{nope}", &data(), &variables(), &no_datetime()).is_err());
     }
 
     #[test]
     fn missing_variable_errors() {
-        assert!(interpolate("{vars.nope}", &data(), &variables()).is_err());
+        assert!(interpolate("{vars.nope}", &data(), &variables(), &no_datetime()).is_err());
     }
 
     #[test]
     fn unmatched_brace_errors() {
-        assert!(interpolate("a{id", &data(), &variables()).is_err());
+        assert!(interpolate("a{id", &data(), &variables(), &no_datetime()).is_err());
     }
 }
