@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../../app/toast";
 import { DatetimeFormatsSection } from "./DatetimeFormatsSection";
@@ -51,23 +51,40 @@ function renderSection() {
   );
 }
 
+// Advance fake timers (and flush the microtasks the query/preview promises chain on) until the
+// predicate holds or we exceed `steps` 50ms ticks. Keeps the debounced preview deterministic.
+async function advanceUntil(predicate: () => boolean, steps = 60) {
+  for (let i = 0; i < steps; i++) {
+    if (predicate()) return;
+    await vi.advanceTimersByTimeAsync(50);
+  }
+  if (!predicate()) throw new Error("advanceUntil: predicate never became true");
+}
+
 describe("DatetimeFormatsSection", () => {
-  beforeEach(() => vi.unstubAllGlobals());
-  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it("shows mocked preview sample for a valid pattern", async () => {
     vi.mocked(queries.previewDatetimeFormat).mockResolvedValue({ sample: "2026-06-25" });
     vi.stubGlobal("fetch", stubFetch({ short_date: "%Y-%m-%d" }));
     renderSection();
 
-    // Wait for the row to appear
-    const patternInput = await screen.findByLabelText("strftime pattern");
-    expect(patternInput).toHaveValue("%Y-%m-%d");
+    // Query resolves and the row mounts with its pattern.
+    await advanceUntil(() => screen.queryByLabelText("strftime pattern") !== null);
+    expect(screen.getByLabelText("strftime pattern")).toHaveValue("%Y-%m-%d");
 
-    // Debounce fires after 400ms; use fake timers to advance
-    await act(async () => {
-      await vi.waitFor(() => expect(screen.getByText("2026-06-25")).toBeInTheDocument(), { timeout: 2000 });
-    });
+    // Cross the 400ms debounce so the (mocked) preview call fires and its sample renders.
+    await advanceUntil(() => screen.queryByText("2026-06-25") !== null);
+    expect(screen.getByText("2026-06-25")).toBeInTheDocument();
+    expect(queries.previewDatetimeFormat).toHaveBeenCalledWith("%Y-%m-%d");
   });
 
   it("shows error message for an invalid pattern", async () => {
@@ -75,11 +92,10 @@ describe("DatetimeFormatsSection", () => {
     vi.stubGlobal("fetch", stubFetch({ bad: "%Q" }));
     renderSection();
 
-    await screen.findByLabelText("strftime pattern");
-
-    await act(async () => {
-      await vi.waitFor(() => expect(screen.getByText("Invalid strftime pattern: %Q")).toBeInTheDocument(), { timeout: 2000 });
-    });
+    await advanceUntil(() => screen.queryByLabelText("strftime pattern") !== null);
+    await advanceUntil(() => screen.queryByText("Invalid strftime pattern: %Q") !== null);
+    expect(screen.getByText("Invalid strftime pattern: %Q")).toBeInTheDocument();
+    expect(queries.previewDatetimeFormat).toHaveBeenCalledWith("%Q");
   });
 
   it("saves rows via PUT when Save is clicked", async () => {
@@ -88,14 +104,14 @@ describe("DatetimeFormatsSection", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
 
-    await screen.findByLabelText("strftime pattern");
+    await advanceUntil(() => screen.queryByLabelText("strftime pattern") !== null);
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
 
-    await waitFor(() => {
-      const putCall = [...fetchMock.mock.calls].reverse().find(([u, i]) =>
-        String(u).startsWith("/api/settings/datetime_formats") && ((i as RequestInit)?.method ?? "GET").toUpperCase() === "PUT"
+    const sawPut = () =>
+      fetchMock.mock.calls.some(([u, i]) =>
+        String(u).startsWith("/api/settings/datetime_formats") && ((i as RequestInit)?.method ?? "GET").toUpperCase() === "PUT",
       );
-      expect(putCall).toBeTruthy();
-    });
+    await advanceUntil(sawPut);
+    expect(sawPut()).toBe(true);
   });
 });

@@ -223,6 +223,7 @@ export function DatetimeFormatsSection() {
       </h2>
       <div className="flex flex-col gap-2">
         {activeRows.map((row, i) => (
+          // index key is fine: rows are not reorderable; removing a row remounts PatternRow and resets its preview state
           <PatternRow
             key={i}
             row={row}
