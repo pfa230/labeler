@@ -138,7 +138,8 @@ export function TokensSection() {
       ) : (tokens ?? []).length === 0 ? (
         <p className="text-sm" style={{ color: "var(--muted)" }}>No tokens.</p>
       ) : (
-        <table className="w-full border-collapse">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
           <thead>
             <tr>
               <th className={th} style={{ color: "var(--muted)" }}>Name</th>
@@ -152,7 +153,8 @@ export function TokensSection() {
               <TokenRow key={t.id} token={t} />
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       )}
 
       <CreateTokenForm onCreated={setNewSecret} />

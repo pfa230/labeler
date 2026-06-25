@@ -127,7 +127,8 @@ export function ConnectionsSection() {
       ) : (connections ?? []).length === 0 ? (
         <p className="text-sm" style={{ color: "var(--muted)" }}>No connections configured.</p>
       ) : (
-        <table className="w-full border-collapse">
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
           <thead>
             <tr>
               <th className={th} style={{ color: "var(--muted)" }}>Name</th>
@@ -143,7 +144,8 @@ export function ConnectionsSection() {
               <ConnectionRow key={c.id} conn={c} onEdit={() => setEditing(c)} onDeleted={onDeleted} />
             ))}
           </tbody>
-        </table>
+          </table>
+        </div>
       )}
     </section>
   );
