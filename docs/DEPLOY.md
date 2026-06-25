@@ -17,10 +17,10 @@ docker compose up -d --build
 # open http://localhost:8080
 ```
 
-`docker compose up` builds the image locally (`pull_policy: build`) and starts the service. The named
-volumes are seeded from the image (the image already owns `/app/data` and `/app/templates` to the
-non-root UID 65532, and Docker copies that content and ownership into a fresh volume on first mount), so
-no separate init container is needed. Health is at `GET /api/health`.
+`docker compose up` builds the image locally (`pull_policy: build`) and starts the service. The container
+starts as root, its entrypoint chowns the data and templates dirs to `PUID:PGID` (default `1000:1000`),
+then drops to that user via `gosu` and runs the service. Set `PUID`/`PGID` (in `.env`) to your host user
+so volumes and bind-mounts line up. No separate init container is needed. Health is at `GET /api/health`.
 
 ## Run a published image (GHCR)
 
@@ -73,6 +73,8 @@ for each:
 | --- | --- | --- | --- |
 | `PORT` | `8080` | fixed `8080` (reserved) | remap the host side with `HOST_PORT` |
 | `RUST_LOG` | `labeler=info,tower_http=info` | from `.env` | `.env` |
+| `PUID` | `1000` | `1000` | `.env` (the uid the service runs as; set to your `id -u`) |
+| `PGID` | `1000` | `1000` | `.env` (the gid the service runs as; set to your `id -g`) |
 | `LABELER_DATA_DIR` | `data/` | `/app/data` | mount the `labeler-data` volume |
 | `LABELER_TEMPLATES_DIR` | `templates/` | `/app/templates` | mount the `labeler-templates` volume |
 | `LABELER_FONTS_DIR` | `fonts/` | `/app/fonts` | baked (bind-mount to override; the dir must contain `InterVariable.ttf`) |
@@ -172,11 +174,11 @@ Restore by extracting the tarballs back into the volumes (app stopped), e.g.
 
 ### Bind mounts (advanced)
 
-The default uses named volumes, which Docker seeds from the image with the correct non-root ownership. If
-you bind-mount host directories instead, that seeding does not happen: pre-`chown` the host dirs to
-`65532:65532` so the non-root app can write them, or run the container as your host UID. A bind-mounted
-templates dir does not get the starters; copy them in if you want them. An empty templates dir is not an
-error, the service just starts with zero templates.
+The default uses named volumes. Whether you use named volumes or host bind-mounts, the entrypoint
+chowns the data and templates dirs to `PUID:PGID` on every start, so set `PUID`/`PGID` to the owner of
+your bind-mounted host dirs (usually your own `id -u`/`id -g`) and they line up automatically. A
+bind-mounted templates dir does not get the starters; copy them in if you want them. An empty templates
+dir is not an error, the service just starts with zero templates.
 
 ## Debugging
 
@@ -227,11 +229,12 @@ trust a private CA, build a derived image (debian-slim has `update-ca-certificat
 
 ```dockerfile
 FROM labeler:latest
-USER root
 COPY my-ca.crt /usr/local/share/ca-certificates/my-ca.crt
 RUN update-ca-certificates
-USER 65532:65532
 ```
+
+(The base image runs as root and drops to `PUID:PGID` in its entrypoint, so the derived image needs no
+`USER` line; `update-ca-certificates` runs at build time as root.)
 
 **Authenticated queues are not supported in MVP.** The printer config is just `{ uri }`; a queue
 requiring authentication will be reachable but fail with 401/403. Basic-auth and a custom-CA option are
