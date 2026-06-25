@@ -5,6 +5,7 @@ use crate::store::{Store, StoreError};
 use std::collections::BTreeMap;
 
 pub const JOB_LOG_RETENTION_DAYS: &str = "job_log_retention_days";
+const DEFAULT_RETENTION_DAYS: u32 = 90;
 
 /// Setting key for the named `{datetime.*}` strftime formats (issue #76).
 pub const DATETIME_FORMATS: &str = "datetime_formats";
@@ -19,7 +20,6 @@ pub fn default_datetime_formats() -> BTreeMap<String, String> {
         ("time".to_string(), "%H:%M".to_string()),
     ])
 }
-const DEFAULT_RETENTION_DAYS: u32 = 90;
 
 /// Errors resolving a setting: a store failure, or a stored override that no longer parses (corruption
 /// or manual tampering, since `validate` gates every write).
@@ -86,8 +86,11 @@ pub fn validate(key: &str, value: &serde_json::Value) -> Result<String, String> 
                 crate::datetime_fmt::validate_pattern(pat)
                     .map_err(|e| format!("format '{name}': {e}"))?;
             }
-            // Canonical stored text: re-serialize the validated object.
-            Ok(serde_json::Value::Object(obj.clone()).to_string())
+            // Canonical stored text: normalize through a BTreeMap so the serialized order is
+            // key-stable regardless of the incoming JSON's insertion order.
+            let normalized: BTreeMap<String, serde_json::Value> =
+                obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            Ok(serde_json::to_string(&normalized).expect("serializing a validated map"))
         }
         _ => Err(format!("unknown setting '{key}'")),
     }
@@ -188,6 +191,14 @@ mod tests {
         assert!(validate(DATETIME_FORMATS, &json!({ "bad name": "%Y" })).is_err());
         assert!(validate(DATETIME_FORMATS, &json!({ "x": "%!" })).is_err()); // invalid specifier (%q is VALID = quarter; use %!)
         assert!(validate(DATETIME_FORMATS, &json!({ "x": 5 })).is_err()); // non-string value
+    }
+
+    #[test]
+    fn validate_datetime_formats_canonical_text_is_order_stable() {
+        let a = validate(DATETIME_FORMATS, &json!({ "a": "%Y", "b": "%m" })).unwrap();
+        let b = validate(DATETIME_FORMATS, &json!({ "b": "%m", "a": "%Y" })).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a, r#"{"a":"%Y","b":"%m"}"#);
     }
 
     #[test]
