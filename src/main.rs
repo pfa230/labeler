@@ -15,6 +15,27 @@ async fn main() {
     let templates = TemplateRegistry::load_from_dir("templates")
         .unwrap_or_else(|err| panic!("failed to load templates: {err}"));
     tracing::info!(count = templates.len(), "templates loaded");
+
+    // Dev-only: warn if the locally served ui/dist bundle is missing or older than ui/src. Skipped when
+    // LABELER_UI_DIR is set (the container sets it). Never fails startup. See #69.
+    if std::env::var_os("LABELER_UI_DIR").is_none() {
+        use labeler::ui_freshness::{ui_dist_status, UiDistStatus};
+        match ui_dist_status(
+            std::path::Path::new("ui/src"),
+            std::path::Path::new("ui/dist"),
+        ) {
+            UiDistStatus::MissingDist => tracing::warn!(
+                "ui/dist not found; the web UI will not load. Run `npm --prefix ui run build`, or use \
+                 the Vite dev server (`npm --prefix ui run dev`)."
+            ),
+            UiDistStatus::Stale => tracing::warn!(
+                "ui/dist is older than ui/src; serving a stale UI. Rebuild with \
+                 `npm --prefix ui run build`, or use the Vite dev server (`npm --prefix ui run dev`)."
+            ),
+            UiDistStatus::Fresh | UiDistStatus::Unknown => {}
+        }
+    }
+
     let data_dir = std::env::var_os("LABELER_DATA_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("data"));
