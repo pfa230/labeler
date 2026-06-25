@@ -15,7 +15,9 @@ export function sampleData(fields: string[], imgFields: string[] = []): Record<s
 
 // Renders a preview object URL for a template detail. Single -> /render/label image; sheet -> /batch pdf.
 export function useTemplatePreview(detail: TemplateDetail | undefined): { url?: string; error?: string; loading: boolean } {
-  const [state, setState] = useState<{ url?: string; error?: string; loading: boolean }>({ loading: false });
+  // Start in the loading state: TemplateDetail always auto-previews (no fields to fill), so the pane must
+  // never flash PreviewPane's "Fill the required fields to preview." idle copy before the effect runs (#74).
+  const [state, setState] = useState<{ url?: string; error?: string; loading: boolean }>({ loading: true });
   useEffect(() => {
     if (!detail) return;
     let url: string | undefined;
