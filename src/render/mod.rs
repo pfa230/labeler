@@ -1723,14 +1723,17 @@ mod tests {
             ("message".to_string(), json!("Widget")),
         ]);
         let settings = BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())]);
-        let png = render_single_label(template, &data, None, &settings, &no_datetime())
-            .expect("render homebox-qr");
+        let dt_formats = crate::settings::default_datetime_formats();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now: chrono::Local::now(),
+        };
+        let png =
+            render_single_label(template, &data, None, &settings, &dt).expect("render homebox-qr");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
         // Missing qr_base_url setting is an error.
-        assert!(
-            render_single_label(template, &data, None, &no_settings(), &no_datetime()).is_err()
-        );
+        assert!(render_single_label(template, &data, None, &no_settings(), &dt).is_err());
     }
 
     #[test]
