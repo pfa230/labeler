@@ -307,7 +307,6 @@ mod tests {
     #[test]
     fn single_print_renders_requested_format() {
         let labels = vec![lbl("a")];
-        // pdf driver format -> PDF bytes
         let out = render_batch(
             &single_tpl(),
             &labels,
@@ -325,7 +324,6 @@ mod tests {
             units[0].bytes.starts_with(b"%PDF"),
             "pdf driver format must yield PDF bytes"
         );
-        // png driver format -> PNG bytes
         let out = render_batch(
             &single_tpl(),
             &labels,
