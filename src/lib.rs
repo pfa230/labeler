@@ -2029,6 +2029,124 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn print_webhook_ok_single_template_jobs_equal_copies() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "printer": "ok-printer",
+            "fields": { "message": "Hello", "code": "QR-1" },
+            "copies": 2
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_response(resp).await;
+        assert_eq!(body["total"], 2);
+        assert_eq!(body["succeeded"], 2);
+        assert_eq!(body["jobs"], 2); // single/tape template: one send per copy
+    }
+
+    #[tokio::test]
+    async fn print_webhook_defaults_to_one_copy() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "printer": "ok-printer",
+            "fields": { "message": "Hi", "code": "Q" }
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_response(resp).await["total"], 1);
+    }
+
+    #[tokio::test]
+    async fn print_webhook_copies_out_of_range_is_400() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        for bad in [0u32, 101] {
+            let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","fields":{"message":"x","code":"y"},"copies":bad});
+            let resp = app
+                .clone()
+                .oneshot(json_req("POST", "/api/print", payload.to_string()))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "copies={bad}");
+            assert_eq!(json_response(resp).await["error"]["code"], "InvalidRequest");
+        }
+    }
+
+    #[tokio::test]
+    async fn print_webhook_unknown_template_is_404() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({"template":"nope","printer":"ok-printer","fields":{}});
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn print_webhook_malformed_json_is_400() {
+        let app = build_app();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", "{not json".to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn print_webhook_oversized_body_is_413() {
+        let app = build_app();
+        // > 64 KiB body via a huge field value.
+        let big = "x".repeat(80 * 1024);
+        let payload = json!({"template":"brother_24mm_qr","printer":"p","fields":{"message":big}});
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            json_response(resp).await["error"]["code"],
+            "PayloadTooLarge"
+        );
+    }
+
+    // Verify the API-wide behavior: oversized bodies on non-/print JSON endpoints also return 413.
+    // axum's global DefaultBodyLimit (~2 MiB) triggers the same JsonRejection->PayloadTooLarge path.
+    #[tokio::test]
+    async fn batch_oversized_body_is_413() {
+        let app = build_app();
+        // ~2.1 MiB body; exceeds the global ~2 MiB DefaultBodyLimit.
+        let big = "x".repeat(2 * 1024 * 1024 + 100 * 1024);
+        let payload = json!({"labels":[{"template":"brother_24mm_qr","data":{"message":big}}]});
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            json_response(resp).await["error"]["code"],
+            "PayloadTooLarge"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2167,6 +2285,19 @@ mod auth_http_tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn print_webhook_requires_auth() {
+        let app = test_app();
+        let payload =
+            serde_json::json!({"template":"brother_24mm_qr","printer":"ok-printer","fields":{}});
+        let resp = app
+            .clone()
+            .oneshot(req_post_json("/api/print", &payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
