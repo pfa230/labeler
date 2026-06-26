@@ -1,7 +1,7 @@
 use arc_swap::ArcSwap;
 use axum::{
     extract::rejection::JsonRejection,
-    extract::{FromRequestParts, Json, Path, Query, State},
+    extract::{DefaultBodyLimit, FromRequestParts, Json, Path, Query, State},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Router,
@@ -176,7 +176,10 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/datetime-formats/preview", post(preview_datetime_format))
         .route("/render/label", post(render_label))
         .route("/batch", post(batch))
-        .route("/print", post(print_label))
+        .route(
+            "/print",
+            post(print_label).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/import/csv", post(import_csv))
         .route("/auth/setup", post(setup))
         .route("/auth/login", post(login))

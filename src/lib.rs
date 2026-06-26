@@ -2109,6 +2109,24 @@ layout:
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
+
+    #[tokio::test]
+    async fn print_webhook_oversized_body_is_413() {
+        let app = build_app();
+        // > 64 KiB body via a huge field value.
+        let big = "x".repeat(80 * 1024);
+        let payload = json!({"template":"brother_24mm_qr","printer":"p","fields":{"message":big}});
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            json_response(resp).await["error"]["code"],
+            "PayloadTooLarge"
+        );
+    }
 }
 
 #[cfg(test)]
