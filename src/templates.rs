@@ -1055,8 +1055,8 @@ layout: []
     #[test]
     fn dynamic_width_single_allows_multiline_text() {
         let template = TemplateDefinition {
-            id: "tape_single_line".to_string(),
-            name: "Tape Single Line".to_string(),
+            id: "tape_multiline".to_string(),
+            name: "Tape Multiline".to_string(),
             description: "tape".to_string(),
             unit: "mm".to_string(),
             dpi: 300,
