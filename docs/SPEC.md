@@ -453,8 +453,8 @@ All errors return JSON:
 | `TemplateInvalid` | 422 | Template fails structural validation (e.g. a dynamic `format.width` missing one bound). |
 | `UnsupportedFormat` | 422 | Endpoint/format mismatch or unknown unit. |
 | `BatchInvalid` | 422 | One or more `/batch` labels failed render-validation; `details.failures` lists them. |
-| `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). |
-| `PayloadTooLarge` | 413 | A `/print` request body exceeds 64 KiB. |
+| `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). Note: `/batch` (and other JSON endpoints) can also return 413 with code `PayloadTooLarge` if the raw body exceeds the server's global limit. |
+| `PayloadTooLarge` | 413 | Request body exceeds the configured limit. On `POST /print` the limit is 64 KiB; on other JSON endpoints it is the server's global default (~2 MiB). Applies API-wide to any endpoint that reads a JSON body. |
 | `NotFound` | 404 | Unknown `/api/*` route (the API fallback). |
 | `RenderFailed` | 500 | Typst compile/encode failure. |
 | `SettingNotFound` | 404 | Unknown application setting key. |
@@ -672,6 +672,8 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-26**: Oversized JSON bodies now return `413 PayloadTooLarge` API-wide (#22). Any endpoint that reads a JSON body returns 413 when the body exceeds the configured limit (64 KiB on `POST /print`; the server's global default ~2 MiB on other endpoints). Previously these cases returned 400.
 
 - **2026-06-26**: Inbound print webhook (ADR-0031; #22). `POST /print` accepts a flat payload
   (`template`, `printer`, `fields`, `option?`, `copies?`) and prints one label, optionally repeated

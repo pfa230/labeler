@@ -90,7 +90,7 @@ impl AppError {
     }
 
     pub fn payload_too_large(message: impl Into<String>) -> Self {
-        AppError::new(
+        Self::new(
             StatusCode::PAYLOAD_TOO_LARGE,
             CODE_PAYLOAD_TOO_LARGE,
             message,

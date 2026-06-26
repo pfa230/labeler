@@ -38,7 +38,11 @@ auth uniformly, including this endpoint, for local use.
 
 The request body is capped at **64 KiB** via axum's `DefaultBodyLimit::max(64 * 1024)` layer applied
 only to this route. Bodies exceeding the cap are rejected with `413 PayloadTooLarge` before
-deserialization, matching the stable error contract.
+deserialization, matching the stable error contract. The `JsonRejection -> 413 PayloadTooLarge`
+mapping in `impl From<JsonRejection> for AppError` is global: any JSON endpoint whose body exceeds
+the applicable limit (64 KiB here; the server's global default ~2 MiB elsewhere) will return 413.
+The 64 KiB cap is `/print`-specific; the 413 response code is correct HTTP semantics for any
+oversized body.
 
 `copies` is defined as **label instances** (not printer copies). A value of 2 sends two identical
 labels: two separate print jobs for single/tape templates, or two slots on a sheet. The cap of 100 is
