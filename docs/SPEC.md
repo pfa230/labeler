@@ -128,8 +128,9 @@ failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned s
   resolution selection come in a later slice).
 - `?resolution=<dpi>` (default: the template `dpi` field): integer DPI override for the PNG raster. Lets
   callers preview at a target device resolution without editing the template. Valid range is `[1, 1200]`;
-  a non-numeric value, `0`, or a value above `1200` is `400 InvalidRequest`. PNG only (ignored for PDF,
-  since PDF is vector). See [ADR-0033](adr/0033-capability-aware-rendering.md).
+  a non-numeric value, `0`, or a value above `1200` is `400 InvalidRequest`. The value does not affect PDF
+  output (PDF is vector), but it is still validated, an out-of-range or non-numeric `resolution` is
+  rejected with `400` regardless of `format`. See [ADR-0033](adr/0033-capability-aware-rendering.md).
 
 ### 2.2 `POST /batch`
 
