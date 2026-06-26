@@ -186,13 +186,6 @@ impl TemplateDefinition {
                         .to_string(),
                 );
             }
-            // Multiline text is incompatible with dynamic width, which has no fixed column width to wrap against.
-            if layout_has_multiline(&self.layout) {
-                return Err(
-                    "multiline text is not allowed on a dynamic-width (auto-length) template; see #78"
-                        .to_string(),
-                );
-            }
         }
 
         let bounds = layout_bounds(&self.format)?;
@@ -666,18 +659,6 @@ impl From<&TemplateDefinition> for TemplateDetail {
     }
 }
 
-fn layout_has_multiline(layout: &Layout) -> bool {
-    match layout {
-        Layout::Items(items) => items.iter().any(|item| match item {
-            LayoutItem::Text { multiline, .. } => *multiline,
-            LayoutItem::Container { items, .. } => {
-                layout_has_multiline(&Layout::Items(items.clone()))
-            }
-            _ => false,
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{TemplateDefinition, TemplateRegistry};
@@ -1072,7 +1053,7 @@ layout: []
     }
 
     #[test]
-    fn dynamic_width_single_rejects_multiline_text() {
+    fn dynamic_width_single_allows_multiline_text() {
         let template = TemplateDefinition {
             id: "tape_multiline".to_string(),
             name: "Tape Multiline".to_string(),
@@ -1103,11 +1084,9 @@ layout: []
             }]),
             version: None,
         };
-        let err = template.validate().expect_err("expected error");
-        assert!(
-            err.contains("multiline text is not allowed on a dynamic-width"),
-            "unexpected error: {err}"
-        );
+        template
+            .validate()
+            .expect("dynamic-width single with multiline: true should validate OK");
     }
 
     #[test]

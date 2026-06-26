@@ -437,45 +437,111 @@ fn pt_to_units(value_pt: f32, unit: &str) -> f32 {
 #[derive(Debug, Clone)]
 pub(super) struct MeasuredText {
     pub font: f32,
-    pub text: String,
+    pub lines: Vec<String>,
     pub width: f32,
 }
 
-/// Single-line auto-length fit: choose the font, return the natural width (clamped to the budget) and the
-/// possibly-ellipsized text. Range shrinks max to min then ellipsizes; Fixed measures at its size then
-/// ellipsizes. Width is in template units.
+/// Auto-length fit: choose the font, return the (possibly wrapped and ellipsized) lines and the
+/// natural width (clamped to the budget). Width is in template units.
+///
+/// When `multiline` is `false`, only the first input line is considered; the result is always
+/// one line (ellipsized on overflow). When `multiline` is `true`, the text is word-wrapped to the
+/// budget width, the largest font that fits the height is chosen, and overflow lines are ellipsized.
 pub(super) fn fit_text_auto_length(
     raw_text: &str,
     font_size: &FontSize,
+    multiline: bool,
     budget_w_units: f32,
     box_h_units: f32,
     unit: &str,
 ) -> Result<MeasuredText, AppError> {
     let font = inter_font()?;
-    let line = to_nonbreaking(raw_text.lines().next().unwrap_or(""));
     let budget_pt = units_to_pt(budget_w_units, unit);
     let height_pt = units_to_pt(box_h_units, unit);
+
+    if !multiline {
+        let line = to_nonbreaking(raw_text.lines().next().unwrap_or(""));
+        let size = match font_size {
+            FontSize::Fixed(s) => *s,
+            FontSize::Range { min, max } => {
+                largest_fitting_font(&line, false, *min, *max, budget_w_units, box_h_units, unit)
+            }
+        };
+        if text_fits(font, &line, false, size, budget_pt, height_pt) {
+            let w = pt_to_units(text_width(font, &line, size), unit).min(budget_w_units);
+            return Ok(MeasuredText {
+                font: size,
+                lines: vec![line],
+                width: w,
+            });
+        }
+        let trimmed = trim_single_line(font, &line, size, budget_pt);
+        return Ok(MeasuredText {
+            font: size,
+            lines: vec![trimmed],
+            width: budget_w_units,
+        });
+    }
+
+    // Multiline: pick the font (shrink to fit the height with wrapping), then produce the final lines.
     let size = match font_size {
         FontSize::Fixed(s) => *s,
-        FontSize::Range { min, max } => {
-            largest_fitting_font(&line, false, *min, *max, budget_w_units, box_h_units, unit)
-        }
+        FontSize::Range { min, max } => largest_fitting_font(
+            raw_text,
+            true,
+            *min,
+            *max,
+            budget_w_units,
+            box_h_units,
+            unit,
+        ),
     };
-    if text_fits(font, &line, false, size, budget_pt, height_pt) {
-        let w = pt_to_units(text_width(font, &line, size), unit).min(budget_w_units);
-        Ok(MeasuredText {
-            font: size,
-            text: line,
-            width: w,
-        })
-    } else {
-        let trimmed = trim_single_line(font, &line, size, budget_pt);
-        Ok(MeasuredText {
-            font: size,
-            text: trimmed,
-            width: budget_w_units,
-        })
+    let (lines, max_w_pt) = wrap_lines_fit(font, raw_text, size, budget_pt, height_pt);
+    let width = pt_to_units(max_w_pt, unit).min(budget_w_units);
+    Ok(MeasuredText {
+        font: size,
+        lines,
+        width,
+    })
+}
+
+/// Wrap `text` to `width_pt`, keep only the lines that fit `height_pt` (ellipsizing the last on
+/// overflow), and NBSP-treat each kept line so the renderer cannot re-break it. Wrapping happens on
+/// real spaces first (NBSP is not whitespace, so it must be applied after wrapping). Returns the
+/// NBSP-treated lines plus the longest-line width in points, measured on the raw (pre-NBSP) lines so
+/// the width never depends on NBSP and space sharing an advance in the measurement font.
+fn wrap_lines_fit(
+    font: &Font,
+    text: &str,
+    size: f32,
+    width_pt: f32,
+    height_pt: f32,
+) -> (Vec<String>, f32) {
+    const ELLIPSIS: &str = "...";
+    let lh = line_height(font, size);
+    let max_lines = (height_pt / lh).floor().max(1.0) as usize;
+    let mut lines = wrap_text(font, text, size, width_pt);
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        let last = lines.last_mut().unwrap();
+        let ellipsis_width = text_width(font, ELLIPSIS, size);
+        if ellipsis_width > width_pt {
+            *last = ELLIPSIS.to_string();
+        } else {
+            while !last.is_empty()
+                && text_width(font, &format!("{last}{ELLIPSIS}"), size) > width_pt
+            {
+                last.pop();
+            }
+            *last = format!("{last}{ELLIPSIS}");
+        }
     }
+    let max_w_pt = lines
+        .iter()
+        .map(|l| text_width(font, l, size))
+        .fold(0.0_f32, f32::max);
+    let lines = lines.into_iter().map(|l| to_nonbreaking(&l)).collect();
+    (lines, max_w_pt)
 }
 
 pub(super) fn typst_alignment(alignment: &Alignment) -> String {
@@ -690,6 +756,7 @@ mod helpers_tests {
                 min: 6.0,
                 max: 20.0,
             },
+            false,
             200.0,
             50.0,
             "mm",
@@ -697,7 +764,7 @@ mod helpers_tests {
         .unwrap();
         assert_eq!(m.font, 20.0);
         assert!(m.width > 0.0 && m.width < 200.0);
-        assert_eq!(m.text, "Hi");
+        assert_eq!(m.lines, vec!["Hi".to_string()]);
     }
 
     #[test]
@@ -708,21 +775,105 @@ mod helpers_tests {
                 min: 6.0,
                 max: 20.0,
             },
+            false,
             8.0,
             3.0,
             "mm",
         )
         .unwrap();
         assert_eq!(m.font, 6.0);
-        assert!(m.text.ends_with("...") || m.text.ends_with('\u{2026}'));
+        assert_eq!(m.lines.len(), 1);
+        assert!(m.lines[0].ends_with("...") || m.lines[0].ends_with('\u{2026}'));
         assert!((m.width - 8.0).abs() < 0.01);
     }
 
     #[test]
     fn auto_length_fixed_font_no_shrink() {
-        let m = fit_text_auto_length("Hi", &FontSize::Fixed(12.0), 200.0, 50.0, "mm").unwrap();
+        let m =
+            fit_text_auto_length("Hi", &FontSize::Fixed(12.0), false, 200.0, 50.0, "mm").unwrap();
         assert_eq!(m.font, 12.0);
-        assert_eq!(m.text, "Hi");
+        assert_eq!(m.lines, vec!["Hi".to_string()]);
+    }
+
+    #[test]
+    fn auto_length_multiline_wraps_and_width_is_longest_line() {
+        // Long text, narrow budget, tall box: should wrap to >1 line; width <= budget.
+        let m = fit_text_auto_length(
+            "alpha bravo charlie delta",
+            &FontSize::Range {
+                min: 6.0,
+                max: 10.0,
+            },
+            true,
+            20.0, // budget width units (mm)
+            20.0, // box height units (mm): room for several lines
+            "mm",
+        )
+        .unwrap();
+        assert!(m.lines.len() >= 2, "expected wrapping, got {:?}", m.lines);
+        assert!(m.width <= 20.0 + 0.01);
+        // each line is NBSP-treated (no ASCII space)
+        assert!(
+            m.lines.iter().all(|l| !l.contains(' ')),
+            "lines must be NBSP-joined: {:?}",
+            m.lines
+        );
+    }
+
+    #[test]
+    fn auto_length_multiline_short_text_is_single_line() {
+        let m = fit_text_auto_length(
+            "Hi",
+            &FontSize::Range {
+                min: 6.0,
+                max: 10.0,
+            },
+            true,
+            50.0,
+            20.0,
+            "mm",
+        )
+        .unwrap();
+        assert_eq!(m.lines.len(), 1);
+    }
+
+    #[test]
+    fn auto_length_multiline_overflow_ellipsizes_last_line() {
+        // Many words, short height: at min font only a few lines fit; last is ellipsized.
+        let m = fit_text_auto_length(
+            "one two three four five six seven eight nine ten eleven twelve",
+            &FontSize::Range { min: 6.0, max: 6.0 }, // fixed-ish via min==max to force overflow
+            true,
+            12.0, // narrow
+            6.0,  // short height: few lines
+            "mm",
+        )
+        .unwrap();
+        assert!(
+            m.lines.last().unwrap().contains("..."),
+            "last line should ellipsize: {:?}",
+            m.lines
+        );
+    }
+
+    #[test]
+    fn auto_length_multiline_empty_input_is_ok() {
+        // Empty input must not panic. `wrap_text` yields a single blank line, so the result is one
+        // empty line with zero width.
+        let m = fit_text_auto_length(
+            "",
+            &FontSize::Range {
+                min: 6.0,
+                max: 10.0,
+            },
+            true,
+            50.0,
+            20.0,
+            "mm",
+        )
+        .unwrap();
+        assert_eq!(m.lines, vec![String::new()]);
+        assert_eq!(m.width, 0.0);
     }
 }
 
