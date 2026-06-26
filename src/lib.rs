@@ -2273,6 +2273,93 @@ layout:
             "explicit null must clear the stored password"
         );
     }
+
+    #[tokio::test]
+    async fn render_bilevel_png_is_pure_black_white() {
+        let app = build_app();
+        let body =
+            json!({ "template": "brother_24mm_qr", "data": { "message": "Hi", "code": "Q" } });
+        // bilevel: every pixel pure black or white
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png&color_mode=bilevel",
+                body.to_string(),
+            ))
+            .await
+            .expect("req");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let png = bytes_response(resp).await;
+        let img = image::load_from_memory(&png).expect("decode").to_rgba8();
+        assert!(
+            img.pixels().all(|p| {
+                let (r, g, b) = (p[0], p[1], p[2]);
+                (r, g, b) == (0, 0, 0) || (r, g, b) == (255, 255, 255)
+            }),
+            "bilevel output must be pure B/W"
+        );
+
+        // default (color) render of the same template HAS intermediate grays (anti-aliasing)
+        let resp2 = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                body.to_string(),
+            ))
+            .await
+            .expect("req");
+        let png2 = bytes_response(resp2).await;
+        let img2 = image::load_from_memory(&png2).expect("decode").to_rgba8();
+        assert!(
+            img2.pixels().any(|p| {
+                let (r, g, b) = (p[0], p[1], p[2]);
+                (r, g, b) != (0, 0, 0) && (r, g, b) != (255, 255, 255)
+            }),
+            "color render should contain anti-aliased grays (proves bilevel changed something)"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_bilevel_rejects_pdf_and_bad_params() {
+        let app = build_app();
+        let body =
+            json!({ "template": "brother_24mm_qr", "data": { "message": "Hi", "code": "Q" } });
+        for q in [
+            "format=pdf&color_mode=bilevel",
+            "color_mode=bogus",
+            "resolution=99999",
+            "resolution=abc",
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "POST",
+                    &format!("/api/render/label?{q}"),
+                    body.to_string(),
+                ))
+                .await
+                .expect("req");
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "query: {q}");
+            assert_eq!(
+                json_response(resp).await["error"]["code"],
+                "InvalidRequest",
+                "query: {q}"
+            );
+        }
+        // valid resolution override succeeds
+        let ok = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png&color_mode=bilevel&resolution=203",
+                body.to_string(),
+            ))
+            .await
+            .expect("req");
+        assert_eq!(ok.status(), StatusCode::OK);
+    }
 }
 
 #[cfg(test)]

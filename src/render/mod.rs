@@ -7,10 +7,10 @@ use crate::models::{
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
-    assets_root, build_qr_svg, escape_typst_string, fit_text_auto_length, fit_text_to_box,
-    format_length, interpolate, line_height_units, parse_image_data_uri, resolve_dimension,
-    resolve_image_asset, to_nonbreaking, to_page_coords, typst_alignment, typst_font_options,
-    value_to_string, MeasuredText,
+    assets_root, binarize_rgba, build_qr_svg, escape_typst_string, fit_text_auto_length,
+    fit_text_to_box, format_length, interpolate, line_height_units, parse_image_data_uri,
+    resolve_dimension, resolve_image_asset, to_nonbreaking, to_page_coords, typst_alignment,
+    typst_font_options, value_to_string, MeasuredText,
 };
 use serde_json::Value as JsonValue;
 use std::cell::{Cell, RefCell};
@@ -183,12 +183,43 @@ pub fn render_thumbnail_png(
         .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ColorMode {
+    #[default]
+    Color,
+    BiLevel,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImageRenderOptions {
+    pub color_mode: ColorMode,
+    pub resolution_dpi: Option<u32>,
+}
+
 pub fn render_single_label(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
+) -> Result<Vec<u8>, AppError> {
+    render_single_label_image(
+        template,
+        data,
+        option,
+        settings,
+        datetime,
+        ImageRenderOptions::default(),
+    )
+}
+
+pub fn render_single_label_image(
+    template: &TemplateDefinition,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+    settings: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
+    opts: ImageRenderOptions,
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
     let doc = compile_single_doc(template, data, option, &env)?;
@@ -197,7 +228,11 @@ pub fn render_single_label(
         .first()
         .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
 
-    let pixmap = typst_render::render(page, template.dpi as f32 / 72.0);
+    let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
+    let mut pixmap = typst_render::render(page, dpi as f32 / 72.0);
+    if opts.color_mode == ColorMode::BiLevel {
+        binarize_rgba(pixmap.data_mut());
+    }
     pixmap
         .encode_png()
         .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
