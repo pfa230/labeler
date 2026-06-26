@@ -46,6 +46,7 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | PUT | `/api/variables/{key}` | Upsert a variable | `200` / `400` |
 | GET | `/api/settings` | Resolved app settings (effective value + `is_default` per key) | `200` |
 | PUT / DELETE | `/api/settings/{key}` | Set an override / reset to default | `200` / `204` / `400` / `404` |
+| POST | `/api/print` | Inbound print webhook: single label, N copies, to a named printer | `200` / `400` / `404` / `409` / `413` / `422` / `502` |
 | POST | `/api/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
 | POST | `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout` | First-run setup / login / logout | see §11 |
 | GET | `/api/auth/me` | SPA auth state | `200` |
@@ -175,6 +176,70 @@ one job). `failed[].index` is the zero-based label index.
 
 - Batches over 500 labels return `413 BatchTooLarge`.
 - `template` referencing an unknown id → `404`; `option` validated per the template's declared `options`.
+
+### 2.3 `POST /print`
+
+An inbound print webhook for integrations (Grocy, scripts, local automation). It prints one label,
+optionally repeated, to a named printer. See [ADR-0031](adr/0031-inbound-print-webhook.md).
+
+```json
+{
+  "template": "brother_24mm",
+  "printer":  "office",
+  "fields":   { "name": "Tomato Soup", "qty": "3" },
+  "option":   { "orientation": "horizontal" },
+  "copies":   2
+}
+```
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `template` | string | Yes | Template id; `404` if not found. |
+| `printer` | string | Yes | Printer id; `404` if not found, `409` if disabled. |
+| `fields` | object | Yes (may be empty) | Mapped to the label `data` for field binding. |
+| `option` | object | No | Template variant selection; validated against the template's declared `options`. |
+| `copies` | integer 1..100 | No | Number of label instances to print (default `1`). |
+
+`copies` counts **label instances**, not printer copies. A value of 2 sends two identical labels: two
+separate print jobs for `single`/tape templates, or two slots on a sheet (paginated like `/batch`).
+Callers needing more than 100 copies should use `POST /batch` directly.
+
+**Response.** Always `BatchSummary` on success:
+
+```json
+{ "total": 2, "succeeded": 2, "failed": [], "jobs": 2 }
+```
+
+`total` and `succeeded` count label instances (copies). `jobs` counts actual printer dispatches: equal
+to `copies` for `single`/tape templates; fewer for `sheet` templates (the sheet is paginated and sent
+as a single print job per page, mirroring `/batch`). Send failures are reported in `failed[]` with a
+`200`; they are not fatal (mirrors `/batch` best-effort transport).
+
+**Error contract.**
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `InvalidRequest` | Malformed JSON or `copies` outside `[1, 100]`. |
+| 404 | `TemplateNotFound` | Unknown `template` id. |
+| 404 | `NotFound` | Unknown `printer` id. |
+| 409 | `PrinterDisabled` | Printer exists but is disabled. |
+| 413 | `PayloadTooLarge` | Request body exceeds 64 KiB. |
+| 422 | (various) | A rendered label is invalid (same render path as `/batch`). |
+| 502 | `PrinterError` | Pre-send dispatch failure (before any job is accepted). |
+
+**Trusted-LAN posture.** This endpoint is intended for a trusted LAN (homelab, local automation bus).
+Do not expose it to the internet. The API token is the access gate; there is no IP allowlisting or
+rate limiting beyond normal auth middleware. `LABELER_NO_AUTH=true` disables authentication uniformly
+for local use.
+
+**Example.**
+
+```bash
+curl -X POST http://labeler.lan:8080/api/print \
+  -H "Authorization: Bearer $LABELER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"template":"brother_24mm","printer":"office","fields":{"name":"Tomato Soup","qty":"3"},"copies":2}'
+```
 
 ## 3. Template schema
 
@@ -387,6 +452,7 @@ All errors return JSON:
 | `UnsupportedFormat` | 422 | Endpoint/format mismatch or unknown unit. |
 | `BatchInvalid` | 422 | One or more `/batch` labels failed render-validation; `details.failures` lists them. |
 | `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). |
+| `PayloadTooLarge` | 413 | A `/print` request body exceeds 64 KiB. |
 | `NotFound` | 404 | Unknown `/api/*` route (the API fallback). |
 | `RenderFailed` | 500 | Typst compile/encode failure. |
 | `SettingNotFound` | 404 | Unknown application setting key. |
@@ -604,6 +670,15 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-26**: Inbound print webhook (ADR-0031; #22). `POST /print` accepts a flat payload
+  (`template`, `printer`, `fields`, `option?`, `copies?`) and prints one label, optionally repeated
+  N times (default 1, max 100), delegating to the shared `/batch` dispatch path. `copies` counts
+  label instances; `total`/`succeeded` in the `BatchSummary` count instances; `jobs` counts actual
+  printer dispatches (mirrors `/batch`). Request body capped at 64 KiB; oversized bodies map to
+  `413 PayloadTooLarge`. Send failures are reported in `failed[]` with a `200` (best-effort
+  transport, mirrors `/batch`). Intended for trusted-LAN integrations (Grocy, scripts); do not
+  expose to the internet. See §2.3.
 
 - **2026-06-25**: The templates and fonts directories are now env-configurable (#38) via
   `LABELER_TEMPLATES_DIR` (default `templates/`) and `LABELER_FONTS_DIR` (default `fonts/`), mirroring
