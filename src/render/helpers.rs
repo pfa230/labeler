@@ -12,6 +12,20 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 
+/// In-place global luminance threshold of premultiplied-RGBA bytes to pure black/white (slice 1: no
+/// dithering). Typst pages render opaque (alpha 255), so premultiplied == straight and Rec.601 luma is
+/// correct. Threshold 128 = 0.5.
+pub(super) fn binarize_rgba(data: &mut [u8]) {
+    for px in data.chunks_exact_mut(4) {
+        let luma = (77 * px[0] as u32 + 150 * px[1] as u32 + 29 * px[2] as u32) >> 8;
+        let v = if luma < 128 { 0u8 } else { 255u8 };
+        px[0] = v;
+        px[1] = v;
+        px[2] = v;
+        px[3] = 255;
+    }
+}
+
 pub(super) fn value_to_string(value: &JsonValue) -> String {
     match value {
         JsonValue::String(value) => value.clone(),
@@ -643,6 +657,31 @@ pub(super) fn resolve_image_asset(root: &Path, src: &str) -> Result<(Vec<u8>, Im
         AppError::unsupported_layout_item(format!("image asset not readable: {src}"))
     })?;
     Ok((bytes, fmt))
+}
+
+#[cfg(test)]
+mod binarize_tests {
+    use super::binarize_rgba;
+
+    #[test]
+    fn binarize_rgba_makes_pure_black_or_white() {
+        // grays: 0, 64, 127 (->black), 128, 200, 255 (->white). RGBA, opaque.
+        let mut data = vec![
+            0, 0, 0, 255, 64, 64, 64, 255, 127, 127, 127, 255, 128, 128, 128, 255, 200, 200, 200,
+            255, 255, 255, 255, 255,
+        ];
+        binarize_rgba(&mut data);
+        for (i, px) in data.chunks_exact(4).enumerate() {
+            assert!(px[3] == 255, "alpha forced opaque");
+            assert!(
+                (px[0], px[1], px[2]) == (0, 0, 0) || (px[0], px[1], px[2]) == (255, 255, 255),
+                "pixel {i} not pure B/W: {px:?}"
+            );
+        }
+        // 0.5 split: index 2 (127) -> black, index 3 (128) -> white
+        assert_eq!(&data[8..11], &[0, 0, 0]);
+        assert_eq!(&data[12..15], &[255, 255, 255]);
+    }
 }
 
 #[cfg(test)]
