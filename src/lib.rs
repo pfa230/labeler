@@ -166,14 +166,17 @@ mod http_tests {
     }
 
     fn build_app() -> axum::Router {
+        build_app_with_state().0
+    }
+
+    /// Like `build_app` but also returns the shared `AppState`, so a test can read the store directly
+    /// (e.g. to assert a write-only secret persisted, since the API never echoes it back).
+    fn build_app_with_state() -> (axum::Router, Arc<AppState>) {
         let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
         let store = Store::open_in_memory().expect("store");
         seed_token(&store);
-        with_auth(app(Arc::new(AppState::new(
-            templates,
-            "templates".into(),
-            store,
-        ))))
+        let state = Arc::new(AppState::new(templates, "templates".into(), store));
+        (with_auth(app(state.clone())), state)
     }
 
     fn uniq() -> String {
@@ -2208,6 +2211,67 @@ layout:
             .expect("req");
         assert_eq!(p.status(), StatusCode::OK);
         assert!(json_response(p).await["config"].get("password").is_none());
+    }
+
+    // End-to-end guard on the security-critical merge->upsert wiring: the API never echoes the
+    // password, so a regression (redact-before-upsert, or merging the wrong object) would silently
+    // wipe the STORED secret without any response-body test noticing. Read the store directly.
+    #[tokio::test]
+    async fn printer_password_persists_across_update_and_clears_on_null() {
+        let (app, state) = build_app_with_state();
+
+        let create = json!({
+            "id": "persist", "name": "Persist", "kind": "cups",
+            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" },
+            "enabled": true
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", create.to_string()))
+            .await
+            .expect("req");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        // PUT omitting password (change only the name): the stored secret must be KEPT.
+        let upd = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" }, "enabled": true });
+        let p = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/persist", upd.to_string()))
+            .await
+            .expect("req");
+        assert_eq!(p.status(), StatusCode::OK);
+
+        let stored = state
+            .store()
+            .get_printer("persist")
+            .await
+            .expect("store read")
+            .expect("printer exists");
+        assert_eq!(stored.name, "Renamed");
+        assert_eq!(
+            stored.config["password"], "s3cret",
+            "password must persist across a password-omitting update"
+        );
+
+        // PUT with password: null: the stored secret must be CLEARED.
+        let clr = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u", "password": null }, "enabled": true });
+        let c = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/persist", clr.to_string()))
+            .await
+            .expect("req");
+        assert_eq!(c.status(), StatusCode::OK);
+
+        let stored = state
+            .store()
+            .get_printer("persist")
+            .await
+            .expect("store read")
+            .expect("printer exists");
+        assert!(
+            stored.config.get("password").is_none(),
+            "explicit null must clear the stored password"
+        );
     }
 }
 
