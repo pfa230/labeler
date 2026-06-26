@@ -675,12 +675,17 @@ impl<'a> RenderContext<'a> {
                 let line_h = line_height_units(m.font, self.unit)?;
                 let slot_top = self.frame_height_units - point.y - slot_h;
                 let dy_units = slot_top + ((slot_h - line_h) / 2.0).max(0.0);
-                let escaped = escape_typst_string(&m.text);
                 let dx = format_length(left, self.unit)?;
                 let dy = format_length(dy_units, self.unit)?;
                 let box_width = format_length(m.width, self.unit)?;
                 let box_height = format_length(line_h, self.unit)?;
-                let content = format!("#text(\"{escaped}\", size: {}pt)", m.font);
+                let body = m
+                    .lines
+                    .iter()
+                    .map(|l| format!("#text(\"{}\", size: {}pt)", escape_typst_string(l), m.font))
+                    .collect::<Vec<_>>()
+                    .join("#linebreak()");
+                let content = body;
                 let content = self.wrap_rotation(content, placement.rotate);
                 writeln!(
                     out,
