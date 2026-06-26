@@ -173,6 +173,17 @@ describe("PrintersSection", () => {
     expect(screen.getByText(/unencrypted over ipp/i)).toBeInTheDocument();
   });
 
+  it("warns when insecure is combined with credentials", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    // ipps:// uri keeps the cleartext warning silent, isolating the MITM warning.
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipps://h/q" } });
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /insecure/i }));
+    expect(screen.queryByText(/unencrypted over ipp/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/man-in-the-middle/i)).toBeInTheDocument();
+  });
+
   it("shows a server validation error inline when save is rejected", async () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
