@@ -69,6 +69,14 @@ pub fn build_driver(kind: &str, config: &JsonValue) -> Result<Box<dyn PrinterDri
 #[derive(Debug, Deserialize)]
 struct CupsConfig {
     uri: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    ca_cert: Option<String>,
+    #[serde(default)]
+    insecure: bool,
 }
 
 impl CupsConfig {
@@ -81,6 +89,14 @@ impl CupsConfig {
                 cfg.uri
             )));
         }
+        if let Some(pem) = &cfg.ca_cert {
+            if !pem.contains("-----BEGIN CERTIFICATE-----") {
+                return Err(DriverError::Config(
+                    "ca_cert must be a PEM certificate (expected -----BEGIN CERTIFICATE-----)"
+                        .to_string(),
+                ));
+            }
+        }
         Ok(cfg)
     }
 }
@@ -88,12 +104,22 @@ impl CupsConfig {
 /// Sends a rendered PDF to a CUPS queue or an IPP-Everywhere printer via IPP `Print-Job`.
 pub struct CupsDriver {
     uri: String,
+    username: Option<String>,
+    password: Option<String>,
+    ca_cert: Option<String>,
+    insecure: bool,
 }
 
 impl CupsDriver {
     fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
         let cfg = CupsConfig::from_value(config)?;
-        Ok(Self { uri: cfg.uri })
+        Ok(Self {
+            uri: cfg.uri,
+            username: cfg.username,
+            password: cfg.password,
+            ca_cert: cfg.ca_cert,
+            insecure: cfg.insecure,
+        })
     }
 }
 
@@ -115,7 +141,17 @@ impl PrinterDriver for CupsDriver {
             .job_title("labeler")
             .build()
             .map_err(|err| PrintError::Transport(err.to_string()))?;
-        let response = AsyncIppClient::new(uri)
+        let mut builder = AsyncIppClient::builder(uri);
+        if let (Some(user), Some(pass)) = (&self.username, &self.password) {
+            builder = builder.basic_auth(user, pass);
+        }
+        if self.insecure {
+            builder = builder.ignore_tls_errors(true);
+        } else if let Some(pem) = &self.ca_cert {
+            builder = builder.ca_cert(pem.as_bytes());
+        }
+        let response = builder
+            .build()
             .send(operation)
             .await
             .map_err(|err| PrintError::Transport(err.to_string()))?;
@@ -168,6 +204,53 @@ impl PrinterDriver for FakeDriver {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cups_config_parses_all_fields() {
+        let cfg = CupsConfig::from_value(&json!({
+            "uri": "ipps://host/printers/q",
+            "username": "u",
+            "password": "p",
+            "ca_cert": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            "insecure": true
+        }))
+        .unwrap();
+        assert_eq!(cfg.uri, "ipps://host/printers/q");
+        assert_eq!(cfg.username.as_deref(), Some("u"));
+        assert_eq!(cfg.password.as_deref(), Some("p"));
+        assert!(cfg.ca_cert.is_some());
+        assert!(cfg.insecure);
+    }
+
+    #[test]
+    fn cups_config_minimal_defaults() {
+        let cfg = CupsConfig::from_value(&json!({ "uri": "ipp://h/q" })).unwrap();
+        assert!(
+            cfg.username.is_none()
+                && cfg.password.is_none()
+                && cfg.ca_cert.is_none()
+                && !cfg.insecure
+        );
+    }
+
+    #[test]
+    fn cups_config_rejects_non_pem_ca_cert() {
+        assert!(
+            CupsConfig::from_value(&json!({ "uri": "ipps://h/q", "ca_cert": "not a cert" }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn build_driver_accepts_full_cups_config() {
+        assert!(build_driver(
+            "cups",
+            &json!({
+                "uri": "ipp://h/q", "username": "u", "password": "p", "insecure": false
+            })
+        )
+        .is_ok());
+    }
 
     #[test]
     fn validate_and_build_cups() {
