@@ -2127,6 +2127,26 @@ layout:
             "PayloadTooLarge"
         );
     }
+
+    // Verify the API-wide behavior: oversized bodies on non-/print JSON endpoints also return 413.
+    // axum's global DefaultBodyLimit (~2 MiB) triggers the same JsonRejection->PayloadTooLarge path.
+    #[tokio::test]
+    async fn batch_oversized_body_is_413() {
+        let app = build_app();
+        // ~2.1 MiB body; exceeds the global ~2 MiB DefaultBodyLimit.
+        let big = "x".repeat(2 * 1024 * 1024 + 100 * 1024);
+        let payload = json!({"labels":[{"template":"brother_24mm_qr","data":{"message":big}}]});
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            json_response(resp).await["error"]["code"],
+            "PayloadTooLarge"
+        );
+    }
 }
 
 #[cfg(test)]
