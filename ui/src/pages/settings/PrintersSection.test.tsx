@@ -137,6 +137,53 @@ describe("PrintersSection", () => {
     await waitFor(() => expect(screen.queryByLabelText(/printer id/i)).not.toBeInTheDocument());
   });
 
+  it("submits cups auth + TLS fields, omitting insecure when false", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "auth" } });
+    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "Auth" } });
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipps://h/q" } });
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "p" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
+    const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
+    // insecure is omitted when false, so existing payloads stay byte-identical (see Step 3).
+    expect(body.config).toEqual({ uri: "ipps://h/q", username: "u", password: "p" });
+  });
+
+  it("omits password from the payload when left blank", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "np" } });
+    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "NP" } });
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipps://h/q" } });
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
+    const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
+    expect("password" in body.config).toBe(false);
+  });
+
+  it("warns when credentials are set over a non-ipps uri", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://h/q" } });
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
+    expect(screen.getByText(/unencrypted over ipp/i)).toBeInTheDocument();
+  });
+
+  it("warns when insecure is combined with credentials", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    // ipps:// uri keeps the cleartext warning silent, isolating the MITM warning.
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipps://h/q" } });
+    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /insecure/i }));
+    expect(screen.queryByText(/unencrypted over ipp/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/man-in-the-middle/i)).toBeInTheDocument();
+  });
+
   it("shows a server validation error inline when save is rejected", async () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();

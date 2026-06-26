@@ -595,7 +595,18 @@ variables, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, de
   in the summary. (`POST /print` was removed and absorbed by `/batch`; ADR-0011.)
 - **Phase 1 driver:** `cups` sends the rendered PDF over IPP (pure-Rust `ipp` crate, no `lp` binary) to
   a CUPS queue or IPP-Everywhere printer URI. Later families (Zebra ZPL, Brother raster, Dymo) register
-  as new drivers without changing dispatch.
+  as new drivers without changing dispatch. The cups config schema is:
+
+  | Field | Type | Required | Notes |
+  | --- | --- | --- | --- |
+  | `uri` | string | Yes | Must start with `ipp://` or `ipps://`. |
+  | `username` | string | No | Used only when `password` is also set. |
+  | `password` | string | No | **Write-only.** Never returned in API responses (omitted, not nulled). On `PUT`, omit to keep the stored value; send `null` to clear it; send a string to replace it. Stored plaintext (must be replayed to the printer). |
+  | `ca_cert` | string | No | Inline PEM certificate (`-----BEGIN CERTIFICATE-----`). Trusted only for this printer's TLS handshake. Ignored when `insecure` is `true`. |
+  | `insecure` | bool | No | Default `false`. When `true`, TLS certificate verification is skipped entirely (`insecure` dominates `ca_cert`). Combining `insecure` with credentials enables MITM credential theft; use only in isolated lab setups. |
+
+  Credentials sent over `ipp://` (not `ipps://`) travel unencrypted; use `ipps://` for any
+  credential-carrying connection. See [ADR-0032](adr/0032-ipp-auth-custom-ca.md).
 - **Deferred:** printer status read-back, USB/browser printing. (Batch-to-printer and multi-page sheets
   are now delivered by `/batch`; `copies` is expanded client-side, so #28 is moot.)
 
@@ -672,6 +683,8 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-26**: CUPS driver now supports basic-auth, custom-CA PEM, and insecure skip-verify (ADR-0032; #39). The `cups` printer config expands to `{ uri, username?, password?, ca_cert?, insecure? }`. `password` is write-only: never returned in API responses (key omitted entirely). On `PUT /printers/{id}`, omit `password` to keep the stored value, send `null` to clear it, or send a string to replace it. `ca_cert` is an inline PEM certificate trusted only for that printer's TLS. `insecure: true` skips TLS verification and overrides `ca_cert`; combining it with credentials on an untrusted network risks MITM credential theft. Credentials over `ipp://` travel unencrypted; use `ipps://`. See the Printing section for the full field table.
 
 - **2026-06-26**: Oversized JSON bodies now return `413 PayloadTooLarge` API-wide (#22). Any endpoint that reads a JSON body returns 413 when the body exceeds the configured limit (64 KiB on `POST /print`; the server's global default ~2 MiB on other endpoints). Previously these cases returned 400.
 
