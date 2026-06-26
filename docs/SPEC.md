@@ -119,6 +119,17 @@ failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned s
 - `?format=png|pdf` (default `png`) selects the output: `image/png` (rasterized at the template DPI) or
   `application/pdf` (vector). An unknown value is `400 InvalidRequest`. The output is the raw image/PDF,
   not a ZIP.
+- `?color_mode=color|bilevel` (default `color`): post-processing applied to the PNG raster after Typst
+  renders it. `bilevel` converts the image to pure 1-bit black/white by applying a global luminance
+  threshold (no dithering in this slice); it is useful for preparing a download that matches what a
+  bilevel printer will produce. `bilevel` is PNG-only: combining `format=pdf` with
+  `color_mode=bilevel` is `400 InvalidRequest`. Requires `format=png` (explicit or default). See
+  [ADR-0033](adr/0033-capability-aware-rendering.md) (this is slice 1; printer-driven color-mode and
+  resolution selection come in a later slice).
+- `?resolution=<dpi>` (default: the template `dpi` field): integer DPI override for the PNG raster. Lets
+  callers preview at a target device resolution without editing the template. Valid range is `[1, 1200]`;
+  a non-numeric value, `0`, or a value above `1200` is `400 InvalidRequest`. PNG only (ignored for PDF,
+  since PDF is vector). See [ADR-0033](adr/0033-capability-aware-rendering.md).
 
 ### 2.2 `POST /batch`
 
@@ -683,6 +694,13 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-26**: `POST /render/label` gains two optional PNG render params (ADR-0033 slice 1; #92).
+  `?color_mode=color|bilevel` (default `color`): `bilevel` post-processes the raster to pure 1-bit
+  black/white via a global luminance threshold (no dithering). PNG only; `format=pdf` +
+  `color_mode=bilevel` is `400 InvalidRequest`. `?resolution=<dpi>` (default: template `dpi`):
+  integer DPI override in `[1, 1200]`; non-numeric, `0`, or above `1200` is `400 InvalidRequest`.
+  See §2.1.
 
 - **2026-06-26**: CUPS driver now supports basic-auth, custom-CA PEM, and insecure skip-verify (ADR-0032; #39). The `cups` printer config expands to `{ uri, username?, password?, ca_cert?, insecure? }`. `password` is write-only: never returned in API responses (key omitted entirely). On `PUT /printers/{id}`, omit `password` to keep the stored value, send `null` to clear it, or send a string to replace it. `ca_cert` is an inline PEM certificate trusted only for that printer's TLS. `insecure: true` skips TLS verification and overrides `ca_cert`; combining it with credentials on an untrusted network risks MITM credential theft. Credentials over `ipp://` travel unencrypted; use `ipps://`. See the Printing section for the full field table.
 
