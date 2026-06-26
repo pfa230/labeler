@@ -18,6 +18,9 @@ function cupsUri(p: Printer): string {
   return "";
 }
 
+// Reads a plain string field from a cups config for form pre-fill. Never call this for write-only
+// secrets (e.g. "password"): the API redacts those, so they are absent here, and seeding a form field
+// from them must not become a path that echoes a secret back to the server.
 function cupsStringField(p: Printer, field: string): string {
   const config = p.config;
   if (typeof config === "object" && config !== null && field in config) {
