@@ -496,11 +496,7 @@ pub(super) fn fit_text_auto_length(
             unit,
         ),
     };
-    let lines = wrap_lines_fit(font, raw_text, size, budget_pt, height_pt);
-    let max_w_pt = lines
-        .iter()
-        .map(|l| text_width(font, l, size))
-        .fold(0.0_f32, f32::max);
+    let (lines, max_w_pt) = wrap_lines_fit(font, raw_text, size, budget_pt, height_pt);
     let width = pt_to_units(max_w_pt, unit).min(budget_w_units);
     Ok(MeasuredText {
         font: size,
@@ -511,14 +507,16 @@ pub(super) fn fit_text_auto_length(
 
 /// Wrap `text` to `width_pt`, keep only the lines that fit `height_pt` (ellipsizing the last on
 /// overflow), and NBSP-treat each kept line so the renderer cannot re-break it. Wrapping happens on
-/// real spaces first (NBSP is not whitespace, so it must be applied after wrapping).
+/// real spaces first (NBSP is not whitespace, so it must be applied after wrapping). Returns the
+/// NBSP-treated lines plus the longest-line width in points, measured on the raw (pre-NBSP) lines so
+/// the width never depends on NBSP and space sharing an advance in the measurement font.
 fn wrap_lines_fit(
     font: &Font,
     text: &str,
     size: f32,
     width_pt: f32,
     height_pt: f32,
-) -> Vec<String> {
+) -> (Vec<String>, f32) {
     const ELLIPSIS: &str = "...";
     let lh = line_height(font, size);
     let max_lines = (height_pt / lh).floor().max(1.0) as usize;
@@ -538,7 +536,12 @@ fn wrap_lines_fit(
             *last = format!("{last}{ELLIPSIS}");
         }
     }
-    lines.into_iter().map(|l| to_nonbreaking(&l)).collect()
+    let max_w_pt = lines
+        .iter()
+        .map(|l| text_width(font, l, size))
+        .fold(0.0_f32, f32::max);
+    let lines = lines.into_iter().map(|l| to_nonbreaking(&l)).collect();
+    (lines, max_w_pt)
 }
 
 pub(super) fn typst_alignment(alignment: &Alignment) -> String {
@@ -851,6 +854,26 @@ mod helpers_tests {
             "last line should ellipsize: {:?}",
             m.lines
         );
+    }
+
+    #[test]
+    fn auto_length_multiline_empty_input_is_ok() {
+        // Empty input must not panic. `wrap_text` yields a single blank line, so the result is one
+        // empty line with zero width.
+        let m = fit_text_auto_length(
+            "",
+            &FontSize::Range {
+                min: 6.0,
+                max: 10.0,
+            },
+            true,
+            50.0,
+            20.0,
+            "mm",
+        )
+        .unwrap();
+        assert_eq!(m.lines, vec![String::new()]);
+        assert_eq!(m.width, 0.0);
     }
 }
 
