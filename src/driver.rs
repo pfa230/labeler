@@ -46,6 +46,42 @@ pub trait PrinterDriver: Send + Sync {
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError>;
 }
 
+/// Strip write-only secrets from a printer config before returning it to a client. cups: drop `password`.
+pub fn redact_config(kind: &str, config: &JsonValue) -> JsonValue {
+    let mut config = config.clone();
+    if kind == "cups" {
+        if let Some(obj) = config.as_object_mut() {
+            obj.remove("password");
+        }
+    }
+    config
+}
+
+/// Merge the write-only `password` from the existing stored config into `incoming` (cups). By the
+/// presence of the `password` key in `incoming`: absent -> keep existing; string -> set; null -> clear.
+pub fn merge_secrets(kind: &str, incoming: &mut JsonValue, existing: Option<&JsonValue>) {
+    if kind != "cups" {
+        return;
+    }
+    let Some(obj) = incoming.as_object_mut() else {
+        return;
+    };
+    match obj.get("password") {
+        None => {
+            if let Some(prev) = existing
+                .and_then(|e| e.get("password"))
+                .filter(|v| v.is_string())
+            {
+                obj.insert("password".to_string(), prev.clone());
+            }
+        }
+        Some(JsonValue::Null) => {
+            obj.remove("password");
+        }
+        Some(_) => {}
+    }
+}
+
 /// Validate that `kind` is known and `config` parses for that driver (used by printer CRUD).
 pub fn validate_config(kind: &str, config: &JsonValue) -> Result<(), DriverError> {
     match kind {
@@ -261,6 +297,37 @@ mod tests {
         let driver = build_driver("cups", &json!({ "uri": "ipp://h/p" })).unwrap();
         assert_eq!(driver.accepted_format(), ArtifactFormat::Pdf);
         assert!(build_driver("zebra", &json!({})).is_err());
+    }
+
+    #[test]
+    fn redact_config_omits_cups_password() {
+        let c = redact_config(
+            "cups",
+            &json!({ "uri": "ipp://h/q", "username": "u", "password": "p" }),
+        );
+        assert!(c.get("password").is_none());
+        assert_eq!(c["username"], "u");
+    }
+
+    #[test]
+    fn merge_secrets_keep_set_clear() {
+        let existing = json!({ "uri": "ipp://h/q", "password": "old" });
+        // absent -> keep
+        let mut a = json!({ "uri": "ipp://h/q" });
+        merge_secrets("cups", &mut a, Some(&existing));
+        assert_eq!(a["password"], "old");
+        // present string -> set
+        let mut b = json!({ "uri": "ipp://h/q", "password": "new" });
+        merge_secrets("cups", &mut b, Some(&existing));
+        assert_eq!(b["password"], "new");
+        // null -> clear
+        let mut c = json!({ "uri": "ipp://h/q", "password": null });
+        merge_secrets("cups", &mut c, Some(&existing));
+        assert!(c.get("password").is_none());
+        // create (no existing), absent -> no password
+        let mut d = json!({ "uri": "ipp://h/q" });
+        merge_secrets("cups", &mut d, None);
+        assert!(d.get("password").is_none());
     }
 
     #[tokio::test]
