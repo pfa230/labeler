@@ -42,6 +42,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0029](0029-runtime-base-debian-slim.md) | Runtime base image: debian-slim, not distroless | Accepted |
 | [0030](0030-multiline-auto-length-tape.md) | Multi-line auto-length tape labels | Accepted |
 | [0031](0031-inbound-print-webhook.md) | Inbound print webhook (POST /print) | Accepted |
+| [0032](0032-ipp-auth-custom-ca.md) | IPP basic-auth + custom-CA for printing | Accepted |
 
 ## Adding an ADR
 

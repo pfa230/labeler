@@ -18,11 +18,36 @@ function cupsUri(p: Printer): string {
   return "";
 }
 
+// Reads a plain string field from a cups config for form pre-fill. Never call this for write-only
+// secrets (e.g. "password"): the API redacts those, so they are absent here, and seeding a form field
+// from them must not become a path that echoes a secret back to the server.
+function cupsStringField(p: Printer, field: string): string {
+  const config = p.config;
+  if (typeof config === "object" && config !== null && field in config) {
+    const val = (config as Record<string, unknown>)[field];
+    if (typeof val === "string") return val;
+  }
+  return "";
+}
+
+function cupsInsecure(p: Printer): boolean {
+  const config = p.config;
+  if (typeof config === "object" && config !== null && "insecure" in config) {
+    return (config as { insecure?: unknown }).insecure === true;
+  }
+  return false;
+}
+
 function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: () => void }) {
   const isNew = initial === null;
   const [id, setId] = useState(initial?.id ?? "");
   const [name, setName] = useState(initial?.name ?? "");
   const [uri, setUri] = useState(initial ? cupsUri(initial) : "");
+  const [username, setUsername] = useState(initial ? cupsStringField(initial, "username") : "");
+  // password always starts blank: the API never returns it (write-only secret).
+  const [password, setPassword] = useState("");
+  const [caCert, setCaCert] = useState(initial ? cupsStringField(initial, "ca_cert") : "");
+  const [insecure, setInsecure] = useState(initial ? cupsInsecure(initial) : false);
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [error, setError] = useState<string | null>(null);
   const save = useSavePrinter();
@@ -47,7 +72,12 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
       return;
     }
     setError(null);
-    const printer: Printer = { id, name: name.trim(), kind: "cups", config: { uri: uri.trim() }, enabled };
+    const config: Record<string, unknown> = { uri: uri.trim() };
+    if (username.trim() !== "") config.username = username.trim();
+    if (password !== "") config.password = password;
+    if (caCert.trim() !== "") config.ca_cert = caCert.trim();
+    if (insecure) config.insecure = true;
+    const printer: Printer = { id, name: name.trim(), kind: "cups", config, enabled };
     save.mutate(
       { printer, isNew },
       {
@@ -90,6 +120,36 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
           <span className="text-sm">enabled</span>
         </label>
       </div>
+      <div className="flex flex-wrap gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>username</span>
+          <input aria-label="username" value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} style={inputStyle} />
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>password</span>
+          <input type="password" aria-label="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="leave blank to keep current" className={inputClass} style={inputStyle} />
+        </label>
+        <label className="flex flex-1 flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>ca cert</span>
+          <textarea aria-label="ca cert" value={caCert} onChange={(e) => setCaCert(e.target.value)} rows={3} className={inputClass} style={inputStyle} />
+        </label>
+        <label className="flex items-center gap-2 self-end pb-2">
+          <input type="checkbox" aria-label="insecure" checked={insecure} onChange={(e) => setInsecure(e.target.checked)} />
+          <span className="text-sm">skip TLS verification (insecure)</span>
+        </label>
+      </div>
+      {(username.trim() !== "" || password !== "") ? (
+        !/^ipps:\/\//.test(uri.trim()) ? (
+          <p className="text-xs" style={{ color: "var(--warn, #b45309)" }}>
+            Credentials are sent unencrypted over ipp://; use ipps://.
+          </p>
+        ) : null
+      ) : null}
+      {insecure && (username.trim() !== "" || password !== "") ? (
+        <p className="text-xs" style={{ color: "var(--warn, #b45309)" }}>
+          Skipping TLS verification with credentials exposes them to man-in-the-middle theft.
+        </p>
+      ) : null}
       {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
       <div className="flex gap-3">
         <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>

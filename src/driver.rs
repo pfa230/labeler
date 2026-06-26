@@ -46,6 +46,42 @@ pub trait PrinterDriver: Send + Sync {
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError>;
 }
 
+/// Strip write-only secrets from a printer config before returning it to a client. cups: drop `password`.
+pub fn redact_config(kind: &str, config: &JsonValue) -> JsonValue {
+    let mut config = config.clone();
+    if kind == "cups" {
+        if let Some(obj) = config.as_object_mut() {
+            obj.remove("password");
+        }
+    }
+    config
+}
+
+/// Merge the write-only `password` from the existing stored config into `incoming` (cups). By the
+/// presence of the `password` key in `incoming`: absent -> keep existing; string -> set; null -> clear.
+pub fn merge_secrets(kind: &str, incoming: &mut JsonValue, existing: Option<&JsonValue>) {
+    if kind != "cups" {
+        return;
+    }
+    let Some(obj) = incoming.as_object_mut() else {
+        return;
+    };
+    match obj.get("password") {
+        None => {
+            if let Some(prev) = existing
+                .and_then(|e| e.get("password"))
+                .filter(|v| v.is_string())
+            {
+                obj.insert("password".to_string(), prev.clone());
+            }
+        }
+        Some(JsonValue::Null) => {
+            obj.remove("password");
+        }
+        Some(_) => {}
+    }
+}
+
 /// Validate that `kind` is known and `config` parses for that driver (used by printer CRUD).
 pub fn validate_config(kind: &str, config: &JsonValue) -> Result<(), DriverError> {
     match kind {
@@ -69,6 +105,14 @@ pub fn build_driver(kind: &str, config: &JsonValue) -> Result<Box<dyn PrinterDri
 #[derive(Debug, Deserialize)]
 struct CupsConfig {
     uri: String,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default)]
+    ca_cert: Option<String>,
+    #[serde(default)]
+    insecure: bool,
 }
 
 impl CupsConfig {
@@ -81,6 +125,14 @@ impl CupsConfig {
                 cfg.uri
             )));
         }
+        if let Some(pem) = &cfg.ca_cert {
+            if !pem.contains("-----BEGIN CERTIFICATE-----") {
+                return Err(DriverError::Config(
+                    "ca_cert must be a PEM certificate (expected -----BEGIN CERTIFICATE-----)"
+                        .to_string(),
+                ));
+            }
+        }
         Ok(cfg)
     }
 }
@@ -88,12 +140,22 @@ impl CupsConfig {
 /// Sends a rendered PDF to a CUPS queue or an IPP-Everywhere printer via IPP `Print-Job`.
 pub struct CupsDriver {
     uri: String,
+    username: Option<String>,
+    password: Option<String>,
+    ca_cert: Option<String>,
+    insecure: bool,
 }
 
 impl CupsDriver {
     fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
         let cfg = CupsConfig::from_value(config)?;
-        Ok(Self { uri: cfg.uri })
+        Ok(Self {
+            uri: cfg.uri,
+            username: cfg.username,
+            password: cfg.password,
+            ca_cert: cfg.ca_cert,
+            insecure: cfg.insecure,
+        })
     }
 }
 
@@ -115,7 +177,17 @@ impl PrinterDriver for CupsDriver {
             .job_title("labeler")
             .build()
             .map_err(|err| PrintError::Transport(err.to_string()))?;
-        let response = AsyncIppClient::new(uri)
+        let mut builder = AsyncIppClient::builder(uri);
+        if let (Some(user), Some(pass)) = (&self.username, &self.password) {
+            builder = builder.basic_auth(user, pass);
+        }
+        if self.insecure {
+            builder = builder.ignore_tls_errors(true);
+        } else if let Some(pem) = &self.ca_cert {
+            builder = builder.ca_cert(pem.as_bytes());
+        }
+        let response = builder
+            .build()
             .send(operation)
             .await
             .map_err(|err| PrintError::Transport(err.to_string()))?;
@@ -170,6 +242,53 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn cups_config_parses_all_fields() {
+        let cfg = CupsConfig::from_value(&json!({
+            "uri": "ipps://host/printers/q",
+            "username": "u",
+            "password": "p",
+            "ca_cert": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+            "insecure": true
+        }))
+        .unwrap();
+        assert_eq!(cfg.uri, "ipps://host/printers/q");
+        assert_eq!(cfg.username.as_deref(), Some("u"));
+        assert_eq!(cfg.password.as_deref(), Some("p"));
+        assert!(cfg.ca_cert.is_some());
+        assert!(cfg.insecure);
+    }
+
+    #[test]
+    fn cups_config_minimal_defaults() {
+        let cfg = CupsConfig::from_value(&json!({ "uri": "ipp://h/q" })).unwrap();
+        assert!(
+            cfg.username.is_none()
+                && cfg.password.is_none()
+                && cfg.ca_cert.is_none()
+                && !cfg.insecure
+        );
+    }
+
+    #[test]
+    fn cups_config_rejects_non_pem_ca_cert() {
+        assert!(
+            CupsConfig::from_value(&json!({ "uri": "ipps://h/q", "ca_cert": "not a cert" }))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn build_driver_accepts_full_cups_config() {
+        assert!(build_driver(
+            "cups",
+            &json!({
+                "uri": "ipp://h/q", "username": "u", "password": "p", "insecure": false
+            })
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn validate_and_build_cups() {
         assert!(validate_config("cups", &json!({ "uri": "ipp://h/p" })).is_ok());
         assert!(validate_config("cups", &json!({})).is_err()); // missing uri
@@ -178,6 +297,37 @@ mod tests {
         let driver = build_driver("cups", &json!({ "uri": "ipp://h/p" })).unwrap();
         assert_eq!(driver.accepted_format(), ArtifactFormat::Pdf);
         assert!(build_driver("zebra", &json!({})).is_err());
+    }
+
+    #[test]
+    fn redact_config_omits_cups_password() {
+        let c = redact_config(
+            "cups",
+            &json!({ "uri": "ipp://h/q", "username": "u", "password": "p" }),
+        );
+        assert!(c.get("password").is_none());
+        assert_eq!(c["username"], "u");
+    }
+
+    #[test]
+    fn merge_secrets_keep_set_clear() {
+        let existing = json!({ "uri": "ipp://h/q", "password": "old" });
+        // absent -> keep
+        let mut a = json!({ "uri": "ipp://h/q" });
+        merge_secrets("cups", &mut a, Some(&existing));
+        assert_eq!(a["password"], "old");
+        // present string -> set
+        let mut b = json!({ "uri": "ipp://h/q", "password": "new" });
+        merge_secrets("cups", &mut b, Some(&existing));
+        assert_eq!(b["password"], "new");
+        // null -> clear
+        let mut c = json!({ "uri": "ipp://h/q", "password": null });
+        merge_secrets("cups", &mut c, Some(&existing));
+        assert!(c.get("password").is_none());
+        // create (no existing), absent -> no password
+        let mut d = json!({ "uri": "ipp://h/q" });
+        merge_secrets("cups", &mut d, None);
+        assert!(d.get("password").is_none());
     }
 
     #[tokio::test]
