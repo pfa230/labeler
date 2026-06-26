@@ -437,7 +437,7 @@ fn pt_to_units(value_pt: f32, unit: &str) -> f32 {
 #[derive(Debug, Clone)]
 pub(super) struct MeasuredText {
     pub font: f32,
-    pub text: String,
+    pub lines: Vec<String>,
     pub width: f32,
 }
 
@@ -465,14 +465,14 @@ pub(super) fn fit_text_auto_length(
         let w = pt_to_units(text_width(font, &line, size), unit).min(budget_w_units);
         Ok(MeasuredText {
             font: size,
-            text: line,
+            lines: vec![line],
             width: w,
         })
     } else {
         let trimmed = trim_single_line(font, &line, size, budget_pt);
         Ok(MeasuredText {
             font: size,
-            text: trimmed,
+            lines: vec![trimmed],
             width: budget_w_units,
         })
     }
@@ -697,7 +697,7 @@ mod helpers_tests {
         .unwrap();
         assert_eq!(m.font, 20.0);
         assert!(m.width > 0.0 && m.width < 200.0);
-        assert_eq!(m.text, "Hi");
+        assert_eq!(m.lines, vec!["Hi".to_string()]);
     }
 
     #[test]
@@ -714,7 +714,8 @@ mod helpers_tests {
         )
         .unwrap();
         assert_eq!(m.font, 6.0);
-        assert!(m.text.ends_with("...") || m.text.ends_with('\u{2026}'));
+        assert_eq!(m.lines.len(), 1);
+        assert!(m.lines[0].ends_with("...") || m.lines[0].ends_with('\u{2026}'));
         assert!((m.width - 8.0).abs() < 0.01);
     }
 
@@ -722,7 +723,7 @@ mod helpers_tests {
     fn auto_length_fixed_font_no_shrink() {
         let m = fit_text_auto_length("Hi", &FontSize::Fixed(12.0), 200.0, 50.0, "mm").unwrap();
         assert_eq!(m.font, 12.0);
-        assert_eq!(m.text, "Hi");
+        assert_eq!(m.lines, vec!["Hi".to_string()]);
     }
 }
 
