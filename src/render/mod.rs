@@ -461,6 +461,7 @@ impl<'a> RenderContext<'a> {
                     value,
                     placement,
                     font_size,
+                    multiline,
                     ..
                 } => {
                     let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
@@ -471,7 +472,9 @@ impl<'a> RenderContext<'a> {
                         .unwrap_or(self.frame_height_units - at.y);
                     if size_w.is_auto() {
                         let budget = (budget_w - at.x).max(0.0);
-                        let m = fit_text_auto_length(&text, font_size, budget, box_h, self.unit)?;
+                        let m = fit_text_auto_length(
+                            &text, font_size, *multiline, budget, box_h, self.unit,
+                        )?;
                         let w = m.width;
                         out.push(m);
                         at.x + w
