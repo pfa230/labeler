@@ -789,6 +789,31 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn multiline_auto_length_tape_returns_png() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother_24mm_multiline",
+            "data": {
+                "message": "Long label that should wrap onto two lines on the tape"
+            }
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/render/label?format=png")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = bytes_response(response).await;
+        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n", "expected PNG magic bytes");
+    }
+
+    #[tokio::test]
     async fn batch_single_download_returns_zip() {
         let app = build_app();
         let payload = json!({
