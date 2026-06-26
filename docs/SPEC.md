@@ -212,10 +212,23 @@ A `Dimension` is either a fixed number, or a dynamic object `{ min, max }` (both
 on `format.width` of a `single` template). A `single` template with a dynamic `format.width` is
 **auto-length**: the label width is determined at render time by measuring the content, clamping to
 `[min, max]`, and choosing the largest font that fits the budget (then ellipsis if still over). `auto`
-item width on a dynamic-width label resolves to the content width (`label_width - at.x`). Multiline
-text (`multiline: true`) on a dynamic-width single is not allowed (deferred to #78). Both `min` and
-`max` must be present; a missing bound is `422 TemplateInvalid`. Sheet templates and fixed-width
-single templates are unaffected. See [ADR-0026](adr/0026-auto-length-dynamic-width.md).
+item width on a dynamic-width label resolves to the content width (`label_width - at.x`). Both `min`
+and `max` must be present; a missing bound is `422 TemplateInvalid`. Sheet templates and fixed-width
+single templates are unaffected. See [ADR-0026](adr/0026-auto-length-dynamic-width.md) and
+[ADR-0030](adr/0030-multiline-auto-length-tape.md).
+
+**Multiline text on dynamic-width singles.** `multiline: true` is supported on auto-length `single`
+templates (ADR-0030). Wrapping uses the item's auto-width budget (`width.max - at.x`, minus container
+padding). The renderer shrinks from `font_size.max` toward `font_size.min` (0.5 pt steps) until the
+text fits; line count is emergent (`floor(height / line_height)` at the chosen font size). If the
+content still overflows at `font_size.min`, the fitting lines are kept and the last is ellipsized.
+The tape label extent is `at.x + longest_wrapped_line_width`, clamped to `[width.min, width.max]`.
+Wrapped lines are precomputed in the measurement pass and emitted verbatim in the render pass
+(each line's spaces replaced with non-breaking spaces so Typst cannot re-break them).
+
+**`alignment.vertical` on auto-length items.** The schema default is `top`. Auto-length items that
+omit `alignment.vertical` use `top`. To keep text centered, set `vertical: center` explicitly. The
+bundled tape templates already set `vertical: center` and are unaffected.
 
 **`sheet`** — a grid of identical label slots on a fixed page:
 
@@ -252,10 +265,11 @@ be > 0. (`line` does not use `size`; see §4.1.)
 
 - **`text`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
   placement, `font_size`, `multiline` (default `false`),
-  `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom).
+  `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom; default `top`).
   `font_size` is either a fixed number or a range `{ min, max }`. A range auto-shrinks the text to fit
   the box (0.5pt steps, `fontdue` metrics) and truncates with an ellipsis if it still overflows.
-  Single-line text collapses spaces to non-breaking and renders only the first line.
+  Single-line text collapses spaces to non-breaking and renders only the first line. On dynamic-width
+  `single` templates, `multiline: true` is also supported; see §3.1 for the wrap and sizing rules.
 - **`qr`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
   placement, optional `params`:
   `error_correction` (`L`/`M`/`Q`/`H`, default `M`), `module_size`, `quiet_zone`.
@@ -368,7 +382,7 @@ All errors return JSON:
 | `InvalidOptionValue` | 422 | Option selection not allowed by the template. |
 | `MissingField` | 422 | A referenced `data` field is absent. |
 | `UnsupportedLayoutItem` | 422 | Layout item cannot be rendered (e.g. bad size/qr param). |
-| `TemplateInvalid` | 422 | Template fails structural validation: multiline text on a dynamic-width `single`, or a dynamic `format.width` missing one bound. |
+| `TemplateInvalid` | 422 | Template fails structural validation (e.g. a dynamic `format.width` missing one bound). |
 | `UnsupportedFormat` | 422 | Endpoint/format mismatch or unknown unit. |
 | `BatchInvalid` | 422 | One or more `/batch` labels failed render-validation; `details.failures` lists them. |
 | `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). |
@@ -601,10 +615,17 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   format from the new `datetime_formats` app setting (default: five seeded entries). An unknown name
   is `422 MissingField`. Token precedence: datetime, then `vars.`, then data. `now` is captured once
   per render request. See §8 (updated token list) and the Settings section (`datetime_formats`).
+- **2026-06-25**: Multiline text on dynamic-width `single` (continuous-tape) templates is now
+  supported (ADR-0030; #78). Text wraps inside the auto-width budget (`width.max - at.x`), font
+  shrinks from `font_size.max` toward `font_size.min` (line count emergent), last line ellipsized on
+  overflow. Tape extent = `at.x + longest wrapped line`, clamped to `[min,max]`. Wrapped lines are
+  precomputed and emitted NBSP-treated so Typst cannot re-break them. `alignment.vertical` is now
+  honored on all auto-length items (schema default `top`; the bundled tape templates set
+  `vertical: center` explicitly and are unaffected). A bundled example template
+  `brother_24mm_multiline.yaml` ships the feature.
 - **2026-06-22**: Continuous-tape (`single` with `width: {min,max}`) labels are now auto-length (M11;
   ADR-0026; #77): the label fits its single-line content clamped to `[min,max]` (largest font that fits,
-  then ellipsis), instead of always rendering at `max`. Multiline text on a dynamic-width template is now
-  rejected (multi-line tape is #78); a dynamic-width single must declare both bounds.
+  then ellipsis), instead of always rendering at `max`. A dynamic-width single must declare both bounds.
 - **2026-06-21**: Corrected the bundled Brother tape templates (M11; #66/#67). Replaced the three
   300-dpi templates with a five-template set at 180 dpi using the real TZe printable heights
   (9.9/15.8/18.1mm): `brother_12mm`/`brother_18mm`/`brother_24mm` (text only) and
