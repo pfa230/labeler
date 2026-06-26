@@ -23,18 +23,20 @@ use crate::{
     },
     openapi::ApiDoc,
     parse::parse_template,
-    render::render_single_label,
-    render::render_single_label_pdf,
+    render::{render_single_label_image, render_single_label_pdf, ColorMode, ImageRenderOptions},
     store::{Printer, Store},
     templates::{TemplateDefinition, TemplateRegistry, TemplateRegistryError},
 };
 
 const MAX_BATCH_LABELS: usize = 500;
 const MAX_PRINT_COPIES: u32 = 100;
+const MAX_RENDER_DPI: u32 = 1200;
 
 #[derive(serde::Deserialize)]
 pub struct RenderQuery {
     pub format: Option<String>,
+    pub color_mode: Option<String>,
+    pub resolution: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -1394,7 +1396,9 @@ pub async fn print_label(
     post,
     path = "/render/label",
     params(
-        ("format" = Option<String>, Query, description = "Output format: png (default) or pdf")
+        ("format" = Option<String>, Query, description = "Output format: png (default) or pdf"),
+        ("color_mode" = Option<String>, Query, description = "Color mode for PNG: color (default) or bilevel"),
+        ("resolution" = Option<String>, Query, description = "PNG raster DPI override (1-1200); defaults to template dpi")
     ),
     request_body = RenderLabelRequest,
     responses(
@@ -1439,6 +1443,36 @@ pub async fn render_label(
         ));
     }
 
+    let color_mode = match query.color_mode.as_deref() {
+        None | Some("") | Some("color") => ColorMode::Color,
+        Some("bilevel") => ColorMode::BiLevel,
+        Some(other) => {
+            return Err(AppError::invalid_request(format!(
+                "unknown color_mode '{other}'; use color or bilevel"
+            )))
+        }
+    };
+    let resolution_dpi = match query.resolution.as_deref() {
+        None | Some("") => None,
+        Some(s) => {
+            let dpi: u32 = s.parse().map_err(|_| {
+                AppError::invalid_request(format!(
+                    "resolution must be a positive integer, got '{s}'"
+                ))
+            })?;
+            if dpi == 0 || dpi > MAX_RENDER_DPI {
+                return Err(AppError::invalid_request(format!(
+                    "resolution must be between 1 and {MAX_RENDER_DPI}"
+                )));
+            }
+            Some(dpi)
+        }
+    };
+    let img_opts = ImageRenderOptions {
+        color_mode,
+        resolution_dpi,
+    };
+
     let variables = state.store().all_variables().await?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
         .await
@@ -1449,13 +1483,27 @@ pub async fn render_label(
     };
     let (bytes, content_type) = match query.format.as_deref() {
         None | Some("") | Some("png") => (
-            render_single_label(template, &req.label.data, option_value, &variables, &dt)?,
+            render_single_label_image(
+                template,
+                &req.label.data,
+                option_value,
+                &variables,
+                &dt,
+                img_opts,
+            )?,
             "image/png",
         ),
-        Some("pdf") => (
-            render_single_label_pdf(template, &req.label.data, option_value, &variables, &dt)?,
-            "application/pdf",
-        ),
+        Some("pdf") => {
+            if color_mode == ColorMode::BiLevel {
+                return Err(AppError::invalid_request(
+                    "bilevel is only supported for png output",
+                ));
+            }
+            (
+                render_single_label_pdf(template, &req.label.data, option_value, &variables, &dt)?,
+                "application/pdf",
+            )
+        }
         Some(other) => {
             return Err(AppError::invalid_request(format!(
                 "unknown format '{other}'; use png or pdf"
