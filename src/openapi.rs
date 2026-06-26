@@ -15,9 +15,9 @@ use crate::{
     models::{
         AutoSize, BatchRequest, BatchRowError, BatchSummary, Dimension, ErrorBody, ErrorResponse,
         Fit, FontSize, HealthResponse, HorizontalAlign, LabelInput, Layout, LayoutItem, Options,
-        Placement, Point, Position, QrParams, ReloadResponse, RenderLabelRequest, SheetPosition,
-        Size, SizeValue, TemplateDetail, TemplateFormat, TemplateList, TemplateSummary,
-        VariableValue, VerticalAlign,
+        Placement, Point, Position, PrintRequest, QrParams, ReloadResponse, RenderLabelRequest,
+        SheetPosition, Size, SizeValue, TemplateDetail, TemplateFormat, TemplateList,
+        TemplateSummary, VariableValue, VerticalAlign,
     },
     store::Printer,
 };
@@ -47,6 +47,7 @@ use crate::{
         api::preview_datetime_format,
         api::render_label,
         api::batch,
+        api::print_label,
         api::import_csv,
         api::setup,
         api::login,
@@ -101,6 +102,7 @@ use crate::{
             VerticalAlign,
             RenderLabelRequest,
             BatchRequest,
+            PrintRequest,
             BatchSummary,
             BatchRowError,
             LabelInput,
