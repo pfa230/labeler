@@ -196,7 +196,7 @@ optionally repeated, to a named printer. See [ADR-0031](adr/0031-inbound-print-w
 | --- | --- | --- | --- |
 | `template` | string | Yes | Template id; `404` if not found. |
 | `printer` | string | Yes | Printer id; `404` if not found, `409` if disabled. |
-| `fields` | object | Yes (may be empty) | Mapped to the label `data` for field binding. |
+| `fields` | object | No (defaults to `{}`) | Mapped to the label `data` for field binding. |
 | `option` | object | No | Template variant selection; validated against the template's declared `options`. |
 | `copies` | integer 1..100 | No | Number of label instances to print (default `1`). |
 
@@ -210,6 +210,8 @@ Callers needing more than 100 copies should use `POST /batch` directly.
 { "total": 2, "succeeded": 2, "failed": [], "jobs": 2 }
 ```
 
+(`jobs: 2` is for a `single`/tape template with `copies: 2`; a `sheet` template would report `jobs: 1`.)
+
 `total` and `succeeded` count label instances (copies). `jobs` counts actual printer dispatches: equal
 to `copies` for `single`/tape templates; fewer for `sheet` templates (the sheet is paginated and sent
 as a single print job per page, mirroring `/batch`). Send failures are reported in `failed[]` with a
@@ -221,11 +223,11 @@ as a single print job per page, mirroring `/batch`). Send failures are reported 
 | --- | --- | --- |
 | 400 | `InvalidRequest` | Malformed JSON or `copies` outside `[1, 100]`. |
 | 404 | `TemplateNotFound` | Unknown `template` id. |
-| 404 | `NotFound` | Unknown `printer` id. |
+| 404 | `PrinterNotFound` | Unknown `printer` id. |
 | 409 | `PrinterDisabled` | Printer exists but is disabled. |
 | 413 | `PayloadTooLarge` | Request body exceeds 64 KiB. |
-| 422 | (various) | A rendered label is invalid (same render path as `/batch`). |
-| 502 | `PrinterError` | Pre-send dispatch failure (before any job is accepted). |
+| 422 | `BatchInvalid` | A rendered label is invalid (same render path as `/batch`). |
+| 502 | `PrintFailed` | Pre-send dispatch failure (before any job is accepted). |
 
 **Trusted-LAN posture.** This endpoint is intended for a trusted LAN (homelab, local automation bus).
 Do not expose it to the internet. The API token is the access gate; there is no IP allowlisting or
