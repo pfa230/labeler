@@ -29,6 +29,7 @@ const CODE_PRINT_FAILED: &str = "PrintFailed";
 const CODE_INTERNAL: &str = "Internal";
 const CODE_BATCH_INVALID: &str = "BatchInvalid";
 const CODE_BATCH_TOO_LARGE: &str = "BatchTooLarge";
+const CODE_PAYLOAD_TOO_LARGE: &str = "PayloadTooLarge";
 const CODE_NOT_FOUND: &str = "NotFound";
 const CODE_UNAUTHORIZED: &str = "Unauthorized";
 const CODE_FORBIDDEN: &str = "Forbidden";
@@ -85,6 +86,15 @@ impl AppError {
             CODE_BATCH_TOO_LARGE,
             format!("batch has {count} labels; the maximum is {max}"),
             Some(json!({ "count": count, "max": max })),
+        )
+    }
+
+    pub fn payload_too_large(message: impl Into<String>) -> Self {
+        AppError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            CODE_PAYLOAD_TOO_LARGE,
+            message,
+            None,
         )
     }
 
@@ -309,6 +319,9 @@ impl IntoResponse for AppError {
 
 impl From<JsonRejection> for AppError {
     fn from(rejection: JsonRejection) -> Self {
+        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return AppError::payload_too_large("Request body too large");
+        }
         let message = rejection.body_text();
         tracing::warn!(message = %message, "json request rejected");
         match rejection {
