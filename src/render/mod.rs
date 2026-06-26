@@ -671,25 +671,36 @@ impl<'a> RenderContext<'a> {
                     Some(self.frame_height_units - point.y),
                     "height",
                 )?;
-                // Vertically center the single line by sizing the box to the line height and offsetting
-                // it within the slot. Typst `#align(horizon)` does not apply inside a `#box`, so we
-                // position the tight box ourselves. The box width is the measured (tight) text width, so
-                // horizontal alignment is moot.
                 let line_h = line_height_units(m.font, self.unit)?;
+                let n = m.lines.len() as f32;
+                let block_h = line_h * n;
                 let slot_top = self.frame_height_units - point.y - slot_h;
-                let dy_units = slot_top + ((slot_h - line_h) / 2.0).max(0.0);
-                let dx = format_length(left, self.unit)?;
-                let dy = format_length(dy_units, self.unit)?;
-                let box_width = format_length(m.width, self.unit)?;
-                let box_height = format_length(line_h, self.unit)?;
+                use crate::models::VerticalAlign;
+                let dy_units = match alignment.vertical {
+                    VerticalAlign::Top => slot_top,
+                    VerticalAlign::Bottom => slot_top + (slot_h - block_h).max(0.0),
+                    VerticalAlign::Center => slot_top + ((slot_h - block_h) / 2.0).max(0.0),
+                };
                 let body = m
                     .lines
                     .iter()
                     .map(|l| format!("#text(\"{}\", size: {}pt)", escape_typst_string(l), m.font))
                     .collect::<Vec<_>>()
                     .join("#linebreak()");
-                let content = body;
-                let content = self.wrap_rotation(content, placement.rotate);
+                // Derive the horizontal keyword directly; `typst_alignment` returns a combined
+                // "vertical + horizontal" String, not a tuple, so do NOT use it here.
+                use crate::models::HorizontalAlign;
+                let halign = match alignment.horizontal {
+                    HorizontalAlign::Left => "left",
+                    HorizontalAlign::Center => "center",
+                    HorizontalAlign::Right => "right",
+                };
+                let inner = format!("#align({halign})[{body}]");
+                let dx = format_length(left, self.unit)?;
+                let dy = format_length(dy_units, self.unit)?;
+                let box_width = format_length(m.width, self.unit)?;
+                let box_height = format_length(block_h, self.unit)?;
+                let content = self.wrap_rotation(inner, placement.rotate);
                 writeln!(
                     out,
                     "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
