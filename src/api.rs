@@ -545,7 +545,11 @@ fn validate_printer(printer: &Printer) -> Result<(), AppError> {
 pub async fn list_printers(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Printer>>, AppError> {
-    Ok(Json(state.store().list_printers().await?))
+    let mut printers = state.store().list_printers().await?;
+    for p in &mut printers {
+        p.config = crate::driver::redact_config(&p.kind, &p.config);
+    }
+    Ok(Json(printers))
 }
 
 #[utoipa::path(
@@ -560,14 +564,16 @@ pub async fn list_printers(
 )]
 pub async fn create_printer(
     State(state): State<Arc<AppState>>,
-    Json(printer): Json<Printer>,
+    Json(mut printer): Json<Printer>,
 ) -> Result<Response, AppError> {
     validate_printer(&printer)?;
     let _guard = state.write_lock.lock().await;
     if state.store().get_printer(&printer.id).await?.is_some() {
         return Err(AppError::printer_exists(&printer.id));
     }
+    crate::driver::merge_secrets(&printer.kind, &mut printer.config, None);
     state.store().upsert_printer(&printer).await?;
+    printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
     Ok((axum::http::StatusCode::CREATED, Json(printer)).into_response())
 }
 
@@ -584,12 +590,13 @@ pub async fn get_printer(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Printer>, AppError> {
-    state
+    let mut printer = state
         .store()
         .get_printer(&id)
         .await?
-        .map(Json)
-        .ok_or_else(|| AppError::printer_not_found(id))
+        .ok_or_else(|| AppError::printer_not_found(id))?;
+    printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
+    Ok(Json(printer))
 }
 
 #[utoipa::path(
@@ -789,7 +796,7 @@ pub async fn preview_datetime_format(
 pub async fn replace_printer(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(printer): Json<Printer>,
+    Json(mut printer): Json<Printer>,
 ) -> Result<Response, AppError> {
     if printer.id != id {
         return Err(AppError::invalid_request(format!(
@@ -799,10 +806,13 @@ pub async fn replace_printer(
     }
     validate_printer(&printer)?;
     let _guard = state.write_lock.lock().await;
-    if state.store().get_printer(&id).await?.is_none() {
+    let existing = state.store().get_printer(&id).await?;
+    let Some(existing) = existing else {
         return Err(AppError::printer_not_found(id));
-    }
+    };
+    crate::driver::merge_secrets(&printer.kind, &mut printer.config, Some(&existing.config));
     state.store().upsert_printer(&printer).await?;
+    printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
     Ok((axum::http::StatusCode::OK, Json(printer)).into_response())
 }
 

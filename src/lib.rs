@@ -2147,6 +2147,68 @@ layout:
             "PayloadTooLarge"
         );
     }
+
+    #[tokio::test]
+    async fn printer_password_is_redacted_in_responses() {
+        let app = build_app();
+        let create = json!({
+            "id": "sec", "name": "Sec", "kind": "cups",
+            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" },
+            "enabled": true
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", create.to_string()))
+            .await
+            .expect("req");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = json_response(resp).await;
+        assert!(
+            body["config"].get("password").is_none(),
+            "create response must omit password"
+        );
+        assert_eq!(body["config"]["username"], "u");
+
+        let g = app
+            .clone()
+            .oneshot(json_req("GET", "/api/printers/sec", String::new()))
+            .await
+            .expect("req");
+        let gb = json_response(g).await;
+        assert!(
+            gb["config"].get("password").is_none(),
+            "GET must omit password"
+        );
+        assert_eq!(gb["config"]["username"], "u");
+
+        // list must redact too
+        let l = app
+            .clone()
+            .oneshot(json_req("GET", "/api/printers", String::new()))
+            .await
+            .expect("req");
+        let lb = json_response(l).await;
+        let entry = lb
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "sec")
+            .expect("listed");
+        assert!(
+            entry["config"].get("password").is_none(),
+            "list must omit password"
+        );
+
+        // PUT omitting password must succeed (keep); response still omits password.
+        let upd = json!({ "id": "sec", "name": "Sec2", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" }, "enabled": true });
+        let p = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/sec", upd.to_string()))
+            .await
+            .expect("req");
+        assert_eq!(p.status(), StatusCode::OK);
+        assert!(json_response(p).await["config"].get("password").is_none());
+    }
 }
 
 #[cfg(test)]
