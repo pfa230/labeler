@@ -1,7 +1,7 @@
 use arc_swap::ArcSwap;
 use axum::{
     extract::rejection::JsonRejection,
-    extract::{FromRequestParts, Json, Path, Query, State},
+    extract::{DefaultBodyLimit, FromRequestParts, Json, Path, Query, State},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Router,
@@ -18,8 +18,8 @@ use crate::{
     connector::{BrowsePage, BrowseRequest, ConnectorSchema, LabelRow, MaterializeRequest},
     errors::AppError,
     models::{
-        BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, ReloadResponse,
-        RenderLabelRequest, TemplateDetail, TemplateList, VariableValue,
+        BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, PrintRequest,
+        ReloadResponse, RenderLabelRequest, TemplateDetail, TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -30,6 +30,7 @@ use crate::{
 };
 
 const MAX_BATCH_LABELS: usize = 500;
+const MAX_PRINT_COPIES: u32 = 100;
 
 #[derive(serde::Deserialize)]
 pub struct RenderQuery {
@@ -175,6 +176,10 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/datetime-formats/preview", post(preview_datetime_format))
         .route("/render/label", post(render_label))
         .route("/batch", post(batch))
+        .route(
+            "/print",
+            post(print_label).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .route("/import/csv", post(import_csv))
         .route("/auth/setup", post(setup))
         .route("/auth/login", post(login))
@@ -1327,6 +1332,50 @@ pub async fn batch(
         req.printer.as_deref(),
         req.format.as_deref(),
         req.start_slot,
+    )
+    .await
+}
+
+#[utoipa::path(
+    post,
+    path = "/print",
+    request_body = PrintRequest,
+    responses(
+        (status = 200, description = "Print summary", body = BatchSummary),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Template or printer not found", body = ErrorResponse),
+        (status = 409, description = "Printer disabled", body = ErrorResponse),
+        (status = 413, description = "Request body too large", body = ErrorResponse),
+        (status = 502, description = "Printer transport failure", body = ErrorResponse)
+    )
+)]
+pub async fn print_label(
+    State(state): State<Arc<AppState>>,
+    payload: Result<Json<PrintRequest>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let Json(req) = payload.map_err(AppError::from)?;
+    if !(1..=MAX_PRINT_COPIES).contains(&req.copies) {
+        return Err(AppError::invalid_request(format!(
+            "copies must be between 1 and {MAX_PRINT_COPIES}"
+        )));
+    }
+    let registry = state.templates.load_full();
+    let template = registry
+        .get(&req.template)
+        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+    let label = crate::models::LabelInput {
+        data: req.fields,
+        option: req.option,
+    };
+    let labels = vec![label; req.copies as usize];
+    run_batch(
+        &state,
+        template,
+        &labels,
+        crate::batch::BatchMode::Print,
+        Some(&req.printer),
+        None,
+        0,
     )
     .await
 }

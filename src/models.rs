@@ -380,9 +380,25 @@ pub struct BatchSummary {
     pub jobs: usize,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct LabelInput {
     pub data: HashMap<String, Value>,
     #[serde(default)]
     pub option: Option<BTreeMap<String, String>>,
+}
+
+fn default_copies() -> u32 {
+    1
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PrintRequest {
+    pub template: String,
+    pub printer: String,
+    #[serde(default)]
+    pub fields: HashMap<String, Value>,
+    #[serde(default)]
+    pub option: Option<BTreeMap<String, String>>,
+    #[serde(default = "default_copies")]
+    pub copies: u32,
 }

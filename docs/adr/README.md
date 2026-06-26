@@ -41,6 +41,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0028](0028-datetime-interpolation-token.md) | Current-time interpolation token ({datetime.*}) | Accepted |
 | [0029](0029-runtime-base-debian-slim.md) | Runtime base image: debian-slim, not distroless | Accepted |
 | [0030](0030-multiline-auto-length-tape.md) | Multi-line auto-length tape labels | Accepted |
+| [0031](0031-inbound-print-webhook.md) | Inbound print webhook (POST /print) | Accepted |
 
 ## Adding an ADR
 
