@@ -55,8 +55,9 @@ The handler adds no new dispatch or rendering logic: all format-dispatch, valida
 - No new print logic: `/batch` remains the canonical bulk endpoint; `/print` is a pure caller of the
   shared path.
 - Send failures (transport errors after a job is accepted) are reported in `BatchSummary.failed[]`
-  with a `200`, mirroring `/batch` behavior. Pre-send dispatch failures (printer not found, printer
-  disabled, oversized body) return the appropriate error status.
+  with a `200`, mirroring `/batch` behavior. Pre-dispatch failures (body too large, unknown printer,
+  disabled printer) return the appropriate error status. A failure during the dispatch attempt itself,
+  before any job is accepted, is a `502`.
 - The 64 KiB body cap prevents runaway memory from unexpectedly large payloads; the cap is tight
   because the payload is a single label's fields, not a multi-label batch.
 - The `copies` upper bound (100) is a webhook-appropriate sanity cap; callers needing more should use
