@@ -273,6 +273,55 @@ impl PrinterDriver for CupsDriver {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrinterCapabilities {
+    pub bilevel: bool,
+    pub accepts_png: bool,
+    pub resolution_dpi: Option<u32>,
+}
+
+const COLOR_RASTER_TYPES: &[&str] = &["srgb_8", "sgray_8", "cmyk_8", "adobe-rgb_8", "srgb_16"];
+
+impl PrinterCapabilities {
+    pub fn from_parts(
+        color_modes: &[String],
+        raster_types: &[String],
+        formats: &[String],
+        resolution: Option<(i32, i32, i8)>,
+    ) -> Self {
+        let color_mode_bilevel = color_modes.iter().any(|m| m == "bi-level");
+        let raster_bilevel = raster_types.iter().any(|t| t == "black_1")
+            && !raster_types
+                .iter()
+                .any(|t| COLOR_RASTER_TYPES.contains(&t.as_str()));
+        let bilevel = color_mode_bilevel || raster_bilevel;
+        let accepts_png = formats.iter().any(|f| f == "image/png");
+        let resolution_dpi = resolution.and_then(|(cf, feed, units)| {
+            if units == 3 && cf == feed && cf > 0 && (cf as u32) <= crate::render::MAX_RENDER_DPI {
+                Some(cf as u32)
+            } else {
+                None
+            }
+        });
+        Self {
+            bilevel,
+            accepts_png,
+            resolution_dpi,
+        }
+    }
+}
+
+pub fn negotiated_profile(caps: &PrinterCapabilities) -> crate::render::ImageRenderOptions {
+    if caps.bilevel && caps.accepts_png {
+        crate::render::ImageRenderOptions {
+            color_mode: crate::render::ColorMode::BiLevel,
+            resolution_dpi: caps.resolution_dpi,
+        }
+    } else {
+        crate::render::ImageRenderOptions::default()
+    }
+}
+
 /// Test-only driver that records nothing and either succeeds or fails, for exercising the `/print`
 /// dispatch without a real printer.
 #[cfg(test)]
@@ -336,6 +385,105 @@ impl PrinterDriver for FakeDriver {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn capabilities_from_parts_detects_bilevel() {
+        // pwg black_1 only + png
+        let c = PrinterCapabilities::from_parts(
+            &[],
+            &["black_1".into(), "black_8".into()],
+            &["image/png".into(), "application/pdf".into()],
+            Some((203, 203, 3)),
+        );
+        assert!(c.bilevel && c.accepts_png);
+        assert_eq!(c.resolution_dpi, Some(203));
+        // print-color-mode bi-level + png
+        let c2 = PrinterCapabilities::from_parts(
+            &["bi-level".into(), "monochrome".into()],
+            &[],
+            &["image/png".into()],
+            None,
+        );
+        assert!(c2.bilevel);
+        assert_eq!(c2.resolution_dpi, None);
+        // black_1 alongside a COLOR raster type -> not bilevel
+        let c3 = PrinterCapabilities::from_parts(
+            &[],
+            &["black_1".into(), "srgb_8".into()],
+            &["image/png".into()],
+            None,
+        );
+        assert!(!c3.bilevel);
+        // no png -> accepts_png false
+        let c4 = PrinterCapabilities::from_parts(
+            &["bi-level".into()],
+            &[],
+            &["application/pdf".into()],
+            None,
+        );
+        assert!(c4.bilevel && !c4.accepts_png);
+    }
+
+    #[test]
+    fn resolution_conversion_rules() {
+        // square dpi in range
+        assert_eq!(
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((300, 300, 3))).resolution_dpi,
+            Some(300)
+        );
+        // asymmetric -> None
+        assert_eq!(
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((300, 600, 3))).resolution_dpi,
+            None
+        );
+        // dpcm (units 4) -> None
+        assert_eq!(
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((118, 118, 4))).resolution_dpi,
+            None
+        );
+        // out of bounds -> None
+        assert_eq!(
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((5000, 5000, 3))).resolution_dpi,
+            None
+        );
+        assert_eq!(
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((0, 0, 3))).resolution_dpi,
+            None
+        );
+    }
+
+    #[test]
+    fn negotiated_profile_mapping() {
+        use crate::render::ColorMode;
+        let bilevel_png = PrinterCapabilities {
+            bilevel: true,
+            accepts_png: true,
+            resolution_dpi: Some(203),
+        };
+        let p = negotiated_profile(&bilevel_png);
+        assert!(matches!(p.color_mode, ColorMode::BiLevel));
+        assert_eq!(p.resolution_dpi, Some(203));
+        // bilevel but no png -> Color
+        let no_png = PrinterCapabilities {
+            bilevel: true,
+            accepts_png: false,
+            resolution_dpi: Some(203),
+        };
+        assert!(matches!(
+            negotiated_profile(&no_png).color_mode,
+            ColorMode::Color
+        ));
+        // color -> Color
+        let color = PrinterCapabilities {
+            bilevel: false,
+            accepts_png: true,
+            resolution_dpi: None,
+        };
+        assert!(matches!(
+            negotiated_profile(&color).color_mode,
+            ColorMode::Color
+        ));
+    }
 
     #[test]
     fn cups_config_parses_all_fields() {
