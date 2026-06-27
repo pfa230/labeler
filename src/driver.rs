@@ -490,6 +490,10 @@ mod tests {
             ipp_document_format(ArtifactFormat::Raster),
             "image/pwg-raster"
         );
+        assert_eq!(
+            ipp_document_format(ArtifactFormat::Zpl),
+            "application/vnd.zebra-zpl"
+        );
     }
 
     #[test]
