@@ -637,7 +637,27 @@ variables, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, de
     IPP `document-format: application/pdf`.
 
   This is slice 2 of [ADR-0033](adr/0033-capability-aware-rendering.md): printer-config-driven format
-  selection. IPP capability auto-negotiation and the media-width gate are later slices.
+  selection. The media-width gate is a later slice.
+
+  **IPP capability auto-negotiation (slice 3).** A printer with no `config.render` is auto-negotiated
+  on the print path via IPP `Get-Printer-Attributes`. labeler queries the printer's advertised attributes
+  and selects bilevel `image/png` when ALL of the following hold:
+
+  - The printer advertises a bilevel signal: `print-color-mode-supported` or `print-color-mode-default`
+    includes `bi-level`, OR `pwg-raster-document-type-supported` includes `black_1` with no color type
+    present in that list.
+  - `document-format-supported` includes `image/png`.
+  - `printer-resolution-default` reports a square resolution (X and Y DPI equal), expressed in dots per
+    inch. labeler uses that reported DPI as the raster resolution.
+
+  If none of the bilevel conditions are met, or `image/png` is not supported, or the resolution is
+  non-square or not expressed in dots-per-inch, labeler falls back to Color/PDF (today's default). Any
+  query failure or a 3-second timeout also causes the same graceful fallback; negotiation never blocks a
+  print job.
+
+  An explicit `config.render` (even `color_mode: "color"`) suppresses negotiation entirely: labeler uses
+  the configured profile and skips the `Get-Printer-Attributes` query. See
+  [ADR-0033](adr/0033-capability-aware-rendering.md) (slice 3).
 
   Credentials sent over `ipp://` (not `ipps://`) travel unencrypted; use `ipps://` for any
   credential-carrying connection. See [ADR-0032](adr/0032-ipp-auth-custom-ca.md).
@@ -717,6 +737,15 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-27**: IPP capability auto-negotiation (ADR-0033 slice 3; #92). A CUPS printer with no
+  `config.render` is now auto-negotiated on the print path via `Get-Printer-Attributes`. labeler picks
+  bilevel `image/png` when the printer advertises a bilevel signal (`print-color-mode-supported/-default`
+  includes `bi-level`, OR `pwg-raster-document-type-supported` includes `black_1` with no color type)
+  AND `image/png` is in `document-format-supported`, at the printer's reported square DPI
+  (`printer-resolution-default`, dots-per-inch). Any query failure, 3-second timeout, or non-square/
+  non-dpi resolution falls back to Color/PDF. An explicit `config.render` (even `color_mode: "color"`)
+  suppresses negotiation. Negotiation never blocks a print job. See the Printing section.
 
 - **2026-06-27**: Per-printer render profile (ADR-0033 slice 2; #92). The `cups` printer config gains an
   optional `render` object: `{ color_mode?: "color"|"bilevel" (default "color"), resolution?: int [1,1200] }`.
