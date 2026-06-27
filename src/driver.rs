@@ -355,12 +355,13 @@ impl PrinterCapabilities {
                             ipp::value::IppValue::NameWithoutLanguage(s) => {
                                 Some(s.as_str().to_string())
                             }
-                            other => other.as_keyword().map(|s| s.as_str().to_string()),
+                            _ => None,
                         })
                         .collect()
                 })
                 .unwrap_or_default()
         };
+        // printer-resolution-default is a single `resolution` value per RFC 8011, not a 1setOf.
         let resolution = group
             .and_then(|g| g.attributes().get("printer-resolution-default"))
             .and_then(|attr| match attr.value() {
