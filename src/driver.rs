@@ -303,14 +303,36 @@ impl PrinterDriver for CupsDriver {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Convert an IPP `media-size` `x-dimension` (hundredths of mm, Integer) to millimetres.
+/// Returns None for missing or non-positive values (zero means unknown/unset in IPP).
+pub fn loaded_media_width_mm(x_hundredths: Option<i32>) -> Option<f32> {
+    x_hundredths.filter(|x| *x > 0).map(|x| x as f32 / 100.0)
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PrinterCapabilities {
     pub bilevel: bool,
     pub accepts_png: bool,
     pub resolution_dpi: Option<u32>,
+    pub loaded_media_width_mm: Option<f32>,
 }
 
 const COLOR_RASTER_TYPES: &[&str] = &["srgb_8", "sgray_8", "cmyk_8", "adobe-rgb_8", "srgb_16"];
+
+/// Return the first `Collection` reachable from `v`. Handles both a bare `Collection` and an
+/// `Array` of collections (IPP 1setOf), since iterating a `Collection` yields members, not itself.
+fn first_collection(
+    v: &ipp::value::IppValue,
+) -> Option<&std::collections::BTreeMap<ipp::value::IppName, ipp::value::IppValue>> {
+    match v {
+        ipp::value::IppValue::Collection(c) => Some(c),
+        ipp::value::IppValue::Array(items) => items.iter().find_map(|i| match i {
+            ipp::value::IppValue::Collection(c) => Some(c),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
 
 impl PrinterCapabilities {
     pub fn from_parts(
@@ -337,6 +359,7 @@ impl PrinterCapabilities {
             bilevel,
             accepts_png,
             resolution_dpi,
+            loaded_media_width_mm: None,
         }
     }
 
@@ -372,7 +395,18 @@ impl PrinterCapabilities {
                 } => Some((*cross_feed, *feed, *units)),
                 _ => None,
             });
-        PrinterCapabilities::from_parts(
+        // media-col-ready -> media-size -> x-dimension (hundredths-mm Integer).
+        let x_hundredths = group
+            .and_then(|g| g.attributes().get("media-col-ready"))
+            .and_then(|attr| first_collection(attr.value()))
+            .and_then(|c| c.get("media-size"))
+            .and_then(first_collection)
+            .and_then(|sz| sz.get("x-dimension"))
+            .and_then(|v| match v {
+                ipp::value::IppValue::Integer(x) => Some(*x),
+                _ => None,
+            });
+        let mut caps = PrinterCapabilities::from_parts(
             &[
                 strings("print-color-mode-supported"),
                 strings("print-color-mode-default"),
@@ -381,7 +415,9 @@ impl PrinterCapabilities {
             &strings("pwg-raster-document-type-supported"),
             &strings("document-format-supported"),
             resolution,
-        )
+        );
+        caps.loaded_media_width_mm = loaded_media_width_mm(x_hundredths);
+        caps
     }
 }
 
@@ -436,6 +472,7 @@ impl FakeDriver {
                 .get("resolution")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u32),
+            loaded_media_width_mm: None,
         });
         Self { fail, render, caps }
     }
@@ -555,6 +592,7 @@ mod tests {
             bilevel: true,
             accepts_png: true,
             resolution_dpi: Some(203),
+            loaded_media_width_mm: None,
         };
         let p = negotiated_profile(&bilevel_png);
         assert!(matches!(p.color_mode, ColorMode::BiLevel));
@@ -564,6 +602,7 @@ mod tests {
             bilevel: true,
             accepts_png: false,
             resolution_dpi: Some(203),
+            loaded_media_width_mm: None,
         };
         assert!(matches!(
             negotiated_profile(&no_png).color_mode,
@@ -574,6 +613,7 @@ mod tests {
             bilevel: false,
             accepts_png: true,
             resolution_dpi: None,
+            loaded_media_width_mm: None,
         };
         assert!(matches!(
             negotiated_profile(&color).color_mode,
@@ -756,6 +796,15 @@ mod tests {
         let caps = d3.capabilities_sync().expect("caps present");
         assert!(caps.bilevel && caps.accepts_png);
         assert_eq!(caps.resolution_dpi, Some(203));
+    }
+
+    #[test]
+    fn loaded_media_width_parsing() {
+        // media-col x-dimension in hundredths-mm -> mm; only structured source, no name guessing.
+        assert_eq!(loaded_media_width_mm(Some(1200)), Some(12.0));
+        assert_eq!(loaded_media_width_mm(Some(2400)), Some(24.0));
+        assert_eq!(loaded_media_width_mm(Some(0)), None);
+        assert_eq!(loaded_media_width_mm(None), None);
     }
 
     #[tokio::test]
