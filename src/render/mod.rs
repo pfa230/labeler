@@ -79,7 +79,7 @@ fn compile_label_doc(
 
     // Resolve initial width/height; Dynamic single may be overridden after measurement.
     let (mut width_units, height_units) = match &template.format {
-        TemplateFormat::Single { width, height } => {
+        TemplateFormat::Single { width, height, .. } => {
             (resolve_dimension(width)?, resolve_dimension(height)?)
         }
         TemplateFormat::Sheet {
@@ -1273,6 +1273,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(10.0),
+                media_width: None,
             },
             options: Some(Options(BTreeMap::from([(
                 "variant".to_string(),
@@ -1321,6 +1322,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(30.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: Some(Options(BTreeMap::from([(
                 "variant".to_string(),
@@ -1454,6 +1456,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Image {
@@ -1632,6 +1635,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(10.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -1689,6 +1693,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(40.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![
@@ -1744,6 +1749,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(60.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -1859,6 +1865,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: crate::models::Dimension::Fixed(40.0),
                 height: crate::models::Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![
@@ -1938,6 +1945,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: crate::models::Dimension::Fixed(40.0),
                 height: crate::models::Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -2022,6 +2030,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(40.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: Some(Options(BTreeMap::from([
                 (
