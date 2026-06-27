@@ -196,6 +196,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(10.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {

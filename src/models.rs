@@ -343,6 +343,8 @@ pub enum TemplateFormat {
     Single {
         width: Dimension,
         height: Dimension,
+        #[serde(default)]
+        media_width: Option<f32>,
     },
 }
 

@@ -203,6 +203,16 @@ impl TemplateDefinition {
             is_dynamic_width,
         )?;
 
+        if let TemplateFormat::Single {
+            media_width: Some(mw),
+            ..
+        } = &self.format
+        {
+            if *mw <= 0.0 {
+                return Err("media_width must be greater than 0".to_string());
+            }
+        }
+
         match &self.format {
             TemplateFormat::Sheet {
                 paper_width,
@@ -236,7 +246,7 @@ impl TemplateDefinition {
                     }
                 }
             }
-            TemplateFormat::Single { width, height } => {
+            TemplateFormat::Single { width, height, .. } => {
                 validate_dimension("width", width)?;
                 validate_dimension("height", height)?;
             }
@@ -606,7 +616,7 @@ struct LayoutBounds {
 
 fn layout_bounds(format: &TemplateFormat) -> Result<Option<LayoutBounds>, String> {
     let (width, height) = match format {
-        TemplateFormat::Single { width, height } => {
+        TemplateFormat::Single { width, height, .. } => {
             (resolve_dimension(width), resolve_dimension(height))
         }
         TemplateFormat::Sheet {
@@ -700,6 +710,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
+                media_width: None,
             },
             options: Some(Options(BTreeMap::from([(
                 "variant".to_string(),
@@ -723,6 +734,7 @@ mod tests {
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
+                media_width: None,
             },
             options: Some(Options(BTreeMap::from([(
                 "variant".to_string(),
@@ -824,6 +836,7 @@ layout: []
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(12.0),
                 height: Dimension::Fixed(25.0),
+                media_width: None,
             },
             options: Some(Options(BTreeMap::from([(
                 "variant".to_string(),
@@ -876,6 +889,7 @@ layout: []
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![
@@ -923,6 +937,7 @@ layout: []
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Line {
@@ -946,6 +961,7 @@ layout: []
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0),
                 height: Dimension::Fixed(20.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Line {
@@ -986,6 +1002,7 @@ layout: []
                     max: None,
                 },
                 height: Dimension::Fixed(12.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -1027,6 +1044,7 @@ layout: []
                     max: Some(100.0),
                 },
                 height: Dimension::Fixed(12.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Container {
@@ -1066,6 +1084,7 @@ layout: []
                     max: Some(100.0),
                 },
                 height: Dimension::Fixed(12.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -1103,6 +1122,7 @@ layout: []
                     max: Some(100.0),
                 },
                 height: Dimension::Fixed(12.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -1137,6 +1157,7 @@ layout: []
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(50.0),
                 height: Dimension::Fixed(12.0),
+                media_width: None,
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Text {
@@ -1158,6 +1179,30 @@ layout: []
         template
             .validate()
             .expect("fixed-width single with multiline: true should validate OK");
+    }
+
+    #[test]
+    fn single_rejects_nonpositive_media_width() {
+        let template = TemplateDefinition {
+            id: "mw_test".to_string(),
+            name: "MW Test".to_string(),
+            description: "test".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(50.0),
+                height: Dimension::Fixed(12.0),
+                media_width: Some(0.0),
+            },
+            options: None,
+            layout: Layout::Items(vec![]),
+            version: None,
+        };
+        let err = template.validate().expect_err("expected error");
+        assert!(
+            err.contains("media_width must be greater than 0"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
