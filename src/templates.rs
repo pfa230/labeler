@@ -1183,7 +1183,7 @@ layout: []
 
     #[test]
     fn single_rejects_nonpositive_media_width() {
-        let template = TemplateDefinition {
+        let build = |mw: Option<f32>| TemplateDefinition {
             id: "mw_test".to_string(),
             name: "MW Test".to_string(),
             description: "test".to_string(),
@@ -1192,17 +1192,22 @@ layout: []
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(50.0),
                 height: Dimension::Fixed(12.0),
-                media_width: Some(0.0),
+                media_width: mw,
             },
             options: None,
             layout: Layout::Items(vec![]),
             version: None,
         };
-        let err = template.validate().expect_err("expected error");
-        assert!(
-            err.contains("media_width must be greater than 0"),
-            "unexpected error: {err}"
-        );
+        for bad in [Some(0.0), Some(-1.0)] {
+            let err = build(bad).validate().expect_err("expected error");
+            assert!(
+                err.contains("media_width must be greater than 0"),
+                "unexpected error: {err}"
+            );
+        }
+        build(Some(12.0))
+            .validate()
+            .expect("positive media_width should validate");
     }
 
     #[test]
