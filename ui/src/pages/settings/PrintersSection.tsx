@@ -38,6 +38,17 @@ function cupsInsecure(p: Printer): boolean {
   return false;
 }
 
+function cupsRenderStringField(p: Printer, field: string): string {
+  const config = p.config;
+  if (typeof config !== "object" || config === null || !("render" in config)) return "";
+  const render = (config as Record<string, unknown>).render;
+  if (typeof render !== "object" || render === null || !(field in render)) return "";
+  const val = (render as Record<string, unknown>)[field];
+  if (typeof val === "string") return val;
+  if (typeof val === "number") return String(val);
+  return "";
+}
+
 function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: () => void }) {
   const isNew = initial === null;
   const [id, setId] = useState(initial?.id ?? "");
@@ -48,6 +59,8 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
   const [password, setPassword] = useState("");
   const [caCert, setCaCert] = useState(initial ? cupsStringField(initial, "ca_cert") : "");
   const [insecure, setInsecure] = useState(initial ? cupsInsecure(initial) : false);
+  const [colorMode, setColorMode] = useState(initial ? (cupsRenderStringField(initial, "color_mode") || "color") : "color");
+  const [resolution, setResolution] = useState(initial ? cupsRenderStringField(initial, "resolution") : "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [error, setError] = useState<string | null>(null);
   const save = useSavePrinter();
@@ -77,6 +90,10 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
     if (password !== "") config.password = password;
     if (caCert.trim() !== "") config.ca_cert = caCert.trim();
     if (insecure) config.insecure = true;
+    const render: Record<string, unknown> = {};
+    if (colorMode !== "color") render.color_mode = colorMode;
+    if (resolution.trim() !== "") render.resolution = Number(resolution.trim());
+    if (Object.keys(render).length > 0) config.render = render;
     const printer: Printer = { id, name: name.trim(), kind: "cups", config, enabled };
     save.mutate(
       { printer, isNew },
@@ -136,6 +153,19 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
         <label className="flex items-center gap-2 self-end pb-2">
           <input type="checkbox" aria-label="insecure" checked={insecure} onChange={(e) => setInsecure(e.target.checked)} />
           <span className="text-sm">skip TLS verification (insecure)</span>
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>color mode</span>
+          <select aria-label="color mode" value={colorMode} onChange={(e) => setColorMode(e.target.value)} className={inputClass} style={inputStyle}>
+            <option value="color">color</option>
+            <option value="bilevel">bilevel</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>print resolution</span>
+          <input type="number" aria-label="print resolution" value={resolution} onChange={(e) => setResolution(e.target.value)} placeholder="e.g. 203" className={inputClass} style={inputStyle} />
         </label>
       </div>
       {(username.trim() !== "" || password !== "") ? (
