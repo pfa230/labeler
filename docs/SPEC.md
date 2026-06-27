@@ -237,6 +237,7 @@ as a single print job per page, mirroring `/batch`). Send failures are reported 
 | 404 | `TemplateNotFound` | Unknown `template` id. |
 | 404 | `PrinterNotFound` | Unknown `printer` id. |
 | 409 | `PrinterDisabled` | Printer exists but is disabled. |
+| 409 | `MediaMismatch` | Template `media_width` and the printer's loaded media width differ by more than 1 mm (preflight gate). |
 | 413 | `PayloadTooLarge` | Request body exceeds 64 KiB. |
 | 422 | `BatchInvalid` | A rendered label is invalid (same render path as `/batch`). |
 | 502 | `PrintFailed` | Pre-send dispatch failure (before any job is accepted). |
@@ -285,7 +286,14 @@ format:
   type: single
   width: { min: 10.0, max: 100.0 }   # Dimension
   height: 12.0                        # Dimension
+  media_width: 24.0                   # optional; nominal tape width in template unit
 ```
+
+| Field | Type | Required | Notes |
+| --- | --- | --- | --- |
+| `width` | `Dimension` | Yes | Label width. Fixed number or `{ min, max }` for auto-length. |
+| `height` | `Dimension` | Yes | Label height (fixed). |
+| `media_width` | number > 0 | No | Nominal tape/media width in the template `unit`. Declares the physical media this template targets. Used exclusively by the print preflight gate (see the Printing section). Has no effect on rendering geometry. The bundled Brother tape templates set this field (12, 18, or 24 mm). |
 
 A `Dimension` is either a fixed number, or a dynamic object `{ min, max }` (both required when used
 on `format.width` of a `single` template). A `single` template with a dynamic `format.width` is
@@ -467,6 +475,7 @@ All errors return JSON:
 | `BatchInvalid` | 422 | One or more `/batch` labels failed render-validation; `details.failures` lists them. |
 | `BatchTooLarge` | 413 | A `/batch` request exceeds the label cap (500). Note: `/batch` (and other JSON endpoints) can also return 413 with code `PayloadTooLarge` if the raw body exceeds the server's global limit. |
 | `PayloadTooLarge` | 413 | Request body exceeds the configured limit. On `POST /print` the limit is 64 KiB; on other JSON endpoints it is the server's global default (~2 MiB). Applies API-wide to any endpoint that reads a JSON body. |
+| `MediaMismatch` | 409 | Template `media_width` and the printer's loaded media width differ by more than 1 mm. Print is rejected by the preflight gate. |
 | `NotFound` | 404 | Unknown `/api/*` route (the API fallback). |
 | `RenderFailed` | 500 | Typst compile/encode failure. |
 | `SettingNotFound` | 404 | Unknown application setting key. |
@@ -659,6 +668,29 @@ variables, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, de
   the configured profile and skips the `Get-Printer-Attributes` query. See
   [ADR-0033](adr/0033-capability-aware-rendering.md) (slice 3).
 
+  **Print preflight media gate (slice 4).** Before dispatching a print job for a `single` template,
+  labeler optionally checks that the template's declared tape width matches the media loaded in the
+  printer. The gate is FAIL-OPEN: uncertainty never blocks printing; only a confirmed mismatch does.
+
+  The check runs when ALL of the following hold:
+
+  - The `single` template declares `media_width` (see §3.1).
+  - A `Get-Printer-Attributes` query to the printer returns a parseable `media-col-ready` attribute
+    containing a usable media width (in `mm` or `in`, expressed in 100ths of that unit per PWG 5101.1).
+  - The query completes within the 3-second timeout and returns no error.
+
+  If the template `media_width` (converted to mm) and the reported media width differ by more than 1 mm,
+  the print request is rejected with `409 MediaMismatch` BEFORE any job is sent. No label is printed.
+
+  The gate is FAIL-OPEN: if the template has no `media_width`, or the printer reports no media or an
+  unparseable `media-col-ready`, or the `Get-Printer-Attributes` query fails or times out, the print
+  proceeds unconditionally. The gate is never the reason printing does not happen unless it has a
+  confirmed template/loaded-tape mismatch.
+
+  `media_width` is always expressed in the template `unit` (§3) and converted to mm for the comparison
+  (`1 in = 25.4 mm`). This gate is part of [ADR-0033](adr/0033-capability-aware-rendering.md) (slice 4;
+  completes #92).
+
   Credentials sent over `ipp://` (not `ipps://`) travel unencrypted; use `ipps://` for any
   credential-carrying connection. See [ADR-0032](adr/0032-ipp-auth-custom-ca.md).
 - **Deferred:** printer status read-back, USB/browser printing. (Batch-to-printer and multi-page sheets
@@ -737,6 +769,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-27**: Print preflight media gate (ADR-0033 slice 4; completes #92). `single` templates may
+  declare an optional `media_width` field (nominal tape width in the template `unit`; must be > 0). When
+  a template declares `media_width` AND the CUPS printer's `Get-Printer-Attributes` response contains a
+  parseable `media-col-ready` width, a mismatch beyond 1 mm is rejected with `409 MediaMismatch` before
+  any job is sent. The gate is FAIL-OPEN: no `media_width`, an absent or unparseable `media-col-ready`,
+  or any query failure/timeout causes the print to proceed. `media_width` is in the template `unit` and
+  converted to mm for the comparison (`1 in = 25.4 mm`). See the Printing section and §3.1.
 
 - **2026-06-27**: IPP capability auto-negotiation (ADR-0033 slice 3; #92). A CUPS printer with no
   `config.render` is now auto-negotiated on the print path via `Get-Printer-Attributes`. labeler picks

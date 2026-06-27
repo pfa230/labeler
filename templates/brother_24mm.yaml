@@ -9,6 +9,7 @@ format:
     min: 10.0
     max: 120.0
   height: 18.1
+  media_width: 24
 layout:
   - type: container
     at: [0.0, 0.0]
