@@ -1247,7 +1247,15 @@ async fn run_batch(
             }
             let driver = crate::driver::build_driver(&printer.kind, &printer.config)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
-            let render_opts = driver.render_options();
+            let render_opts = match driver.configured_render_options() {
+                Some(o) => o,
+                None => driver
+                    .capabilities()
+                    .await
+                    .as_ref()
+                    .map(crate::driver::negotiated_profile)
+                    .unwrap_or_default(),
+            };
             let artifact_format =
                 crate::driver::print_artifact_format(render_opts.color_mode, is_single);
             let render_format = match artifact_format {

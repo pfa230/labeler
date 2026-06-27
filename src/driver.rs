@@ -67,9 +67,14 @@ pub enum PrintError {
 
 #[async_trait]
 pub trait PrinterDriver: Send + Sync {
-    /// The render options this driver prefers; the dispatcher uses them to select the render path.
-    fn render_options(&self) -> crate::render::ImageRenderOptions {
-        crate::render::ImageRenderOptions::default()
+    /// The render options explicitly configured for this driver, if any. None means unset.
+    fn configured_render_options(&self) -> Option<crate::render::ImageRenderOptions> {
+        None
+    }
+    /// Query the printer's live capabilities via IPP Get-Printer-Attributes. Returns None on any
+    /// error (network, timeout, non-success status) so callers can fall back gracefully.
+    async fn capabilities(&self) -> Option<PrinterCapabilities> {
+        None
     }
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError>;
 }
@@ -199,26 +204,22 @@ pub struct CupsDriver {
     password: Option<String>,
     ca_cert: Option<String>,
     insecure: bool,
-    render: crate::render::ImageRenderOptions,
+    render: Option<crate::render::ImageRenderOptions>,
 }
 
 impl CupsDriver {
     fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
         let cfg = CupsConfig::from_value(config)?;
-        let render = cfg
-            .render
-            .as_ref()
-            .map(|r| {
-                let color_mode = match r.color_mode.as_deref() {
-                    Some("bilevel") => crate::render::ColorMode::BiLevel,
-                    _ => crate::render::ColorMode::Color,
-                };
-                crate::render::ImageRenderOptions {
-                    color_mode,
-                    resolution_dpi: r.resolution,
-                }
-            })
-            .unwrap_or_default();
+        let render = cfg.render.as_ref().map(|r| {
+            let color_mode = match r.color_mode.as_deref() {
+                Some("bilevel") => crate::render::ColorMode::BiLevel,
+                _ => crate::render::ColorMode::Color,
+            };
+            crate::render::ImageRenderOptions {
+                color_mode,
+                resolution_dpi: r.resolution,
+            }
+        });
         Ok(Self {
             uri: cfg.uri,
             username: cfg.username,
@@ -228,12 +229,50 @@ impl CupsDriver {
             render,
         })
     }
+
+    fn build_client(
+        &self,
+        uri: ipp::prelude::Uri,
+        timeout: Option<std::time::Duration>,
+    ) -> ipp::prelude::AsyncIppClient {
+        use ipp::prelude::*;
+        let mut builder = AsyncIppClient::builder(uri);
+        if let Some(t) = timeout {
+            builder = builder.request_timeout(t);
+        }
+        if let (Some(user), Some(pass)) = (&self.username, &self.password) {
+            builder = builder.basic_auth(user, pass);
+        }
+        if self.insecure {
+            builder = builder.ignore_tls_errors(true);
+        } else if let Some(pem) = &self.ca_cert {
+            builder = builder.ca_cert(pem.as_bytes());
+        }
+        builder.build()
+    }
 }
 
 #[async_trait]
 impl PrinterDriver for CupsDriver {
-    fn render_options(&self) -> crate::render::ImageRenderOptions {
+    fn configured_render_options(&self) -> Option<crate::render::ImageRenderOptions> {
         self.render
+    }
+
+    async fn capabilities(&self) -> Option<PrinterCapabilities> {
+        use ipp::prelude::*;
+        let uri: Uri = self.uri.parse().ok()?;
+        let op = IppOperationBuilder::get_printer_attributes(uri.clone())
+            .build()
+            .ok()?;
+        let resp = self
+            .build_client(uri, Some(std::time::Duration::from_secs(3)))
+            .send(op)
+            .await
+            .ok()?;
+        if !resp.header().status_code().is_success() {
+            return None;
+        }
+        Some(PrinterCapabilities::from_attributes(resp.attributes()))
     }
 
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError> {
@@ -248,17 +287,8 @@ impl PrinterDriver for CupsDriver {
             .job_title("labeler")
             .build()
             .map_err(|err| PrintError::Transport(err.to_string()))?;
-        let mut builder = AsyncIppClient::builder(uri);
-        if let (Some(user), Some(pass)) = (&self.username, &self.password) {
-            builder = builder.basic_auth(user, pass);
-        }
-        if self.insecure {
-            builder = builder.ignore_tls_errors(true);
-        } else if let Some(pem) = &self.ca_cert {
-            builder = builder.ca_cert(pem.as_bytes());
-        }
-        let response = builder
-            .build()
+        let response = self
+            .build_client(uri, None)
             .send(operation)
             .await
             .map_err(|err| PrintError::Transport(err.to_string()))?;
@@ -309,6 +339,49 @@ impl PrinterCapabilities {
             resolution_dpi,
         }
     }
+
+    fn from_attributes(attrs: &ipp::attribute::IppAttributes) -> Self {
+        use ipp::model::DelimiterTag;
+        let group = attrs.groups_of(DelimiterTag::PrinterAttributes).next();
+        let strings = |name: &str| -> Vec<String> {
+            group
+                .and_then(|g| g.attributes().get(name))
+                .map(|attr| {
+                    attr.value()
+                        .into_iter()
+                        .filter_map(|v| match v {
+                            ipp::value::IppValue::Keyword(s) => Some(s.as_str().to_string()),
+                            ipp::value::IppValue::MimeMediaType(s) => Some(s.as_str().to_string()),
+                            ipp::value::IppValue::NameWithoutLanguage(s) => {
+                                Some(s.as_str().to_string())
+                            }
+                            other => other.as_keyword().map(|s| s.as_str().to_string()),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let resolution = group
+            .and_then(|g| g.attributes().get("printer-resolution-default"))
+            .and_then(|attr| match attr.value() {
+                ipp::value::IppValue::Resolution {
+                    cross_feed,
+                    feed,
+                    units,
+                } => Some((*cross_feed, *feed, *units)),
+                _ => None,
+            });
+        PrinterCapabilities::from_parts(
+            &[
+                strings("print-color-mode-supported"),
+                strings("print-color-mode-default"),
+            ]
+            .concat(),
+            &strings("pwg-raster-document-type-supported"),
+            &strings("document-format-supported"),
+            resolution,
+        )
+    }
 }
 
 pub fn negotiated_profile(caps: &PrinterCapabilities) -> crate::render::ImageRenderOptions {
@@ -327,7 +400,8 @@ pub fn negotiated_profile(caps: &PrinterCapabilities) -> crate::render::ImageRen
 #[cfg(test)]
 struct FakeDriver {
     fail: bool,
-    render: crate::render::ImageRenderOptions,
+    render: Option<crate::render::ImageRenderOptions>,
+    caps: Option<PrinterCapabilities>,
 }
 
 #[cfg(test)]
@@ -337,45 +411,66 @@ impl FakeDriver {
             .get("fail")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        let render = config
-            .get("render")
-            .map(|r| {
-                let color_mode = match r.get("color_mode").and_then(|v| v.as_str()) {
-                    Some("bilevel") => crate::render::ColorMode::BiLevel,
-                    _ => crate::render::ColorMode::Color,
-                };
-                let resolution_dpi = r
-                    .get("resolution")
-                    .and_then(|v| v.as_u64())
-                    .map(|n| n as u32);
-                crate::render::ImageRenderOptions {
-                    color_mode,
-                    resolution_dpi,
-                }
-            })
-            .unwrap_or_default();
-        Self { fail, render }
+        let render = config.get("render").map(|r| {
+            let color_mode = match r.get("color_mode").and_then(|v| v.as_str()) {
+                Some("bilevel") => crate::render::ColorMode::BiLevel,
+                _ => crate::render::ColorMode::Color,
+            };
+            let resolution_dpi = r
+                .get("resolution")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32);
+            crate::render::ImageRenderOptions {
+                color_mode,
+                resolution_dpi,
+            }
+        });
+        let caps = config.get("capabilities").map(|c| PrinterCapabilities {
+            bilevel: c.get("bilevel").and_then(|v| v.as_bool()).unwrap_or(false),
+            accepts_png: c
+                .get("accepts_png")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            resolution_dpi: c
+                .get("resolution")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32),
+        });
+        Self { fail, render, caps }
+    }
+
+    fn capabilities_sync(&self) -> Option<PrinterCapabilities> {
+        self.caps.clone()
     }
 }
 
 #[cfg(test)]
 #[async_trait]
 impl PrinterDriver for FakeDriver {
-    fn render_options(&self) -> crate::render::ImageRenderOptions {
+    fn configured_render_options(&self) -> Option<crate::render::ImageRenderOptions> {
         self.render
+    }
+
+    async fn capabilities(&self) -> Option<PrinterCapabilities> {
+        self.capabilities_sync()
     }
 
     async fn send(&self, artifact: &[u8], _opts: &PrintOptions) -> Result<(), PrintError> {
         if self.fail {
             return Err(PrintError::Transport("fake failure".to_string()));
         }
-        // A bilevel-configured fake printer must receive PNG bytes (proves the profile drove the render).
-        if matches!(self.render.color_mode, crate::render::ColorMode::BiLevel)
-            && !artifact.starts_with(b"\x89PNG")
-        {
-            return Err(PrintError::Transport(
-                "bilevel printer expected a PNG artifact".to_string(),
-            ));
+        // Mirror run_batch's precedence (configured else negotiated else default); tests use Single.
+        let effective = self
+            .configured_render_options()
+            .or_else(|| self.capabilities_sync().map(|c| negotiated_profile(&c)))
+            .unwrap_or_default();
+        let expected = print_artifact_format(effective.color_mode, true);
+        let is_png = artifact.starts_with(b"\x89PNG");
+        let want_png = matches!(expected, ArtifactFormat::Png);
+        if want_png != is_png {
+            return Err(PrintError::Transport(format!(
+                "fake: expected {expected:?} artifact, png={is_png}"
+            )));
         }
         Ok(())
     }
@@ -539,10 +634,8 @@ mod tests {
         assert!(validate_config("zebra", &json!({})).is_err()); // unknown kind
 
         let driver = build_driver("cups", &json!({ "uri": "ipp://h/p" })).unwrap();
-        assert!(matches!(
-            driver.render_options().color_mode,
-            crate::render::ColorMode::Color
-        ));
+        // no render config -> None (auto-negotiated at print time)
+        assert!(driver.configured_render_options().is_none());
         assert!(build_driver("zebra", &json!({})).is_err());
     }
 
@@ -605,12 +698,12 @@ mod tests {
     fn cups_driver_render_options_reflects_profile() {
         use crate::render::ColorMode;
         let d = CupsDriver::from_value(&json!({ "uri": "ipp://h/q", "render": { "color_mode": "bilevel", "resolution": 203 } })).unwrap();
-        let opts = d.render_options();
+        let opts = d.configured_render_options().expect("render present");
         assert!(matches!(opts.color_mode, ColorMode::BiLevel));
         assert_eq!(opts.resolution_dpi, Some(203));
-        // default when absent
+        // absent render config -> None
         let d2 = CupsDriver::from_value(&json!({ "uri": "ipp://h/q" })).unwrap();
-        assert!(matches!(d2.render_options().color_mode, ColorMode::Color));
+        assert!(d2.configured_render_options().is_none());
     }
 
     #[test]
@@ -650,7 +743,18 @@ mod tests {
         let d = FakeDriver::from_value(
             &json!({ "fail": false, "render": { "color_mode": "bilevel" } }),
         );
-        assert!(matches!(d.render_options().color_mode, ColorMode::BiLevel));
+        let opts = d.configured_render_options().expect("render present");
+        assert!(matches!(opts.color_mode, ColorMode::BiLevel));
+        // no render -> None
+        let d2 = FakeDriver::from_value(&json!({ "fail": false }));
+        assert!(d2.configured_render_options().is_none());
+        // capabilities parsed correctly
+        let d3 = FakeDriver::from_value(
+            &json!({ "fail": false, "capabilities": { "bilevel": true, "accepts_png": true, "resolution": 203 } }),
+        );
+        let caps = d3.capabilities_sync().expect("caps present");
+        assert!(caps.bilevel && caps.accepts_png);
+        assert_eq!(caps.resolution_dpi, Some(203));
     }
 
     #[tokio::test]
