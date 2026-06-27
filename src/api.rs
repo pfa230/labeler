@@ -30,7 +30,6 @@ use crate::{
 
 const MAX_BATCH_LABELS: usize = 500;
 const MAX_PRINT_COPIES: u32 = 100;
-const MAX_RENDER_DPI: u32 = 1200;
 
 #[derive(serde::Deserialize)]
 pub struct RenderQuery {
@@ -1202,13 +1201,13 @@ async fn run_batch(
         formats: &dt_formats,
         now: chrono::Local::now(),
     };
-    let env = crate::batch::BatchEnv {
-        settings: &variables,
-        datetime: &dt,
-    };
-
     match mode {
         crate::batch::BatchMode::Download => {
+            let env = crate::batch::BatchEnv {
+                settings: &variables,
+                datetime: &dt,
+                render_opts: crate::render::ImageRenderOptions::default(),
+            };
             let rendered = crate::batch::render_batch(
                 template,
                 labels,
@@ -1248,21 +1247,24 @@ async fn run_batch(
             }
             let driver = crate::driver::build_driver(&printer.kind, &printer.config)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
-            let driver_format = match driver.accepted_format() {
-                crate::driver::ArtifactFormat::Pdf => "pdf",
+            let render_opts = driver.render_options();
+            let artifact_format =
+                crate::driver::print_artifact_format(render_opts.color_mode, is_single);
+            let render_format = match artifact_format {
                 crate::driver::ArtifactFormat::Png => "png",
-                fmt => {
-                    return Err(AppError::print_failed(format!(
-                        "no renderer for artifact format {fmt:?}"
-                    )))
-                }
+                _ => "pdf",
+            };
+            let env = crate::batch::BatchEnv {
+                settings: &variables,
+                datetime: &dt,
+                render_opts,
             };
             // Validate-then-execute: render everything first; bad data => 422 before any send.
             let rendered = crate::batch::render_batch(
                 template,
                 labels,
                 mode,
-                Some(driver_format),
+                Some(render_format),
                 start_slot,
                 &env,
                 MAX_BATCH_LABELS,
@@ -1277,7 +1279,13 @@ async fn run_batch(
             let mut failed = Vec::new();
             for unit in &units {
                 match driver
-                    .send(&unit.bytes, &crate::driver::PrintOptions::default())
+                    .send(
+                        &unit.bytes,
+                        &crate::driver::PrintOptions {
+                            copies: 1,
+                            artifact_format,
+                        },
+                    )
                     .await
                 {
                     Ok(()) => {
@@ -1460,9 +1468,10 @@ pub async fn render_label(
                     "resolution must be a positive integer, got '{s}'"
                 ))
             })?;
-            if dpi == 0 || dpi > MAX_RENDER_DPI {
+            if dpi == 0 || dpi > crate::render::MAX_RENDER_DPI {
                 return Err(AppError::invalid_request(format!(
-                    "resolution must be between 1 and {MAX_RENDER_DPI}"
+                    "resolution must be between 1 and {}",
+                    crate::render::MAX_RENDER_DPI
                 )));
             }
             Some(dpi)

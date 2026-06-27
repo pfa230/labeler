@@ -7,7 +7,7 @@ use std::io::Write as _;
 
 use crate::errors::{AppError, BatchFailure};
 use crate::models::{LabelInput, TemplateFormat};
-use crate::render::{render_sheet_pages, render_single_label, render_single_label_pdf};
+use crate::render::{render_sheet_pages, render_single_label_image, render_single_label_pdf};
 use crate::templates::TemplateDefinition;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,10 +16,12 @@ pub enum BatchMode {
     Print,
 }
 
-/// Render-time environment: variables map and datetime resolver threaded through batch rendering.
+/// Render-time environment: variables map, datetime resolver, and image render options threaded
+/// through batch rendering.
 pub struct BatchEnv<'a> {
     pub settings: &'a BTreeMap<String, String>,
     pub datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
+    pub render_opts: crate::render::ImageRenderOptions,
 }
 
 /// One print job's bytes plus the label indices it covers (single: one label; sheet: all labels).
@@ -92,12 +94,13 @@ fn render_single_batch(
                 env.settings,
                 env.datetime,
             ),
-            _ => render_single_label(
+            _ => render_single_label_image(
                 template,
                 &lbl.data,
                 lbl.option.as_ref(),
                 env.settings,
                 env.datetime,
+                env.render_opts,
             ),
         };
         match res {
@@ -231,7 +234,11 @@ mod tests {
             formats,
             now: chrono::Local::now(),
         });
-        BatchEnv { settings, datetime }
+        BatchEnv {
+            settings,
+            datetime,
+            render_opts: crate::render::ImageRenderOptions::default(),
+        }
     }
 
     #[test]

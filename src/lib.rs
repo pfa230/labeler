@@ -949,6 +949,43 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn print_bilevel_profile_renders_and_succeeds() {
+        let app = build_app();
+        // a fake printer configured bilevel
+        let body = json!({
+            "id": "bl",
+            "name": "bl",
+            "kind": "fake",
+            "config": { "fail": false, "render": { "color_mode": "bilevel", "resolution": 203 } }
+        })
+        .to_string();
+        let c = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", body))
+            .await
+            .expect("req");
+        assert_eq!(c.status(), StatusCode::CREATED);
+        // print a SINGLE template -> bilevel png path runs end-to-end
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "mode": "print",
+            "printer": "bl",
+            "labels": [ { "data": { "message": "Hi", "code": "Q" } } ]
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .expect("req");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let summary = json_response(resp).await;
+        // succeeded == 1 is LOAD-BEARING: the fake driver rejects a non-PNG artifact when
+        // configured bilevel, so success proves the print path rendered + sent a bilevel PNG.
+        assert_eq!(summary["succeeded"], 1);
+        assert_eq!(summary["failed"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
     async fn batch_sheet_print_failure_marks_all() {
         let app = build_app();
         create_fake_printer(&app, "bad-sheet-printer", true).await;
