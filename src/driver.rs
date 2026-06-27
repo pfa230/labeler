@@ -472,7 +472,10 @@ impl FakeDriver {
                 .get("resolution")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as u32),
-            loaded_media_width_mm: None,
+            loaded_media_width_mm: c
+                .get("loaded_media_width")
+                .and_then(|v| v.as_f64())
+                .map(|n| n as f32),
         });
         Self { fail, render, caps }
     }
