@@ -2397,6 +2397,56 @@ layout:
             .expect("req");
         assert_eq!(ok.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn print_render_profile_precedence() {
+        let app = build_app();
+        async fn print_ok(app: &axum::Router, id: &str, cfg: serde_json::Value) {
+            let body = json!({ "id": id, "name": id, "kind": "fake", "config": cfg }).to_string();
+            let c = app
+                .clone()
+                .oneshot(json_req("POST", "/api/printers", body))
+                .await
+                .expect("req");
+            assert_eq!(c.status(), StatusCode::CREATED, "create {id}");
+            let payload = json!({
+                "template": "brother_24mm_qr",
+                "mode": "print",
+                "printer": id,
+                "labels": [ { "data": { "message": "Hi", "code": "Q" } } ]
+            });
+            let resp = app
+                .clone()
+                .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+                .await
+                .expect("req");
+            assert_eq!(resp.status(), StatusCode::OK, "print {id}");
+            assert_eq!(json_response(resp).await["succeeded"], 1, "succeeded {id}");
+        }
+        // 1. no config.render + caps bilevel+png -> negotiated bilevel -> PNG
+        print_ok(
+            &app,
+            "neg",
+            json!({ "fail": false, "capabilities": { "bilevel": true, "accepts_png": true, "resolution": 203 } }),
+        )
+        .await;
+        // 2. config color + caps bilevel -> configured wins -> PDF (color/pdf)
+        print_ok(
+            &app,
+            "sup",
+            json!({ "fail": false, "render": { "color_mode": "color" }, "capabilities": { "bilevel": true, "accepts_png": true } }),
+        )
+        .await;
+        // 3. no config + no caps -> default Color -> PDF
+        print_ok(&app, "def", json!({ "fail": false })).await;
+        // 4. config bilevel + no caps -> configured bilevel -> PNG
+        print_ok(
+            &app,
+            "cfg",
+            json!({ "fail": false, "render": { "color_mode": "bilevel" } }),
+        )
+        .await;
+    }
 }
 
 #[cfg(test)]
