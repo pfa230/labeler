@@ -184,6 +184,32 @@ describe("PrintersSection", () => {
     expect(screen.getByText(/man-in-the-middle/i)).toBeInTheDocument();
   });
 
+  it("submits a bilevel render profile", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "bl" } });
+    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "BL" } });
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://h/q" } });
+    fireEvent.change(screen.getByLabelText(/color mode/i), { target: { value: "bilevel" } });
+    fireEvent.change(screen.getByLabelText(/print resolution/i), { target: { value: "203" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
+    const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
+    expect(body.config.render).toEqual({ color_mode: "bilevel", resolution: 203 });
+  });
+
+  it("omits render when color mode is the default", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
+    fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "c" } });
+    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "C" } });
+    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://h/q" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
+    const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
+    expect("render" in body.config).toBe(false);
+  });
+
   it("shows a server validation error inline when save is rejected", async () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
