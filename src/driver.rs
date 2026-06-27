@@ -804,6 +804,7 @@ mod tests {
         assert_eq!(loaded_media_width_mm(Some(1200)), Some(12.0));
         assert_eq!(loaded_media_width_mm(Some(2400)), Some(24.0));
         assert_eq!(loaded_media_width_mm(Some(0)), None);
+        assert_eq!(loaded_media_width_mm(Some(-5)), None);
         assert_eq!(loaded_media_width_mm(None), None);
     }
 
