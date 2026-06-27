@@ -1,5 +1,7 @@
 mod helpers;
 
+pub const MAX_RENDER_DPI: u32 = 1200;
+
 use crate::errors::AppError;
 use crate::models::{
     Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Size, SizeValue,

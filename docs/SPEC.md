@@ -616,6 +616,28 @@ variables, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, de
   | `password` | string | No | **Write-only.** Never returned in API responses (omitted, not nulled). On `PUT`, omit to keep the stored value; send `null` to clear it; send a string to replace it. Stored plaintext (must be replayed to the printer). |
   | `ca_cert` | string | No | Inline PEM certificate (`-----BEGIN CERTIFICATE-----`). Trusted only for this printer's TLS handshake. Ignored when `insecure` is `true`. |
   | `insecure` | bool | No | Default `false`. When `true`, TLS certificate verification is skipped entirely (`insecure` dominates `ca_cert`). Combining `insecure` with credentials enables MITM credential theft; use only in isolated lab setups. |
+  | `render` | object | No | Optional render profile for this printer. See sub-fields below. |
+
+  `render` sub-fields:
+
+  | Sub-field | Type | Required | Notes |
+  | --- | --- | --- | --- |
+  | `color_mode` | `"color"` \| `"bilevel"` | No | Default `"color"`. `"bilevel"` renders single/tape labels as a 1-bit `image/png` (global luminance threshold, no dithering). Sheet templates always render PDF regardless of this setting. |
+  | `resolution` | integer | No | DPI override for raster output, in `[1, 1200]`. Absent: uses the template `dpi` field. |
+
+  Bad `render` values (`color_mode` not in the allowed set, `resolution` out of `[1, 1200]` or non-integer)
+  are rejected with `422` at printer create (`POST /printers`) or replace (`PUT /printers/{id}`).
+
+  **Print format selection.** The CUPS driver selects the wire format per job:
+
+  - A printer with `render.color_mode = "bilevel"` AND a `single`/tape template: renders the label as a
+    1-bit `image/png` (the same global-threshold bilevel conversion as `?color_mode=bilevel` on
+    `POST /render/label`) and sends it with IPP `document-format: image/png`.
+  - All other cases (sheet templates, or a `color` printer): render PDF and send with
+    IPP `document-format: application/pdf`.
+
+  This is slice 2 of [ADR-0033](adr/0033-capability-aware-rendering.md): printer-config-driven format
+  selection. IPP capability auto-negotiation and the media-width gate are later slices.
 
   Credentials sent over `ipp://` (not `ipps://`) travel unencrypted; use `ipps://` for any
   credential-carrying connection. See [ADR-0032](adr/0032-ipp-auth-custom-ca.md).
@@ -695,6 +717,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-06-27**: Per-printer render profile (ADR-0033 slice 2; #92). The `cups` printer config gains an
+  optional `render` object: `{ color_mode?: "color"|"bilevel" (default "color"), resolution?: int [1,1200] }`.
+  Bad values are `422` at create/replace. On the print path, a printer with `render.color_mode = "bilevel"`
+  renders `single`/tape labels as a 1-bit `image/png` (global luminance threshold, same conversion as the
+  `?color_mode=bilevel` preview param) and sends it with IPP `document-format: image/png`. Sheet templates
+  and `color` printers continue to render PDF (`application/pdf`). IPP auto-negotiation and the media-width
+  gate are later slices. See the Printing section for the full `render` field table.
 
 - **2026-06-26**: `POST /render/label` gains two optional PNG render params (ADR-0033 slice 1; #92).
   `?color_mode=color|bilevel` (default `color`): `bilevel` post-processes the raster to pure 1-bit

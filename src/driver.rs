@@ -14,14 +14,40 @@ pub enum ArtifactFormat {
     Raster,
 }
 
+/// Selects the artifact format for the print path based on the driver's color mode and template shape.
+/// BiLevel + single -> PNG (fits in one IPP job); everything else -> PDF.
+pub fn print_artifact_format(
+    color_mode: crate::render::ColorMode,
+    is_single: bool,
+) -> ArtifactFormat {
+    if matches!(color_mode, crate::render::ColorMode::BiLevel) && is_single {
+        ArtifactFormat::Png
+    } else {
+        ArtifactFormat::Pdf
+    }
+}
+
+fn ipp_document_format(f: ArtifactFormat) -> &'static str {
+    match f {
+        ArtifactFormat::Pdf => "application/pdf",
+        ArtifactFormat::Png => "image/png",
+        ArtifactFormat::Zpl => "application/vnd.zebra-zpl",
+        ArtifactFormat::Raster => "image/pwg-raster",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PrintOptions {
     pub copies: u32,
+    pub artifact_format: ArtifactFormat,
 }
 
 impl Default for PrintOptions {
     fn default() -> Self {
-        Self { copies: 1 }
+        Self {
+            copies: 1,
+            artifact_format: ArtifactFormat::Pdf,
+        }
     }
 }
 
@@ -41,8 +67,10 @@ pub enum PrintError {
 
 #[async_trait]
 pub trait PrinterDriver: Send + Sync {
-    /// The artifact format this driver consumes; the dispatcher renders to it before `send`.
-    fn accepted_format(&self) -> ArtifactFormat;
+    /// The render options this driver prefers; the dispatcher uses them to select the render path.
+    fn render_options(&self) -> crate::render::ImageRenderOptions {
+        crate::render::ImageRenderOptions::default()
+    }
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError>;
 }
 
@@ -103,6 +131,14 @@ pub fn build_driver(kind: &str, config: &JsonValue) -> Result<Box<dyn PrinterDri
 }
 
 #[derive(Debug, Deserialize)]
+struct RenderProfileConfig {
+    #[serde(default)]
+    color_mode: Option<String>,
+    #[serde(default)]
+    resolution: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CupsConfig {
     uri: String,
     #[serde(default)]
@@ -113,6 +149,8 @@ struct CupsConfig {
     ca_cert: Option<String>,
     #[serde(default)]
     insecure: bool,
+    #[serde(default)]
+    render: Option<RenderProfileConfig>,
 }
 
 impl CupsConfig {
@@ -133,6 +171,23 @@ impl CupsConfig {
                 ));
             }
         }
+        if let Some(r) = &cfg.render {
+            if let Some(cm) = &r.color_mode {
+                if cm != "color" && cm != "bilevel" {
+                    return Err(DriverError::Config(format!(
+                        "render.color_mode must be color or bilevel (got '{cm}')"
+                    )));
+                }
+            }
+            if let Some(res) = r.resolution {
+                if res == 0 || res > crate::render::MAX_RENDER_DPI {
+                    return Err(DriverError::Config(format!(
+                        "render.resolution must be between 1 and {}",
+                        crate::render::MAX_RENDER_DPI
+                    )));
+                }
+            }
+        }
         Ok(cfg)
     }
 }
@@ -144,28 +199,44 @@ pub struct CupsDriver {
     password: Option<String>,
     ca_cert: Option<String>,
     insecure: bool,
+    render: crate::render::ImageRenderOptions,
 }
 
 impl CupsDriver {
     fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
         let cfg = CupsConfig::from_value(config)?;
+        let render = cfg
+            .render
+            .as_ref()
+            .map(|r| {
+                let color_mode = match r.color_mode.as_deref() {
+                    Some("bilevel") => crate::render::ColorMode::BiLevel,
+                    _ => crate::render::ColorMode::Color,
+                };
+                crate::render::ImageRenderOptions {
+                    color_mode,
+                    resolution_dpi: r.resolution,
+                }
+            })
+            .unwrap_or_default();
         Ok(Self {
             uri: cfg.uri,
             username: cfg.username,
             password: cfg.password,
             ca_cert: cfg.ca_cert,
             insecure: cfg.insecure,
+            render,
         })
     }
 }
 
 #[async_trait]
 impl PrinterDriver for CupsDriver {
-    fn accepted_format(&self) -> ArtifactFormat {
-        ArtifactFormat::Pdf
+    fn render_options(&self) -> crate::render::ImageRenderOptions {
+        self.render
     }
 
-    async fn send(&self, artifact: &[u8], _opts: &PrintOptions) -> Result<(), PrintError> {
+    async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError> {
         use ipp::prelude::*;
 
         let uri: Uri = self.uri.parse().map_err(|err| {
@@ -173,7 +244,7 @@ impl PrinterDriver for CupsDriver {
         })?;
         let payload = ipp::payload::IppPayload::new(std::io::Cursor::new(artifact.to_vec()));
         let operation = IppOperationBuilder::print_job(uri.clone(), payload)
-            .document_format("application/pdf")
+            .document_format(ipp_document_format(opts.artifact_format))
             .job_title("labeler")
             .build()
             .map_err(|err| PrintError::Transport(err.to_string()))?;
@@ -207,6 +278,7 @@ impl PrinterDriver for CupsDriver {
 #[cfg(test)]
 struct FakeDriver {
     fail: bool,
+    render: crate::render::ImageRenderOptions,
 }
 
 #[cfg(test)]
@@ -216,23 +288,47 @@ impl FakeDriver {
             .get("fail")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        Self { fail }
+        let render = config
+            .get("render")
+            .map(|r| {
+                let color_mode = match r.get("color_mode").and_then(|v| v.as_str()) {
+                    Some("bilevel") => crate::render::ColorMode::BiLevel,
+                    _ => crate::render::ColorMode::Color,
+                };
+                let resolution_dpi = r
+                    .get("resolution")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32);
+                crate::render::ImageRenderOptions {
+                    color_mode,
+                    resolution_dpi,
+                }
+            })
+            .unwrap_or_default();
+        Self { fail, render }
     }
 }
 
 #[cfg(test)]
 #[async_trait]
 impl PrinterDriver for FakeDriver {
-    fn accepted_format(&self) -> ArtifactFormat {
-        ArtifactFormat::Pdf
+    fn render_options(&self) -> crate::render::ImageRenderOptions {
+        self.render
     }
 
-    async fn send(&self, _artifact: &[u8], _opts: &PrintOptions) -> Result<(), PrintError> {
+    async fn send(&self, artifact: &[u8], _opts: &PrintOptions) -> Result<(), PrintError> {
         if self.fail {
-            Err(PrintError::Transport("fake failure".to_string()))
-        } else {
-            Ok(())
+            return Err(PrintError::Transport("fake failure".to_string()));
         }
+        // A bilevel-configured fake printer must receive PNG bytes (proves the profile drove the render).
+        if matches!(self.render.color_mode, crate::render::ColorMode::BiLevel)
+            && !artifact.starts_with(b"\x89PNG")
+        {
+            return Err(PrintError::Transport(
+                "bilevel printer expected a PNG artifact".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -295,7 +391,10 @@ mod tests {
         assert!(validate_config("zebra", &json!({})).is_err()); // unknown kind
 
         let driver = build_driver("cups", &json!({ "uri": "ipp://h/p" })).unwrap();
-        assert_eq!(driver.accepted_format(), ArtifactFormat::Pdf);
+        assert!(matches!(
+            driver.render_options().color_mode,
+            crate::render::ColorMode::Color
+        ));
         assert!(build_driver("zebra", &json!({})).is_err());
     }
 
@@ -328,6 +427,82 @@ mod tests {
         let mut d = json!({ "uri": "ipp://h/q" });
         merge_secrets("cups", &mut d, None);
         assert!(d.get("password").is_none());
+    }
+
+    #[test]
+    fn cups_config_parses_render_profile() {
+        let cfg = CupsConfig::from_value(&json!({
+            "uri": "ipp://h/q",
+            "render": { "color_mode": "bilevel", "resolution": 203 }
+        }))
+        .unwrap();
+        let r = cfg.render.as_ref().unwrap();
+        assert_eq!(r.color_mode.as_deref(), Some("bilevel"));
+        assert_eq!(r.resolution, Some(203));
+    }
+
+    #[test]
+    fn cups_config_rejects_bad_render_profile() {
+        assert!(CupsConfig::from_value(
+            &json!({ "uri": "ipp://h/q", "render": { "color_mode": "nope" } })
+        )
+        .is_err());
+        assert!(CupsConfig::from_value(
+            &json!({ "uri": "ipp://h/q", "render": { "resolution": 99999 } })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn cups_driver_render_options_reflects_profile() {
+        use crate::render::ColorMode;
+        let d = CupsDriver::from_value(&json!({ "uri": "ipp://h/q", "render": { "color_mode": "bilevel", "resolution": 203 } })).unwrap();
+        let opts = d.render_options();
+        assert!(matches!(opts.color_mode, ColorMode::BiLevel));
+        assert_eq!(opts.resolution_dpi, Some(203));
+        // default when absent
+        let d2 = CupsDriver::from_value(&json!({ "uri": "ipp://h/q" })).unwrap();
+        assert!(matches!(d2.render_options().color_mode, ColorMode::Color));
+    }
+
+    #[test]
+    fn print_artifact_format_rules() {
+        use crate::render::ColorMode;
+        assert_eq!(
+            print_artifact_format(ColorMode::BiLevel, true),
+            ArtifactFormat::Png
+        );
+        assert_eq!(
+            print_artifact_format(ColorMode::BiLevel, false),
+            ArtifactFormat::Pdf
+        );
+        assert_eq!(
+            print_artifact_format(ColorMode::Color, true),
+            ArtifactFormat::Pdf
+        );
+    }
+
+    #[test]
+    fn ipp_document_format_mapping() {
+        assert_eq!(ipp_document_format(ArtifactFormat::Pdf), "application/pdf");
+        assert_eq!(ipp_document_format(ArtifactFormat::Png), "image/png");
+        assert_eq!(
+            ipp_document_format(ArtifactFormat::Raster),
+            "image/pwg-raster"
+        );
+        assert_eq!(
+            ipp_document_format(ArtifactFormat::Zpl),
+            "application/vnd.zebra-zpl"
+        );
+    }
+
+    #[test]
+    fn fake_driver_render_options_from_config() {
+        use crate::render::ColorMode;
+        let d = FakeDriver::from_value(
+            &json!({ "fail": false, "render": { "color_mode": "bilevel" } }),
+        );
+        assert!(matches!(d.render_options().color_mode, ColorMode::BiLevel));
     }
 
     #[tokio::test]
