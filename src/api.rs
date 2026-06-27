@@ -1247,11 +1247,29 @@ async fn run_batch(
             }
             let driver = crate::driver::build_driver(&printer.kind, &printer.config)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
-            let render_opts = match driver.configured_render_options() {
+            let configured = driver.configured_render_options();
+            let template_media_width = match &template.format {
+                crate::models::TemplateFormat::Single { media_width, .. } => *media_width,
+                _ => None,
+            };
+            let caps = if configured.is_none() || template_media_width.is_some() {
+                driver.capabilities().await
+            } else {
+                None
+            };
+            // media preflight gate (fail-open): reject ONLY on a confident mismatch.
+            if let (Some(mw), Some(got)) = (
+                template_media_width,
+                caps.as_ref().and_then(|c| c.loaded_media_width_mm),
+            ) {
+                let want_mm = if template.unit == "in" { mw * 25.4 } else { mw };
+                if (want_mm - got).abs() > 1.0 {
+                    return Err(AppError::media_mismatch(want_mm, got));
+                }
+            }
+            let render_opts = match configured {
                 Some(o) => o,
-                None => driver
-                    .capabilities()
-                    .await
+                None => caps
                     .as_ref()
                     .map(crate::driver::negotiated_profile)
                     .unwrap_or_default(),

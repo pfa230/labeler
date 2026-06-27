@@ -25,6 +25,7 @@ const CODE_PRINTER_NOT_FOUND: &str = "PrinterNotFound";
 const CODE_PRINTER_EXISTS: &str = "PrinterExists";
 const CODE_PRINTER_INVALID: &str = "PrinterInvalid";
 const CODE_PRINTER_DISABLED: &str = "PrinterDisabled";
+const CODE_MEDIA_MISMATCH: &str = "MediaMismatch";
 const CODE_PRINT_FAILED: &str = "PrintFailed";
 const CODE_INTERNAL: &str = "Internal";
 const CODE_BATCH_INVALID: &str = "BatchInvalid";
@@ -242,6 +243,15 @@ impl AppError {
             CODE_PRINTER_DISABLED,
             format!("printer '{id}' is disabled"),
             Some(json!({ "printer": id })),
+        )
+    }
+
+    pub fn media_mismatch(want_mm: f32, got_mm: f32) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            CODE_MEDIA_MISMATCH,
+            format!("template requires {want_mm}mm media but {got_mm}mm is loaded"),
+            None,
         )
     }
 

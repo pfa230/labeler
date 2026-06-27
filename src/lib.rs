@@ -2447,6 +2447,85 @@ layout:
         )
         .await;
     }
+
+    #[tokio::test]
+    async fn print_media_gate() {
+        let app = build_app();
+
+        async fn mk(app: &axum::Router, id: &str, caps: serde_json::Value) {
+            let body = json!({
+                "id": id, "name": id, "kind": "fake",
+                "config": { "fail": false, "capabilities": caps }
+            })
+            .to_string();
+            let c = app
+                .clone()
+                .oneshot(json_req("POST", "/api/printers", body))
+                .await
+                .expect("req");
+            assert_eq!(c.status(), StatusCode::CREATED);
+        }
+
+        // Superset of fields: covers brother_24mm (message) and homebox-qr (id, message).
+        async fn print_resp(
+            app: &axum::Router,
+            template: &str,
+            printer: &str,
+        ) -> axum::response::Response {
+            let data = json!({
+                "message": "Hi", "code": "Q", "id": "A1",
+                "url": "https://x/A1", "name": "N", "tags": "T", "description": "D"
+            });
+            let payload = json!({
+                "template": template,
+                "mode": "print",
+                "printer": printer,
+                "labels": [{ "data": data }]
+            });
+            app.clone()
+                .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+                .await
+                .expect("req")
+        }
+
+        // 1. brother_24mm (media_width 24) + loaded 12mm -> mismatch -> 409 MediaMismatch
+        mk(&app, "wrong", json!({ "loaded_media_width": 12 })).await;
+        let r = print_resp(&app, "brother_24mm", "wrong").await;
+        assert_eq!(r.status(), StatusCode::CONFLICT);
+        assert_eq!(json_response(r).await["error"]["code"], "MediaMismatch");
+
+        // 2. brother_24mm + loaded 24mm -> match -> 200
+        mk(&app, "match", json!({ "loaded_media_width": 24 })).await;
+        assert_eq!(
+            print_resp(&app, "brother_24mm", "match").await.status(),
+            StatusCode::OK
+        );
+
+        // 3. loaded width unknown -> gate inert -> 200
+        mk(&app, "unknown", json!({})).await;
+        assert_eq!(
+            print_resp(&app, "brother_24mm", "unknown").await.status(),
+            StatusCode::OK
+        );
+
+        // 4. homebox-qr (no media_width) + loaded 12mm -> gate inert -> 200
+        // Seed the vars.qr_base_url variable that homebox-qr requires.
+        let seed = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/variables/qr_base_url",
+                json!({ "value": "https://lab.example/items" }).to_string(),
+            ))
+            .await
+            .expect("seed var");
+        assert_eq!(seed.status(), StatusCode::OK);
+        mk(&app, "nomw", json!({ "loaded_media_width": 12 })).await;
+        assert_eq!(
+            print_resp(&app, "homebox-qr", "nomw").await.status(),
+            StatusCode::OK
+        );
+    }
 }
 
 #[cfg(test)]
