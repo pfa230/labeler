@@ -1,10 +1,7 @@
 /target
 **/*.rs.bk
 
-# Runtime app-state (SQLite)
-/data/
-
-# Local dev config dir (LABELER_CONFIG_DIR=./config-dev)
+# Local dev config dir (LABELER_CONFIG_DIR=./config-dev): DB + templates + assets
 /config-dev/
 
 *.pdf
