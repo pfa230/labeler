@@ -13,8 +13,8 @@ services:
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
     volumes:
-      - labeler-data:/app/data
-      - labeler-templates:/app/templates
+      - labeler-config:/config
+      # - ./config:/config
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -25,7 +25,5 @@ services:
       start_period: 5s
     restart: unless-stopped
 volumes:
-  labeler-data:
-    name: labeler-data
-  labeler-templates:
-    name: labeler-templates
+  labeler-config:
+    name: labeler-config
