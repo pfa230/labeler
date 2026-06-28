@@ -258,8 +258,8 @@ curl -X POST http://labeler.lan:8080/api/print \
 
 ## 3. Template schema
 
-Templates are `*.yaml` / `*.yml` files in the templates directory (`LABELER_TEMPLATES_DIR`, default
-`templates/`). Top-level fields:
+Templates are `*.yaml` / `*.yml` files in the templates directory (`{config}/templates/`, where
+`{config}` is `LABELER_CONFIG_DIR`). Top-level fields:
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -366,7 +366,7 @@ be > 0. (`line` does not use `size`; see §4.1.)
   traversal guard) or `name` (a data key whose value is a base64 data URI, `data:<mime>;base64,...`),
   plus placement and optional `fit` (`contain` default, `cover`, `stretch`). Formats: PNG, JPEG, SVG.
   Bytes are decoded server-side and injected into Typst as a virtual file; there is no server-side URL
-  fetching (see ADR-0009). The assets root is `LABELER_ASSETS_DIR` (default `assets/`). Missing data
+  fetching (see ADR-0009). The assets root is `{config}/assets/` (`LABELER_CONFIG_DIR`). Missing data
   key → `MissingField`; bad base64 / unsupported format / asset path problems → `UnsupportedLayoutItem`.
 - **`line`** — `at` (start, default `[0,0]`) and `to` (end), both absolute in frame coordinates, plus
   `thickness` (> 0). Lines have no box `size`/`fit`/rotation. Endpoints must differ and lie within the
@@ -603,8 +603,8 @@ unified `/v1/entities` endpoint (`isLocation=false`/`true`); see [ADR-0021](adr/
 ## Printing
 
 Architecture: [ADR-0007](adr/0007-printer-architecture-and-transport-model.md). App state (printers,
-variables, a job log) lives in SQLite under the data dir (`LABELER_DATA_DIR`, default `data/`), behind a
-`store` module.
+variables, a job log) lives in SQLite at `{config}/labeler.db` (`LABELER_CONFIG_DIR`, default `/config`),
+behind a `store` module.
 
 - **Printers** are "machine" instances `{ id, name, kind, config, enabled }` with an opaque
   per-`kind` JSON `config`, managed via `/printers` CRUD (`id` is a validated slug). `kind` selects a
@@ -770,6 +770,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-28**: Single config dir (ADR-0034; #93). All persistent state moves under one
+  `LABELER_CONFIG_DIR` (default `/config`): `{config}/labeler.db`, `{config}/templates/`, and
+  `{config}/assets/`. The per-dir env vars `LABELER_DATA_DIR`, `LABELER_TEMPLATES_DIR`, and
+  `LABELER_ASSETS_DIR` are removed. On first run, the bundled starter templates are seeded into
+  `{config}/templates/` (gated by a `templates_seeded` DB flag); after that the dir is fully
+  user-owned (deletes are permanent; no re-injection on upgrade). See §3, §4.1 (image item),
+  and the Printing section for updated paths, and [ADR-0034](adr/0034-single-config-dir.md).
+
 - **2026-06-27**: Print preflight media gate (ADR-0033 slice 4; completes #92). `single` templates may
   declare an optional `media_width` field (nominal tape width in the template `unit`; must be > 0). When
   a template declares `media_width` AND the CUPS printer's `Get-Printer-Attributes` response contains a
@@ -815,11 +823,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   transport, mirrors `/batch`). Intended for trusted-LAN integrations (Grocy, scripts); do not
   expose to the internet. See §2.3.
 
-- **2026-06-25**: The templates and fonts directories are now env-configurable (#38) via
-  `LABELER_TEMPLATES_DIR` (default `templates/`) and `LABELER_FONTS_DIR` (default `fonts/`), mirroring
-  `LABELER_DATA_DIR`/`LABELER_UI_DIR`. A custom fonts dir must contain `InterVariable.ttf` (used by both
-  Typst glyph search and `fontdue` measurement). Defaults are unchanged, so existing deploys and the
-  container image are unaffected.
+- **2026-06-25**: The fonts directory is env-configurable (#38 partial) via `LABELER_FONTS_DIR`
+  (default `fonts/`). A custom fonts dir must contain `InterVariable.ttf` (used by both Typst glyph
+  search and `fontdue` measurement). (`LABELER_TEMPLATES_DIR` and `LABELER_DATA_DIR` from this issue
+  are superseded by `LABELER_CONFIG_DIR`; see 2026-06-28 above.)
 
 - **2026-06-25**: Current-time interpolation token (#76; ADR-0028). `{datetime}` (bare) resolves to
   the current local date in ISO format (`%Y-%m-%d`). `{datetime.<name>}` resolves a named strftime
