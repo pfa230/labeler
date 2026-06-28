@@ -42,8 +42,20 @@ async fn main() {
         )
         .init();
 
-    let templates_dir =
-        labeler::resolve_dir(std::env::var_os("LABELER_TEMPLATES_DIR"), "templates");
+    let config_dir = labeler::resolve_dir(std::env::var_os("LABELER_CONFIG_DIR"), "/config");
+    let templates_dir = config_dir.join("templates");
+    std::fs::create_dir_all(&templates_dir).expect("failed to create templates dir");
+    // assets dir must exist: render::helpers::resolve_image_asset canonicalizes {config}/assets and
+    // fails if it is missing (the entrypoint covers Docker, but local/non-entrypoint runs need this).
+    std::fs::create_dir_all(config_dir.join("assets")).expect("failed to create assets dir");
+
+    let store = Store::open(&config_dir.join("labeler.db"))
+        .unwrap_or_else(|err| panic!("failed to open store: {err}"));
+
+    labeler::bundled::seed_templates_once(&store, &templates_dir)
+        .await
+        .unwrap_or_else(|err| panic!("failed to seed bundled templates: {err}"));
+
     let templates = TemplateRegistry::load_from_dir(&templates_dir)
         .unwrap_or_else(|err| panic!("failed to load templates: {err}"));
     tracing::info!(count = templates.len(), "templates loaded");
@@ -67,13 +79,6 @@ async fn main() {
             UiDistStatus::Fresh | UiDistStatus::Unknown => {}
         }
     }
-
-    let data_dir = std::env::var_os("LABELER_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("data"));
-    std::fs::create_dir_all(&data_dir).expect("failed to create data dir");
-    let store = Store::open(&data_dir.join("labeler.db"))
-        .unwrap_or_else(|err| panic!("failed to open store: {err}"));
 
     if let (Ok(u), Ok(p)) = (
         std::env::var("LABELER_INIT_USER"),

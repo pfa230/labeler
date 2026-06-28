@@ -613,9 +613,7 @@ impl ImageFmt {
 }
 
 pub(super) fn assets_root() -> PathBuf {
-    std::env::var_os("LABELER_ASSETS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("assets"))
+    crate::resolve_dir(std::env::var_os("LABELER_CONFIG_DIR"), "/config").join("assets")
 }
 
 pub(super) fn parse_image_data_uri(value: &str) -> Result<(Vec<u8>, ImageFmt), AppError> {

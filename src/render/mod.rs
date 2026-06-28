@@ -1586,18 +1586,18 @@ mod tests {
     fn render_static_image_src() {
         use base64::Engine as _;
         use std::time::{SystemTime, UNIX_EPOCH};
-        let mut dir = std::env::temp_dir();
         let n = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        dir.push(format!("labeler_render_assets_{n}"));
-        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = std::env::temp_dir().join(format!("labeler_render_cfg_{n}"));
+        let assets_dir = cfg.join("assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(PNG_1X1_B64)
             .unwrap();
-        std::fs::write(dir.join("logo.png"), &bytes).unwrap();
-        std::env::set_var("LABELER_ASSETS_DIR", &dir);
+        std::fs::write(assets_dir.join("logo.png"), &bytes).unwrap();
+        std::env::set_var("LABELER_CONFIG_DIR", &cfg);
 
         let data = HashMap::new();
         let png = render_single_label(
@@ -1620,8 +1620,8 @@ mod tests {
         )
         .is_err());
 
-        std::env::remove_var("LABELER_ASSETS_DIR");
-        std::fs::remove_dir_all(&dir).ok();
+        std::env::remove_var("LABELER_CONFIG_DIR");
+        std::fs::remove_dir_all(&cfg).ok();
     }
 
     #[test]
