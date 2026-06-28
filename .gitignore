@@ -4,6 +4,9 @@
 # Runtime app-state (SQLite)
 /data/
 
+# Local dev config dir (LABELER_CONFIG_DIR=./config-dev)
+/config-dev/
+
 *.pdf
 *.db
 
