@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod batch;
+pub mod bundled;
 pub mod connector;
 mod convert;
 pub mod datetime_fmt;

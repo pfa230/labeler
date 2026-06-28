@@ -18,7 +18,7 @@ docker compose up -d --build
 ```
 
 `docker compose up` builds the image locally (`pull_policy: build`) and starts the service. The container
-starts as root, its entrypoint chowns the data and templates dirs to `PUID:PGID` (default `1000:1000`),
+starts as root, its entrypoint chowns `/config` to `PUID:PGID` (default `1000:1000`),
 then drops to that user via `gosu` and runs the service. Set `PUID`/`PGID` (in `.env`) to your host user
 so volumes and bind-mounts line up. No separate init container is needed. Health is at `GET /api/health`.
 
@@ -32,7 +32,7 @@ CI publishes images to `ghcr.io/pfa230/labeler`:
 Pull and run it:
 
 ```bash
-docker run -d -p 8080:8080 -v labeler-data:/app/data -v labeler-templates:/app/templates \
+docker run -d -p 8080:8080 -v labeler-config:/config \
   ghcr.io/pfa230/labeler:latest
 ```
 
@@ -58,8 +58,9 @@ The common knobs, set in `.env` (Compose interpolates them); the full environmen
 | `RUST_LOG` | `labeler=info,tower_http=info` | Log filter (tracing EnvFilter syntax). |
 
 Everything else is fixed inside the image: the container always listens on `8080` (`PORT` is reserved so
-the healthcheck stays valid; remap the host side with `HOST_PORT`), data lives at `/app/data`, the UI at
-`/app/ui/dist`, templates at `/app/templates`, fonts at `/app/fonts`.
+the healthcheck stays valid; remap the host side with `HOST_PORT`), all persistent state lives under
+`/config` (`/config/labeler.db`, `/config/templates/`, `/config/assets/`), the UI at `/app/ui/dist`,
+and fonts at `/app/fonts`.
 
 ### Full environment contract
 
@@ -75,32 +76,28 @@ for each:
 | `RUST_LOG` | `labeler=info,tower_http=info` | from `.env` | `.env` |
 | `PUID` | `1000` | `1000` | `.env` (the uid the service runs as; set to your `id -u`) |
 | `PGID` | `1000` | `1000` | `.env` (the gid the service runs as; set to your `id -g`) |
-| `LABELER_DATA_DIR` | `data/` | `/app/data` | mount the `labeler-data` volume |
-| `LABELER_TEMPLATES_DIR` | `templates/` | `/app/templates` | mount the `labeler-templates` volume |
+| `LABELER_CONFIG_DIR` | `/config` | `/config` | mount the `labeler-config` volume |
 | `LABELER_FONTS_DIR` | `fonts/` | `/app/fonts` | baked (bind-mount to override; the dir must contain `InterVariable.ttf`) |
 | `LABELER_UI_DIR` | `ui/dist` | `/app/ui/dist` | baked |
-| `LABELER_ASSETS_DIR` | `assets/` | `/app/assets` (empty) | bind-mount a host assets dir (see below) |
 | `LABELER_INIT_USER` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_INIT_PASSWORD` | unset | unset | `.env` (first-run bootstrap; see Authentication) |
 | `LABELER_TRUST_PROXY` | `false` | unset | `.env` (set `true` behind a TLS-terminating proxy) |
 | `LABELER_NO_AUTH` | unset | unset | `.env` (set `true` for single-user LAN-trust homelab; see Authentication) |
 
-Templates (`/app/templates`) and fonts (`/app/fonts`) are CWD-relative app paths fixed in the image;
-making them env-configurable is tracked in issue #38. The QR base URL is a runtime *variable* (the
-Variables section of the Settings screen, or `PUT /api/variables/qr_base_url`), not an env var.
+The QR base URL is a runtime *variable* (the Variables section of the Settings screen, or
+`PUT /api/variables/qr_base_url`), not an env var.
 
 ### Image assets (templates using `image.src`)
 
-Templates can reference a bundled image by path (`image.src`), resolved under the assets root
-(`LABELER_ASSETS_DIR`, `/app/assets` in the image). The image ships an empty `/app/assets`. If you use
-`image.src` templates, provide the files by bind-mounting a host directory read-only, e.g. add to the
-`labeler` service:
+Templates can reference a bundled image by path (`image.src`), resolved under `{config}/assets/`.
+The assets directory is created inside `/config` on first run alongside the database and templates.
+If you use `image.src` templates, drop your asset files into `/config/assets/` (on the host, inside
+the `labeler-config` volume), or bind-mount a host directory over it, e.g. add to the `labeler` service:
 
 ```yaml
     volumes:
-      - labeler-data:/app/data
-      - labeler-templates:/app/templates
-      - ./assets:/app/assets:ro
+      - labeler-config:/config
+      - ./assets:/config/assets:ro
 ```
 
 Templates that supply images as data URIs (`image.name`) need no assets directory.
@@ -150,35 +147,37 @@ the UI and the first-run setup screen creates the first account, or seed it from
 
 ## Data, volumes, and backups
 
-Two named volumes hold all state:
+One named volume holds all state:
 
-- `labeler-data`: the SQLite database (printers, settings, job log).
-- `labeler-templates`: label templates (seeded with the bundled starters on first creation; your uploads
-  persist here across image updates).
+- `labeler-config`: the SQLite database, label templates, and assets. The entrypoint chowns `/config`
+  to `PUID:PGID` on every start.
+
+**Bundled templates are seeded on first run.** When the service starts with an empty (or new) config
+dir, it writes the bundled starter templates into `{config}/templates/` and records a `templates_seeded`
+flag in the database. After that, `{config}/templates/` is fully user-owned: add, edit, and delete
+templates freely. Deletes are permanent; the bundled templates are NOT re-injected on upgrade.
 
 **`docker compose down -v` and `docker volume rm` DELETE this state.** A plain `docker compose down`
-keeps the volumes; only `-v` wipes them. After a wipe, templates re-seed from the image and
-settings/printers are gone.
+keeps the volume; only `-v` wipes it. After a wipe, the bundled templates are seeded again (since
+the flag is gone with the database) and other settings/printers are lost.
 
 Back up with the app stopped (a file-level copy of a live SQLite db can be inconsistent):
 
 ```bash
 docker compose stop labeler
-docker run --rm -v labeler-data:/d -v "$PWD":/b busybox tar czf /b/labeler-data.tgz -C /d .
-docker run --rm -v labeler-templates:/d -v "$PWD":/b busybox tar czf /b/labeler-templates.tgz -C /d .
+docker run --rm -v labeler-config:/d -v "$PWD":/b busybox tar czf /b/labeler-config.tgz -C /d .
 docker compose start labeler
 ```
 
-Restore by extracting the tarballs back into the volumes (app stopped), e.g.
-`docker run --rm -v labeler-data:/d -v "$PWD":/b busybox tar xzf /b/labeler-data.tgz -C /d`.
+Restore by extracting the tarball back into the volume (app stopped):
+`docker run --rm -v labeler-config:/d -v "$PWD":/b busybox tar xzf /b/labeler-config.tgz -C /d`.
 
 ### Bind mounts (advanced)
 
-The default uses named volumes. Whether you use named volumes or host bind-mounts, the entrypoint
-chowns the data and templates dirs to `PUID:PGID` on every start, so set `PUID`/`PGID` to the owner of
-your bind-mounted host dirs (usually your own `id -u`/`id -g`) and they line up automatically. A
-bind-mounted templates dir does not get the starters; copy them in if you want them. An empty templates
-dir is not an error, the service just starts with zero templates.
+The default uses a named volume. To use a host bind-mount instead, replace `-v labeler-config:/config`
+with `-v /your/host/path:/config`. The entrypoint chowns `/config` to `PUID:PGID` on every start, so
+set `PUID`/`PGID` to the owner of your bind-mounted host dir (usually your own `id -u`/`id -g`) and
+ownership lines up automatically.
 
 ## Debugging
 
