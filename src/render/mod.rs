@@ -923,51 +923,136 @@ impl<'a> RenderContext<'a> {
         }
         let point = placement.at.point();
         let left = point.x;
-        // On a dynamic-width (auto-length) label, an auto-width container must span only
-        // the remaining width from its left edge, not the full frame width. This matches the
-        // measurement pass which budgets (budget_w - at.x) - padding for the container.
-        let width = if self.auto_length.is_some() && placement.size.0[0].is_auto() {
-            (self.frame_width_units - left).max(0.0)
-        } else {
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
-                .0
-        };
+        let rotation = placement
+            .rotate
+            .and_then(Rotation::from_degrees)
+            .unwrap_or(Rotation::R0);
+
+        if !rotation.is_rotated() {
+            // R0: unchanged path (output byte-identical to before).
+            // On a dynamic-width (auto-length) label, an auto-width container must span only
+            // the remaining width from its left edge, not the full frame width. This matches the
+            // measurement pass which budgets (budget_w - at.x) - padding for the container.
+            let width = if self.auto_length.is_some() && placement.size.0[0].is_auto() {
+                (self.frame_width_units - left).max(0.0)
+            } else {
+                self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+                    .0
+            };
+            let height = self
+                .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+                .1;
+            let bottom = point.y;
+            let top = bottom + height;
+
+            let inner_width = width - padding.left - padding.right;
+            let inner_height = height - padding.top - padding.bottom;
+            let child_auto_length = self.auto_length.as_ref().map(|al| AutoLength {
+                texts: al.texts,
+                cursor: al.cursor,
+            });
+            let context = RenderContext::new(
+                (inner_width, inner_height),
+                self.unit,
+                self.data,
+                self.selected_option,
+                self.env,
+                self.images,
+                child_auto_length,
+            );
+            let child_source = context.render_items(items)?;
+            let content = if padding == &crate::models::Padding::ZERO {
+                child_source
+            } else {
+                let pad_left = format_length(padding.left, self.unit)?;
+                let pad_top = format_length(padding.top, self.unit)?;
+                format!("#place(top + left, dx: {pad_left}, dy: {pad_top})[{child_source}]")
+            };
+            let content = self.wrap_rotation(content, placement.rotate);
+
+            let dx = format_length(left, self.unit)?;
+            let dy = format_length(self.frame_height_units - top, self.unit)?;
+            let box_width = format_length(width, self.unit)?;
+            let box_height = format_length(height, self.unit)?;
+
+            if let Some(frame) = frame {
+                let stroke = format_length(frame.thickness, self.unit)?;
+                let radius = if frame.rounded {
+                    format_length(frame.thickness * 2.0, self.unit)?
+                } else {
+                    format_length(0.0, self.unit)?
+                };
+                let frame_content = format!(
+                    "#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})"
+                );
+                let frame_content = self.wrap_rotation(frame_content, placement.rotate);
+                writeln!(
+                    out,
+                    "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
+                )
+                .map_err(|err| {
+                    AppError::render_failed(format!("failed to build typst source: {err}"))
+                })?;
+            }
+
+            writeln!(
+                out,
+                "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
+            )
+            .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+
+            return Ok(());
+        }
+
+        // Rotated path (R90/R180/R270). Validation guarantees an explicit size and no auto here.
+        let width = self
+            .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+            .0;
         let height = self
             .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
             .1;
         let bottom = point.y;
         let top = bottom + height;
 
-        let inner_width = width - padding.left - padding.right;
-        let inner_height = height - padding.top - padding.bottom;
-        let child_auto_length = self.auto_length.as_ref().map(|al| AutoLength {
-            texts: al.texts,
-            cursor: al.cursor,
-        });
+        let dx = format_length(left, self.unit)?;
+        let dy = format_length(self.frame_height_units - top, self.unit)?;
+        let box_width = format_length(width, self.unit)?;
+        let box_height = format_length(height, self.unit)?;
+
+        // Author canvas: full physical box, swapped for 90/270. Padding is author-space.
+        let (canvas_w, canvas_h) = if rotation.swaps_axes() {
+            (height, width)
+        } else {
+            (width, height)
+        };
+        let content_w = canvas_w - padding.left - padding.right;
+        let content_h = canvas_h - padding.top - padding.bottom;
+
+        // No auto_length under rotation (validation forbids auto descendants).
         let context = RenderContext::new(
-            (inner_width, inner_height),
+            (content_w, content_h),
             self.unit,
             self.data,
             self.selected_option,
             self.env,
             self.images,
-            child_auto_length,
+            None,
         );
         let child_source = context.render_items(items)?;
-        let content = if padding == &crate::models::Padding::ZERO {
+
+        let canvas_w_len = format_length(canvas_w, self.unit)?;
+        let canvas_h_len = format_length(canvas_h, self.unit)?;
+        let inner = if padding == &crate::models::Padding::ZERO {
             child_source
         } else {
             let pad_left = format_length(padding.left, self.unit)?;
             let pad_top = format_length(padding.top, self.unit)?;
             format!("#place(top + left, dx: {pad_left}, dy: {pad_top})[{child_source}]")
         };
-        let content = self.wrap_rotation(content, placement.rotate);
+        let canvas = format!("#box(width: {canvas_w_len}, height: {canvas_h_len})[{inner}]");
+        let rotated = self.wrap_rotation(canvas, placement.rotate);
 
-        let dx = format_length(left, self.unit)?;
-        let dy = format_length(self.frame_height_units - top, self.unit)?;
-        let box_width = format_length(width, self.unit)?;
-        let box_height = format_length(height, self.unit)?;
-
+        // Frame is physical and unrotated.
         if let Some(frame) = frame {
             let stroke = format_length(frame.thickness, self.unit)?;
             let radius = if frame.rounded {
@@ -978,7 +1063,6 @@ impl<'a> RenderContext<'a> {
             let frame_content = format!(
                 "#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})"
             );
-            let frame_content = self.wrap_rotation(frame_content, placement.rotate);
             writeln!(
                 out,
                 "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
@@ -988,9 +1072,10 @@ impl<'a> RenderContext<'a> {
             })?;
         }
 
+        // Single placement of the rotated author canvas, clipped to the physical box.
         writeln!(
             out,
-            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
+            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{rotated}]]"
         )
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
@@ -1049,10 +1134,16 @@ impl<'a> RenderContext<'a> {
     }
 
     fn wrap_rotation(&self, content: String, rotate: Option<f32>) -> String {
-        if let Some(rotate) = rotate {
-            format!("#rotate({rotate}deg)[{content}]")
-        } else {
-            content
+        // Typst positive angles rotate clockwise (screen coords); our `rotate` contract is
+        // counter-clockwise, so negate. `reflow: true` normalizes the box to the rotated footprint.
+        match rotate
+            .and_then(Rotation::from_degrees)
+            .unwrap_or(Rotation::R0)
+        {
+            Rotation::R0 => content,
+            Rotation::R90 => format!("#rotate(-90deg, reflow: true)[{content}]"),
+            Rotation::R180 => format!("#rotate(180deg, reflow: true)[{content}]"),
+            Rotation::R270 => format!("#rotate(90deg, reflow: true)[{content}]"),
         }
     }
 }
@@ -1226,6 +1317,161 @@ mod tests {
             out_plain.len(),
             1,
             "non-rotated container measures its auto child"
+        );
+    }
+
+    #[test]
+    fn r0_container_source_unchanged() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let container = LayoutItem::Container {
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            option: None,
+            frame: Some(Frame {
+                thickness: 0.3,
+                rounded: false,
+            }),
+            padding: Padding::ZERO,
+            items: vec![],
+        };
+        let src = ctx.render_items(&[container]).expect("render r0 container");
+        assert!(
+            !src.contains("#rotate"),
+            "R0 container must not emit #rotate"
+        );
+        assert!(
+            src.contains("clip: true"),
+            "R0 container keeps its single clipped box"
+        );
+    }
+
+    fn rotated_container_template(rotate: f32, items: Vec<LayoutItem>) -> TemplateDefinition {
+        TemplateDefinition {
+            id: "rot".to_string(),
+            name: "Rot".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(80.0),
+                height: Dimension::Fixed(40.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Container {
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: Some(rotate),
+                },
+                option: None,
+                frame: Some(Frame {
+                    thickness: 0.3,
+                    rounded: false,
+                }),
+                padding: Padding::ZERO,
+                items,
+            }]),
+            version: None,
+        }
+    }
+
+    #[test]
+    fn rotated_container_renders_to_png() {
+        let template = rotated_container_template(
+            90.0,
+            vec![LayoutItem::Text {
+                name: None,
+                value: Some("VERTICAL".to_string()),
+                placement: Placement {
+                    at: Position([2.0, 2.0]),
+                    size: Size([SizeValue::Value(30.0), SizeValue::Value(8.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(8.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }],
+        );
+        let data = HashMap::new();
+        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("render rotated container");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    // Returns the dark-pixel fraction of each image quadrant: [TL, TR, BL, BR].
+    fn quadrant_dark_fraction(png: &[u8]) -> [f32; 4] {
+        let img = image::load_from_memory(png).expect("decode").to_luma8();
+        let (w, h) = (img.width(), img.height());
+        let (mw, mh) = (w / 2, h / 2);
+        let mut dark = [0u32; 4];
+        let mut total = [0u32; 4];
+        for y in 0..h {
+            for x in 0..w {
+                let q = match (x < mw, y < mh) {
+                    (true, true) => 0,
+                    (false, true) => 1,
+                    (true, false) => 2,
+                    (false, false) => 3,
+                };
+                total[q] += 1;
+                if img.get_pixel(x, y).0[0] < 128 {
+                    dark[q] += 1;
+                }
+            }
+        }
+        [
+            dark[0] as f32 / total[0] as f32,
+            dark[1] as f32 / total[1] as f32,
+            dark[2] as f32 / total[2] as f32,
+            dark[3] as f32 / total[3] as f32,
+        ]
+    }
+
+    #[test]
+    fn rotation_ccw_corner_mapping_r90() {
+        // A QR marker at the author canvas bottom-left (40x80 portrait); under CCW 90 it must land
+        // in the physical bottom-right of the 80x40 label (spec table R90: BL -> BR).
+        let template = rotated_container_template(
+            90.0,
+            vec![LayoutItem::Qr {
+                name: None,
+                value: Some("X".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            }],
+        );
+        let data = HashMap::new();
+        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("render corner marker");
+        let q = quadrant_dark_fraction(&png);
+        assert!(
+            q[3] > q[0] && q[3] > q[1] && q[3] > q[2],
+            "QR at author BL must land physical BR under CCW 90; dark [TL,TR,BL,BR]={q:?}"
         );
     }
 
