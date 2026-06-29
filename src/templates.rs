@@ -342,7 +342,7 @@ fn validate_layout_item(
             ..
         } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -358,7 +358,7 @@ fn validate_layout_item(
             placement, params, ..
         } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -383,7 +383,7 @@ fn validate_layout_item(
         }
         LayoutItem::Image { placement, .. } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -424,7 +424,7 @@ fn validate_layout_item(
             items,
         } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, true)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -508,10 +508,15 @@ fn validate_position(at: &Position) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_rotation(rotate: &Option<f32>) -> Result<(), String> {
-    if let Some(rotate) = rotate {
-        if !rotate.is_finite() {
-            return Err("rotate must be a finite number".to_string());
+fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), String> {
+    if let Some(deg) = rotate {
+        // Rotation is a container-only inner transform (#98); reject it on any other item,
+        // regardless of value (even 0).
+        if !is_container {
+            return Err("rotation is only supported on containers".to_string());
+        }
+        if crate::models::Rotation::from_degrees(*deg).is_none() {
+            return Err("rotate must be a multiple of 90 degrees".to_string());
         }
     }
     Ok(())
@@ -682,6 +687,36 @@ mod tests {
         path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    fn parse_and_validate(yaml: &str) -> Result<(), String> {
+        crate::parse::parse_template(yaml)
+            .map_err(|e| e.to_string())?
+            .validate()
+    }
+
+    #[test]
+    fn rotation_must_be_orthogonal() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 45\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotation_rejected_on_non_container() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 90\n    font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotation_zero_rejected_on_non_container() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 0\n    font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotation_orthogonal_on_container_ok() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: -90\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_ok());
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
