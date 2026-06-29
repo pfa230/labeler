@@ -4,8 +4,8 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Size, SizeValue,
-    TemplateFormat,
+    Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Rotation, Size,
+    SizeValue, TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
@@ -567,24 +567,33 @@ impl<'a> RenderContext<'a> {
                     } else {
                         // fixed-width container: right extent is at.x + explicit width
                         let explicit_w = size_w.value().unwrap_or(0.0);
-                        let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
-                        let inner_h = {
-                            let size_h = &placement.size.0[1];
-                            let explicit_h = size_h
-                                .value()
-                                .unwrap_or(self.frame_height_units - placement.at.point().y);
-                            (explicit_h - padding.top - padding.bottom).max(0.0)
-                        };
-                        let ctx = RenderContext::new(
-                            (inner_w, inner_h),
-                            self.unit,
-                            self.data,
-                            self.selected_option,
-                            self.env,
-                            self.images,
-                            None,
-                        );
-                        ctx.measure(items, inner_w, out)?;
+                        let rotation = placement
+                            .rotate
+                            .and_then(Rotation::from_degrees)
+                            .unwrap_or(Rotation::R0);
+                        // Rotated containers are self-contained (explicit size, no auto descendants);
+                        // their author-space children must not be measured in physical-horizontal
+                        // terms, so do not recurse into them (#98).
+                        if !rotation.is_rotated() {
+                            let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
+                            let inner_h = {
+                                let size_h = &placement.size.0[1];
+                                let explicit_h = size_h
+                                    .value()
+                                    .unwrap_or(self.frame_height_units - placement.at.point().y);
+                                (explicit_h - padding.top - padding.bottom).max(0.0)
+                            };
+                            let ctx = RenderContext::new(
+                                (inner_w, inner_h),
+                                self.unit,
+                                self.data,
+                                self.selected_option,
+                                self.env,
+                                self.images,
+                                None,
+                            );
+                            ctx.measure(items, inner_w, out)?;
+                        }
                         at_x + explicit_w
                     }
                 }
@@ -1157,6 +1166,68 @@ mod tests {
     use crate::templates::TemplateDefinition;
     use serde_json::json;
     use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn measure_skips_children_of_rotated_container() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+
+        let auto_text = LayoutItem::Text {
+            name: None,
+            value: Some("hello".to_string()),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                size: Size([
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::Value(10.0),
+                ]),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(6.0),
+            multiline: false,
+            alignment: Alignment::default(),
+        };
+        let make_container = |rotate: Option<f32>| LayoutItem::Container {
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                max_w: None,
+                max_h: None,
+                rotate,
+            },
+            option: None,
+            frame: None,
+            padding: Padding::ZERO,
+            items: vec![auto_text.clone()],
+        };
+
+        let mut out_rot = Vec::new();
+        ctx.measure(&[make_container(Some(90.0))], 80.0, &mut out_rot)
+            .unwrap();
+        assert!(
+            out_rot.is_empty(),
+            "rotated container must not measure its children"
+        );
+
+        let mut out_plain = Vec::new();
+        ctx.measure(&[make_container(None)], 80.0, &mut out_plain)
+            .unwrap();
+        assert_eq!(
+            out_plain.len(),
+            1,
+            "non-rotated container measures its auto child"
+        );
+    }
 
     fn no_settings() -> BTreeMap<String, String> {
         BTreeMap::new()
