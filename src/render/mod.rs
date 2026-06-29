@@ -1524,6 +1524,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nested_rotated_containers_render() {
+        // Outer R90 (frame + asymmetric author-space padding) containing an inner R90, frame-less
+        // container with a text child. Proves nested rotation emits valid, compilable Typst.
+        let inner = LayoutItem::Container {
+            placement: Placement {
+                at: Position([2.0, 2.0]),
+                size: Size([SizeValue::Value(24.0), SizeValue::Value(24.0)]),
+                max_w: None,
+                max_h: None,
+                rotate: Some(90.0),
+            },
+            option: None,
+            frame: None,
+            padding: Padding::ZERO,
+            items: vec![LayoutItem::Text {
+                name: None,
+                value: Some("inner".to_string()),
+                placement: Placement {
+                    at: Position([1.0, 1.0]),
+                    size: Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                multiline: false,
+                alignment: Alignment::default(),
+            }],
+        };
+        let outer = LayoutItem::Container {
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                max_w: None,
+                max_h: None,
+                rotate: Some(90.0),
+            },
+            option: None,
+            frame: Some(Frame {
+                thickness: 0.3,
+                rounded: false,
+            }),
+            padding: Padding {
+                top: 2.0,
+                right: 4.0,
+                bottom: 6.0,
+                left: 8.0,
+            },
+            items: vec![inner],
+        };
+        let template = TemplateDefinition {
+            id: "nest".to_string(),
+            name: "Nest".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(80.0),
+                height: Dimension::Fixed(40.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![outer]),
+            version: None,
+        };
+        let png = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render nested rotated containers");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
     fn no_settings() -> BTreeMap<String, String> {
         BTreeMap::new()
     }
