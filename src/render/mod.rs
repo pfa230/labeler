@@ -1475,6 +1475,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rotation_ccw_corner_mapping_r180_and_r270() {
+        let qr = || {
+            vec![LayoutItem::Qr {
+                name: None,
+                value: Some("X".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            }]
+        };
+        let data = HashMap::new();
+
+        // R180: author BL -> physical TR.
+        let png = render_single_label(
+            &rotated_container_template(180.0, qr()),
+            &data,
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render r180");
+        let q = quadrant_dark_fraction(&png);
+        assert!(
+            q[1] > q[0] && q[1] > q[2] && q[1] > q[3],
+            "R180 BL->TR; dark [TL,TR,BL,BR]={q:?}"
+        );
+
+        // R270: author BL -> physical TL.
+        let png = render_single_label(
+            &rotated_container_template(270.0, qr()),
+            &data,
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render r270");
+        let q = quadrant_dark_fraction(&png);
+        assert!(
+            q[0] > q[1] && q[0] > q[2] && q[0] > q[3],
+            "R270 BL->TL; dark [TL,TR,BL,BR]={q:?}"
+        );
+    }
+
     fn no_settings() -> BTreeMap<String, String> {
         BTreeMap::new()
     }
