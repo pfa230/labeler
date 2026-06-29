@@ -342,7 +342,7 @@ fn validate_layout_item(
             ..
         } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -358,7 +358,7 @@ fn validate_layout_item(
             placement, params, ..
         } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -383,7 +383,7 @@ fn validate_layout_item(
         }
         LayoutItem::Image { placement, .. } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -424,7 +424,19 @@ fn validate_layout_item(
             items,
         } => {
             validate_position(&placement.at)?;
-            validate_rotation(&placement.rotate)?;
+            validate_rotation(&placement.rotate, true)?;
+            let rotation = placement
+                .rotate
+                .and_then(crate::models::Rotation::from_degrees)
+                .unwrap_or(crate::models::Rotation::R0);
+            if rotation.is_rotated() {
+                if placement.size.0[0].is_auto() || placement.size.0[1].is_auto() {
+                    return Err("a rotated container must have an explicit size".to_string());
+                }
+                if subtree_uses_auto(items) {
+                    return Err("auto size is not allowed inside a rotated container".to_string());
+                }
+            }
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -465,12 +477,27 @@ fn validate_layout_item(
                 }
             }
 
-            let inner_width = width - padding.left - padding.right;
-            let inner_height = height - padding.top - padding.bottom;
+            // Author canvas = full box, swapped for 90/270. Padding is author-space, so it is
+            // subtracted from the (swapped) author dimensions. For R0 this is the existing math.
+            let (canvas_w, canvas_h) = if rotation.swaps_axes() {
+                (height, width)
+            } else {
+                (width, height)
+            };
+            let inner_width = canvas_w - padding.left - padding.right;
+            let inner_height = canvas_h - padding.top - padding.bottom;
+            const CONTENT_EPSILON: f32 = 1.0e-4;
+            if rotation.is_rotated()
+                && (inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON)
+            {
+                return Err("container padding leaves no room for content".to_string());
+            }
             let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
             // Children of an auto-width container on a dynamic-width single may also use auto
-            // width; they resolve to the container inner width at render time.
-            let child_dynamic = is_dynamic_width && placement.size.0[0].is_auto();
+            // width; they resolve to the container inner width at render time. Rotated containers
+            // reject auto entirely (above), so child_dynamic is false there.
+            let child_dynamic =
+                is_dynamic_width && !rotation.is_rotated() && placement.size.0[0].is_auto();
             validate_layout_items(items, Some(&container_bounds), options, child_dynamic)?;
         }
     }
@@ -508,10 +535,36 @@ fn validate_position(at: &Position) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_rotation(rotate: &Option<f32>) -> Result<(), String> {
-    if let Some(rotate) = rotate {
-        if !rotate.is_finite() {
-            return Err("rotate must be a finite number".to_string());
+/// True if any item in the subtree uses an `auto` width or height. Used to forbid auto sizing
+/// anywhere inside a rotated container (#98), where author-horizontal maps to physical-vertical
+/// and the dynamic-width measurement model does not apply.
+fn subtree_uses_auto(items: &[LayoutItem]) -> bool {
+    items.iter().any(|item| match item {
+        LayoutItem::Text { placement, .. }
+        | LayoutItem::Qr { placement, .. }
+        | LayoutItem::Image { placement, .. } => {
+            placement.size.0[0].is_auto() || placement.size.0[1].is_auto()
+        }
+        LayoutItem::Container {
+            placement, items, ..
+        } => {
+            placement.size.0[0].is_auto()
+                || placement.size.0[1].is_auto()
+                || subtree_uses_auto(items)
+        }
+        LayoutItem::Line { .. } => false,
+    })
+}
+
+fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), String> {
+    if let Some(deg) = rotate {
+        // Rotation is a container-only inner transform (#98); reject it on any other item,
+        // regardless of value (even 0).
+        if !is_container {
+            return Err("rotation is only supported on containers".to_string());
+        }
+        if crate::models::Rotation::from_degrees(*deg).is_none() {
+            return Err("rotate must be a multiple of 90 degrees".to_string());
         }
     }
     Ok(())
@@ -682,6 +735,65 @@ mod tests {
         path::{Path, PathBuf},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    fn parse_and_validate(yaml: &str) -> Result<(), String> {
+        crate::parse::parse_template(yaml)
+            .map_err(|e| e.to_string())?
+            .validate()
+    }
+
+    #[test]
+    fn rotation_must_be_orthogonal() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 45\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotation_rejected_on_non_container() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 90\n    font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotation_zero_rejected_on_non_container() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 0\n    font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotated_container_rejects_auto_outer_size() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [auto,40]\n    rotate: 90\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotated_container_rejects_auto_child() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [auto,10]\n        font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotated_container_child_bounds_use_swapped_canvas() {
+        // physical 80x40 container, rotate 90 -> author canvas 40x80; a child 30 wide x 70 tall fits.
+        let ok = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [30,70]\n        font_size: 6\n";
+        assert!(parse_and_validate(ok).is_ok());
+        // a child 50 wide exceeds the 40-wide author canvas -> error.
+        let bad = ok.replace("size: [30,70]", "size: [50,70]");
+        assert!(parse_and_validate(&bad).is_err());
+    }
+
+    #[test]
+    fn rotated_container_rejects_nonpositive_content_area() {
+        // author canvas is 40 wide x 80 tall; top+bottom padding 120 > 80 -> non-positive Ch.
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    padding: [60,0,60,0]\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotation_orthogonal_on_container_ok() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: -90\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_ok());
+    }
 
     fn temp_dir(label: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
