@@ -342,7 +342,7 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 | `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units (see §6). |
 | `size` | `[w, h]` | — | Each entry is a number or `auto`. |
 | `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. |
-| `rotate` | number (deg) | — | Rotates the rendered item. |
+| `rotate` | number (deg) | — | **Container only.** Orthogonal CCW rotation of the container's inner content; see §4.2. An error on any non-container item. |
 
 `auto` size resolves to `max_w`/`max_h` if present; for `container` it falls back to the parent frame's
 dimension. On a dynamic-width `single` template (§3.1), `auto` width resolves to the content width
@@ -379,6 +379,29 @@ be > 0. (`line` does not use `size`; see §4.1.)
 
 Layout item `name`s (text/qr, and a data-bound `image`) must be unique and non-empty within a sibling
 list. `value`-based text/qr items are anonymous and are exempt from this check.
+
+### 4.2 Container rotation
+
+A `container` may set `rotate` to turn a portrait design onto a landscape slot (the vertical
+"read by turning the box" label). The model (ADR-0036):
+
+- **Container-only, orthogonal.** `rotate` is valid only on a `container` and must be a multiple of
+  90° (`{0, 90, 180, 270}`; values are normalized via `rem_euclid(360)` within a small tolerance).
+  Any `rotate` on a non-container item, or a non-orthogonal value, is a validation error.
+- **Counter-clockwise.** Degrees are counter-clockwise. Author canvas corners map to physical box
+  corners as: R90 BL→BR, BR→TR, TR→TL, TL→BL; R180 BL→TR, …; R270 BL→TL, ….
+- **`at`/`size` stay parent-frame.** A rotated container is placed and bounds-checked exactly like an
+  unrotated one: `size` is its footprint in the parent. Rotation is purely an inner transform, so
+  nested rotated containers compose without compounding coordinate flips.
+- **Inner author canvas swaps for 90/270.** Children are authored in the container's natural reading
+  orientation; for `rotate: 90|270` the inner authoring box (and child bounds) swap to
+  `[inner_h, inner_w]`. Padding is **author-space** (it rotates with the design; `padding.top` is
+  "above" in reading orientation regardless of angle). The physical `frame` outline is **not**
+  rotated.
+- **No `auto` under rotation.** A rotated container must have an explicit `size`, and no descendant
+  inside it may use `auto` width/height (author-horizontal maps to physical-vertical, which the
+  dynamic-width measurement model does not handle). The measurement pass does not recurse into a
+  rotated container.
 
 ## 5. Options
 
@@ -770,6 +793,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-06-29**: Layout-aware container rotation (ADR-0036; #98). `rotate` becomes a container-only,
+  orthogonal (`{0,90,180,270}`), counter-clockwise inner transform: a portrait design seats onto a
+  landscape slot. The container's `at`/`size` stay parent-frame; the inner author canvas (and child
+  bounds) swap for 90/270; padding is author-space; the physical frame is unrotated; `auto` sizing is
+  rejected on or inside a rotated container. `rotate` on a non-container item is now an error. See §4.2.
 - **2026-06-28**: Single config dir (ADR-0034; #93). All persistent state moves under one
   `LABELER_CONFIG_DIR` (default `/config`): `{config}/labeler.db`, `{config}/templates/`, and
   `{config}/assets/`. The per-dir env vars `LABELER_DATA_DIR`, `LABELER_TEMPLATES_DIR`, and
