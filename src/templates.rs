@@ -425,6 +425,18 @@ fn validate_layout_item(
         } => {
             validate_position(&placement.at)?;
             validate_rotation(&placement.rotate, true)?;
+            let rotation = placement
+                .rotate
+                .and_then(crate::models::Rotation::from_degrees)
+                .unwrap_or(crate::models::Rotation::R0);
+            if rotation.is_rotated() {
+                if placement.size.0[0].is_auto() || placement.size.0[1].is_auto() {
+                    return Err("a rotated container must have an explicit size".to_string());
+                }
+                if subtree_uses_auto(items) {
+                    return Err("auto size is not allowed inside a rotated container".to_string());
+                }
+            }
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
                 &placement.size,
@@ -506,6 +518,27 @@ fn validate_position(at: &Position) -> Result<(), String> {
         return Err("at must not extend into negative coordinates".to_string());
     }
     Ok(())
+}
+
+/// True if any item in the subtree uses an `auto` width or height. Used to forbid auto sizing
+/// anywhere inside a rotated container (#98), where author-horizontal maps to physical-vertical
+/// and the dynamic-width measurement model does not apply.
+fn subtree_uses_auto(items: &[LayoutItem]) -> bool {
+    items.iter().any(|item| match item {
+        LayoutItem::Text { placement, .. }
+        | LayoutItem::Qr { placement, .. }
+        | LayoutItem::Image { placement, .. } => {
+            placement.size.0[0].is_auto() || placement.size.0[1].is_auto()
+        }
+        LayoutItem::Container {
+            placement, items, ..
+        } => {
+            placement.size.0[0].is_auto()
+                || placement.size.0[1].is_auto()
+                || subtree_uses_auto(items)
+        }
+        LayoutItem::Line { .. } => false,
+    })
 }
 
 fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), String> {
@@ -709,6 +742,18 @@ mod tests {
     #[test]
     fn rotation_zero_rejected_on_non_container() {
         let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 0\n    font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotated_container_rejects_auto_outer_size() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [auto,40]\n    rotate: 90\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotated_container_rejects_auto_child() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [auto,10]\n        font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
