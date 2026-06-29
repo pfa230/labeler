@@ -477,12 +477,27 @@ fn validate_layout_item(
                 }
             }
 
-            let inner_width = width - padding.left - padding.right;
-            let inner_height = height - padding.top - padding.bottom;
+            // Author canvas = full box, swapped for 90/270. Padding is author-space, so it is
+            // subtracted from the (swapped) author dimensions. For R0 this is the existing math.
+            let (canvas_w, canvas_h) = if rotation.swaps_axes() {
+                (height, width)
+            } else {
+                (width, height)
+            };
+            let inner_width = canvas_w - padding.left - padding.right;
+            let inner_height = canvas_h - padding.top - padding.bottom;
+            const CONTENT_EPSILON: f32 = 1.0e-4;
+            if rotation.is_rotated()
+                && (inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON)
+            {
+                return Err("container padding leaves no room for content".to_string());
+            }
             let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
             // Children of an auto-width container on a dynamic-width single may also use auto
-            // width; they resolve to the container inner width at render time.
-            let child_dynamic = is_dynamic_width && placement.size.0[0].is_auto();
+            // width; they resolve to the container inner width at render time. Rotated containers
+            // reject auto entirely (above), so child_dynamic is false there.
+            let child_dynamic =
+                is_dynamic_width && !rotation.is_rotated() && placement.size.0[0].is_auto();
             validate_layout_items(items, Some(&container_bounds), options, child_dynamic)?;
         }
     }
@@ -754,6 +769,23 @@ mod tests {
     #[test]
     fn rotated_container_rejects_auto_child() {
         let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [auto,10]\n        font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn rotated_container_child_bounds_use_swapped_canvas() {
+        // physical 80x40 container, rotate 90 -> author canvas 40x80; a child 30 wide x 70 tall fits.
+        let ok = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [30,70]\n        font_size: 6\n";
+        assert!(parse_and_validate(ok).is_ok());
+        // a child 50 wide exceeds the 40-wide author canvas -> error.
+        let bad = ok.replace("size: [30,70]", "size: [50,70]");
+        assert!(parse_and_validate(&bad).is_err());
+    }
+
+    #[test]
+    fn rotated_container_rejects_nonpositive_content_area() {
+        // author canvas is 40 wide x 80 tall; top+bottom padding 120 > 80 -> non-positive Ch.
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    padding: [60,0,60,0]\n    items: []\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
