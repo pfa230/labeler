@@ -15,18 +15,19 @@ format:
   paper_height: 11.0
   label_width: 4.0
   label_height: 2.0
-  # Units: inches. Origin is page bottom-left.
+  # Units: inches. Origin is page bottom-left. Positions from homebox common.py
+  # (MARGIN_LEFT 0.17, H_GAP 0.16 -> right col x = 0.17+4+0.16 = 4.33; MARGIN_TOP/BOTTOM 0.5).
   positions:
-    - [0.18, 8.5]
-    - [4.32, 8.5]
-    - [0.18, 6.5]
-    - [4.32, 6.5]
-    - [0.18, 4.5]
-    - [4.32, 4.5]
-    - [0.18, 2.5]
-    - [4.32, 2.5]
-    - [0.18, 0.5]
-    - [4.32, 0.5]
+    - [0.17, 8.5]
+    - [4.33, 8.5]
+    - [0.17, 6.5]
+    - [4.33, 6.5]
+    - [0.17, 4.5]
+    - [4.33, 4.5]
+    - [0.17, 2.5]
+    - [4.33, 2.5]
+    - [0.17, 0.5]
+    - [4.33, 0.5]
 layout:
   - type: container
     option:
@@ -37,89 +38,102 @@ layout:
       thickness: 0.02
       rounded: false
     items: []
+  # Horizontal: 1.5in left column (QR over centered id) + full-height divider +
+  # 2.5in right column (name over a 3/4 rule, then tags above description).
   - type: container
     option:
       orientation: horizontal
-    at: [0.1, 0.1]
-    size: [3.8, 1.8]
+    at: [0.0, 0.0]
+    size: [4.0, 2.0]
     items:
       - type: qr
         name: url
-        at: [0.0, 0.35]
-        size: [1.45, 1.45]
+        at: [0.1, 0.45]
+        size: [1.3, 1.3]
         params:
           quiet_zone: 0.0
       - type: text
         name: id
-        at: [0.0, 0.0]
-        size: [1.45, 0.35]
-        font_size: 12.0
-        alignment:
-          horizontal: center
-          vertical: center
+        at: [0.1, 0.1]
+        size: [1.3, 0.35]
+        font_size: {min: 11.0, max: 22.0}
+        alignment: {horizontal: center, vertical: center}
       - type: line
-        at: [1.45, 0.0]
-        to: [1.45, 1.8]
-        thickness: 0.02
-      - type: container
-        at: [1.45, 0.0]
-        size: [2.35, 1.8]
-        items:
-          - type: text
-            name: name
-            at: [0.0, 1.45]
-            size: [2.35, 0.35]
-            font_size: 17.0
-            alignment:
-              horizontal: left
-              vertical: center
-          - type: line
-            at: [0.0, 1.35]
-            to: [2.35, 1.35]
-            thickness: 0.025
-          - type: text
-            name: tags
-            at: [0.0, 0.95]
-            size: [2.35, 0.3]
-            font_size: 10.5
-            alignment:
-              horizontal: left
-              vertical: center
-          - type: text
-            name: description
-            at: [0.0, 0.0]
-            size: [2.35, 0.95]
-            font_size: 9.5
-            multiline: true
-            alignment:
-              horizontal: left
-              vertical: top
+        at: [1.5, 0.0]
+        to: [1.5, 2.0]
+        thickness: 0.01
+      - type: line
+        at: [1.5, 1.5]
+        to: [4.0, 1.5]
+        thickness: 0.01
+      - type: text
+        name: name
+        at: [1.6, 1.5]
+        size: [2.3, 0.4]
+        font_size: {min: 12.0, max: 24.0}
+        multiline: true
+        alignment: {horizontal: left, vertical: center}
+      - type: text
+        name: tags
+        at: [1.6, 0.75]
+        size: [2.3, 0.65]
+        font_size: 12.0
+        multiline: true
+        alignment: {horizontal: left, vertical: center}
+      - type: text
+        name: description
+        at: [1.6, 0.1]
+        size: [2.3, 0.65]
+        font_size: 12.0
+        multiline: true
+        alignment: {horizontal: left, vertical: center}
+  # Vertical: a portrait design authored in the swapped [2,4] author canvas, rotated 90 CCW
+  # onto the landscape slot (#98). QR top, id, rule, name, rule, tags, description.
   - type: container
     option:
       orientation: vertical
-    at: [0.1, 0.1]
-    size: [3.8, 1.8]
+    at: [0.0, 0.0]
+    size: [4.0, 2.0]
+    rotate: 90
     items:
       - type: qr
         name: url
-        at: [1.3, 0.6]
-        size: [1.2, 1.2]
+        at: [0.2, 2.3]
+        size: [1.6, 1.6]
         params:
           quiet_zone: 0.0
       - type: text
         name: id
-        at: [0.0, 0.3]
-        size: [3.8, 0.3]
-        font_size: 8.0
-        alignment:
-          horizontal: center
-          vertical: center
+        at: [0.1, 1.92]
+        size: [1.8, 0.38]
+        font_size: {min: 10.0, max: 20.0}
+        alignment: {horizontal: center, vertical: center}
+      - type: line
+        at: [0.0, 1.92]
+        to: [2.0, 1.92]
+        thickness: 0.007
+      - type: text
+        name: name
+        at: [0.1, 1.01]
+        size: [1.8, 0.91]
+        font_size: {min: 13.0, max: 26.0}
+        multiline: true
+        alignment: {horizontal: center, vertical: center}
+      - type: line
+        at: [0.0, 1.01]
+        to: [2.0, 1.01]
+        thickness: 0.007
+      - type: text
+        name: tags
+        at: [0.1, 0.5]
+        size: [1.8, 0.41]
+        font_size: 12.0
+        multiline: true
+        alignment: {horizontal: left, vertical: top}
       - type: text
         name: description
-        at: [0.0, 0.0]
-        size: [3.8, 0.3]
-        font_size: 8.0
+        at: [0.1, 0.1]
+        size: [1.8, 0.4]
+        font_size: 12.0
         multiline: true
-        alignment:
-          horizontal: center
-          vertical: center
+        alignment: {horizontal: left, vertical: top}
