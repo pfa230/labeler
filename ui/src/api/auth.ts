@@ -29,14 +29,18 @@ export function useLogin() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (c: { username: string; password: string }) => sendJson("POST", "/auth/login", c),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth"] }),
+    // refetchType: "all" forces the ["auth"] refetch even when no observer is mounted (the page is
+    // /login or /setup); the awaited mutation onSuccess then completes before the component navigates,
+    // so RequireAuth sees authed:true on the first render. See #103.
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth"], refetchType: "all" }),
   });
 }
 export function useSetup() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (c: { username: string; password: string }) => sendJson("POST", "/auth/setup", c),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth"] }),
+    // See useLogin: force a full refetch so navigate("/") runs against fresh auth (#103).
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth"], refetchType: "all" }),
   });
 }
 export function useLogout() {

@@ -2601,6 +2601,20 @@ mod auth_http_tests {
             .to_string()
     }
 
+    #[tokio::test]
+    async fn auth_me_is_no_store() {
+        let app = test_app();
+        let res = app.oneshot(req_get("/api/auth/me")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get("cache-control")
+                .map(|v| v.to_str().unwrap()),
+            Some("no-store"),
+            "auth/me must be no-store so browser/proxy never serve stale auth state"
+        );
+    }
+
     /// Create the first user and log in, returning the session cookie that authorizes protected calls.
     async fn setup_login_cookie(app: &axum::Router) -> String {
         app.clone()
