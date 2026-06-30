@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Shell } from "./Shell";
 import { RequireAuth } from "./RequireAuth";
+import { RedirectIfAuthed } from "./RedirectIfAuthed";
 import { Templates } from "../pages/Templates";
 import { TemplateDetail } from "../pages/TemplateDetail";
 import { NewTemplate } from "../pages/NewTemplate";
@@ -15,8 +16,10 @@ export function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/setup" element={<Setup />} />
+        <Route element={<RedirectIfAuthed />}>
+          <Route path="/login" element={<Login />} />
+          <Route path="/setup" element={<Setup />} />
+        </Route>
         <Route element={<RequireAuth />}>
           <Route element={<Shell />}>
             <Route index element={<Templates />} />
