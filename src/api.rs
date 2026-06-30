@@ -1813,6 +1813,16 @@ pub async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Respo
         .into_response()
 }
 
+/// Mark a response uncacheable so the browser and any reverse proxy never serve a stale auth state
+/// (a cached `/auth/me` would strand the SPA on `/setup` after first-account setup; see #103).
+fn no_store(mut resp: Response) -> Response {
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    resp
+}
+
 // `/auth/me` is AUTH-EXEMPT (it must answer for logged-OUT callers too), so it resolves auth itself
 // (optional) and always returns 200 with the auth state the SPA needs.
 #[utoipa::path(
@@ -1828,13 +1838,15 @@ pub async fn me(
     headers: axum::http::HeaderMap,
 ) -> Result<Response, AppError> {
     if state.no_auth() {
-        return Ok(Json(serde_json::json!({
-            "authed": true,
-            "needsSetup": false,
-            "me": {"id": "local", "username": "local"},
-            "noAuth": true
-        }))
-        .into_response());
+        return Ok(no_store(
+            Json(serde_json::json!({
+                "authed": true,
+                "needsSetup": false,
+                "me": {"id": "local", "username": "local"},
+                "noAuth": true
+            }))
+            .into_response(),
+        ));
     }
     if let Some(p) = crate::middleware::resolve_optional(&state, &headers).await {
         let me = match p {
@@ -1849,13 +1861,15 @@ pub async fn me(
                 serde_json::json!({"id": "local", "username": "local"})
             }
         };
-        return Ok(
+        return Ok(no_store(
             Json(serde_json::json!({"authed": true, "needsSetup": false, "me": me}))
                 .into_response(),
-        );
+        ));
     }
     let needs_setup = state.store().count_users().await.map_err(AppError::from)? == 0;
-    Ok(Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response())
+    Ok(no_store(
+        Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response(),
+    ))
 }
 
 #[utoipa::path(
