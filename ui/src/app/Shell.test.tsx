@@ -45,11 +45,13 @@ describe("Shell", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the nav sections", () => {
+  it("renders exactly the four nav sections", () => {
     renderShell();
-    for (const label of ["Templates", "Print", "Import", "Settings"]) {
+    for (const label of ["Labels", "Import", "Connect", "Settings"]) {
       expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
     }
+    expect(screen.queryByRole("link", { name: "Templates" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Print" })).not.toBeInTheDocument();
   });
 
   it("shows the current username and logs out via POST", async () => {
