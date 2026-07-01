@@ -39,6 +39,8 @@ use crate::{
         api::get_printer,
         api::replace_printer,
         api::delete_printer,
+        api::set_printer_default,
+        api::clear_printer_default,
         api::get_variables,
         api::put_variable,
         api::get_settings,

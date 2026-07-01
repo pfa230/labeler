@@ -107,6 +107,22 @@ export function useDeletePrinter() {
   });
 }
 
+export function useSetDefaultPrinter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => sendJson("POST", `/printers/${encodeURIComponent(id)}/default`, {}),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
+  });
+}
+
+export function useClearDefaultPrinter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => del(`/printers/${encodeURIComponent(id)}/default`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
+  });
+}
+
 export interface UserSummary {
   id: string;
   username: string;

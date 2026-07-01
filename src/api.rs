@@ -155,6 +155,10 @@ fn api_router() -> Router<Arc<AppState>> {
             get(get_printer).put(replace_printer).delete(delete_printer),
         )
         .route(
+            "/printers/{id}/default",
+            post(set_printer_default).delete(clear_printer_default),
+        )
+        .route(
             "/connections",
             get(list_connections).post(create_connection),
         )
@@ -575,6 +579,7 @@ pub async fn create_printer(
     crate::driver::merge_secrets(&printer.kind, &mut printer.config, None);
     state.store().upsert_printer(&printer).await?;
     printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
+    printer.is_default = false; // a new row is never default; upsert_printer ignores is_default
     Ok((axum::http::StatusCode::CREATED, Json(printer)).into_response())
 }
 
@@ -814,6 +819,7 @@ pub async fn replace_printer(
     crate::driver::merge_secrets(&printer.kind, &mut printer.config, Some(&existing.config));
     state.store().upsert_printer(&printer).await?;
     printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
+    printer.is_default = existing.is_default; // replace preserves stored default; upsert ignores it
     Ok((axum::http::StatusCode::OK, Json(printer)).into_response())
 }
 
@@ -836,6 +842,42 @@ pub async fn delete_printer(
     } else {
         Err(AppError::printer_not_found(id))
     }
+}
+
+#[utoipa::path(
+    post,
+    path = "/printers/{id}/default",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses(
+        (status = 204, description = "Printer set as the global default"),
+        (status = 404, description = "Printer not found", body = ErrorResponse)
+    )
+)]
+pub async fn set_printer_default(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    if state.store().set_default_printer(&id).await? {
+        Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(AppError::printer_not_found(id))
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/printers/{id}/default",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses((status = 204, description = "Default flag cleared on the printer (idempotent)"))
+)]
+pub async fn clear_printer_default(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    state.store().clear_default_printer(&id).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]

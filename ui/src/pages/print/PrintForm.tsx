@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { defaultOptions, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
+import { usePrinters } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 import type { BatchSummary, TemplateDetail } from "../../api/types";
 import { PreviewPane } from "../../components/PreviewPane";
@@ -28,6 +29,19 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { push } = useToast();
+
+  // One-shot preselect once printers first resolve: enabled default -> sole enabled -> none.
+  // Guarded by a ref (NOT `printer === undefined`) so a printers refetch never clobbers an
+  // explicit "None".
+  const { data: printers } = usePrinters();
+  const initialized = useRef(false);
+  useEffect(() => {
+    if (initialized.current || !printers) return;
+    initialized.current = true;
+    const enabled = printers.filter((p) => p.enabled);
+    const pick = enabled.find((p) => p.is_default)?.id ?? (enabled.length === 1 ? enabled[0].id : undefined);
+    if (pick) setValue((v) => ({ ...v, printer: pick }));
+  }, [printers]);
 
   const showSummary = (summary: BatchSummary) => {
     const { succeeded, total, failed } = summary;
