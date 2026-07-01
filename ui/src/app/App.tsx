@@ -27,6 +27,7 @@ export function App() {
             <Route path="templates/new" element={<NewTemplate />} />
             <Route path="templates/:id" element={<TemplateDetail />} />
             <Route path="print" element={<Print />} />
+            <Route path="print/:templateId" element={<Print />} />
             <Route path="import" element={<Import />} />
             <Route path="connect" element={<Connect />} />
             <Route path="settings" element={<Settings />} />
