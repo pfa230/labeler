@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useTemplates } from "../api/queries";
+import { useFavorites, useRecentTemplates, useSetFavorite, useTemplates } from "../api/queries";
 import { useToast } from "../app/toast-context";
 import type { TemplateSummary } from "../api/types";
 
@@ -15,7 +15,15 @@ function FormatBadge({ type }: { type: string }) {
   );
 }
 
-function TemplateCard({ template }: { template: TemplateSummary }) {
+function TemplateCard({
+  template,
+  favorite,
+  onToggleFavorite,
+}: {
+  template: TemplateSummary;
+  favorite: boolean;
+  onToggleFavorite: () => void;
+}) {
   const [failed, setFailed] = useState(false);
   return (
     <div className="relative">
@@ -64,12 +72,29 @@ function TemplateCard({ template }: { template: TemplateSummary }) {
       >
         ⓘ
       </Link>
+      <button
+        type="button"
+        onClick={onToggleFavorite}
+        aria-label={favorite ? `unfavorite ${template.name}` : `favorite ${template.name}`}
+        aria-pressed={favorite}
+        className="absolute right-2 top-14 z-10 flex h-11 w-11 items-center justify-center rounded-md border text-lg focus-visible:outline-none focus-visible:ring-2"
+        style={{
+          background: "var(--surface)",
+          borderColor: "var(--border)",
+          color: favorite ? "var(--accent)" : "var(--muted)",
+        }}
+      >
+        {favorite ? "★" : "☆"}
+      </button>
     </div>
   );
 }
 
 export function Templates() {
   const { data, isLoading, isError, error } = useTemplates();
+  const favs = useFavorites();
+  const recents = useRecentTemplates();
+  const setFav = useSetFavorite();
   const { push } = useToast();
   const [query, setQuery] = useState("");
 
@@ -90,6 +115,33 @@ export function Templates() {
       (t) => t.id.toLowerCase().includes(needle) || t.name.toLowerCase().includes(needle),
     );
   }, [data, query]);
+
+  const favoriteIds = favs.data ?? [];
+  const isFavorite = (id: string) => favoriteIds.includes(id);
+  const toggleFavorite = (id: string) => setFav.mutate({ id, favorite: !isFavorite(id) });
+
+  // Favorites/Recent are keyed by id; resolve against the loaded list and drop unknowns. Recent excludes
+  // favorited ids so a card never shows in both rows. Both rows are hidden while the search box is active.
+  const byId = useMemo(() => {
+    const map = new Map<string, TemplateSummary>();
+    for (const t of data?.templates ?? []) map.set(t.id, t);
+    return map;
+  }, [data]);
+  const searching = query.trim() !== "";
+  const favTemplates = favoriteIds.map((id) => byId.get(id)).filter((t): t is TemplateSummary => !!t);
+  const recentTemplates = (recents.data ?? [])
+    .filter((id) => !favoriteIds.includes(id))
+    .map((id) => byId.get(id))
+    .filter((t): t is TemplateSummary => !!t);
+
+  const cardFor = (t: TemplateSummary) => (
+    <TemplateCard
+      key={t.id}
+      template={t}
+      favorite={isFavorite(t.id)}
+      onToggleFavorite={() => toggleFavorite(t.id)}
+    />
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -125,11 +177,31 @@ export function Templates() {
           {query ? "No templates match your search." : "No templates available."}
         </p>
       )}
+      {!searching && favTemplates.length > 0 && (
+        <section aria-label="Favorites" className="flex flex-col gap-2">
+          <h2 className="text-sm font-medium" style={{ color: "var(--muted)" }}>
+            Favorites
+          </h2>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {favTemplates.map(cardFor)}
+          </div>
+        </section>
+      )}
+
+      {!searching && recentTemplates.length > 0 && (
+        <section aria-label="Recent" className="flex flex-col gap-2">
+          <h2 className="text-sm font-medium" style={{ color: "var(--muted)" }}>
+            Recent
+          </h2>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {recentTemplates.map(cardFor)}
+          </div>
+        </section>
+      )}
+
       {filtered.length > 0 && (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {filtered.map((t) => (
-            <TemplateCard key={t.id} template={t} />
-          ))}
+          {filtered.map(cardFor)}
         </div>
       )}
     </div>

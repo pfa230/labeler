@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
@@ -31,6 +31,38 @@ const templates = [
   },
 ];
 
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+// Route the fetch mock by URL: /api/templates returns the template list, while /api/favorites and
+// /api/recent-templates default to [] (so their rows stay hidden). Favorites is a mutable closure so a
+// PUT/DELETE to /api/favorites/{id} updates what the next refetch returns.
+function stubFetch(opts?: { favorites?: string[]; recent?: string[] }) {
+  let favorites = [...(opts?.favorites ?? [])];
+  const recent = [...(opts?.recent ?? [])];
+  const calls: { method: string; url: string }[] = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : (input as Request).url;
+    const method = init?.method ?? "GET";
+    calls.push({ method, url });
+    if (url.startsWith("/api/favorites/")) {
+      const id = decodeURIComponent(url.slice("/api/favorites/".length));
+      if (method === "PUT" && !favorites.includes(id)) favorites = [...favorites, id];
+      if (method === "DELETE") favorites = favorites.filter((f) => f !== id);
+      return new Response(null, { status: 204 });
+    }
+    if (url === "/api/favorites") return jsonResponse(favorites);
+    if (url === "/api/recent-templates") return jsonResponse(recent);
+    return jsonResponse({ templates });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return calls;
+}
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -46,16 +78,7 @@ function renderPage() {
 
 describe("Templates list", () => {
   beforeEach(() => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ templates }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          }),
-      ),
-    );
+    stubFetch();
   });
 
   it("renders both names and their format badges", async () => {
@@ -110,5 +133,54 @@ describe("Templates list", () => {
     const img = await screen.findByAltText("Avery 5163 preview");
     fireEvent.error(img);
     expect(screen.getByText("preview", { selector: "div" })).toBeInTheDocument();
+  });
+
+  it("shows Favorites and Recent rows only when non-empty, deduped", async () => {
+    stubFetch({ favorites: ["brother_24mm_qr"], recent: ["brother_24mm_qr", "avery5163"] });
+    renderPage();
+    const favRegion = await screen.findByRole("region", { name: "Favorites" });
+    // Favorites row shows Brother only.
+    expect(within(favRegion).getByRole("link", { name: "Print Brother 24mm" })).toBeInTheDocument();
+    expect(
+      within(favRegion).queryByRole("link", { name: "Print Avery 5163" }),
+    ).not.toBeInTheDocument();
+    // Recent row excludes the favorited Brother (dedupe), leaving only Avery.
+    const recentRegion = screen.getByRole("region", { name: "Recent" });
+    expect(within(recentRegion).getByRole("link", { name: "Print Avery 5163" })).toBeInTheDocument();
+    expect(
+      within(recentRegion).queryByRole("link", { name: "Print Brother 24mm" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the rows while searching", async () => {
+    stubFetch({ favorites: ["brother_24mm_qr"] });
+    renderPage();
+    await screen.findByRole("region", { name: "Favorites" });
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "avery" } });
+    expect(screen.queryByRole("region", { name: "Favorites" })).not.toBeInTheDocument();
+  });
+
+  it("star toggle favorites and unfavorites", async () => {
+    const calls = stubFetch();
+    renderPage();
+    // Rows start empty; the grid card exposes a "favorite" star.
+    const favBtn = await screen.findByRole("button", { name: "favorite Brother 24mm" });
+    fireEvent.click(favBtn);
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === "PUT" && c.url === "/api/favorites/brother_24mm_qr"),
+      ).toBe(true),
+    );
+    // After invalidation the Favorites row appears; its star now toggles the other way.
+    const favRegion = await screen.findByRole("region", { name: "Favorites" });
+    const unfavBtn = await within(favRegion).findByRole("button", {
+      name: "unfavorite Brother 24mm",
+    });
+    fireEvent.click(unfavBtn);
+    await waitFor(() =>
+      expect(
+        calls.some((c) => c.method === "DELETE" && c.url === "/api/favorites/brother_24mm_qr"),
+      ).toBe(true),
+    );
   });
 });

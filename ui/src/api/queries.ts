@@ -1,9 +1,26 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getJson, sendJson, del } from "./client";
+import { getJson, sendJson, del, putVoid } from "./client";
 import type { TemplateSummary, TemplateDetail, Printer } from "./types";
 
 export function useTemplates() {
   return useQuery({ queryKey: ["templates"], queryFn: () => getJson<{ templates: TemplateSummary[] }>("/templates") });
+}
+
+export function useFavorites() {
+  return useQuery({ queryKey: ["favorites"], queryFn: () => getJson<string[]>("/favorites") });
+}
+export function useRecentTemplates() {
+  return useQuery({ queryKey: ["recent-templates"], queryFn: () => getJson<string[]>("/recent-templates") });
+}
+export function useSetFavorite() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, favorite }: { id: string; favorite: boolean }) =>
+      favorite
+        ? putVoid(`/favorites/${encodeURIComponent(id)}`)
+        : del(`/favorites/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["favorites"] }),
+  });
 }
 export function usePrinters() {
   return useQuery({ queryKey: ["printers"], queryFn: () => getJson<Printer[]>("/printers") });
