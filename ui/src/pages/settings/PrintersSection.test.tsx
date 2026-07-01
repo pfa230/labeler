@@ -210,6 +210,26 @@ describe("PrintersSection", () => {
     expect("render" in body.config).toBe(false);
   });
 
+  it("sets a printer as the default via its radio", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (/\/api\/printers\/.+\/default$/.test(url) && method === "POST") {
+        return new Response(null, { status: 204 });
+      }
+      if (url.startsWith("/api/printers")) {
+        return json([{ id: "front", name: "Front Desk", kind: "cups", config: { uri: "ipp://x/y" }, enabled: true, is_default: false }]);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderSection();
+    fireEvent.click(await screen.findByLabelText("default Front Desk"));
+    await waitFor(() =>
+      expect(lastCall("/api/printers/front/default", "POST")).toBeTruthy(),
+    );
+  });
+
   it("shows a server validation error inline when save is rejected", async () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();

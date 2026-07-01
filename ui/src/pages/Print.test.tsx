@@ -31,7 +31,13 @@ const list = {
     { id: "t2", name: "Card", description: "", unit: "mm", dpi: 300, format: detail2.format },
   ],
 };
-const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null, enabled: true }];
+// Two enabled printers with no default, so the one-shot preselect falls through to "none"
+// (it only auto-picks a lone enabled printer or an explicit default) and Print stays gated on an
+// explicit printer selection — which is what this suite exercises.
+const printers = [
+  { id: "p1", name: "Label Printer", kind: "cups", config: null, enabled: true },
+  { id: "p2", name: "Backup Printer", kind: "cups", config: null, enabled: true },
+];
 const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 
 function stubFetch() {
