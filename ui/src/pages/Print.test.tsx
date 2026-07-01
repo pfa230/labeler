@@ -84,6 +84,7 @@ function renderPage(initialPath = "/print") {
       <ToastProvider>
         <MemoryRouter initialEntries={[initialPath]}>
           <Routes>
+            <Route path="/" element={<div>labels grid</div>} />
             <Route path="/print" element={<Print />} />
             <Route path="/print/:templateId" element={<Print />} />
           </Routes>
@@ -109,19 +110,14 @@ describe("Print screen", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows an empty state until a template is chosen", async () => {
-    renderPage();
-    expect(await screen.findByText(/choose a template/i)).toBeInTheDocument();
+  it("redirects /print (no id) to the grid", async () => {
+    renderPage("/print");
+    expect(await screen.findByText("labels grid")).toBeInTheDocument();
   });
 
   it("gates Download on a filled field and Print on a printer, then prints", async () => {
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
-    renderPage();
-
-    // Select t1 in the picker once the list has loaded its option.
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
+    renderPage("/print/t1");
 
     // The message field appears once the detail loads.
     const message = (await screen.findByLabelText("message")) as HTMLInputElement;
@@ -166,40 +162,9 @@ describe("Print screen", () => {
     expect(await screen.findByLabelText("message")).toBeInTheDocument();
   });
 
-  it("shows the empty state at /print with no id", async () => {
-    renderPage("/print");
-    expect(await screen.findByText(/choose a template/i)).toBeInTheDocument();
-  });
-
-  it("shows an error and keeps the picker for an unknown id", async () => {
+  it("shows an error and the all-labels link for an unknown id", async () => {
     renderPage("/print/nope");
     expect(await screen.findByText(/template not found/i)).toBeInTheDocument();
-    expect(screen.getByLabelText("template")).toBeInTheDocument();
-  });
-
-  it("navigates to /print/{id} when a template is chosen", async () => {
-    renderPage("/print");
-    const picker = await screen.findByLabelText("template");
-    // Wait for the option to load; a controlled <select> ignores a value whose option is absent.
-    await screen.findByRole("option", { name: "Card" });
-    fireEvent.change(picker, { target: { value: "t2" } });
-    expect(await screen.findByLabelText("message")).toBeInTheDocument();
-  });
-
-  it("keeps entered fields when switching to a template sharing the field", async () => {
-    renderPage();
-
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-
-    const message = (await screen.findByLabelText("message")) as HTMLInputElement;
-    fireEvent.change(message, { target: { value: "hello" } });
-    expect(message.value).toBe("hello");
-
-    // Switch to t2, which also references "message"; the value must survive (no remount wipe).
-    fireEvent.change(picker, { target: { value: "t2" } });
-    const message2 = (await screen.findByLabelText("message")) as HTMLInputElement;
-    expect(message2.value).toBe("hello");
+    expect(screen.getByRole("link", { name: /all labels/i })).toHaveAttribute("href", "/");
   });
 });
