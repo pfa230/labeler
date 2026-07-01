@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
+import { useMediaQuery } from "../../lib/useMediaQuery";
 import { defaultOptions, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { usePrinters } from "../../api/queries";
@@ -29,6 +30,9 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { push } = useToast();
+
+  const isLg = useMediaQuery("(min-width: 1024px)");
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   // One-shot preselect once printers first resolve: enabled default -> sole enabled -> none.
   // Guarded by a ref (NOT `printer === undefined`) so a printers refetch never clobbers an
@@ -60,7 +64,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
 
   const preview = useLivePreview(
     { templateId: detail.id, format: detail.format.type, data: value.data, option, startSlot },
-    valid,
+    valid && (isLg || previewOpen),
   );
 
   const onDownload = async () => {
@@ -142,30 +146,53 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
 
         {formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}
 
-        {!isSheet && (
-          <label className="flex items-center gap-2 text-sm">
-            <span className="font-medium">Format</span>
-            <select
-              aria-label="download format"
-              value={fmt}
-              onChange={(e) => setFmt(e.target.value as "png" | "pdf")}
-              className="rounded-md border px-2 py-1"
-              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
-            >
-              <option value="png">png</option>
-              <option value="pdf">pdf</option>
-            </select>
-          </label>
-        )}
-
         <div className="flex items-center gap-3">
+          {!isSheet && (
+            <label className="flex items-center gap-2 text-sm">
+              <span className="font-medium">Format</span>
+              <select
+                aria-label="download format"
+                value={fmt}
+                onChange={(e) => setFmt(e.target.value as "png" | "pdf")}
+                className="rounded-md border px-2 py-1"
+                style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+              >
+                <option value="png">png</option>
+                <option value="pdf">pdf</option>
+              </select>
+            </label>
+          )}
+          <button
+            type="button"
+            onClick={onDownload}
+            disabled={busy || !valid || stale}
+            className={`${buttonBase} border`}
+            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+          >
+            Download
+          </button>
+        </div>
+
+        <details className="lg:hidden" onToggle={(e) => setPreviewOpen(e.currentTarget.open)}>
+          <summary className="cursor-pointer py-2 text-sm font-medium">Preview</summary>
+          <PreviewPane name={detail.name} format={detail.format.type} preview={preview} />
+        </details>
+
+        <div
+          className="sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 lg:static lg:mx-0 lg:gap-3 lg:border-t-0 lg:px-0"
+          style={{
+            background: "var(--surface)",
+            borderColor: "var(--border)",
+            paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))",
+          }}
+        >
           <div className="flex items-center gap-1">
             <span className="text-sm font-medium">Copies</span>
             <button
               type="button"
               aria-label="decrease copies"
               onClick={() => setCopies((c) => clampCopies(c - 1))}
-              className={`${buttonBase} border`}
+              className={`${buttonBase} h-11 w-11 border`}
               style={{ borderColor: "var(--border)", color: "var(--ink)" }}
             >
               −
@@ -177,14 +204,14 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
               max={MAX_COPIES}
               value={copies}
               onChange={(e) => setCopies(clampCopies(Number(e.target.value)))}
-              className="w-16 rounded-md border px-2 py-1 text-center"
+              className="h-11 w-16 rounded-md border px-2 py-1 text-center"
               style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
             />
             <button
               type="button"
               aria-label="increase copies"
               onClick={() => setCopies((c) => clampCopies(c + 1))}
-              className={`${buttonBase} border`}
+              className={`${buttonBase} h-11 w-11 border`}
               style={{ borderColor: "var(--border)", color: "var(--ink)" }}
             >
               +
@@ -194,24 +221,17 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
             type="button"
             onClick={onPrint}
             disabled={busy || !value.printer || !valid || stale}
-            className={buttonBase}
+            className={`${buttonBase} h-11 min-w-32 flex-1 lg:flex-none`}
             style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
           >
             Print
           </button>
-          <button
-            type="button"
-            onClick={onDownload}
-            disabled={busy || !valid || stale}
-            className={`${buttonBase} border`}
-            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-          >
-            Download
-          </button>
         </div>
       </div>
 
-      <PreviewPane name={detail.name} format={detail.format.type} preview={preview} />
+      <div className="hidden lg:block">
+        <PreviewPane name={detail.name} format={detail.format.type} preview={preview} />
+      </div>
     </div>
   );
 }
