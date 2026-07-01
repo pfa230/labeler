@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { Print } from "./Print";
@@ -44,6 +44,12 @@ function stubFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     // Detail BEFORE list so the broad /api/templates branch doesn't swallow it.
+    if (url.startsWith("/api/templates/nope")) {
+      return new Response(
+        JSON.stringify({ error: { code: "NotFound", message: "template not found" } }),
+        { status: 404, headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.startsWith("/api/templates/t1")) {
       return new Response(JSON.stringify(detail), { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -71,15 +77,16 @@ function stubFetch() {
   });
 }
 
-function renderPage(initialState?: { template: string }) {
+function renderPage(initialPath = "/print") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter
-          initialEntries={[{ pathname: "/print", state: initialState ?? null }]}
-        >
-          <Print />
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="/print" element={<Print />} />
+            <Route path="/print/:templateId" element={<Print />} />
+          </Routes>
         </MemoryRouter>
       </ToastProvider>
     </QueryClientProvider>,
@@ -154,8 +161,28 @@ describe("Print screen", () => {
     expect(await screen.findByText(/1\/1/)).toBeInTheDocument();
   });
 
-  it("preselects the template from router state", async () => {
-    renderPage({ template: "t1" });
+  it("renders the form for a template from the URL param", async () => {
+    renderPage("/print/t1");
+    expect(await screen.findByLabelText("message")).toBeInTheDocument();
+  });
+
+  it("shows the empty state at /print with no id", async () => {
+    renderPage("/print");
+    expect(await screen.findByText(/choose a template/i)).toBeInTheDocument();
+  });
+
+  it("shows an error and keeps the picker for an unknown id", async () => {
+    renderPage("/print/nope");
+    expect(await screen.findByText(/template not found/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("template")).toBeInTheDocument();
+  });
+
+  it("navigates to /print/{id} when a template is chosen", async () => {
+    renderPage("/print");
+    const picker = await screen.findByLabelText("template");
+    // Wait for the option to load; a controlled <select> ignores a value whose option is absent.
+    await screen.findByRole("option", { name: "Card" });
+    fireEvent.change(picker, { target: { value: "t2" } });
     expect(await screen.findByLabelText("message")).toBeInTheDocument();
   });
 
