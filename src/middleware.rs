@@ -22,6 +22,17 @@ pub enum Principal {
     Local,
 }
 
+impl Principal {
+    /// Stable actor identity for per-user data and job attribution.
+    pub fn actor_id(&self) -> String {
+        match self {
+            Principal::User { id, .. } => id.clone(),
+            Principal::Token { id } => format!("token:{id}"),
+            Principal::Local => "local".to_string(),
+        }
+    }
+}
+
 /// Paths that never require auth. IMPORTANT: this middleware is layered on the router that is then
 /// `nest("/api", ...)`-ed, so axum strips the `/api` prefix before the inner router runs. The path seen
 /// here is therefore the STRIPPED path (`/health`, not `/api/health`). `/auth/me` is exempt and does its

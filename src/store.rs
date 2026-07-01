@@ -130,6 +130,15 @@ fn migrations() -> Migrations<'static> {
         M::up("ALTER TABLE settings RENAME TO variables;"),
         M::up("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"),
         M::up("ALTER TABLE printers ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;"),
+        M::up("ALTER TABLE jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT '';"),
+        M::up(
+            "CREATE TABLE favorites (
+            user_id     TEXT NOT NULL,
+            template_id TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, template_id)
+        );",
+        ),
     ])
 }
 
@@ -308,13 +317,68 @@ impl Store {
         printer: Option<&str>,
         status: &str,
         error: Option<&str>,
+        user_id: &str,
     ) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
-            "INSERT INTO jobs (template, printer, status, error) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![template, printer, status, error],
+            "INSERT INTO jobs (template, printer, status, error, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![template, printer, status, error, user_id],
         )?;
         Ok(())
+    }
+
+    pub async fn list_favorites(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare(
+            "SELECT template_id FROM favorites WHERE user_id = ?1 ORDER BY created_at, template_id",
+        )?;
+        let rows = stmt.query_map([user_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub async fn add_favorite(&self, user_id: &str, template_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "INSERT OR IGNORE INTO favorites (user_id, template_id) VALUES (?1, ?2)",
+            rusqlite::params![user_id, template_id],
+        )?;
+        Ok(())
+    }
+
+    pub async fn remove_favorite(
+        &self,
+        user_id: &str,
+        template_id: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "DELETE FROM favorites WHERE user_id = ?1 AND template_id = ?2",
+            rusqlite::params![user_id, template_id],
+        )?;
+        Ok(())
+    }
+
+    /// Most recently printed distinct templates for this user (deterministic: MAX(id) tiebreak).
+    pub async fn recent_templates(
+        &self,
+        user_id: &str,
+        limit: u32,
+    ) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare(
+            "SELECT template FROM jobs WHERE user_id = ?1
+             GROUP BY template ORDER BY MAX(ts) DESC, MAX(id) DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![user_id, limit], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     /// Delete job-log rows older than `retention_days`. `0` disables (no-op). Returns rows deleted.
@@ -706,13 +770,60 @@ mod tests {
         assert_eq!(all.get("k").map(String::as_str), Some("v2"));
 
         store
-            .record_job("tpl", Some("p1"), "ok", None)
+            .record_job("tpl", Some("p1"), "ok", None, "u1")
             .await
             .unwrap();
         store
-            .record_job("tpl", None, "failed", Some("boom"))
+            .record_job("tpl", None, "failed", Some("boom"), "u1")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn favorites_add_idempotent_list_and_remove() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.list_favorites("u1").await.unwrap().is_empty());
+        store.add_favorite("u1", "tpl_a").await.unwrap();
+        store.add_favorite("u1", "tpl_a").await.unwrap(); // idempotent
+        store.add_favorite("u1", "tpl_b").await.unwrap();
+        // per-user isolation
+        store.add_favorite("u2", "tpl_c").await.unwrap();
+        assert_eq!(
+            store.list_favorites("u1").await.unwrap(),
+            vec!["tpl_a".to_string(), "tpl_b".to_string()]
+        );
+        assert_eq!(
+            store.list_favorites("u2").await.unwrap(),
+            vec!["tpl_c".to_string()]
+        );
+        store.remove_favorite("u1", "tpl_a").await.unwrap();
+        store.remove_favorite("u1", "tpl_a").await.unwrap(); // idempotent
+        assert_eq!(
+            store.list_favorites("u1").await.unwrap(),
+            vec!["tpl_b".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_templates_distinct_ordered_and_per_user() {
+        let store = Store::open_in_memory().unwrap();
+        // Same ts for a and b; MAX(id) tiebreak makes b (inserted later) rank first.
+        store.record_job("a", None, "ok", None, "u1").await.unwrap();
+        store.record_job("a", None, "ok", None, "u1").await.unwrap();
+        store.record_job("b", None, "ok", None, "u1").await.unwrap();
+        store.record_job("c", None, "ok", None, "u2").await.unwrap();
+        let recents = store.recent_templates("u1", 6).await.unwrap();
+        assert_eq!(recents, vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(store.recent_templates("u1", 1).await.unwrap(), vec!["b"]);
+        assert_eq!(
+            store.recent_templates("u2", 6).await.unwrap(),
+            vec!["c".to_string()]
+        );
+        assert!(store
+            .recent_templates("nobody", 6)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -744,7 +855,10 @@ mod tests {
     #[tokio::test]
     async fn prune_jobs_zero_is_noop() {
         let store = Store::open_in_memory().unwrap();
-        store.record_job("tpl", None, "ok", None).await.unwrap();
+        store
+            .record_job("tpl", None, "ok", None, "u1")
+            .await
+            .unwrap();
         assert_eq!(store.prune_jobs(0).await.unwrap(), 0);
         let remaining: i64 = {
             let conn = store.conn.lock().unwrap();
