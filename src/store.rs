@@ -17,7 +17,9 @@ pub struct Printer {
     pub config: JsonValue,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    // Read-only in the API: set only via POST/DELETE /printers/{id}/default; create/replace ignore it.
     #[serde(default)]
+    #[schema(read_only)]
     pub is_default: bool,
 }
 
@@ -198,7 +200,8 @@ impl Store {
         Ok(affected > 0)
     }
 
-    /// Set `id` as the sole default printer, atomically. Returns false (tx rolled back) if `id` is unknown.
+    /// Set `id` as the sole default printer, atomically. Returns `false` (making no change) if `id`
+    /// is unknown — the existence check runs before any write, so no default is cleared.
     pub async fn set_default_printer(&self, id: &str) -> Result<bool, StoreError> {
         let mut conn = self.conn.lock().expect("store lock");
         let tx = conn.transaction()?;
