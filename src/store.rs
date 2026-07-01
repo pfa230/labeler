@@ -17,6 +17,10 @@ pub struct Printer {
     pub config: JsonValue,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    // Read-only in the API: set only via POST/DELETE /printers/{id}/default; create/replace ignore it.
+    #[serde(default)]
+    #[schema(read_only)]
+    pub is_default: bool,
 }
 
 fn default_true() -> bool {
@@ -125,6 +129,7 @@ fn migrations() -> Migrations<'static> {
         M::up("CREATE INDEX idx_jobs_ts ON jobs(ts);"),
         M::up("ALTER TABLE settings RENAME TO variables;"),
         M::up("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"),
+        M::up("ALTER TABLE printers ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;"),
     ])
 }
 
@@ -150,8 +155,9 @@ impl Store {
 
     pub async fn list_printers(&self) -> Result<Vec<Printer>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt =
-            conn.prepare("SELECT id, name, kind, config, enabled FROM printers ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, kind, config, enabled, is_default FROM printers ORDER BY id",
+        )?;
         let rows = stmt.query_map([], row_to_printer_parts)?;
         let mut out = Vec::new();
         for row in rows {
@@ -162,8 +168,9 @@ impl Store {
 
     pub async fn get_printer(&self, id: &str) -> Result<Option<Printer>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt =
-            conn.prepare("SELECT id, name, kind, config, enabled FROM printers WHERE id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, kind, config, enabled, is_default FROM printers WHERE id = ?1",
+        )?;
         let mut rows = stmt.query_map([id], row_to_printer_parts)?;
         match rows.next() {
             Some(row) => Ok(Some(printer_from_parts(row?)?)),
@@ -191,6 +198,31 @@ impl Store {
         let conn = self.conn.lock().expect("store lock");
         let affected = conn.execute("DELETE FROM printers WHERE id = ?1", [id])?;
         Ok(affected > 0)
+    }
+
+    /// Set `id` as the sole default printer, atomically. Returns `false` (making no change) if `id`
+    /// is unknown — the existence check runs before any write, so no default is cleared.
+    pub async fn set_default_printer(&self, id: &str) -> Result<bool, StoreError> {
+        let mut conn = self.conn.lock().expect("store lock");
+        let tx = conn.transaction()?;
+        let exists: bool = tx
+            .query_row("SELECT 1 FROM printers WHERE id = ?1", [id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            return Ok(false); // tx drops -> rolled back; nothing changed
+        }
+        tx.execute("UPDATE printers SET is_default = 0", [])?;
+        tx.execute("UPDATE printers SET is_default = 1 WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Clear the default flag on `id` (idempotent no-op if it wasn't default / doesn't exist).
+    pub async fn clear_default_printer(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute("UPDATE printers SET is_default = 0 WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     pub async fn get_variable(&self, key: &str) -> Result<Option<String>, StoreError> {
@@ -596,7 +628,7 @@ fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
     })
 }
 
-type PrinterParts = (String, String, String, String, i64);
+type PrinterParts = (String, String, String, String, i64, i64);
 
 fn row_to_printer_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterParts> {
     Ok((
@@ -605,17 +637,19 @@ fn row_to_printer_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterPart
         row.get(2)?,
         row.get(3)?,
         row.get(4)?,
+        row.get(5)?,
     ))
 }
 
 fn printer_from_parts(parts: PrinterParts) -> Result<Printer, StoreError> {
-    let (id, name, kind, config, enabled) = parts;
+    let (id, name, kind, config, enabled, is_default) = parts;
     Ok(Printer {
         id,
         name,
         kind,
         config: serde_json::from_str(&config)?,
         enabled: enabled != 0,
+        is_default: is_default != 0,
     })
 }
 
@@ -635,6 +669,7 @@ mod tests {
             kind: "cups".to_string(),
             config: json!({ "uri": "ipp://x" }),
             enabled: true,
+            is_default: false,
         };
         store.upsert_printer(&printer).await.unwrap();
 
