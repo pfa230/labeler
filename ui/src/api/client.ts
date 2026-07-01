@@ -51,6 +51,15 @@ export async function del(path: string): Promise<void> {
   if (!res.ok) throw await toError(res);
 }
 
+// PUT with no response body (204); throws the error contract on non-2xx.
+export async function putVoid(path: string): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, { method: "PUT" });
+  if (!res.ok) {
+    on401(res.status);
+    throw await toError(res);
+  }
+}
+
 function filenameFrom(res: Response): string | undefined {
   // Matches the current server's `Content-Disposition: attachment; filename="x"`; not RFC5987 `filename*=`.
   const m = (res.headers.get("content-disposition") ?? "").match(/filename="?([^"]+)"?/);

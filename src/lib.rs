@@ -3360,6 +3360,152 @@ mod auth_http_tests {
         assert_eq!(body["noAuth"], true);
     }
 
+    /// A second user's session cookie (created via A's cookie), for per-user isolation checks.
+    async fn login_second_user(app: &axum::Router, cookie_a: &str, username: &str) -> String {
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/users",
+                &format!(r#"{{"username":"{username}","password":"pw123456"}}"#),
+                cookie_a,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/auth/login",
+                &format!(r#"{{"username":"{username}","password":"pw123456"}}"#),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        cookie_from(&res)
+    }
+
+    #[tokio::test]
+    async fn favorites_crud_and_per_user_isolation() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+
+        // PUT a favorite -> 204, then GET lists it
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/favorites/brother_24mm_qr",
+                "{}",
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/favorites", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await, serde_json::json!(["brother_24mm_qr"]));
+
+        // PUT again is idempotent (still exactly one)
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/favorites/brother_24mm_qr",
+                "{}",
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/favorites", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await, serde_json::json!(["brother_24mm_qr"]));
+
+        // PUT an unknown template -> 404
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie("/api/favorites/nope", "{}", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        // user B sees an empty list (per-user isolation)
+        let cookie_b = login_second_user(&app, &cookie, "bob").await;
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/favorites", &cookie_b))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await, serde_json::json!([]));
+
+        // DELETE as A -> 204, then GET empty
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie("/api/favorites/brother_24mm_qr", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/favorites", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn recents_are_recorded_with_local_actor() {
+        // no-auth app: the print actor is "local", so recents are visible to the local caller.
+        let app = test_app_no_auth();
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/printers",
+                r#"{"id":"ok-printer","name":"ok-printer","kind":"fake","config":{"fail":false}}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+
+        // recents empty before any print
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/recent-templates"))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await, serde_json::json!([]));
+
+        // print one label
+        let res = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/print",
+                r#"{"template":"brother_24mm_qr","printer":"ok-printer","fields":{"message":"x","code":"y"},"copies":1}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // the print is now attributed to "local" and surfaces in recents
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/recent-templates"))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await, serde_json::json!(["brother_24mm_qr"]));
+        // limit clamps to at least one result
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/recent-templates?limit=0"))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await, serde_json::json!(["brother_24mm_qr"]));
+    }
+
     #[tokio::test]
     async fn no_auth_relaxed_origin_check() {
         // state-changing request with NO Origin succeeds (non-browser caller)
