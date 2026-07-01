@@ -49,6 +49,9 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | PUT / DELETE | `/api/settings/{key}` | Set an override / reset to default | `200` / `204` / `400` / `404` |
 | POST | `/api/print` | Inbound print webhook: single label, N copies, to a named printer | `200` / `400` / `404` / `409` / `413` / `422` / `502` |
 | POST | `/api/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
+| GET | `/api/favorites` | List the caller's favorited template ids | `200 ["id",…]` |
+| PUT / DELETE | `/api/favorites/{template_id}` | Favorite / unfavorite a template (idempotent) | `204` / `404` |
+| GET | `/api/recent-templates` | Caller's recently printed template ids (`?limit=`, default 6, cap 20) | `200 ["id",…]` |
 | POST | `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout` | First-run setup / login / logout | see §11 |
 | GET | `/api/auth/me` | SPA auth state | `200` |
 | POST | `/api/auth/password` | Change own password | see §11 |
@@ -720,6 +723,25 @@ behind a `store` module.
 - **Deferred:** printer status read-back, USB/browser printing. (Batch-to-printer and multi-page sheets
   are now delivered by `/batch`; `copies` is expanded client-side, so #28 is moot.)
 
+## Favorites and recents
+
+Per-user Favorites and Recent rows surface the common few templates at the top of the Labels grid (#115).
+
+- **Actor identity.** Every request resolves to a stable actor id: an authenticated user is their user
+  id; the no-auth `local` principal is `"local"` (a single global actor); an API token is `"token:{id}"`.
+  Favorites and recents are keyed by this actor, so a browsing user never sees another user's data, and
+  webhook/API-token prints (attributed to the token actor) never pollute a user's recents.
+- **Jobs record the actor.** The `jobs` table carries a `user_id` column (the actor id) written on every
+  recorded print. Rows predating the column have an empty `user_id` and so never match a real actor.
+- **Favorites** are stored in a `favorites (user_id, template_id)` table. `GET /favorites` returns the
+  caller's favorited ids in favoriting order, filtered against the live registry (favorited-then-deleted
+  templates are dropped on read). `PUT /favorites/{template_id}` favorites (idempotent; `404` if the id
+  is not a known template) and `DELETE` unfavorites (idempotent). Mutations take the write lock.
+- **Recents.** `GET /recent-templates?limit=N` (default 6, cap 20; `limit` clamps to `[1,20]`) returns the
+  caller's most-recently-printed distinct template ids, ordered by most recent print (`MAX(ts)`, with
+  `MAX(id)` as a deterministic tiebreak because `ts` has one-second resolution), filtered against the
+  live registry (so it can return fewer than `limit`).
+
 ## Variables
 
 A generic key/value store holds template substitution variables, persisted in the SQLite `variables`
@@ -794,6 +816,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-07-01**: Per-user Favorites and Recent rows on the Labels grid (#115). Adds a stable actor
+  identity (`Principal::actor_id()`: user id / `local` / `token:{id}`); a `favorites (user_id,
+  template_id)` table with `GET /favorites` and `PUT`/`DELETE /favorites/{template_id}`; and
+  `GET /recent-templates?limit=` backed by a new `jobs.user_id` column written on every recorded print.
+  The `user_id` column is the same audit-log column #94 builds on. See "Favorites and recents".
 - **2026-07-01**: Effortless print form (ADR-0037; #111, #112). The interactive print form gains a
   **Copies** control (1-100, Print only; Download is unaffected): tape/single templates print N via
   `POST /api/print`, sheet templates via `/api/batch` with the label repeated. A **global default
