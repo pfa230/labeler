@@ -95,6 +95,9 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const onPrint = async () => {
     setFormError(null);
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
+    // Print requires a printer (the button is already gated on it); narrows value.printer to string.
+    const printer = value.printer;
+    if (!printer) return;
     setBusy(true);
     try {
       const n = clampCopies(copies);
@@ -103,14 +106,14 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
           template: detail.id,
           labels: Array.from({ length: n }, () => label),
           mode: "print",
-          printer: value.printer,
+          printer,
           ...(startSlot ? { start_slot: startSlot } : {}),
         });
         if (r.kind === "summary") showSummary(r.summary);
       } else {
         const summary = await printLabel({
           template: detail.id,
-          printer: value.printer,
+          printer,
           fields: value.data,
           ...(option ? { option } : {}),
           copies: n,
