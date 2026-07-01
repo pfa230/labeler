@@ -53,6 +53,10 @@ function stubFetch() {
     if (url.startsWith("/api/render/label")) {
       return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
     }
+    if (url === "/api/print") {
+      void init;
+      return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (url.startsWith("/api/batch")) {
       void init;
       return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
@@ -134,11 +138,13 @@ describe("Print screen", () => {
     fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p1" } });
     await waitFor(() => expect(print).not.toBeDisabled());
 
+    // t1 is a single/tape template, so Print routes to /print (not /batch).
+    const printCall = () => [...fetchMock.mock.calls].reverse().find(([u]) => String(u) === "/api/print");
     fireEvent.click(print);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const batchBody = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    expect(batchBody.mode).toBe("print");
-    expect(batchBody.printer).toBe("p1");
+    await waitFor(() => expect(printCall()).toBeDefined());
+    const printBody = JSON.parse((printCall()![1] as RequestInit).body as string);
+    expect(printBody.printer).toBe("p1");
+    expect(printBody.copies).toBe(1);
     expect(await screen.findByText(/1\/1/)).toBeInTheDocument();
   });
 

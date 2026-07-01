@@ -2,15 +2,19 @@ import { useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { defaultOptions, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
-import { ApiError, fetchBlob, saveBlob, submitBatch } from "../../api/client";
+import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { useToast } from "../../app/toast-context";
-import type { TemplateDetail } from "../../api/types";
+import type { BatchSummary, TemplateDetail } from "../../api/types";
 import { PreviewPane } from "../../components/PreviewPane";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
 
 const buttonBase =
   "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
+
+const MIN_COPIES = 1;
+const MAX_COPIES = 100;
+const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Math.floor(Number.isFinite(n) ? n : 1)));
 
 export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
   const [value, setValue] = useState<FormValue>(() => ({
@@ -20,9 +24,16 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     startSlot: 0,
   }));
   const [fmt, setFmt] = useState<"png" | "pdf">("png");
+  const [copies, setCopies] = useState(1);
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { push } = useToast();
+
+  const showSummary = (summary: BatchSummary) => {
+    const { succeeded, total, failed } = summary;
+    const detailMsg = failed.length ? ` — ${failed[0].error}` : "";
+    push({ kind: failed.length ? "error" : "ok", message: `Printed ${succeeded}/${total}${detailMsg}` });
+  };
 
   const isSheet = detail.format.type === "sheet";
   const reconciledOption = reconcileRowOptions(value.option, detail.options);
@@ -72,17 +83,25 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     setBusy(true);
     try {
-      const r = await submitBatch({
-        template: detail.id,
-        labels: [label],
-        mode: "print",
-        printer: value.printer,
-        ...(startSlot ? { start_slot: startSlot } : {}),
-      });
-      if (r.kind === "summary") {
-        const { succeeded, total, failed } = r.summary;
-        const detailMsg = failed.length ? ` — ${failed[0].error}` : "";
-        push({ kind: failed.length ? "error" : "ok", message: `Printed ${succeeded}/${total}${detailMsg}` });
+      const n = clampCopies(copies);
+      if (isSheet) {
+        const r = await submitBatch({
+          template: detail.id,
+          labels: Array.from({ length: n }, () => label),
+          mode: "print",
+          printer: value.printer,
+          ...(startSlot ? { start_slot: startSlot } : {}),
+        });
+        if (r.kind === "summary") showSummary(r.summary);
+      } else {
+        const summary = await printLabel({
+          template: detail.id,
+          printer: value.printer,
+          fields: value.data,
+          ...(option ? { option } : {}),
+          copies: n,
+        });
+        showSummary(summary);
       }
     } catch (err) {
       if (err instanceof ApiError && err.code === "BatchInvalid") {
@@ -123,6 +142,37 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
         )}
 
         <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1">
+            <span className="text-sm font-medium">Copies</span>
+            <button
+              type="button"
+              aria-label="decrease copies"
+              onClick={() => setCopies((c) => clampCopies(c - 1))}
+              className={`${buttonBase} border`}
+              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+            >
+              −
+            </button>
+            <input
+              type="number"
+              aria-label="copies"
+              min={MIN_COPIES}
+              max={MAX_COPIES}
+              value={copies}
+              onChange={(e) => setCopies(clampCopies(Number(e.target.value)))}
+              className="w-16 rounded-md border px-2 py-1 text-center"
+              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+            />
+            <button
+              type="button"
+              aria-label="increase copies"
+              onClick={() => setCopies((c) => clampCopies(c + 1))}
+              className={`${buttonBase} border`}
+              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+            >
+              +
+            </button>
+          </div>
           <button
             type="button"
             onClick={onPrint}

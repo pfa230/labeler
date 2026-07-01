@@ -74,6 +74,16 @@ export type BatchResult =
   | { kind: "download"; blob: Blob; filename?: string }
   | { kind: "summary"; summary: BatchSummary };
 
+export async function printLabel(body: {
+  template: string;
+  printer?: string;
+  fields: Record<string, string>;
+  option?: Record<string, string>;
+  copies: number;
+}): Promise<BatchSummary> {
+  return sendJson<BatchSummary>("POST", "/print", body);
+}
+
 export async function submitBatch(body: unknown): Promise<BatchResult> {
   const res = await fetch(`${BASE}/batch`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
