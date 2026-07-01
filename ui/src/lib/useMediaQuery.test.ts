@@ -3,11 +3,11 @@ import { renderHook, act } from "@testing-library/react";
 import { useMediaQuery } from "./useMediaQuery";
 
 function stubMatchMedia(initial: boolean) {
-  let listener: ((e: { matches: boolean }) => void) | null = null;
+  let listener: (() => void) | null = null;
   const mql = {
     matches: initial,
     media: "(min-width: 1024px)",
-    addEventListener: (_: string, fn: (e: { matches: boolean }) => void) => {
+    addEventListener: (_: string, fn: () => void) => {
       listener = fn;
     },
     removeEventListener: () => {
@@ -15,7 +15,14 @@ function stubMatchMedia(initial: boolean) {
     },
   };
   vi.stubGlobal("matchMedia", () => mql as unknown as MediaQueryList);
-  return { fire: (matches: boolean) => act(() => listener?.({ matches })) };
+  // Real MediaQueryLists update .matches before dispatching "change"; the store snapshot re-reads it.
+  return {
+    fire: (matches: boolean) =>
+      act(() => {
+        mql.matches = matches;
+        listener?.();
+      }),
+  };
 }
 
 afterEach(() => vi.unstubAllGlobals());
