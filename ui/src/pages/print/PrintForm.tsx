@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
@@ -34,18 +34,15 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const isLg = useMediaQuery("(min-width: 1024px)");
   const [previewOpen, setPreviewOpen] = useState(false);
 
-  // One-shot preselect once printers first resolve: enabled default -> sole enabled -> none.
-  // Guarded by a ref (NOT `printer === undefined`) so a printers refetch never clobbers an
-  // explicit "None".
+  // Printer preselect, derived at render (no effect; #116): enabled default -> sole enabled -> none.
+  // `value.printer` stores only EXPLICIT user choices ("" = explicit None, an id = explicit pick,
+  // undefined = untouched -> use the preselect), so a printers refetch never clobbers a choice.
   const { data: printers } = usePrinters();
-  const initialized = useRef(false);
-  useEffect(() => {
-    if (initialized.current || !printers) return;
-    initialized.current = true;
-    const enabled = printers.filter((p) => p.enabled);
-    const pick = enabled.find((p) => p.is_default)?.id ?? (enabled.length === 1 ? enabled[0].id : undefined);
-    if (pick) setValue((v) => ({ ...v, printer: pick }));
+  const preselect = useMemo(() => {
+    const enabled = (printers ?? []).filter((p) => p.enabled);
+    return enabled.find((p) => p.is_default)?.id ?? (enabled.length === 1 ? enabled[0].id : undefined);
   }, [printers]);
+  const effectivePrinter = value.printer === undefined ? preselect : value.printer || undefined;
 
   const showSummary = (summary: BatchSummary) => {
     const { succeeded, total, failed } = summary;
@@ -99,8 +96,8 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const onPrint = async () => {
     setFormError(null);
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
-    // Print requires a printer (the button is already gated on it); narrows value.printer to string.
-    const printer = value.printer;
+    // Print requires a printer (the button is already gated on it); narrows to string.
+    const printer = effectivePrinter;
     if (!printer) return;
     setBusy(true);
     try {
@@ -142,7 +139,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="flex flex-col gap-4">
-        <FieldForm detail={detail} value={{ ...value, option: reconciledOption }} onChange={setValue} />
+        <FieldForm detail={detail} value={{ ...value, option: reconciledOption, printer: effectivePrinter }} onChange={setValue} />
 
         {formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}
 
@@ -220,7 +217,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
           <button
             type="button"
             onClick={onPrint}
-            disabled={busy || !value.printer || !valid || stale}
+            disabled={busy || !effectivePrinter || !valid || stale}
             className={`${buttonBase} h-11 min-w-32 flex-1 lg:flex-none`}
             style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
           >
