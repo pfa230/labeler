@@ -142,6 +142,51 @@ describe("PrintForm copies", () => {
   });
 });
 
+describe("PrintForm phone-first layout", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock = stubFetch();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("puts copies and Print in the sticky actions row, Download in the secondary row", async () => {
+    renderForm(tape);
+    const print = await screen.findByRole("button", { name: "Print" });
+    const stickyRow = print.closest("div.sticky, div[class*='sticky']");
+    expect(stickyRow).not.toBeNull();
+    expect(stickyRow).toContainElement(screen.getByLabelText("copies"));
+    const download = screen.getByRole("button", { name: "Download" });
+    expect(stickyRow).not.toContainElement(download);
+  });
+
+  it("on mobile, the preview is a collapsed disclosure and only fetches when opened", async () => {
+    // Override the global stub: mobile (matches: false).
+    vi.stubGlobal(
+      "matchMedia",
+      (q: string) =>
+        ({
+          matches: false,
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    renderForm(tape);
+    // fill the required field so the form is valid
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hi" } });
+    // closed disclosure -> no preview fetch (allow debounce to elapse)
+    await new Promise((r) => setTimeout(r, 400));
+    expect(countCalls("/api/render/label")).toBe(0);
+    // open the disclosure (click the summary, not the details)
+    fireEvent.click(screen.getByText("Preview"));
+    await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
+  });
+});
+
 describe("PrintForm printer preselect", () => {
   const p = (id: string, enabled: boolean, is_default = false) => ({
     id,
