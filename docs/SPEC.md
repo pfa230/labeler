@@ -42,6 +42,7 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | POST | `/api/batch` | Render/print a batch of labels | `200` / `413` / `422` |
 | GET / POST | `/api/printers` | List / create printers | `200` / `201` |
 | GET / PUT / DELETE | `/api/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
+| POST / DELETE | `/api/printers/{id}/default` | Set this printer as the sole default / clear its default flag | `204` / `404` |
 | GET | `/api/variables` | All template variables as a key/value object | `200 {…}` |
 | PUT | `/api/variables/{key}` | Upsert a variable | `200` / `400` |
 | GET | `/api/settings` | Resolved app settings (effective value + `is_default` per key) | `200` |
@@ -793,6 +794,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-07-01**: Effortless print form (ADR-0037; #111, #112). The interactive print form gains a
+  **Copies** control (1-100, Print only; Download is unaffected): tape/single templates print N via
+  `POST /api/print`, sheet templates via `/api/batch` with the label repeated. A **global default
+  printer** is modeled as a read-only `is_default` flag on the printer (`Printer.is_default`), set via
+  `POST /api/printers/{id}/default` and cleared via `DELETE /api/printers/{id}/default` — at most one
+  default, enforced in one transaction; `POST`/`PUT /api/printers` never set it (create → non-default,
+  replace → preserves). The print form preselects the printer as **enabled default → sole enabled →
+  none**.
 - **2026-06-29**: Layout-aware container rotation (ADR-0036; #98). `rotate` becomes a container-only,
   orthogonal (`{0,90,180,270}`), counter-clockwise inner transform: a portrait design seats onto a
   landscape slot. The container's `at`/`size` stay parent-frame; the inner author canvas (and child
