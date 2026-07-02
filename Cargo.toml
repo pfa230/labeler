@@ -21,10 +21,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tower-http = { version = "0.7", features = ["trace", "fs"] }
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
-typst = "0.14"
-typst-as-lib = { version = "0.15", features = ["typst-kit-embed-fonts", "typst-kit-fonts"] }
-typst-render = "0.14"
-typst-pdf = "0.14"
+typst = "0.15"
+typst-layout = "0.15"
+typst-as-lib = { version = "0.16", features = ["typst-kit-embed-fonts", "typst-kit-fonts"] }
+typst-render = "0.15"
+typst-pdf = "0.15"
 qrcode = "0.14"
 fontdue = "0.9"
 base64 = "0.22"

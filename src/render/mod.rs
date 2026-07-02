@@ -18,8 +18,17 @@ use serde_json::Value as JsonValue;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
-use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
+use typst_layout::PagedDocument;
+
+/// Typst 0.15's `typst_render::render` takes `&RenderOptions` instead of a bare pixels-per-point
+/// scalar; build one carrying the requested scale (bleed off, matching the previous behavior).
+fn render_options(pixels_per_point: f32) -> typst_render::RenderOptions {
+    typst_render::RenderOptions {
+        pixel_per_pt: typst::utils::Scalar::new(pixels_per_point as f64),
+        ..Default::default()
+    }
+}
 
 #[derive(Default)]
 struct ImageCollector {
@@ -176,10 +185,10 @@ pub fn render_thumbnail_png(
     let env = RenderEnv { settings, datetime };
     let doc = compile_label_doc(template, data, option, &env)?;
     let page = doc
-        .pages
+        .pages()
         .first()
         .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
-    let pixmap = typst_render::render(page, template.dpi as f32 / 72.0);
+    let pixmap = typst_render::render(page, &render_options(template.dpi as f32 / 72.0));
     pixmap
         .encode_png()
         .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
@@ -226,12 +235,12 @@ pub fn render_single_label_image(
     let env = RenderEnv { settings, datetime };
     let doc = compile_single_doc(template, data, option, &env)?;
     let page = doc
-        .pages
+        .pages()
         .first()
         .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
 
     let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
-    let mut pixmap = typst_render::render(page, dpi as f32 / 72.0);
+    let mut pixmap = typst_render::render(page, &render_options(dpi as f32 / 72.0));
     if opts.color_mode == ColorMode::BiLevel {
         binarize_rgba(pixmap.data_mut());
     }
@@ -390,7 +399,8 @@ pub fn render_sheet_pages(
 /// Count rendered PDF pages by counting "/Type /Page" objects (excluding the "/Type /Pages" tree
 /// node). Used by pagination tests.
 pub fn count_pdf_pages(pdf: &[u8]) -> usize {
-    let needle = b"/Type /Page";
+    // typst-pdf 0.15 serializes dictionary keys without whitespace (`/Type/Page`, `/Type/Pages`).
+    let needle = b"/Type/Page";
     let mut count = 0usize;
     let mut i = 0;
     while let Some(pos) = pdf[i..].windows(needle.len()).position(|w| w == needle) {
@@ -2551,8 +2561,12 @@ mod tests {
     }
 
     fn weight_probe_ink(weight: u32) -> u64 {
+        // Typst 0.15 strips the "Variable" suffix from stored family names (typst-library
+        // `typographic_family`), so the bundled InterVariable.ttf registers as "Inter"; requesting
+        // "Inter Variable" is now an unknown family and warns. Probe the name that actually resolves
+        // so the zero-warnings guard still fails loudly if the bundled Inter is missing.
         let source = format!(
-            "#set page(width: 60mm, height: 20mm, margin: 0mm)\n#set text(font: (\"Inter Variable\", \"Inter\"), size: 14pt, weight: {weight})\nWeight Probe 123"
+            "#set page(width: 60mm, height: 20mm, margin: 0mm)\n#set text(font: \"Inter\", size: 14pt, weight: {weight})\nWeight Probe 123"
         );
         let engine = super::TypstEngine::builder()
             .main_file(source)
@@ -2565,7 +2579,7 @@ mod tests {
             warned.warnings
         );
         let doc = warned.output.expect("compile weight probe");
-        let pixmap = typst_render::render(&doc.pages[0], 200.0 / 72.0);
+        let pixmap = typst_render::render(&doc.pages()[0], &super::render_options(200.0 / 72.0));
         let png = pixmap.encode_png().expect("png");
         let img = image::load_from_memory(&png).expect("decode").to_luma8();
         img.pixels().map(|p| (255 - p.0[0]) as u64).sum()
