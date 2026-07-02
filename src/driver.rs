@@ -65,6 +65,15 @@ pub enum PrintError {
     Transport(String),
 }
 
+/// Outcome of probing a printer for its live capabilities. Auth handling is out of scope (#118): a
+/// printer that rejects the unauthenticated query is reported as `Unreachable` with its status/error
+/// text in the detail string, not as a distinct auth outcome.
+#[derive(Debug)]
+pub enum ProbeOutcome {
+    Ok(PrinterCapabilities),
+    Unreachable(String),
+}
+
 #[async_trait]
 pub trait PrinterDriver: Send + Sync {
     /// The per-field render overrides explicitly configured for this driver. Each `None` field means
@@ -72,10 +81,15 @@ pub trait PrinterDriver: Send + Sync {
     fn configured_render_override(&self) -> RenderOverride {
         RenderOverride::default()
     }
-    /// Query the printer's live capabilities via IPP Get-Printer-Attributes. Returns None on any
-    /// error (network, timeout, non-success status) so callers can fall back gracefully.
+    /// Probe the printer for live capabilities via IPP Get-Printer-Attributes, distinguishing a
+    /// reachable printer that answered (`Ok`) from one we could not usefully reach (`Unreachable`).
+    async fn probe(&self) -> ProbeOutcome;
+    /// Live capabilities, or None on any probe failure, so callers can fall back gracefully.
     async fn capabilities(&self) -> Option<PrinterCapabilities> {
-        None
+        match self.probe().await {
+            ProbeOutcome::Ok(c) => Some(c),
+            ProbeOutcome::Unreachable(_) => None,
+        }
     }
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError>;
 }
@@ -303,21 +317,39 @@ impl PrinterDriver for CupsDriver {
         self.render
     }
 
-    async fn capabilities(&self) -> Option<PrinterCapabilities> {
+    async fn probe(&self) -> ProbeOutcome {
         use ipp::prelude::*;
-        let uri: Uri = self.uri.parse().ok()?;
-        let op = IppOperationBuilder::get_printer_attributes(uri.clone())
-            .build()
-            .ok()?;
-        let resp = self
+        if let Err(e) = screen_ipp_uri(&self.uri).await {
+            return ProbeOutcome::Unreachable(e.to_string());
+        }
+        let uri: Uri = match self.uri.parse() {
+            Ok(u) => u,
+            Err(e) => {
+                return ProbeOutcome::Unreachable(format!(
+                    "invalid printer uri '{}': {e}",
+                    self.uri
+                ))
+            }
+        };
+        let op = match IppOperationBuilder::get_printer_attributes(uri.clone()).build() {
+            Ok(o) => o,
+            Err(e) => return ProbeOutcome::Unreachable(e.to_string()),
+        };
+        let resp = match self
             .build_client(uri, Some(std::time::Duration::from_secs(3)))
             .send(op)
             .await
-            .ok()?;
+        {
+            Ok(r) => r,
+            Err(e) => return ProbeOutcome::Unreachable(e.to_string()),
+        };
         if !resp.header().status_code().is_success() {
-            return None;
+            return ProbeOutcome::Unreachable(format!(
+                "printer returned IPP status {:?}",
+                resp.header().status_code()
+            ));
         }
-        Some(PrinterCapabilities::from_attributes(resp.attributes()))
+        ProbeOutcome::Ok(PrinterCapabilities::from_attributes(resp.attributes()))
     }
 
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError> {
@@ -523,6 +555,7 @@ struct FakeDriver {
     fail: bool,
     render: RenderOverride,
     caps: Option<PrinterCapabilities>,
+    probe_unreachable: bool,
 }
 
 #[cfg(test)]
@@ -532,6 +565,7 @@ impl FakeDriver {
             .get("fail")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
+        let probe_unreachable = config.get("probe").and_then(|v| v.as_str()) == Some("unreachable");
         let render = config
             .get("render")
             .map(|r| RenderOverride {
@@ -569,7 +603,12 @@ impl FakeDriver {
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
         });
-        Self { fail, render, caps }
+        Self {
+            fail,
+            render,
+            caps,
+            probe_unreachable,
+        }
     }
 
     fn capabilities_sync(&self) -> Option<PrinterCapabilities> {
@@ -584,8 +623,14 @@ impl PrinterDriver for FakeDriver {
         self.render
     }
 
-    async fn capabilities(&self) -> Option<PrinterCapabilities> {
-        self.capabilities_sync()
+    async fn probe(&self) -> ProbeOutcome {
+        if self.probe_unreachable {
+            return ProbeOutcome::Unreachable("fake unreachable".to_string());
+        }
+        match self.capabilities_sync() {
+            Some(c) => ProbeOutcome::Ok(c),
+            None => ProbeOutcome::Unreachable("fake: no capabilities".to_string()),
+        }
     }
 
     async fn send(&self, artifact: &[u8], _opts: &PrintOptions) -> Result<(), PrintError> {
@@ -985,6 +1030,19 @@ mod tests {
         assert_eq!(loaded_media_width_mm(Some(0)), None);
         assert_eq!(loaded_media_width_mm(Some(-5)), None);
         assert_eq!(loaded_media_width_mm(None), None);
+    }
+
+    #[tokio::test]
+    async fn fake_probe_outcomes_flow_through() {
+        let d = FakeDriver::from_value(&json!({ "probe": "unreachable" }));
+        assert!(matches!(d.probe().await, ProbeOutcome::Unreachable(_)));
+        let d2 = FakeDriver::from_value(
+            &json!({ "capabilities": { "bilevel": true, "accepts_png": true } }),
+        );
+        assert!(matches!(d2.probe().await, ProbeOutcome::Ok(_)));
+        // capabilities() provided default mirrors probe(): Ok -> Some, Unreachable -> None.
+        assert!(d.capabilities().await.is_none());
+        assert!(d2.capabilities().await.is_some());
     }
 
     #[tokio::test]
