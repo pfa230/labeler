@@ -155,6 +155,10 @@ fn api_router() -> Router<Arc<AppState>> {
             get(get_printer).put(replace_printer).delete(delete_printer),
         )
         .route(
+            "/printers/{id}/default",
+            post(set_printer_default).delete(clear_printer_default),
+        )
+        .route(
             "/connections",
             get(list_connections).post(create_connection),
         )
@@ -182,6 +186,12 @@ fn api_router() -> Router<Arc<AppState>> {
             post(print_label).layer(DefaultBodyLimit::max(64 * 1024)),
         )
         .route("/import/csv", post(import_csv))
+        .route("/favorites", get(list_favorites))
+        .route(
+            "/favorites/{template_id}",
+            put(add_favorite).delete(remove_favorite),
+        )
+        .route("/recent-templates", get(recent_templates))
         .route("/auth/setup", post(setup))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
@@ -575,6 +585,7 @@ pub async fn create_printer(
     crate::driver::merge_secrets(&printer.kind, &mut printer.config, None);
     state.store().upsert_printer(&printer).await?;
     printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
+    printer.is_default = false; // a new row is never default; upsert_printer ignores is_default
     Ok((axum::http::StatusCode::CREATED, Json(printer)).into_response())
 }
 
@@ -814,6 +825,7 @@ pub async fn replace_printer(
     crate::driver::merge_secrets(&printer.kind, &mut printer.config, Some(&existing.config));
     state.store().upsert_printer(&printer).await?;
     printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
+    printer.is_default = existing.is_default; // replace preserves stored default; upsert ignores it
     Ok((axum::http::StatusCode::OK, Json(printer)).into_response())
 }
 
@@ -836,6 +848,42 @@ pub async fn delete_printer(
     } else {
         Err(AppError::printer_not_found(id))
     }
+}
+
+#[utoipa::path(
+    post,
+    path = "/printers/{id}/default",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses(
+        (status = 204, description = "Printer set as the global default"),
+        (status = 404, description = "Printer not found", body = ErrorResponse)
+    )
+)]
+pub async fn set_printer_default(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    if state.store().set_default_printer(&id).await? {
+        Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+    } else {
+        Err(AppError::printer_not_found(id))
+    }
+}
+
+#[utoipa::path(
+    delete,
+    path = "/printers/{id}/default",
+    params(("id" = String, Path, description = "Printer ID")),
+    responses((status = 204, description = "Default flag cleared on the printer (idempotent)"))
+)]
+pub async fn clear_printer_default(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    state.store().clear_default_printer(&id).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
@@ -1173,6 +1221,14 @@ fn parse_batch_mode(mode: &str) -> Result<crate::batch::BatchMode, AppError> {
     }
 }
 
+/// Print/download dispatch options for `run_batch`, resolved from the request and the caller's identity.
+struct BatchDispatch<'a> {
+    printer: Option<&'a str>,
+    format: Option<&'a str>,
+    start_slot: u32,
+    actor: &'a str,
+}
+
 /// Shared batch dispatch for `/batch` and `/import/csv`: validates constraints, then either renders a
 /// download blob or runs the print send loop and returns a `BatchSummary`.
 async fn run_batch(
@@ -1180,10 +1236,14 @@ async fn run_batch(
     template: &TemplateDefinition,
     labels: &[crate::models::LabelInput],
     mode: crate::batch::BatchMode,
-    printer: Option<&str>,
-    format: Option<&str>,
-    start_slot: u32,
+    dispatch: BatchDispatch<'_>,
 ) -> Result<Response, AppError> {
+    let BatchDispatch {
+        printer,
+        format,
+        start_slot,
+        actor,
+    } = dispatch;
     let is_single = matches!(
         template.format,
         crate::models::TemplateFormat::Single { .. }
@@ -1315,14 +1375,14 @@ async fn run_batch(
                     Ok(()) => {
                         let _ = state
                             .store()
-                            .record_job(&template.id, Some(printer_id), "ok", None)
+                            .record_job(&template.id, Some(printer_id), "ok", None, actor)
                             .await;
                     }
                     Err(err) => {
                         let msg = err.to_string();
                         let _ = state
                             .store()
-                            .record_job(&template.id, Some(printer_id), "failed", Some(&msg))
+                            .record_job(&template.id, Some(printer_id), "failed", Some(&msg), actor)
                             .await;
                         for &i in &unit.indices {
                             failed.push(BatchRowError {
@@ -1360,6 +1420,7 @@ async fn run_batch(
 )]
 pub async fn batch(
     State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
     payload: Result<Json<BatchRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(req) = payload.map_err(AppError::from)?;
@@ -1373,9 +1434,12 @@ pub async fn batch(
         template,
         &req.labels,
         mode,
-        req.printer.as_deref(),
-        req.format.as_deref(),
-        req.start_slot,
+        BatchDispatch {
+            printer: req.printer.as_deref(),
+            format: req.format.as_deref(),
+            start_slot: req.start_slot,
+            actor: &principal.actor_id(),
+        },
     )
     .await
 }
@@ -1395,6 +1459,7 @@ pub async fn batch(
 )]
 pub async fn print_label(
     State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
     payload: Result<Json<PrintRequest>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(req) = payload.map_err(AppError::from)?;
@@ -1417,9 +1482,12 @@ pub async fn print_label(
         template,
         &labels,
         crate::batch::BatchMode::Print,
-        Some(&req.printer),
-        None,
-        0,
+        BatchDispatch {
+            printer: Some(&req.printer),
+            format: None,
+            start_slot: 0,
+            actor: &principal.actor_id(),
+        },
     )
     .await
 }
@@ -1573,6 +1641,7 @@ pub async fn render_label(
 )]
 pub async fn import_csv(
     State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
     Query(params): Query<ImportCsvQuery>,
     body: String,
 ) -> Result<Response, AppError> {
@@ -1627,11 +1696,90 @@ pub async fn import_csv(
         template,
         &labels,
         mode,
-        params.printer.as_deref(),
-        params.format.as_deref(),
-        0,
+        BatchDispatch {
+            printer: params.printer.as_deref(),
+            format: params.format.as_deref(),
+            start_slot: 0,
+            actor: &principal.actor_id(),
+        },
     )
     .await
+}
+
+#[utoipa::path(get, path = "/favorites", tag = "favorites",
+    responses((status = 200, description = "Favorited template ids", body = Vec<String>)))]
+pub async fn list_favorites(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
+) -> Result<Json<Vec<String>>, AppError> {
+    let ids = state.store().list_favorites(&principal.actor_id()).await?;
+    let registry = state.templates.load_full();
+    Ok(Json(
+        ids.into_iter()
+            .filter(|id| registry.get(id).is_some())
+            .collect(),
+    ))
+}
+
+#[utoipa::path(put, path = "/favorites/{template_id}", tag = "favorites",
+    params(("template_id" = String, Path, description = "Template ID")),
+    responses((status = 204, description = "Favorited"), (status = 404, description = "Unknown template", body = ErrorResponse)))]
+pub async fn add_favorite(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
+    Path(template_id): Path<String>,
+) -> Result<Response, AppError> {
+    if state.templates.load_full().get(&template_id).is_none() {
+        return Err(AppError::template_not_found(template_id));
+    }
+    let _guard = state.write_lock.lock().await;
+    state
+        .store()
+        .add_favorite(&principal.actor_id(), &template_id)
+        .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+#[utoipa::path(delete, path = "/favorites/{template_id}", tag = "favorites",
+    params(("template_id" = String, Path, description = "Template ID")),
+    responses((status = 204, description = "Unfavorited (idempotent)")))]
+pub async fn remove_favorite(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
+    Path(template_id): Path<String>,
+) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    state
+        .store()
+        .remove_favorite(&principal.actor_id(), &template_id)
+        .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(serde::Deserialize)]
+pub struct RecentQuery {
+    pub limit: Option<u32>,
+}
+
+#[utoipa::path(get, path = "/recent-templates", tag = "favorites",
+    params(("limit" = Option<u32>, Query, description = "Max results (default 6, cap 20)")),
+    responses((status = 200, description = "Recently printed template ids", body = Vec<String>)))]
+pub async fn recent_templates(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
+    Query(q): Query<RecentQuery>,
+) -> Result<Json<Vec<String>>, AppError> {
+    let limit = q.limit.unwrap_or(6).clamp(1, 20);
+    let ids = state
+        .store()
+        .recent_templates(&principal.actor_id(), limit)
+        .await?;
+    let registry = state.templates.load_full();
+    Ok(Json(
+        ids.into_iter()
+            .filter(|id| registry.get(id).is_some())
+            .collect(),
+    ))
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
@@ -1811,6 +1959,16 @@ pub async fn logout(State(state): State<Arc<AppState>>, jar: CookieJar) -> Respo
         .into_response()
 }
 
+/// Mark a response uncacheable so the browser and any reverse proxy never serve a stale auth state
+/// (a cached `/auth/me` would strand the SPA on `/setup` after first-account setup; see #103).
+fn no_store(mut resp: Response) -> Response {
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    resp
+}
+
 // `/auth/me` is AUTH-EXEMPT (it must answer for logged-OUT callers too), so it resolves auth itself
 // (optional) and always returns 200 with the auth state the SPA needs.
 #[utoipa::path(
@@ -1826,13 +1984,15 @@ pub async fn me(
     headers: axum::http::HeaderMap,
 ) -> Result<Response, AppError> {
     if state.no_auth() {
-        return Ok(Json(serde_json::json!({
-            "authed": true,
-            "needsSetup": false,
-            "me": {"id": "local", "username": "local"},
-            "noAuth": true
-        }))
-        .into_response());
+        return Ok(no_store(
+            Json(serde_json::json!({
+                "authed": true,
+                "needsSetup": false,
+                "me": {"id": "local", "username": "local"},
+                "noAuth": true
+            }))
+            .into_response(),
+        ));
     }
     if let Some(p) = crate::middleware::resolve_optional(&state, &headers).await {
         let me = match p {
@@ -1847,13 +2007,15 @@ pub async fn me(
                 serde_json::json!({"id": "local", "username": "local"})
             }
         };
-        return Ok(
+        return Ok(no_store(
             Json(serde_json::json!({"authed": true, "needsSetup": false, "me": me}))
                 .into_response(),
-        );
+        ));
     }
     let needs_setup = state.store().count_users().await.map_err(AppError::from)? == 0;
-    Ok(Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response())
+    Ok(no_store(
+        Json(serde_json::json!({"authed": false, "needsSetup": needs_setup})).into_response(),
+    ))
 }
 
 #[utoipa::path(

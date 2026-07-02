@@ -115,7 +115,8 @@ export function FieldForm({
         <select
           aria-label="printer"
           value={value.printer ?? ""}
-          onChange={(e) => onChange({ ...value, printer: e.target.value || undefined })}
+          // "" is stored as an EXPLICIT None (distinct from undefined = untouched); PrintForm derives the effective printer.
+          onChange={(e) => onChange({ ...value, printer: e.target.value })}
           className={inputClass}
           style={inputStyle}
         >

@@ -70,7 +70,7 @@ describe("Template detail", () => {
     expect(screen.getByText("code")).toBeInTheDocument();
     expect(screen.getByText("single")).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /use to print/i });
-    expect(link).toHaveAttribute("href", "/print");
+    expect(link).toHaveAttribute("href", "/print/brother_24mm_qr");
   });
 
   it("reveals the raw YAML source when toggled", async () => {

@@ -42,12 +42,16 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | POST | `/api/batch` | Render/print a batch of labels | `200` / `413` / `422` |
 | GET / POST | `/api/printers` | List / create printers | `200` / `201` |
 | GET / PUT / DELETE | `/api/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
+| POST / DELETE | `/api/printers/{id}/default` | Set this printer as the sole default / clear its default flag | `204` / `404` |
 | GET | `/api/variables` | All template variables as a key/value object | `200 {…}` |
 | PUT | `/api/variables/{key}` | Upsert a variable | `200` / `400` |
 | GET | `/api/settings` | Resolved app settings (effective value + `is_default` per key) | `200` |
 | PUT / DELETE | `/api/settings/{key}` | Set an override / reset to default | `200` / `204` / `400` / `404` |
 | POST | `/api/print` | Inbound print webhook: single label, N copies, to a named printer | `200` / `400` / `404` / `409` / `413` / `422` / `502` |
 | POST | `/api/import/csv` | Render one label per CSV row (ZIP download or per-row print) | `200` / `400` / `404` / `422` / `502` |
+| GET | `/api/favorites` | List the caller's favorited template ids | `200 ["id",…]` |
+| PUT / DELETE | `/api/favorites/{template_id}` | Favorite / unfavorite a template (idempotent) | `204` / `404` |
+| GET | `/api/recent-templates` | Caller's recently printed template ids (`?limit=`, default 6, cap 20) | `200 ["id",…]` |
 | POST | `/api/auth/setup`, `/api/auth/login`, `/api/auth/logout` | First-run setup / login / logout | see §11 |
 | GET | `/api/auth/me` | SPA auth state | `200` |
 | POST | `/api/auth/password` | Change own password | see §11 |
@@ -342,7 +346,7 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 | `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units (see §6). |
 | `size` | `[w, h]` | — | Each entry is a number or `auto`. |
 | `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. |
-| `rotate` | number (deg) | — | Rotates the rendered item. |
+| `rotate` | number (deg) | — | **Container only.** Orthogonal CCW rotation of the container's inner content; see §4.2. An error on any non-container item. |
 
 `auto` size resolves to `max_w`/`max_h` if present; for `container` it falls back to the parent frame's
 dimension. On a dynamic-width `single` template (§3.1), `auto` width resolves to the content width
@@ -379,6 +383,29 @@ be > 0. (`line` does not use `size`; see §4.1.)
 
 Layout item `name`s (text/qr, and a data-bound `image`) must be unique and non-empty within a sibling
 list. `value`-based text/qr items are anonymous and are exempt from this check.
+
+### 4.2 Container rotation
+
+A `container` may set `rotate` to turn a portrait design onto a landscape slot (the vertical
+"read by turning the box" label). The model (ADR-0036):
+
+- **Container-only, orthogonal.** `rotate` is valid only on a `container` and must be a multiple of
+  90° (`{0, 90, 180, 270}`; values are normalized via `rem_euclid(360)` within a small tolerance).
+  Any `rotate` on a non-container item, or a non-orthogonal value, is a validation error.
+- **Counter-clockwise.** Degrees are counter-clockwise. Author canvas corners map to physical box
+  corners as: R90 BL→BR, BR→TR, TR→TL, TL→BL; R180 BL→TR, …; R270 BL→TL, ….
+- **`at`/`size` stay parent-frame.** A rotated container is placed and bounds-checked exactly like an
+  unrotated one: `size` is its footprint in the parent. Rotation is purely an inner transform, so
+  nested rotated containers compose without compounding coordinate flips.
+- **Inner author canvas swaps for 90/270.** Children are authored in the container's natural reading
+  orientation; for `rotate: 90|270` the inner authoring box (and child bounds) swap to
+  `[inner_h, inner_w]`. Padding is **author-space** (it rotates with the design; `padding.top` is
+  "above" in reading orientation regardless of angle). The physical `frame` outline is **not**
+  rotated.
+- **No `auto` under rotation.** A rotated container must have an explicit `size`, and no descendant
+  inside it may use `auto` width/height (author-horizontal maps to physical-vertical, which the
+  dynamic-width measurement model does not handle). The measurement pass does not recurse into a
+  rotated container.
 
 ## 5. Options
 
@@ -702,6 +729,25 @@ behind a `store` module.
 - **Deferred:** printer status read-back, USB/browser printing. (Batch-to-printer and multi-page sheets
   are now delivered by `/batch`; `copies` is expanded client-side, so #28 is moot.)
 
+## Favorites and recents
+
+Per-user Favorites and Recent rows surface the common few templates at the top of the Labels grid (#115).
+
+- **Actor identity.** Every request resolves to a stable actor id: an authenticated user is their user
+  id; the no-auth `local` principal is `"local"` (a single global actor); an API token is `"token:{id}"`.
+  Favorites and recents are keyed by this actor, so a browsing user never sees another user's data, and
+  webhook/API-token prints (attributed to the token actor) never pollute a user's recents.
+- **Jobs record the actor.** The `jobs` table carries a `user_id` column (the actor id) written on every
+  recorded print. Rows predating the column have an empty `user_id` and so never match a real actor.
+- **Favorites** are stored in a `favorites (user_id, template_id)` table. `GET /favorites` returns the
+  caller's favorited ids in favoriting order, filtered against the live registry (favorited-then-deleted
+  templates are dropped on read). `PUT /favorites/{template_id}` favorites (idempotent; `404` if the id
+  is not a known template) and `DELETE` unfavorites (idempotent). Mutations take the write lock.
+- **Recents.** `GET /recent-templates?limit=N` (default 6, cap 20; `limit` clamps to `[1,20]`) returns the
+  caller's most-recently-printed distinct template ids, ordered by most recent print (`MAX(ts)`, with
+  `MAX(id)` as a deterministic tiebreak because `ts` has one-second resolution), filtered against the
+  live registry (so it can return fewer than `limit`).
+
 ## Variables
 
 A generic key/value store holds template substitution variables, persisted in the SQLite `variables`
@@ -783,6 +829,24 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   Negotiated bilevel still requires the printer to advertise `image/png`. `PrinterCapabilities` also
   now carries the reported `printer-make-and-model` and a `color_known` signal (color-capable vs
   unknown). See the Printing section and [ADR-0035](adr/0035-per-field-render-override.md).
+- **2026-07-01**: Per-user Favorites and Recent rows on the Labels grid (#115). Adds a stable actor
+  identity (`Principal::actor_id()`: user id / `local` / `token:{id}`); a `favorites (user_id,
+  template_id)` table with `GET /favorites` and `PUT`/`DELETE /favorites/{template_id}`; and
+  `GET /recent-templates?limit=` backed by a new `jobs.user_id` column written on every recorded print.
+  The `user_id` column is the same audit-log column #94 builds on. See "Favorites and recents".
+- **2026-07-01**: Effortless print form (ADR-0037; #111, #112). The interactive print form gains a
+  **Copies** control (1-100, Print only; Download is unaffected): tape/single templates print N via
+  `POST /api/print`, sheet templates via `/api/batch` with the label repeated. A **global default
+  printer** is modeled as a read-only `is_default` flag on the printer (`Printer.is_default`), set via
+  `POST /api/printers/{id}/default` and cleared via `DELETE /api/printers/{id}/default` — at most one
+  default, enforced in one transaction; `POST`/`PUT /api/printers` never set it (create → non-default,
+  replace → preserves). The print form preselects the printer as **enabled default → sole enabled →
+  none**.
+- **2026-06-29**: Layout-aware container rotation (ADR-0036; #98). `rotate` becomes a container-only,
+  orthogonal (`{0,90,180,270}`), counter-clockwise inner transform: a portrait design seats onto a
+  landscape slot. The container's `at`/`size` stay parent-frame; the inner author canvas (and child
+  bounds) swap for 90/270; padding is author-space; the physical frame is unrotated; `auto` sizing is
+  rejected on or inside a rotated container. `rotate` on a non-container item is now an error. See §4.2.
 - **2026-06-28**: Single config dir (ADR-0034; #93). All persistent state moves under one
   `LABELER_CONFIG_DIR` (default `/config`): `{config}/labeler.db`, `{config}/templates/`, and
   `{config}/assets/`. The per-dir env vars `LABELER_DATA_DIR`, `LABELER_TEMPLATES_DIR`, and

@@ -200,7 +200,12 @@ pub(super) fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32
 
 pub(super) fn typst_font_options() -> TypstKitFontOptions {
     let dir = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts");
-    TypstKitFontOptions::default().include_dirs([dir])
+    // Exclude host system fonts so render output depends only on the bundled fonts and is identical
+    // across dev, CI, and the deployed container; a system-installed face must never shadow the
+    // bundled Inter. See #100. (`include_embedded_fonts` stays on for Typst's default fallback faces.)
+    TypstKitFontOptions::default()
+        .include_system_fonts(false)
+        .include_dirs([dir])
 }
 
 fn inter_font() -> Result<&'static Font, AppError> {

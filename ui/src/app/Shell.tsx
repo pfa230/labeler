@@ -4,8 +4,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { useAuth, useLogout } from "../api/auth";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Templates" },
-  { to: "/print", label: "Print" },
+  { to: "/", label: "Labels" },
   { to: "/import", label: "Import" },
   { to: "/connect", label: "Connect" },
   { to: "/settings", label: "Settings" },

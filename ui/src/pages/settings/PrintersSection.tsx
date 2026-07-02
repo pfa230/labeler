@@ -1,5 +1,11 @@
 import { useState } from "react";
-import { usePrinters, useSavePrinter, useDeletePrinter } from "../../api/queries";
+import {
+  usePrinters,
+  useSavePrinter,
+  useDeletePrinter,
+  useSetDefaultPrinter,
+  useClearDefaultPrinter,
+} from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 import type { Printer } from "../../api/types";
 
@@ -193,7 +199,17 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
   );
 }
 
-function PrinterRow({ printer, onEdit, onDeleted }: { printer: Printer; onEdit: () => void; onDeleted: (id: string) => void }) {
+function PrinterRow({
+  printer,
+  onEdit,
+  onDeleted,
+  onSetDefault,
+}: {
+  printer: Printer;
+  onEdit: () => void;
+  onDeleted: (id: string) => void;
+  onSetDefault: (id: string) => void;
+}) {
   const [confirming, setConfirming] = useState(false);
   const remove = useDeletePrinter();
   const { push } = useToast();
@@ -204,6 +220,15 @@ function PrinterRow({ printer, onEdit, onDeleted }: { printer: Printer; onEdit: 
       <td className={`${td} font-mono`}>{printer.kind}</td>
       <td className={`${td} font-mono`}>{cupsUri(printer)}</td>
       <td className={td}>{printer.enabled ? "yes" : "no"}</td>
+      <td className={td}>
+        <input
+          type="radio"
+          name="default-printer"
+          aria-label={`default ${printer.name}`}
+          checked={printer.is_default ?? false}
+          onChange={() => onSetDefault(printer.id)}
+        />
+      </td>
       <td className={`${td} flex gap-2`}>
         <button type="button" onClick={onEdit} className="underline" style={{ color: "var(--ink)" }}>Edit</button>
         {confirming ? (
@@ -237,7 +262,11 @@ function PrinterRow({ printer, onEdit, onDeleted }: { printer: Printer; onEdit: 
 export function PrintersSection() {
   const { data: printers, isPending, isError } = usePrinters();
   const [editing, setEditing] = useState<Printer | "new" | null>(null);
+  const setDefault = useSetDefaultPrinter();
+  const clearDefault = useClearDefaultPrinter();
+  const currentDefaultId = (printers ?? []).find((p) => p.is_default)?.id;
   const th = "px-3 py-2 text-left text-xs font-medium";
+  const td = "px-3 py-2 text-sm";
   // If the printer currently being edited is deleted, close the now-stale form (a Save would 404).
   const onDeleted = (id: string) => {
     if (editing !== null && editing !== "new" && editing.id === id) setEditing(null);
@@ -280,13 +309,33 @@ export function PrintersSection() {
               <th className={th} style={{ color: "var(--muted)" }}>Kind</th>
               <th className={th} style={{ color: "var(--muted)" }}>URI</th>
               <th className={th} style={{ color: "var(--muted)" }}>Enabled</th>
+              <th className={th} style={{ color: "var(--muted)" }}>Default</th>
               <th className={th} style={{ color: "var(--muted)" }}></th>
             </tr>
           </thead>
           <tbody>
             {(printers ?? []).map((p) => (
-              <PrinterRow key={p.id} printer={p} onEdit={() => setEditing(p)} onDeleted={onDeleted} />
+              <PrinterRow
+                key={p.id}
+                printer={p}
+                onEdit={() => setEditing(p)}
+                onDeleted={onDeleted}
+                onSetDefault={(id) => setDefault.mutate(id)}
+              />
             ))}
+            <tr style={{ borderTop: "1px solid var(--border)" }}>
+              <td className={td} colSpan={4} style={{ color: "var(--muted)" }}>No default printer</td>
+              <td className={td}>
+                <input
+                  type="radio"
+                  name="default-printer"
+                  aria-label="no default printer"
+                  checked={!currentDefaultId}
+                  onChange={() => currentDefaultId && clearDefault.mutate(currentDefaultId)}
+                />
+              </td>
+              <td className={td}></td>
+            </tr>
           </tbody>
           </table>
         </div>
