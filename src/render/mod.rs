@@ -2495,4 +2495,92 @@ mod tests {
         };
         assert!(default_option_selection(&no_opts).is_none());
     }
+
+    /// Engine-upgrade visual harness (#101): dumps a label-sized PNG for every bundled template
+    /// (both avery orientations) into $LABELER_RENDER_DUMP_DIR. Run explicitly:
+    /// LABELER_RENDER_DUMP_DIR=.render-scratch/pre-015 cargo test --lib dump_all_template_renders -- --ignored
+    #[test]
+    #[ignore = "env-gated render dump for engine-upgrade visual comparison"]
+    fn dump_all_template_renders() {
+        let Some(dir) = std::env::var_os("LABELER_RENDER_DUMP_DIR") else {
+            panic!("set LABELER_RENDER_DUMP_DIR");
+        };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("create dump dir");
+        let registry =
+            crate::templates::TemplateRegistry::load_from_dir("templates").expect("load templates");
+        // homebox-qr interpolates {vars.qr_base_url}; placeholder_data excludes variables by design.
+        let settings =
+            BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
+        // homebox-qr also references {datetime.iso_date}, a named format; supply it so the harness
+        // resolves it (no_datetime carries no named formats).
+        let datetime_formats = BTreeMap::from([("iso_date".to_string(), "%Y-%m-%d".to_string())]);
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &datetime_formats,
+            now: chrono::Local::now(),
+        };
+        for summary in registry.summaries() {
+            let template = registry.get(&summary.id).expect("template");
+            let data = placeholder_data(template);
+            // Render every orientation variant explicitly (default_option_selection picks only the
+            // first). Start each variant from the FULL default selection and override orientation,
+            // so other option defaults (avery's `outline: yes`) stay in effect.
+            let base = default_option_selection(template);
+            let selections: Vec<(String, Option<BTreeMap<String, String>>)> = match template
+                .options
+                .as_ref()
+                .and_then(|o| o.allowed().get("orientation").cloned())
+            {
+                Some(orientations) => orientations
+                    .into_iter()
+                    .map(|o| {
+                        let mut sel = base.clone().unwrap_or_default();
+                        sel.insert("orientation".to_string(), o.clone());
+                        (format!("{}-{o}", summary.id), Some(sel))
+                    })
+                    .collect(),
+                None => vec![(summary.id.clone(), base.clone())],
+            };
+            for (name, selection) in selections {
+                let png =
+                    render_thumbnail_png(template, &data, selection.as_ref(), &settings, &datetime)
+                        .unwrap_or_else(|e| panic!("render {name}: {e:?}"));
+                std::fs::write(dir.join(format!("{name}.png")), png).expect("write png");
+            }
+        }
+    }
+
+    fn weight_probe_ink(weight: u32) -> u64 {
+        let source = format!(
+            "#set page(width: 60mm, height: 20mm, margin: 0mm)\n#set text(font: (\"Inter Variable\", \"Inter\"), size: 14pt, weight: {weight})\nWeight Probe 123"
+        );
+        let engine = super::TypstEngine::builder()
+            .main_file(source)
+            .search_fonts_with(super::typst_font_options())
+            .build();
+        let warned = engine.compile::<super::PagedDocument>();
+        assert!(
+            warned.warnings.is_empty(),
+            "font must resolve without warnings (else the embedded fallback could fake a real bold): {:?}",
+            warned.warnings
+        );
+        let doc = warned.output.expect("compile weight probe");
+        let pixmap = typst_render::render(&doc.pages[0], 200.0 / 72.0);
+        let png = pixmap.encode_png().expect("png");
+        let img = image::load_from_memory(&png).expect("decode").to_luma8();
+        img.pixels().map(|p| (255 - p.0[0]) as u64).sum()
+    }
+
+    /// #101 acceptance: Typst 0.15 drives the wght axis of the bundled variable Inter.
+    /// On 0.14 the axis is ignored (ratio ~1.0) and this fails; on 0.15 bold has ≥10% more ink.
+    #[test]
+    fn variable_font_weight_is_honored() {
+        let regular = weight_probe_ink(400);
+        let bold = weight_probe_ink(700);
+        assert!(
+            bold as f64 >= regular as f64 * 1.10,
+            "weight 700 must add ≥10% ink over 400 (got {regular} vs {bold}, ratio {:.3})",
+            bold as f64 / regular as f64
+        );
+    }
 }
