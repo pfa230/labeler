@@ -18,8 +18,17 @@ use serde_json::Value as JsonValue;
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
-use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
+use typst_layout::PagedDocument;
+
+/// Typst 0.15's `typst_render::render` takes `&RenderOptions` instead of a bare pixels-per-point
+/// scalar; build one carrying the requested scale (bleed off, matching the previous behavior).
+fn render_options(pixels_per_point: f32) -> typst_render::RenderOptions {
+    typst_render::RenderOptions {
+        pixel_per_pt: typst::utils::Scalar::new(pixels_per_point as f64),
+        ..Default::default()
+    }
+}
 
 #[derive(Default)]
 struct ImageCollector {
@@ -176,10 +185,10 @@ pub fn render_thumbnail_png(
     let env = RenderEnv { settings, datetime };
     let doc = compile_label_doc(template, data, option, &env)?;
     let page = doc
-        .pages
+        .pages()
         .first()
         .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
-    let pixmap = typst_render::render(page, template.dpi as f32 / 72.0);
+    let pixmap = typst_render::render(page, &render_options(template.dpi as f32 / 72.0));
     pixmap
         .encode_png()
         .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
@@ -226,12 +235,12 @@ pub fn render_single_label_image(
     let env = RenderEnv { settings, datetime };
     let doc = compile_single_doc(template, data, option, &env)?;
     let page = doc
-        .pages
+        .pages()
         .first()
         .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
 
     let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
-    let mut pixmap = typst_render::render(page, dpi as f32 / 72.0);
+    let mut pixmap = typst_render::render(page, &render_options(dpi as f32 / 72.0));
     if opts.color_mode == ColorMode::BiLevel {
         binarize_rgba(pixmap.data_mut());
     }
@@ -390,7 +399,8 @@ pub fn render_sheet_pages(
 /// Count rendered PDF pages by counting "/Type /Page" objects (excluding the "/Type /Pages" tree
 /// node). Used by pagination tests.
 pub fn count_pdf_pages(pdf: &[u8]) -> usize {
-    let needle = b"/Type /Page";
+    // typst-pdf 0.15 serializes dictionary keys without whitespace (`/Type/Page`, `/Type/Pages`).
+    let needle = b"/Type/Page";
     let mut count = 0usize;
     let mut i = 0;
     while let Some(pos) = pdf[i..].windows(needle.len()).position(|w| w == needle) {
@@ -2494,5 +2504,97 @@ mod tests {
             ..template
         };
         assert!(default_option_selection(&no_opts).is_none());
+    }
+
+    /// Engine-upgrade visual harness (#101): dumps a label-sized PNG for every bundled template
+    /// (both avery orientations) into $LABELER_RENDER_DUMP_DIR. Run explicitly:
+    /// LABELER_RENDER_DUMP_DIR=.render-scratch/pre-015 cargo test --lib dump_all_template_renders -- --ignored
+    #[test]
+    #[ignore = "env-gated render dump for engine-upgrade visual comparison"]
+    fn dump_all_template_renders() {
+        let Some(dir) = std::env::var_os("LABELER_RENDER_DUMP_DIR") else {
+            panic!("set LABELER_RENDER_DUMP_DIR");
+        };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("create dump dir");
+        let registry =
+            crate::templates::TemplateRegistry::load_from_dir("templates").expect("load templates");
+        // homebox-qr interpolates {vars.qr_base_url}; placeholder_data excludes variables by design.
+        let settings =
+            BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
+        // homebox-qr also references {datetime.iso_date}, a named format; supply it so the harness
+        // resolves it (no_datetime carries no named formats).
+        let datetime_formats = BTreeMap::from([("iso_date".to_string(), "%Y-%m-%d".to_string())]);
+        let datetime = crate::datetime_fmt::DateTimeResolver {
+            formats: &datetime_formats,
+            now: chrono::Local::now(),
+        };
+        for summary in registry.summaries() {
+            let template = registry.get(&summary.id).expect("template");
+            let data = placeholder_data(template);
+            // Render every orientation variant explicitly (default_option_selection picks only the
+            // first). Start each variant from the FULL default selection and override orientation,
+            // so other option defaults (avery's `outline: yes`) stay in effect.
+            let base = default_option_selection(template);
+            let selections: Vec<(String, Option<BTreeMap<String, String>>)> = match template
+                .options
+                .as_ref()
+                .and_then(|o| o.allowed().get("orientation").cloned())
+            {
+                Some(orientations) => orientations
+                    .into_iter()
+                    .map(|o| {
+                        let mut sel = base.clone().unwrap_or_default();
+                        sel.insert("orientation".to_string(), o.clone());
+                        (format!("{}-{o}", summary.id), Some(sel))
+                    })
+                    .collect(),
+                None => vec![(summary.id.clone(), base.clone())],
+            };
+            for (name, selection) in selections {
+                let png =
+                    render_thumbnail_png(template, &data, selection.as_ref(), &settings, &datetime)
+                        .unwrap_or_else(|e| panic!("render {name}: {e:?}"));
+                std::fs::write(dir.join(format!("{name}.png")), png).expect("write png");
+            }
+        }
+    }
+
+    fn weight_probe_ink(weight: u32) -> u64 {
+        // Typst 0.15 strips the "Variable" suffix from stored family names (typst-library
+        // `typographic_family`), so the bundled InterVariable.ttf registers as "Inter"; requesting
+        // "Inter Variable" is now an unknown family and warns. Probe the name that actually resolves
+        // so the zero-warnings guard still fails loudly if the bundled Inter is missing.
+        let source = format!(
+            "#set page(width: 60mm, height: 20mm, margin: 0mm)\n#set text(font: \"Inter\", size: 14pt, weight: {weight})\nWeight Probe 123"
+        );
+        let engine = super::TypstEngine::builder()
+            .main_file(source)
+            .search_fonts_with(super::typst_font_options())
+            .build();
+        let warned = engine.compile::<super::PagedDocument>();
+        assert!(
+            warned.warnings.is_empty(),
+            "font must resolve without warnings (else the embedded fallback could fake a real bold): {:?}",
+            warned.warnings
+        );
+        let doc = warned.output.expect("compile weight probe");
+        let pixmap = typst_render::render(&doc.pages()[0], &super::render_options(200.0 / 72.0));
+        let png = pixmap.encode_png().expect("png");
+        let img = image::load_from_memory(&png).expect("decode").to_luma8();
+        img.pixels().map(|p| (255 - p.0[0]) as u64).sum()
+    }
+
+    /// #101 acceptance: Typst 0.15 drives the wght axis of the bundled variable Inter.
+    /// On 0.14 the axis is ignored (ratio ~1.0) and this fails; on 0.15 bold has ≥10% more ink.
+    #[test]
+    fn variable_font_weight_is_honored() {
+        let regular = weight_probe_ink(400);
+        let bold = weight_probe_ink(700);
+        assert!(
+            bold as f64 >= regular as f64 * 1.10,
+            "weight 700 must add ≥10% ink over 400 (got {regular} vs {bold}, ratio {:.3})",
+            bold as f64 / regular as f64
+        );
     }
 }
