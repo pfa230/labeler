@@ -10,13 +10,15 @@ const json = (body: unknown, status = 200) =>
 type P = { id: string; name: string; kind: string; config: { uri: string }; enabled: boolean };
 
 // Stateful stub: POST/PUT/DELETE mutate `state`, GET returns it, so an invalidate+refetch shows the
-// real post-mutation table (this is what proves add/edit/delete actually took effect, and that the
-// 204 DELETE path in `del` does not try to parse a body).
+// real post-mutation table. `/printers/probe` returns a canned reachable printer.
 function stubFetch() {
   let state: P[] = [{ id: "front", name: "Front Desk", kind: "cups", config: { uri: "ipp://x/y" }, enabled: true }];
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url === "/api/printers/probe" && method === "POST") {
+      return json({ status: "ok", capabilities: { model: "Brother PT-2730", media_width_mm: 24, resolution_dpi: 180, color: "bilevel", accepts_png: true } });
+    }
     if (url.startsWith("/api/printers/") && method === "DELETE") {
       const id = decodeURIComponent(url.slice("/api/printers/".length));
       state = state.filter((p) => p.id !== id);
@@ -75,22 +77,21 @@ describe("PrintersSection", () => {
     fireEvent.click(screen.getByRole("button", { name: /add printer/i }));
     fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "back" } });
     fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "Back Office" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://b/q" } });
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://b/q" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
     const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
     expect(body).toEqual({ id: "back", name: "Back Office", kind: "cups", config: { uri: "ipp://b/q" }, enabled: true });
-    // the new printer appears in the refetched table
     expect(await screen.findByText("Back Office")).toBeInTheDocument();
   });
 
-  it("edits a printer via PUT with an immutable id", async () => {
+  it("edits a printer via PUT; the id is structurally immutable (no field on edit)", async () => {
     renderSection();
     const row = (await screen.findByText("Front Desk")).closest("tr") as HTMLElement;
     fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
-    expect(screen.getByLabelText(/printer id/i)).toBeDisabled(); // id is immutable on edit
+    expect(screen.queryByLabelText(/printer id/i)).toBeNull(); // no id field to change on edit
     fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "Lobby" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://x/z" } });
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://x/z" } });
     fireEvent.click(screen.getByLabelText("enabled")); // toggle true -> false
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers/front", "PUT")).toBeTruthy());
@@ -99,13 +100,35 @@ describe("PrintersSection", () => {
     expect(await screen.findByText("Lobby")).toBeInTheDocument();
   });
 
+  it("preserves existing auth config on edit even though the card hides it", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.startsWith("/api/printers/") && method === "PUT") return json(JSON.parse(init!.body as string));
+      if (url.startsWith("/api/printers")) {
+        return json([{ id: "auth", name: "Auth", kind: "cups", config: { uri: "ipps://h/q", username: "u", ca_cert: "PEM", insecure: true }, enabled: true }]);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderSection();
+    const row = (await screen.findByText("Auth")).closest("tr") as HTMLElement;
+    fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
+    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "Auth2" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() => expect(lastCall("/api/printers/auth", "PUT")).toBeTruthy());
+    const body = JSON.parse((lastCall("/api/printers/auth", "PUT")![1] as RequestInit).body as string);
+    // username/ca_cert/insecure carried forward untouched; password never echoed.
+    expect(body.config).toEqual({ uri: "ipps://h/q", username: "u", ca_cert: "PEM", insecure: true });
+  });
+
   it("blocks an invalid printer id client-side", async () => {
     renderSection();
     await screen.findByText("Front Desk");
     fireEvent.click(screen.getByRole("button", { name: /add printer/i }));
     fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "bad id" } });
     fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "X" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://b/q" } });
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://b/q" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     expect(await screen.findByText(/id must contain only/i)).toBeInTheDocument();
     expect(lastCall("/api/printers", "POST")).toBeUndefined();
@@ -114,12 +137,10 @@ describe("PrintersSection", () => {
   it("cancels then deletes a printer after an inline confirm", async () => {
     renderSection();
     const row = (await screen.findByText("Front Desk")).closest("tr") as HTMLElement;
-    // Delete -> Cancel: no DELETE issued, row stays.
     fireEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
     fireEvent.click(within(row).getByRole("button", { name: /cancel/i }));
     expect(lastCall("/api/printers/front", "DELETE")).toBeUndefined();
     expect(screen.getByText("Front Desk")).toBeInTheDocument();
-    // Delete -> Confirm: DELETE issued (204, no body), row removed after the refetch.
     fireEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
     fireEvent.click(within(row).getByRole("button", { name: /confirm/i }));
     await waitFor(() => expect(lastCall("/api/printers/front", "DELETE")).toBeTruthy());
@@ -130,66 +151,55 @@ describe("PrintersSection", () => {
     renderSection();
     const row = (await screen.findByText("Front Desk")).closest("tr") as HTMLElement;
     fireEvent.click(within(row).getByRole("button", { name: /edit/i }));
-    expect(screen.getByLabelText(/printer id/i)).toBeInTheDocument(); // form is open
+    expect(screen.getByLabelText(/address/i)).toBeInTheDocument(); // form is open
     fireEvent.click(within(row).getByRole("button", { name: /^delete$/i }));
     fireEvent.click(within(row).getByRole("button", { name: /confirm/i }));
-    // deleting the edited printer closes the now-stale form (otherwise Save would PUT a 404).
-    await waitFor(() => expect(screen.queryByLabelText(/printer id/i)).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByLabelText(/address/i)).not.toBeInTheDocument());
   });
 
-  it("submits cups auth + TLS fields, omitting insecure when false", async () => {
+  it("shows the capabilities strip after a successful test", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
-    fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "auth" } });
-    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "Auth" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipps://h/q" } });
-    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
-    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "p" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-    await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
-    const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
-    // insecure is omitted when false, so existing payloads stay byte-identical (see Step 3).
-    expect(body.config).toEqual({ uri: "ipps://h/q", username: "u", password: "p" });
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://ptouch:8000/ipp/print" } });
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    expect(await screen.findByText(/Brother PT-2730/)).toBeInTheDocument();
+    expect(screen.getByText(/180 dpi/)).toBeInTheDocument();
   });
 
-  it("omits password from the payload when left blank", async () => {
+  it("shows an inline error when probe is unreachable", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/printers/probe" && method === "POST") {
+        return json({ status: "unreachable", detail: "connection refused" });
+      }
+      if (url.startsWith("/api/printers")) return json([]);
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
-    fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "np" } });
-    fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "NP" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipps://h/q" } });
-    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-    await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
-    const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
-    expect("password" in body.config).toBe(false);
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://nope:8000/ipp/print" } });
+    fireEvent.click(screen.getByRole("button", { name: /test connection/i }));
+    expect(await screen.findByText(/connection refused/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled(); // save still allowed
   });
 
-  it("warns when credentials are set over a non-ipps uri", async () => {
+  it("keeps the override disclosure collapsed by default", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://h/q" } });
-    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
-    expect(screen.getByText(/unencrypted over ipp/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/color mode/i)).toBeNull(); // hidden until opened
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
+    expect(screen.getByLabelText(/color mode/i)).toBeInTheDocument();
   });
 
-  it("warns when insecure is combined with credentials", async () => {
-    renderSection();
-    fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
-    // ipps:// uri keeps the cleartext warning silent, isolating the MITM warning.
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipps://h/q" } });
-    fireEvent.change(screen.getByLabelText(/username/i), { target: { value: "u" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: /insecure/i }));
-    expect(screen.queryByText(/unencrypted over ipp/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/man-in-the-middle/i)).toBeInTheDocument();
-  });
-
-  it("submits a bilevel render profile", async () => {
+  it("submits a bilevel render profile from the advanced overrides", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
     fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "bl" } });
     fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "BL" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://h/q" } });
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://h/q" } });
+    fireEvent.click(screen.getByRole("button", { name: /advanced/i }));
     fireEvent.change(screen.getByLabelText(/color mode/i), { target: { value: "bilevel" } });
     fireEvent.change(screen.getByLabelText(/print resolution/i), { target: { value: "203" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
@@ -198,12 +208,12 @@ describe("PrintersSection", () => {
     expect(body.config.render).toEqual({ color_mode: "bilevel", resolution: 203 });
   });
 
-  it("omits render when color mode is the default", async () => {
+  it("omits render when color mode is auto (the default)", async () => {
     renderSection();
     fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
     fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "c" } });
     fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "C" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://h/q" } });
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://h/q" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await waitFor(() => expect(lastCall("/api/printers", "POST")).toBeTruthy());
     const body = JSON.parse((lastCall("/api/printers", "POST")![1] as RequestInit).body as string);
@@ -225,9 +235,7 @@ describe("PrintersSection", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderSection();
     fireEvent.click(await screen.findByLabelText("default Front Desk"));
-    await waitFor(() =>
-      expect(lastCall("/api/printers/front/default", "POST")).toBeTruthy(),
-    );
+    await waitFor(() => expect(lastCall("/api/printers/front/default", "POST")).toBeTruthy());
   });
 
   it("shows a server validation error inline when save is rejected", async () => {
@@ -245,9 +253,8 @@ describe("PrintersSection", () => {
     fireEvent.click(await screen.findByRole("button", { name: /add printer/i }));
     fireEvent.change(screen.getByLabelText(/printer id/i), { target: { value: "back" } });
     fireEvent.change(screen.getByLabelText(/printer name/i), { target: { value: "Back" } });
-    fireEvent.change(screen.getByLabelText(/cups uri/i), { target: { value: "ipp://ok" } });
+    fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "ipp://ok" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-    // the 422 message surfaces inline in the form's <p> (onError -> setError); the toast shows it too.
     expect(await screen.findByText(/cups uri rejected by server/i, { selector: "p" })).toBeInTheDocument();
   });
 });

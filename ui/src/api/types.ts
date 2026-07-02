@@ -21,3 +21,14 @@ export interface TemplateDetail {
 }
 export interface BatchSummary { total: number; succeeded: number; failed: { index: number; error: string }[]; jobs: number }
 export interface Printer { id: string; name: string; kind: string; config: unknown; enabled: boolean; is_default?: boolean }
+
+export interface ProbeCapabilities {
+  model?: string | null;
+  media_width_mm?: number | null;
+  resolution_dpi?: number | null;
+  color: "color" | "bilevel" | "unknown";
+  accepts_png: boolean;
+}
+export type ProbeResult =
+  | { status: "ok"; capabilities: ProbeCapabilities }
+  | { status: "unreachable"; detail: string };
