@@ -51,6 +51,15 @@ export async function del(path: string): Promise<void> {
   if (!res.ok) throw await toError(res);
 }
 
+// PUT with no response body (204); throws the error contract on non-2xx.
+export async function putVoid(path: string): Promise<void> {
+  const res = await fetch(`${BASE}${path}`, { method: "PUT" });
+  if (!res.ok) {
+    on401(res.status);
+    throw await toError(res);
+  }
+}
+
 function filenameFrom(res: Response): string | undefined {
   // Matches the current server's `Content-Disposition: attachment; filename="x"`; not RFC5987 `filename*=`.
   const m = (res.headers.get("content-disposition") ?? "").match(/filename="?([^"]+)"?/);
@@ -73,6 +82,16 @@ import type { BatchSummary } from "./types";
 export type BatchResult =
   | { kind: "download"; blob: Blob; filename?: string }
   | { kind: "summary"; summary: BatchSummary };
+
+export async function printLabel(body: {
+  template: string;
+  printer: string; // /print's PrintRequest.printer is required (no serde default)
+  fields: Record<string, string>;
+  option?: Record<string, string>;
+  copies: number;
+}): Promise<BatchSummary> {
+  return sendJson<BatchSummary>("POST", "/print", body);
+}
 
 export async function submitBatch(body: unknown): Promise<BatchResult> {
   const res = await fetch(`${BASE}/batch`, {

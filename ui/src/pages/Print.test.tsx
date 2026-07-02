@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { Print } from "./Print";
@@ -31,13 +31,25 @@ const list = {
     { id: "t2", name: "Card", description: "", unit: "mm", dpi: 300, format: detail2.format },
   ],
 };
-const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null, enabled: true }];
+// Two enabled printers with no default, so the one-shot preselect falls through to "none"
+// (it only auto-picks a lone enabled printer or an explicit default) and Print stays gated on an
+// explicit printer selection — which is what this suite exercises.
+const printers = [
+  { id: "p1", name: "Label Printer", kind: "cups", config: null, enabled: true },
+  { id: "p2", name: "Backup Printer", kind: "cups", config: null, enabled: true },
+];
 const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 
 function stubFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     // Detail BEFORE list so the broad /api/templates branch doesn't swallow it.
+    if (url.startsWith("/api/templates/nope")) {
+      return new Response(
+        JSON.stringify({ error: { code: "NotFound", message: "template not found" } }),
+        { status: 404, headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.startsWith("/api/templates/t1")) {
       return new Response(JSON.stringify(detail), { status: 200, headers: { "content-type": "application/json" } });
     }
@@ -53,6 +65,10 @@ function stubFetch() {
     if (url.startsWith("/api/render/label")) {
       return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
     }
+    if (url === "/api/print") {
+      void init;
+      return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
+    }
     if (url.startsWith("/api/batch")) {
       void init;
       return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
@@ -61,15 +77,17 @@ function stubFetch() {
   });
 }
 
-function renderPage(initialState?: { template: string }) {
+function renderPage(initialPath = "/print") {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter
-          initialEntries={[{ pathname: "/print", state: initialState ?? null }]}
-        >
-          <Print />
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="/" element={<div>labels grid</div>} />
+            <Route path="/print" element={<Print />} />
+            <Route path="/print/:templateId" element={<Print />} />
+          </Routes>
         </MemoryRouter>
       </ToastProvider>
     </QueryClientProvider>,
@@ -92,19 +110,14 @@ describe("Print screen", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows an empty state until a template is chosen", async () => {
-    renderPage();
-    expect(await screen.findByText(/choose a template/i)).toBeInTheDocument();
+  it("redirects /print (no id) to the grid", async () => {
+    renderPage("/print");
+    expect(await screen.findByText("labels grid")).toBeInTheDocument();
   });
 
   it("gates Download on a filled field and Print on a printer, then prints", async () => {
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
-    renderPage();
-
-    // Select t1 in the picker once the list has loaded its option.
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
+    renderPage("/print/t1");
 
     // The message field appears once the detail loads.
     const message = (await screen.findByLabelText("message")) as HTMLInputElement;
@@ -134,33 +147,24 @@ describe("Print screen", () => {
     fireEvent.change(screen.getByLabelText("printer"), { target: { value: "p1" } });
     await waitFor(() => expect(print).not.toBeDisabled());
 
+    // t1 is a single/tape template, so Print routes to /print (not /batch).
+    const printCall = () => [...fetchMock.mock.calls].reverse().find(([u]) => String(u) === "/api/print");
     fireEvent.click(print);
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    const batchBody = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    expect(batchBody.mode).toBe("print");
-    expect(batchBody.printer).toBe("p1");
+    await waitFor(() => expect(printCall()).toBeDefined());
+    const printBody = JSON.parse((printCall()![1] as RequestInit).body as string);
+    expect(printBody.printer).toBe("p1");
+    expect(printBody.copies).toBe(1);
     expect(await screen.findByText(/1\/1/)).toBeInTheDocument();
   });
 
-  it("preselects the template from router state", async () => {
-    renderPage({ template: "t1" });
+  it("renders the form for a template from the URL param", async () => {
+    renderPage("/print/t1");
     expect(await screen.findByLabelText("message")).toBeInTheDocument();
   });
 
-  it("keeps entered fields when switching to a template sharing the field", async () => {
-    renderPage();
-
-    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
-    await screen.findByRole("option", { name: "Tag" });
-    fireEvent.change(picker, { target: { value: "t1" } });
-
-    const message = (await screen.findByLabelText("message")) as HTMLInputElement;
-    fireEvent.change(message, { target: { value: "hello" } });
-    expect(message.value).toBe("hello");
-
-    // Switch to t2, which also references "message"; the value must survive (no remount wipe).
-    fireEvent.change(picker, { target: { value: "t2" } });
-    const message2 = (await screen.findByLabelText("message")) as HTMLInputElement;
-    expect(message2.value).toBe("hello");
+  it("shows an error and the all-labels link for an unknown id", async () => {
+    renderPage("/print/nope");
+    expect(await screen.findByText(/template not found/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /all labels/i })).toHaveAttribute("href", "/");
   });
 });

@@ -39,6 +39,8 @@ use crate::{
         api::get_printer,
         api::replace_printer,
         api::delete_printer,
+        api::set_printer_default,
+        api::clear_printer_default,
         api::get_variables,
         api::put_variable,
         api::get_settings,
@@ -49,6 +51,10 @@ use crate::{
         api::batch,
         api::print_label,
         api::import_csv,
+        api::list_favorites,
+        api::add_favorite,
+        api::remove_favorite,
+        api::recent_templates,
         api::setup,
         api::login,
         api::logout,
@@ -140,7 +146,8 @@ use crate::{
     tags(
         (name = "labeler", description = "Label rendering service"),
         (name = "auth", description = "Authentication, users, and API tokens"),
-        (name = "settings", description = "Typed application configuration")
+        (name = "settings", description = "Typed application configuration"),
+        (name = "favorites", description = "Per-user favorites and recent templates")
     )
 )]
 pub struct ApiDoc;

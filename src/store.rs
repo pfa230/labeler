@@ -17,6 +17,10 @@ pub struct Printer {
     pub config: JsonValue,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    // Read-only in the API: set only via POST/DELETE /printers/{id}/default; create/replace ignore it.
+    #[serde(default)]
+    #[schema(read_only)]
+    pub is_default: bool,
 }
 
 fn default_true() -> bool {
@@ -125,6 +129,16 @@ fn migrations() -> Migrations<'static> {
         M::up("CREATE INDEX idx_jobs_ts ON jobs(ts);"),
         M::up("ALTER TABLE settings RENAME TO variables;"),
         M::up("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);"),
+        M::up("ALTER TABLE printers ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0;"),
+        M::up("ALTER TABLE jobs ADD COLUMN user_id TEXT NOT NULL DEFAULT '';"),
+        M::up(
+            "CREATE TABLE favorites (
+            user_id     TEXT NOT NULL,
+            template_id TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, template_id)
+        );",
+        ),
     ])
 }
 
@@ -150,8 +164,9 @@ impl Store {
 
     pub async fn list_printers(&self) -> Result<Vec<Printer>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt =
-            conn.prepare("SELECT id, name, kind, config, enabled FROM printers ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, kind, config, enabled, is_default FROM printers ORDER BY id",
+        )?;
         let rows = stmt.query_map([], row_to_printer_parts)?;
         let mut out = Vec::new();
         for row in rows {
@@ -162,8 +177,9 @@ impl Store {
 
     pub async fn get_printer(&self, id: &str) -> Result<Option<Printer>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt =
-            conn.prepare("SELECT id, name, kind, config, enabled FROM printers WHERE id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, kind, config, enabled, is_default FROM printers WHERE id = ?1",
+        )?;
         let mut rows = stmt.query_map([id], row_to_printer_parts)?;
         match rows.next() {
             Some(row) => Ok(Some(printer_from_parts(row?)?)),
@@ -191,6 +207,31 @@ impl Store {
         let conn = self.conn.lock().expect("store lock");
         let affected = conn.execute("DELETE FROM printers WHERE id = ?1", [id])?;
         Ok(affected > 0)
+    }
+
+    /// Set `id` as the sole default printer, atomically. Returns `false` (making no change) if `id`
+    /// is unknown — the existence check runs before any write, so no default is cleared.
+    pub async fn set_default_printer(&self, id: &str) -> Result<bool, StoreError> {
+        let mut conn = self.conn.lock().expect("store lock");
+        let tx = conn.transaction()?;
+        let exists: bool = tx
+            .query_row("SELECT 1 FROM printers WHERE id = ?1", [id], |_| Ok(()))
+            .optional()?
+            .is_some();
+        if !exists {
+            return Ok(false); // tx drops -> rolled back; nothing changed
+        }
+        tx.execute("UPDATE printers SET is_default = 0", [])?;
+        tx.execute("UPDATE printers SET is_default = 1 WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Clear the default flag on `id` (idempotent no-op if it wasn't default / doesn't exist).
+    pub async fn clear_default_printer(&self, id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute("UPDATE printers SET is_default = 0 WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     pub async fn get_variable(&self, key: &str) -> Result<Option<String>, StoreError> {
@@ -276,13 +317,68 @@ impl Store {
         printer: Option<&str>,
         status: &str,
         error: Option<&str>,
+        user_id: &str,
     ) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
-            "INSERT INTO jobs (template, printer, status, error) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![template, printer, status, error],
+            "INSERT INTO jobs (template, printer, status, error, user_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![template, printer, status, error, user_id],
         )?;
         Ok(())
+    }
+
+    pub async fn list_favorites(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare(
+            "SELECT template_id FROM favorites WHERE user_id = ?1 ORDER BY created_at, template_id",
+        )?;
+        let rows = stmt.query_map([user_id], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    pub async fn add_favorite(&self, user_id: &str, template_id: &str) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "INSERT OR IGNORE INTO favorites (user_id, template_id) VALUES (?1, ?2)",
+            rusqlite::params![user_id, template_id],
+        )?;
+        Ok(())
+    }
+
+    pub async fn remove_favorite(
+        &self,
+        user_id: &str,
+        template_id: &str,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        conn.execute(
+            "DELETE FROM favorites WHERE user_id = ?1 AND template_id = ?2",
+            rusqlite::params![user_id, template_id],
+        )?;
+        Ok(())
+    }
+
+    /// Most recently printed distinct templates for this user (deterministic: MAX(id) tiebreak).
+    pub async fn recent_templates(
+        &self,
+        user_id: &str,
+        limit: u32,
+    ) -> Result<Vec<String>, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let mut stmt = conn.prepare(
+            "SELECT template FROM jobs WHERE user_id = ?1
+             GROUP BY template ORDER BY MAX(ts) DESC, MAX(id) DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![user_id, limit], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     /// Delete job-log rows older than `retention_days`. `0` disables (no-op). Returns rows deleted.
@@ -596,7 +692,7 @@ fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
     })
 }
 
-type PrinterParts = (String, String, String, String, i64);
+type PrinterParts = (String, String, String, String, i64, i64);
 
 fn row_to_printer_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterParts> {
     Ok((
@@ -605,17 +701,19 @@ fn row_to_printer_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterPart
         row.get(2)?,
         row.get(3)?,
         row.get(4)?,
+        row.get(5)?,
     ))
 }
 
 fn printer_from_parts(parts: PrinterParts) -> Result<Printer, StoreError> {
-    let (id, name, kind, config, enabled) = parts;
+    let (id, name, kind, config, enabled, is_default) = parts;
     Ok(Printer {
         id,
         name,
         kind,
         config: serde_json::from_str(&config)?,
         enabled: enabled != 0,
+        is_default: is_default != 0,
     })
 }
 
@@ -635,6 +733,7 @@ mod tests {
             kind: "cups".to_string(),
             config: json!({ "uri": "ipp://x" }),
             enabled: true,
+            is_default: false,
         };
         store.upsert_printer(&printer).await.unwrap();
 
@@ -671,13 +770,60 @@ mod tests {
         assert_eq!(all.get("k").map(String::as_str), Some("v2"));
 
         store
-            .record_job("tpl", Some("p1"), "ok", None)
+            .record_job("tpl", Some("p1"), "ok", None, "u1")
             .await
             .unwrap();
         store
-            .record_job("tpl", None, "failed", Some("boom"))
+            .record_job("tpl", None, "failed", Some("boom"), "u1")
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn favorites_add_idempotent_list_and_remove() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.list_favorites("u1").await.unwrap().is_empty());
+        store.add_favorite("u1", "tpl_a").await.unwrap();
+        store.add_favorite("u1", "tpl_a").await.unwrap(); // idempotent
+        store.add_favorite("u1", "tpl_b").await.unwrap();
+        // per-user isolation
+        store.add_favorite("u2", "tpl_c").await.unwrap();
+        assert_eq!(
+            store.list_favorites("u1").await.unwrap(),
+            vec!["tpl_a".to_string(), "tpl_b".to_string()]
+        );
+        assert_eq!(
+            store.list_favorites("u2").await.unwrap(),
+            vec!["tpl_c".to_string()]
+        );
+        store.remove_favorite("u1", "tpl_a").await.unwrap();
+        store.remove_favorite("u1", "tpl_a").await.unwrap(); // idempotent
+        assert_eq!(
+            store.list_favorites("u1").await.unwrap(),
+            vec!["tpl_b".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn recent_templates_distinct_ordered_and_per_user() {
+        let store = Store::open_in_memory().unwrap();
+        // Same ts for a and b; MAX(id) tiebreak makes b (inserted later) rank first.
+        store.record_job("a", None, "ok", None, "u1").await.unwrap();
+        store.record_job("a", None, "ok", None, "u1").await.unwrap();
+        store.record_job("b", None, "ok", None, "u1").await.unwrap();
+        store.record_job("c", None, "ok", None, "u2").await.unwrap();
+        let recents = store.recent_templates("u1", 6).await.unwrap();
+        assert_eq!(recents, vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(store.recent_templates("u1", 1).await.unwrap(), vec!["b"]);
+        assert_eq!(
+            store.recent_templates("u2", 6).await.unwrap(),
+            vec!["c".to_string()]
+        );
+        assert!(store
+            .recent_templates("nobody", 6)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -709,7 +855,10 @@ mod tests {
     #[tokio::test]
     async fn prune_jobs_zero_is_noop() {
         let store = Store::open_in_memory().unwrap();
-        store.record_job("tpl", None, "ok", None).await.unwrap();
+        store
+            .record_job("tpl", None, "ok", None, "u1")
+            .await
+            .unwrap();
         assert_eq!(store.prune_jobs(0).await.unwrap(), 0);
         let remaining: i64 = {
             let conn = store.conn.lock().unwrap();

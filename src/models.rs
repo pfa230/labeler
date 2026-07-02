@@ -143,6 +143,49 @@ impl SizeValue {
 #[serde(transparent)]
 pub struct Size(pub [SizeValue; 2]);
 
+/// Orthogonal rotation interpreted from the wire `rotate` degrees (counter-clockwise).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rotation {
+    R0,
+    R90,
+    R180,
+    R270,
+}
+
+impl Rotation {
+    /// Canonicalize wire degrees to an orthogonal rotation. `None` for non-finite or
+    /// non-multiple-of-90 (within `EPS`). Handles negatives and >360 via `rem_euclid`.
+    pub fn from_degrees(deg: f32) -> Option<Rotation> {
+        if !deg.is_finite() {
+            return None;
+        }
+        const EPS: f32 = 1.0e-3;
+        let norm = deg.rem_euclid(360.0);
+        for (target, rot) in [
+            (0.0, Rotation::R0),
+            (90.0, Rotation::R90),
+            (180.0, Rotation::R180),
+            (270.0, Rotation::R270),
+            (360.0, Rotation::R0),
+        ] {
+            if (norm - target).abs() < EPS {
+                return Some(rot);
+            }
+        }
+        None
+    }
+
+    /// 90/270 swap width and height.
+    pub fn swaps_axes(self) -> bool {
+        matches!(self, Rotation::R90 | Rotation::R270)
+    }
+
+    /// Anything other than `R0` triggers the rotated render/validation path.
+    pub fn is_rotated(self) -> bool {
+        !matches!(self, Rotation::R0)
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 pub struct Placement {
     #[serde(default)]
@@ -403,4 +446,38 @@ pub struct PrintRequest {
     pub option: Option<BTreeMap<String, String>>,
     #[serde(default = "default_copies")]
     pub copies: u32,
+}
+
+#[cfg(test)]
+mod rotation_tests {
+    use super::Rotation;
+
+    #[test]
+    fn from_degrees_maps_orthogonal_and_wraps() {
+        assert_eq!(Rotation::from_degrees(0.0), Some(Rotation::R0));
+        assert_eq!(Rotation::from_degrees(90.0), Some(Rotation::R90));
+        assert_eq!(Rotation::from_degrees(180.0), Some(Rotation::R180));
+        assert_eq!(Rotation::from_degrees(270.0), Some(Rotation::R270));
+        assert_eq!(Rotation::from_degrees(360.0), Some(Rotation::R0));
+        assert_eq!(Rotation::from_degrees(-90.0), Some(Rotation::R270));
+        assert_eq!(Rotation::from_degrees(-0.0), Some(Rotation::R0));
+        assert_eq!(Rotation::from_degrees(359.9999), Some(Rotation::R0));
+        assert_eq!(Rotation::from_degrees(450.0), Some(Rotation::R90));
+    }
+
+    #[test]
+    fn from_degrees_rejects_non_orthogonal_and_non_finite() {
+        assert_eq!(Rotation::from_degrees(45.0), None);
+        assert_eq!(Rotation::from_degrees(f32::NAN), None);
+        assert_eq!(Rotation::from_degrees(f32::INFINITY), None);
+        assert_eq!(Rotation::from_degrees(f32::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn axis_and_rotated_predicates() {
+        assert!(Rotation::R90.swaps_axes() && Rotation::R270.swaps_axes());
+        assert!(!Rotation::R0.swaps_axes() && !Rotation::R180.swaps_axes());
+        assert!(Rotation::R90.is_rotated() && Rotation::R180.is_rotated());
+        assert!(!Rotation::R0.is_rotated());
+    }
 }
