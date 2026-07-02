@@ -312,9 +312,14 @@ pub fn loaded_media_width_mm(x_hundredths: Option<i32>) -> Option<f32> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrinterCapabilities {
     pub bilevel: bool,
+    /// Whether the printer advertised any color-mode or raster-type attribute at all. Lets callers
+    /// tell "known color-capable" (`color_known && !bilevel`) apart from "said nothing" (`!color_known`).
+    pub color_known: bool,
     pub accepts_png: bool,
     pub resolution_dpi: Option<u32>,
     pub loaded_media_width_mm: Option<f32>,
+    /// `printer-make-and-model`, when reported.
+    pub model: Option<String>,
 }
 
 const COLOR_RASTER_TYPES: &[&str] = &["srgb_8", "sgray_8", "cmyk_8", "adobe-rgb_8", "srgb_16"];
@@ -340,6 +345,7 @@ impl PrinterCapabilities {
         raster_types: &[String],
         formats: &[String],
         resolution: Option<(i32, i32, i8)>,
+        model: Option<String>,
     ) -> Self {
         let color_mode_bilevel = color_modes.iter().any(|m| m == "bi-level");
         let raster_bilevel = raster_types.iter().any(|t| t == "black_1")
@@ -347,6 +353,8 @@ impl PrinterCapabilities {
                 .iter()
                 .any(|t| COLOR_RASTER_TYPES.contains(&t.as_str()));
         let bilevel = color_mode_bilevel || raster_bilevel;
+        // The printer told us something about color iff it advertised a color-mode or raster type.
+        let color_known = !color_modes.is_empty() || !raster_types.is_empty();
         let accepts_png = formats.iter().any(|f| f == "image/png");
         let resolution_dpi = resolution.and_then(|(cf, feed, units)| {
             if units == 3 && cf == feed && cf > 0 && (cf as u32) <= crate::render::MAX_RENDER_DPI {
@@ -357,9 +365,11 @@ impl PrinterCapabilities {
         });
         Self {
             bilevel,
+            color_known,
             accepts_png,
             resolution_dpi,
             loaded_media_width_mm: None,
+            model,
         }
     }
 
@@ -377,6 +387,9 @@ impl PrinterCapabilities {
                             ipp::value::IppValue::MimeMediaType(s) => Some(s.as_str().to_string()),
                             ipp::value::IppValue::NameWithoutLanguage(s) => {
                                 Some(s.as_str().to_string())
+                            }
+                            ipp::value::IppValue::TextWithoutLanguage(s) => {
+                                Some(AsRef::<str>::as_ref(s).to_string())
                             }
                             _ => None,
                         })
@@ -415,6 +428,7 @@ impl PrinterCapabilities {
             &strings("pwg-raster-document-type-supported"),
             &strings("document-format-supported"),
             resolution,
+            strings("printer-make-and-model").into_iter().next(),
         );
         caps.loaded_media_width_mm = loaded_media_width_mm(x_hundredths);
         caps
@@ -464,6 +478,10 @@ impl FakeDriver {
         });
         let caps = config.get("capabilities").map(|c| PrinterCapabilities {
             bilevel: c.get("bilevel").and_then(|v| v.as_bool()).unwrap_or(false),
+            color_known: c
+                .get("color_known")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             accepts_png: c
                 .get("accepts_png")
                 .and_then(|v| v.as_bool())
@@ -476,6 +494,10 @@ impl FakeDriver {
                 .get("loaded_media_width")
                 .and_then(|v| v.as_f64())
                 .map(|n| n as f32),
+            model: c
+                .get("model")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         });
         Self { fail, render, caps }
     }
@@ -530,6 +552,7 @@ mod tests {
             &["black_1".into(), "black_8".into()],
             &["image/png".into(), "application/pdf".into()],
             Some((203, 203, 3)),
+            None,
         );
         assert!(c.bilevel && c.accepts_png);
         assert_eq!(c.resolution_dpi, Some(203));
@@ -538,6 +561,7 @@ mod tests {
             &["bi-level".into(), "monochrome".into()],
             &[],
             &["image/png".into()],
+            None,
             None,
         );
         assert!(c2.bilevel);
@@ -548,6 +572,7 @@ mod tests {
             &["black_1".into(), "srgb_8".into()],
             &["image/png".into()],
             None,
+            None,
         );
         assert!(!c3.bilevel);
         // no png -> accepts_png false
@@ -556,34 +581,82 @@ mod tests {
             &[],
             &["application/pdf".into()],
             None,
+            None,
         );
         assert!(c4.bilevel && !c4.accepts_png);
+    }
+
+    #[test]
+    fn from_parts_carries_model() {
+        let caps =
+            PrinterCapabilities::from_parts(&[], &[], &[], None, Some("Brother PT-2730".into()));
+        assert_eq!(caps.model.as_deref(), Some("Brother PT-2730"));
+    }
+
+    #[test]
+    fn color_known_distinguishes_silence_from_color() {
+        // Advertised a color-capable raster type -> color known, not bilevel.
+        let color = PrinterCapabilities::from_parts(&[], &["srgb_8".into()], &[], None, None);
+        assert!(color.color_known && !color.bilevel);
+        // Advertised nothing -> unknown.
+        let silent = PrinterCapabilities::from_parts(&[], &[], &[], None, None);
+        assert!(!silent.color_known && !silent.bilevel);
+        // Advertised bi-level -> bilevel (and known).
+        let bw = PrinterCapabilities::from_parts(&["bi-level".into()], &[], &[], None, None);
+        assert!(bw.bilevel && bw.color_known);
+    }
+
+    #[test]
+    fn from_attributes_reads_make_and_model_text() {
+        use ipp::attribute::{IppAttribute, IppAttributeGroup, IppAttributes};
+        use ipp::model::DelimiterTag;
+        let attr = IppAttribute::with_name(
+            "printer-make-and-model",
+            ipp::value::IppValue::TextWithoutLanguage(
+                ipp::value::IppTextValue::new("Brother PT-2730").unwrap(),
+            ),
+        )
+        .unwrap();
+        let mut group = IppAttributeGroup::new(DelimiterTag::PrinterAttributes);
+        group.attributes_mut().insert(attr.name().clone(), attr);
+        let mut attrs = IppAttributes::new();
+        attrs.groups_mut().push(group);
+        assert_eq!(
+            PrinterCapabilities::from_attributes(&attrs)
+                .model
+                .as_deref(),
+            Some("Brother PT-2730")
+        );
     }
 
     #[test]
     fn resolution_conversion_rules() {
         // square dpi in range
         assert_eq!(
-            PrinterCapabilities::from_parts(&[], &[], &[], Some((300, 300, 3))).resolution_dpi,
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((300, 300, 3)), None)
+                .resolution_dpi,
             Some(300)
         );
         // asymmetric -> None
         assert_eq!(
-            PrinterCapabilities::from_parts(&[], &[], &[], Some((300, 600, 3))).resolution_dpi,
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((300, 600, 3)), None)
+                .resolution_dpi,
             None
         );
         // dpcm (units 4) -> None
         assert_eq!(
-            PrinterCapabilities::from_parts(&[], &[], &[], Some((118, 118, 4))).resolution_dpi,
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((118, 118, 4)), None)
+                .resolution_dpi,
             None
         );
         // out of bounds -> None
         assert_eq!(
-            PrinterCapabilities::from_parts(&[], &[], &[], Some((5000, 5000, 3))).resolution_dpi,
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((5000, 5000, 3)), None)
+                .resolution_dpi,
             None
         );
         assert_eq!(
-            PrinterCapabilities::from_parts(&[], &[], &[], Some((0, 0, 3))).resolution_dpi,
+            PrinterCapabilities::from_parts(&[], &[], &[], Some((0, 0, 3)), None).resolution_dpi,
             None
         );
     }
@@ -593,9 +666,11 @@ mod tests {
         use crate::render::ColorMode;
         let bilevel_png = PrinterCapabilities {
             bilevel: true,
+            color_known: true,
             accepts_png: true,
             resolution_dpi: Some(203),
             loaded_media_width_mm: None,
+            model: None,
         };
         let p = negotiated_profile(&bilevel_png);
         assert!(matches!(p.color_mode, ColorMode::BiLevel));
@@ -603,9 +678,11 @@ mod tests {
         // bilevel but no png -> Color
         let no_png = PrinterCapabilities {
             bilevel: true,
+            color_known: true,
             accepts_png: false,
             resolution_dpi: Some(203),
             loaded_media_width_mm: None,
+            model: None,
         };
         assert!(matches!(
             negotiated_profile(&no_png).color_mode,
@@ -614,9 +691,11 @@ mod tests {
         // color -> Color
         let color = PrinterCapabilities {
             bilevel: false,
+            color_known: true,
             accepts_png: true,
             resolution_dpi: None,
             loaded_media_width_mm: None,
+            model: None,
         };
         assert!(matches!(
             negotiated_profile(&color).color_mode,
