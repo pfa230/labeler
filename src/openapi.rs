@@ -4,8 +4,8 @@ use crate::{
     api,
     api::{
         AuthStatus, ConnectionInput, Credentials, DatetimePreviewRequest, DatetimePreviewResponse,
-        OkResponse, PasswordChange, ResolvedSetting, SettingValue, TokenCreate, TokenCreated,
-        TokenSummary, UserSummary,
+        OkResponse, PasswordChange, ProbeCapabilities, ProbeRequest, ProbeResponse,
+        ResolvedSetting, SettingValue, TokenCreate, TokenCreated, TokenSummary, UserSummary,
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
@@ -41,6 +41,7 @@ use crate::{
         api::delete_printer,
         api::set_printer_default,
         api::clear_printer_default,
+        api::probe_printer,
         api::get_variables,
         api::put_variable,
         api::get_settings,
@@ -86,6 +87,9 @@ use crate::{
             DatetimePreviewResponse,
             ReloadResponse,
             Printer,
+            ProbeRequest,
+            ProbeResponse,
+            ProbeCapabilities,
             TemplateList,
             TemplateSummary,
             TemplateFormat,

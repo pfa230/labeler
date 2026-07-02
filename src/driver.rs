@@ -224,6 +224,23 @@ impl CupsConfig {
                 cfg.uri
             )));
         }
+        // Must be a parseable URI with a host, so a prefixed-but-malformed value (e.g. "ipp://") is
+        // rejected at validation (422) rather than surfacing later as a 200 "unreachable" probe.
+        match url::Url::parse(&cfg.uri) {
+            Ok(u) if u.host_str().is_some_and(|h| !h.is_empty()) => {}
+            Ok(_) => {
+                return Err(DriverError::Config(format!(
+                    "cups uri has no host: '{}'",
+                    cfg.uri
+                )))
+            }
+            Err(e) => {
+                return Err(DriverError::Config(format!(
+                    "invalid cups uri '{}': {e}",
+                    cfg.uri
+                )))
+            }
+        }
         if let Some(pem) = &cfg.ca_cert {
             if !pem.contains("-----BEGIN CERTIFICATE-----") {
                 return Err(DriverError::Config(
@@ -1030,6 +1047,15 @@ mod tests {
         assert_eq!(loaded_media_width_mm(Some(0)), None);
         assert_eq!(loaded_media_width_mm(Some(-5)), None);
         assert_eq!(loaded_media_width_mm(None), None);
+    }
+
+    #[test]
+    fn cups_config_rejects_malformed_uri() {
+        // prefixed but no host -> rejected (feeds the probe endpoint's 422 contract)
+        assert!(CupsConfig::from_value(&json!({ "uri": "ipp://" })).is_err());
+        assert!(CupsConfig::from_value(&json!({ "uri": "ipps://" })).is_err());
+        // a well-formed one still parses
+        assert!(CupsConfig::from_value(&json!({ "uri": "ipp://host:631/ipp/print" })).is_ok());
     }
 
     #[tokio::test]

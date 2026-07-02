@@ -1,4 +1,4 @@
-# 35. Per-field render override (color and resolution negotiated independently)
+# 39. Per-field render override (color and resolution negotiated independently)
 
 Date: 2026-07-01
 

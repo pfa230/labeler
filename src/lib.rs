@@ -1839,6 +1839,81 @@ layout:
     }
 
     #[tokio::test]
+    async fn probe_ok_returns_capabilities() {
+        let app = build_app();
+        let body = json!({
+            "kind": "fake",
+            "config": { "capabilities": {
+                "bilevel": true, "color_known": true, "accepts_png": true,
+                "resolution": 180, "model": "Brother PT-2730"
+            } }
+        })
+        .to_string();
+        let resp = app
+            .oneshot(json_req("POST", "/api/printers/probe", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_response(resp).await;
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["capabilities"]["color"], "bilevel");
+        assert_eq!(v["capabilities"]["model"], "Brother PT-2730");
+        assert_eq!(v["capabilities"]["resolution_dpi"], 180);
+    }
+
+    #[tokio::test]
+    async fn probe_reports_unknown_color_when_printer_is_silent() {
+        let app = build_app();
+        let body =
+            json!({ "kind": "fake", "config": { "capabilities": { "bilevel": false, "color_known": false } } })
+                .to_string();
+        let resp = app
+            .oneshot(json_req("POST", "/api/printers/probe", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_response(resp).await;
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["capabilities"]["color"], "unknown");
+    }
+
+    #[tokio::test]
+    async fn probe_unreachable_returns_status() {
+        let app = build_app();
+        let body = json!({ "kind": "fake", "config": { "probe": "unreachable" } }).to_string();
+        let resp = app
+            .oneshot(json_req("POST", "/api/printers/probe", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = json_response(resp).await;
+        assert_eq!(v["status"], "unreachable");
+        assert!(v["detail"].is_string());
+    }
+
+    #[tokio::test]
+    async fn probe_missing_uri_is_422() {
+        let app = build_app();
+        let body = json!({ "kind": "cups", "config": {} }).to_string();
+        let resp = app
+            .oneshot(json_req("POST", "/api/printers/probe", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn probe_malformed_uri_is_422() {
+        let app = build_app();
+        let body = json!({ "kind": "cups", "config": { "uri": "ipp://" } }).to_string();
+        let resp = app
+            .oneshot(json_req("POST", "/api/printers/probe", body))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
     async fn printer_replace_missing_returns_404() {
         let app = build_app();
         let resp = app
