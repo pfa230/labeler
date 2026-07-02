@@ -1247,12 +1247,16 @@ async fn run_batch(
             }
             let driver = crate::driver::build_driver(&printer.kind, &printer.config)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
-            let configured = driver.configured_render_options();
+            let ovr = driver.configured_render_override();
             let template_media_width = match &template.format {
                 crate::models::TemplateFormat::Single { media_width, .. } => *media_width,
                 _ => None,
             };
-            let caps = if configured.is_none() || template_media_width.is_some() {
+            // Fetch caps when any override field is unset (needs negotiation) or a media check is pending.
+            let need_caps = ovr.color_mode.is_none()
+                || ovr.resolution_dpi.is_none()
+                || template_media_width.is_some();
+            let caps = if need_caps {
                 driver.capabilities().await
             } else {
                 None
@@ -1267,13 +1271,7 @@ async fn run_batch(
                     return Err(AppError::media_mismatch(want_mm, got));
                 }
             }
-            let render_opts = match configured {
-                Some(o) => o,
-                None => caps
-                    .as_ref()
-                    .map(crate::driver::negotiated_profile)
-                    .unwrap_or_default(),
-            };
+            let render_opts = crate::driver::effective_render(&ovr, caps.as_ref());
             let artifact_format =
                 crate::driver::print_artifact_format(render_opts.color_mode, is_single);
             let render_format = match artifact_format {
