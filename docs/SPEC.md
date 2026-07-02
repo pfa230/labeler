@@ -823,6 +823,12 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-07-02**: Render engine upgraded to Typst 0.15 (typst-as-lib 0.16; #101). The bundled
+  variable `InterVariable.ttf` now renders real font weights: Typst 0.15 drives the `wght` axis from
+  `text(weight:)`, where 0.14 ignored it. This lands the upgrade path ADR-0035 deferred; exposing a
+  `font_weight` template field is #97. No template or font-list changes here. Note 0.15's
+  `typographic_family` strips the "Variable" suffix, so the font resolves under the family name
+  `Inter` (the existing `("Inter Variable", "Inter")` list still renders via the `Inter` fallback).
 - **2026-07-02**: Printer probe endpoint (ADR-0040; #117). `POST /api/printers/probe` test-connects an
   unsaved driver config `{ kind?, config }` via IPP Get-Printer-Attributes and always returns `200`
   with the reachability as data: `{ status: "ok", capabilities: { model, media_width_mm,
