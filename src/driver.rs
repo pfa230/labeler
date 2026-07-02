@@ -136,6 +136,47 @@ pub fn build_driver(kind: &str, config: &JsonValue) -> Result<Box<dyn PrinterDri
     }
 }
 
+/// Screen an IPP dial target through the same outbound IP policy the connector uses
+/// (`crate::egress::ip_allowed`): reject loopback, link-local/metadata, unspecified, multicast. Applied
+/// before any IPP request so a user-supplied printer URI cannot be turned into an SSRF probe of internal
+/// services. TOCTOU caveat: the address resolved here and the one the client later dials can differ; this
+/// matches the `egress.rs` posture and is acceptable for a self-hosted tool.
+pub async fn screen_ipp_uri(uri: &str) -> Result<(), DriverError> {
+    let parsed = url::Url::parse(uri)
+        .map_err(|e| DriverError::Config(format!("invalid uri '{uri}': {e}")))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| DriverError::Config(format!("uri has no host: '{uri}'")))?;
+    // IPP default port is 631; only used for DNS resolution below, not for the screen itself.
+    let port = parsed.port().unwrap_or(631);
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if !crate::egress::ip_allowed(ip, false) {
+            return Err(DriverError::Config(format!(
+                "blocked printer address: {ip}"
+            )));
+        }
+        return Ok(());
+    }
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| DriverError::Config(format!("cannot resolve printer host '{host}': {e}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(DriverError::Config(format!(
+            "printer host '{host}' resolved to no addresses"
+        )));
+    }
+    for addr in addrs {
+        if !crate::egress::ip_allowed(addr.ip(), false) {
+            return Err(DriverError::Config(format!(
+                "blocked printer address for '{host}': {}",
+                addr.ip()
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct RenderProfileConfig {
     #[serde(default)]
@@ -282,6 +323,9 @@ impl PrinterDriver for CupsDriver {
     async fn send(&self, artifact: &[u8], opts: &PrintOptions) -> Result<(), PrintError> {
         use ipp::prelude::*;
 
+        screen_ipp_uri(&self.uri)
+            .await
+            .map_err(|err| PrintError::Transport(err.to_string()))?;
         let uri: Uri = self.uri.parse().map_err(|err| {
             PrintError::Transport(format!("invalid printer uri '{}': {err}", self.uri))
         })?;
@@ -941,6 +985,35 @@ mod tests {
         assert_eq!(loaded_media_width_mm(Some(0)), None);
         assert_eq!(loaded_media_width_mm(Some(-5)), None);
         assert_eq!(loaded_media_width_mm(None), None);
+    }
+
+    #[tokio::test]
+    async fn screen_rejects_loopback_and_metadata() {
+        assert!(screen_ipp_uri("ipp://127.0.0.1:631/ipp/print")
+            .await
+            .is_err());
+        assert!(screen_ipp_uri("ipp://169.254.169.254/ipp/print")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn screen_allows_private_host_literal() {
+        assert!(screen_ipp_uri("ipp://10.10.1.34:8000/ipp/print")
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn send_rejects_loopback_target() {
+        // The print path must screen before dialing, same as probe.
+        let d = CupsDriver::from_value(&json!({ "uri": "ipp://127.0.0.1:631/ipp/print" })).unwrap();
+        let opts = PrintOptions {
+            artifact_format: ArtifactFormat::Pdf,
+            ..PrintOptions::default()
+        };
+        let err = d.send(b"%PDF-", &opts).await.unwrap_err();
+        assert!(matches!(err, PrintError::Transport(_)));
     }
 
     #[tokio::test]
