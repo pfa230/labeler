@@ -1,13 +1,14 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   usePrinters,
   useSavePrinter,
   useDeletePrinter,
   useSetDefaultPrinter,
   useClearDefaultPrinter,
+  useProbePrinter,
 } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
-import type { Printer } from "../../api/types";
+import type { Printer, ProbeResult } from "../../api/types";
 
 const ID_RE = /^[A-Za-z0-9_-]+$/; // mirrors the server's accepted printer-id charset
 const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
@@ -24,26 +25,6 @@ function cupsUri(p: Printer): string {
   return "";
 }
 
-// Reads a plain string field from a cups config for form pre-fill. Never call this for write-only
-// secrets (e.g. "password"): the API redacts those, so they are absent here, and seeding a form field
-// from them must not become a path that echoes a secret back to the server.
-function cupsStringField(p: Printer, field: string): string {
-  const config = p.config;
-  if (typeof config === "object" && config !== null && field in config) {
-    const val = (config as Record<string, unknown>)[field];
-    if (typeof val === "string") return val;
-  }
-  return "";
-}
-
-function cupsInsecure(p: Printer): boolean {
-  const config = p.config;
-  if (typeof config === "object" && config !== null && "insecure" in config) {
-    return (config as { insecure?: unknown }).insecure === true;
-  }
-  return false;
-}
-
 function cupsRenderStringField(p: Printer, field: string): string {
   const config = p.config;
   if (typeof config !== "object" || config === null || !("render" in config)) return "";
@@ -55,22 +36,63 @@ function cupsRenderStringField(p: Printer, field: string): string {
   return "";
 }
 
+// Carry forward the non-secret auth config (username/ca_cert/insecure) on edit so saving through the
+// auth-less card does not strip it (a PUT replaces config, and the server only merges the write-only
+// password). Surfacing these fields for editing is #118.
+function cupsAuthConfig(p: Printer): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const config = p.config;
+  if (typeof config === "object" && config !== null) {
+    const c = config as Record<string, unknown>;
+    if (typeof c.username === "string") out.username = c.username;
+    if (typeof c.ca_cert === "string") out.ca_cert = c.ca_cert;
+    if (c.insecure === true) out.insecure = true;
+  }
+  return out;
+}
+
 function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: () => void }) {
   const isNew = initial === null;
   const [id, setId] = useState(initial?.id ?? "");
   const [name, setName] = useState(initial?.name ?? "");
   const [uri, setUri] = useState(initial ? cupsUri(initial) : "");
-  const [username, setUsername] = useState(initial ? cupsStringField(initial, "username") : "");
-  // password always starts blank: the API never returns it (write-only secret).
-  const [password, setPassword] = useState("");
-  const [caCert, setCaCert] = useState(initial ? cupsStringField(initial, "ca_cert") : "");
-  const [insecure, setInsecure] = useState(initial ? cupsInsecure(initial) : false);
-  const [colorMode, setColorMode] = useState(initial ? (cupsRenderStringField(initial, "color_mode") || "color") : "color");
+  // "auto" means: omit from config so the printer's reported value is negotiated at print time.
+  const [colorMode, setColorMode] = useState(initial ? cupsRenderStringField(initial, "color_mode") || "auto" : "auto");
   const [resolution, setResolution] = useState(initial ? cupsRenderStringField(initial, "resolution") : "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [probeRes, setProbeRes] = useState<ProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const save = useSavePrinter();
+  const probe = useProbePrinter();
   const { push } = useToast();
+
+  // Auth config is not editable here (#118) but is preserved verbatim across an edit.
+  const carriedAuth = useMemo(() => (initial ? cupsAuthConfig(initial) : {}), [initial]);
+
+  const buildConfig = (): Record<string, unknown> => {
+    const config: Record<string, unknown> = { uri: uri.trim(), ...carriedAuth };
+    const render: Record<string, unknown> = {};
+    if (colorMode !== "auto") render.color_mode = colorMode;
+    if (resolution.trim() !== "") render.resolution = Number(resolution.trim());
+    if (Object.keys(render).length > 0) config.render = render;
+    return config;
+  };
+
+  const onTest = () => {
+    if (!/^ipps?:\/\//.test(uri.trim())) {
+      setProbeRes({ status: "unreachable", detail: "Enter an ipp:// or ipps:// address first." });
+      return;
+    }
+    probe.mutate(
+      { uri: uri.trim(), ...carriedAuth },
+      {
+        onSuccess: (r) => setProbeRes(r),
+        onError: (err) =>
+          setProbeRes({ status: "unreachable", detail: err instanceof Error ? err.message : "Probe failed" }),
+      },
+    );
+  };
 
   const submit = () => {
     if (!ID_RE.test(id)) {
@@ -81,26 +103,13 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
       setError("name must not be empty");
       return;
     }
-    if (uri.trim() === "") {
-      setError("cups uri must not be empty");
-      return;
-    }
     if (!/^ipps?:\/\//.test(uri.trim())) {
       // Mirror the server's cups uri check (driver.rs) so a bad scheme is caught before the request.
-      setError("cups uri must start with ipp:// or ipps://");
+      setError("address must start with ipp:// or ipps://");
       return;
     }
     setError(null);
-    const config: Record<string, unknown> = { uri: uri.trim() };
-    if (username.trim() !== "") config.username = username.trim();
-    if (password !== "") config.password = password;
-    if (caCert.trim() !== "") config.ca_cert = caCert.trim();
-    if (insecure) config.insecure = true;
-    const render: Record<string, unknown> = {};
-    if (colorMode !== "color") render.color_mode = colorMode;
-    if (resolution.trim() !== "") render.resolution = Number(resolution.trim());
-    if (Object.keys(render).length > 0) config.render = render;
-    const printer: Printer = { id, name: name.trim(), kind: "cups", config, enabled };
+    const printer: Printer = { id, name: name.trim(), kind: "cups", config: buildConfig(), enabled };
     save.mutate(
       { printer, isNew },
       {
@@ -117,75 +126,97 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
     );
   };
 
+  const caps = probeRes?.status === "ok" ? probeRes.capabilities : null;
+
   return (
     <div className="flex flex-col gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)" }}>
-      <div className="flex flex-wrap gap-3">
+      <div className="flex flex-wrap items-end gap-3">
+        {isNew && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs" style={{ color: "var(--muted)" }}>id</span>
+            <input aria-label="printer id" value={id} onChange={(e) => setId(e.target.value)} className={inputClass} style={inputStyle} />
+          </label>
+        )}
         <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>printer id</span>
-          <input aria-label="printer id" value={id} disabled={!isNew} onChange={(e) => setId(e.target.value)} className={inputClass} style={inputStyle} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>printer name</span>
+          <span className="text-xs" style={{ color: "var(--muted)" }}>name</span>
           <input aria-label="printer name" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>kind</span>
-          <select aria-label="printer kind" value="cups" disabled className={inputClass} style={inputStyle}>
-            <option value="cups">cups</option>
-          </select>
-        </label>
         <label className="flex flex-1 flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>cups uri</span>
-          <input aria-label="cups uri" value={uri} onChange={(e) => setUri(e.target.value)} className={inputClass} style={inputStyle} />
+          <span className="text-xs" style={{ color: "var(--muted)" }}>address</span>
+          <input
+            aria-label="address"
+            value={uri}
+            onChange={(e) => setUri(e.target.value)}
+            placeholder="ipp://printer.local:631/ipp/print"
+            className={inputClass}
+            style={inputStyle}
+          />
         </label>
-        <label className="flex items-center gap-2 self-end pb-2">
+        <button
+          type="button"
+          onClick={onTest}
+          disabled={probe.isPending}
+          className={`${buttonBase} border`}
+          style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+        >
+          {probe.isPending ? "Testing…" : "Test connection"}
+        </button>
+        <label className="flex items-center gap-2 pb-2">
           <input type="checkbox" aria-label="enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           <span className="text-sm">enabled</span>
         </label>
       </div>
-      <div className="flex flex-wrap gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>username</span>
-          <input aria-label="username" value={username} onChange={(e) => setUsername(e.target.value)} className={inputClass} style={inputStyle} />
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>password</span>
-          <input type="password" aria-label="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="leave blank to keep current" className={inputClass} style={inputStyle} />
-        </label>
-        <label className="flex flex-1 flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>ca cert</span>
-          <textarea aria-label="ca cert" value={caCert} onChange={(e) => setCaCert(e.target.value)} rows={3} className={inputClass} style={inputStyle} />
-        </label>
-        <label className="flex items-center gap-2 self-end pb-2">
-          <input type="checkbox" aria-label="insecure" checked={insecure} onChange={(e) => setInsecure(e.target.checked)} />
-          <span className="text-sm">skip TLS verification (insecure)</span>
-        </label>
-      </div>
-      <div className="flex flex-wrap gap-3">
-        <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>color mode</span>
-          <select aria-label="color mode" value={colorMode} onChange={(e) => setColorMode(e.target.value)} className={inputClass} style={inputStyle}>
-            <option value="color">color</option>
-            <option value="bilevel">bilevel</option>
-          </select>
-        </label>
-        <label className="flex flex-col gap-1">
-          <span className="text-xs" style={{ color: "var(--muted)" }}>print resolution</span>
-          <input type="number" aria-label="print resolution" value={resolution} onChange={(e) => setResolution(e.target.value)} placeholder="e.g. 203" className={inputClass} style={inputStyle} />
-        </label>
-      </div>
-      {(username.trim() !== "" || password !== "") ? (
-        !/^ipps:\/\//.test(uri.trim()) ? (
-          <p className="text-xs" style={{ color: "var(--warn, #b45309)" }}>
-            Credentials are sent unencrypted over ipp://; use ipps://.
-          </p>
-        ) : null
-      ) : null}
-      {insecure && (username.trim() !== "" || password !== "") ? (
-        <p className="text-xs" style={{ color: "var(--warn, #b45309)" }}>
-          Skipping TLS verification with credentials exposes them to man-in-the-middle theft.
+
+      {caps && (
+        <div className="rounded-md border px-3 py-2 text-sm" style={{ borderColor: "var(--good, #15803d)", color: "var(--ink)" }}>
+          <div className="font-medium">✓ {caps.model ?? "Printer reachable"}</div>
+          <div className="text-xs" style={{ color: "var(--muted)" }}>
+            {[
+              caps.media_width_mm != null ? `${caps.media_width_mm}mm` : null,
+              caps.resolution_dpi != null ? `${caps.resolution_dpi} dpi` : null,
+              caps.color,
+              caps.accepts_png ? "PNG" : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </div>
+          <div className="text-xs" style={{ color: "var(--muted)" }}>Used automatically when printing.</div>
+        </div>
+      )}
+      {probeRes?.status === "unreachable" && (
+        <p className="text-sm" style={{ color: "var(--warn, #b45309)" }}>
+          Couldn't reach printer: {probeRes.detail}
         </p>
-      ) : null}
+      )}
+
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="text-sm underline"
+          style={{ color: "var(--muted)" }}
+          aria-expanded={showAdvanced}
+        >
+          {showAdvanced ? "▾" : "▸"} Advanced: override printer settings
+        </button>
+        {showAdvanced && (
+          <div className="mt-2 flex flex-wrap gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs" style={{ color: "var(--muted)" }}>color mode</span>
+              <select aria-label="color mode" value={colorMode} onChange={(e) => setColorMode(e.target.value)} className={inputClass} style={inputStyle}>
+                <option value="auto">auto (use printer)</option>
+                <option value="color">color</option>
+                <option value="bilevel">bilevel</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs" style={{ color: "var(--muted)" }}>resolution (dpi)</span>
+              <input type="number" aria-label="print resolution" value={resolution} onChange={(e) => setResolution(e.target.value)} placeholder="auto" className={inputClass} style={inputStyle} />
+            </label>
+          </div>
+        )}
+      </div>
+
       {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
       <div className="flex gap-3">
         <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>

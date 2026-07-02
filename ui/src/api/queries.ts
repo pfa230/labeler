@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJson, sendJson, del, putVoid } from "./client";
-import type { TemplateSummary, TemplateDetail, Printer } from "./types";
+import type { TemplateSummary, TemplateDetail, Printer, ProbeResult } from "./types";
 
 export function useTemplates() {
   return useQuery({ queryKey: ["templates"], queryFn: () => getJson<{ templates: TemplateSummary[] }>("/templates") });
@@ -121,6 +121,14 @@ export function useDeletePrinter() {
   return useMutation({
     mutationFn: (id: string) => del(`/printers/${encodeURIComponent(id)}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
+  });
+}
+
+// Test-connect an unsaved cups config; returns the printer's self-reported capabilities.
+export function useProbePrinter() {
+  return useMutation({
+    mutationFn: (config: unknown) =>
+      sendJson<ProbeResult>("POST", "/printers/probe", { kind: "cups", config }),
   });
 }
 
