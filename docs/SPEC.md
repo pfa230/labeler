@@ -631,8 +631,8 @@ behind a `store` module.
 
   | Sub-field | Type | Required | Notes |
   | --- | --- | --- | --- |
-  | `color_mode` | `"color"` \| `"bilevel"` | No | Default `"color"`. `"bilevel"` renders single/tape labels as a 1-bit `image/png` (global luminance threshold, no dithering). Sheet templates always render PDF regardless of this setting. |
-  | `resolution` | integer | No | DPI override for raster output, in `[1, 1200]`. Absent: uses the template `dpi` field. |
+  | `color_mode` | `"color"` \| `"bilevel"` | No | Per-field override. Absent: **negotiated** from the printer (see below), not defaulted. `"bilevel"` renders single/tape labels as a 1-bit `image/png` (global luminance threshold, no dithering). Sheet templates always render PDF regardless of this setting. |
+  | `resolution` | integer | No | Per-field override for raster DPI, in `[1, 1200]`. Absent: **negotiated** from the printer, else the template `dpi` field. |
 
   Bad `render` values (`color_mode` not in the allowed set, `resolution` out of `[1, 1200]` or non-integer)
   are rejected with `422` at printer create (`POST /printers`) or replace (`PUT /printers/{id}`).
@@ -664,9 +664,15 @@ behind a `store` module.
   query failure or a 3-second timeout also causes the same graceful fallback; negotiation never blocks a
   print job.
 
-  An explicit `config.render` (even `color_mode: "color"`) suppresses negotiation entirely: labeler uses
-  the configured profile and skips the `Get-Printer-Attributes` query. See
-  [ADR-0033](adr/0033-capability-aware-rendering.md) (slice 3).
+  **Per-field override precedence (ADR-0035).** `config.render` is resolved per field, not
+  all-or-nothing. Each of `color_mode` and `resolution` independently resolves to: the configured
+  override if set, else the negotiated value, else the default. So overriding only `resolution` still
+  negotiates `color_mode`, and vice versa. labeler queries `Get-Printer-Attributes` whenever *either*
+  field is unset (or a media-width check is pending). Negotiated `color_mode` is `bilevel` only when the
+  printer is bilevel AND advertises `image/png` (a bilevel single/tape job is sent as `image/png`, so a
+  bilevel-but-non-PNG printer must not be auto-switched); negotiated `resolution` uses the reported
+  square DPI. This supersedes the earlier behavior where any `config.render` suppressed negotiation
+  entirely. See [ADR-0035](adr/0035-per-field-render-override.md).
 
   **Print preflight media gate (slice 4).** Before dispatching a print job for a `single` template,
   labeler optionally checks that the template's declared tape width matches the media loaded in the
@@ -770,6 +776,13 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-07-01**: Per-field render override (ADR-0035; #117). `config.render` is now resolved per
+  field: each of `color_mode`/`resolution` independently is the configured override, else the
+  negotiated value, else the default. Overriding one field no longer suppresses negotiation of the
+  other (the prior behavior, where any `config.render` disabled `Get-Printer-Attributes` entirely).
+  Negotiated bilevel still requires the printer to advertise `image/png`. `PrinterCapabilities` also
+  now carries the reported `printer-make-and-model` and a `color_known` signal (color-capable vs
+  unknown). See the Printing section and [ADR-0035](adr/0035-per-field-render-override.md).
 - **2026-06-28**: Single config dir (ADR-0034; #93). All persistent state moves under one
   `LABELER_CONFIG_DIR` (default `/config`): `{config}/labeler.db`, `{config}/templates/`, and
   `{config}/assets/`. The per-dir env vars `LABELER_DATA_DIR`, `LABELER_TEMPLATES_DIR`, and

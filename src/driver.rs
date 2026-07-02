@@ -67,9 +67,10 @@ pub enum PrintError {
 
 #[async_trait]
 pub trait PrinterDriver: Send + Sync {
-    /// The render options explicitly configured for this driver, if any. None means unset.
-    fn configured_render_options(&self) -> Option<crate::render::ImageRenderOptions> {
-        None
+    /// The per-field render overrides explicitly configured for this driver. Each `None` field means
+    /// "not overridden, negotiate it". See [`effective_render`].
+    fn configured_render_override(&self) -> RenderOverride {
+        RenderOverride::default()
     }
     /// Query the printer's live capabilities via IPP Get-Printer-Attributes. Returns None on any
     /// error (network, timeout, non-success status) so callers can fall back gracefully.
@@ -204,22 +205,25 @@ pub struct CupsDriver {
     password: Option<String>,
     ca_cert: Option<String>,
     insecure: bool,
-    render: Option<crate::render::ImageRenderOptions>,
+    render: RenderOverride,
 }
 
 impl CupsDriver {
     fn from_value(config: &JsonValue) -> Result<Self, DriverError> {
         let cfg = CupsConfig::from_value(config)?;
-        let render = cfg.render.as_ref().map(|r| {
-            let color_mode = match r.color_mode.as_deref() {
-                Some("bilevel") => crate::render::ColorMode::BiLevel,
-                _ => crate::render::ColorMode::Color,
-            };
-            crate::render::ImageRenderOptions {
-                color_mode,
+        // Per-field: a missing key stays `None` (negotiate it), not a concrete default.
+        let render = cfg
+            .render
+            .as_ref()
+            .map(|r| RenderOverride {
+                color_mode: match r.color_mode.as_deref() {
+                    Some("bilevel") => Some(crate::render::ColorMode::BiLevel),
+                    Some("color") => Some(crate::render::ColorMode::Color),
+                    _ => None,
+                },
                 resolution_dpi: r.resolution,
-            }
-        });
+            })
+            .unwrap_or_default();
         Ok(Self {
             uri: cfg.uri,
             username: cfg.username,
@@ -254,7 +258,7 @@ impl CupsDriver {
 
 #[async_trait]
 impl PrinterDriver for CupsDriver {
-    fn configured_render_options(&self) -> Option<crate::render::ImageRenderOptions> {
+    fn configured_render_override(&self) -> RenderOverride {
         self.render
     }
 
@@ -435,14 +439,36 @@ impl PrinterCapabilities {
     }
 }
 
-pub fn negotiated_profile(caps: &PrinterCapabilities) -> crate::render::ImageRenderOptions {
-    if caps.bilevel && caps.accepts_png {
-        crate::render::ImageRenderOptions {
-            color_mode: crate::render::ColorMode::BiLevel,
-            resolution_dpi: caps.resolution_dpi,
-        }
-    } else {
-        crate::render::ImageRenderOptions::default()
+/// Per-field render overrides. Each `None` field is negotiated from the printer's capabilities; a
+/// `Some` field is an explicit user choice that wins over negotiation. See [`effective_render`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderOverride {
+    pub color_mode: Option<crate::render::ColorMode>,
+    pub resolution_dpi: Option<u32>,
+}
+
+/// Resolve the effective render options from per-field overrides and (optional) printer capabilities.
+/// Each field independently is: override, else negotiated from caps, else default. Negotiated color is
+/// `BiLevel` only when the printer is bilevel AND accepts PNG (BiLevel + single -> PNG artifact via
+/// [`print_artifact_format`], so a bilevel-but-non-PNG printer must not be auto-switched to PNG).
+pub fn effective_render(
+    ovr: &RenderOverride,
+    caps: Option<&PrinterCapabilities>,
+) -> crate::render::ImageRenderOptions {
+    use crate::render::{ColorMode, ImageRenderOptions};
+    let color_mode = match ovr.color_mode {
+        Some(cm) => cm,
+        None => match caps {
+            Some(c) if c.bilevel && c.accepts_png => ColorMode::BiLevel,
+            _ => ColorMode::Color,
+        },
+    };
+    let resolution_dpi = ovr
+        .resolution_dpi
+        .or_else(|| caps.and_then(|c| c.resolution_dpi));
+    ImageRenderOptions {
+        color_mode,
+        resolution_dpi,
     }
 }
 
@@ -451,7 +477,7 @@ pub fn negotiated_profile(caps: &PrinterCapabilities) -> crate::render::ImageRen
 #[cfg(test)]
 struct FakeDriver {
     fail: bool,
-    render: Option<crate::render::ImageRenderOptions>,
+    render: RenderOverride,
     caps: Option<PrinterCapabilities>,
 }
 
@@ -462,20 +488,20 @@ impl FakeDriver {
             .get("fail")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
-        let render = config.get("render").map(|r| {
-            let color_mode = match r.get("color_mode").and_then(|v| v.as_str()) {
-                Some("bilevel") => crate::render::ColorMode::BiLevel,
-                _ => crate::render::ColorMode::Color,
-            };
-            let resolution_dpi = r
-                .get("resolution")
-                .and_then(|v| v.as_u64())
-                .map(|n| n as u32);
-            crate::render::ImageRenderOptions {
-                color_mode,
-                resolution_dpi,
-            }
-        });
+        let render = config
+            .get("render")
+            .map(|r| RenderOverride {
+                color_mode: match r.get("color_mode").and_then(|v| v.as_str()) {
+                    Some("bilevel") => Some(crate::render::ColorMode::BiLevel),
+                    Some("color") => Some(crate::render::ColorMode::Color),
+                    _ => None,
+                },
+                resolution_dpi: r
+                    .get("resolution")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32),
+            })
+            .unwrap_or_default();
         let caps = config.get("capabilities").map(|c| PrinterCapabilities {
             bilevel: c.get("bilevel").and_then(|v| v.as_bool()).unwrap_or(false),
             color_known: c
@@ -510,7 +536,7 @@ impl FakeDriver {
 #[cfg(test)]
 #[async_trait]
 impl PrinterDriver for FakeDriver {
-    fn configured_render_options(&self) -> Option<crate::render::ImageRenderOptions> {
+    fn configured_render_override(&self) -> RenderOverride {
         self.render
     }
 
@@ -522,11 +548,11 @@ impl PrinterDriver for FakeDriver {
         if self.fail {
             return Err(PrintError::Transport("fake failure".to_string()));
         }
-        // Mirror run_batch's precedence (configured else negotiated else default); tests use Single.
-        let effective = self
-            .configured_render_options()
-            .or_else(|| self.capabilities_sync().map(|c| negotiated_profile(&c)))
-            .unwrap_or_default();
+        // Mirror the print path's per-field precedence (override else negotiated else default).
+        let effective = effective_render(
+            &self.configured_render_override(),
+            self.capabilities_sync().as_ref(),
+        );
         let expected = print_artifact_format(effective.color_mode, true);
         let is_png = artifact.starts_with(b"\x89PNG");
         let want_png = matches!(expected, ArtifactFormat::Png);
@@ -662,45 +688,62 @@ mod tests {
     }
 
     #[test]
-    fn negotiated_profile_mapping() {
-        use crate::render::ColorMode;
-        let bilevel_png = PrinterCapabilities {
-            bilevel: true,
-            color_known: true,
-            accepts_png: true,
-            resolution_dpi: Some(203),
-            loaded_media_width_mm: None,
-            model: None,
-        };
-        let p = negotiated_profile(&bilevel_png);
-        assert!(matches!(p.color_mode, ColorMode::BiLevel));
-        assert_eq!(p.resolution_dpi, Some(203));
-        // bilevel but no png -> Color
-        let no_png = PrinterCapabilities {
-            bilevel: true,
-            color_known: true,
-            accepts_png: false,
-            resolution_dpi: Some(203),
-            loaded_media_width_mm: None,
-            model: None,
-        };
-        assert!(matches!(
-            negotiated_profile(&no_png).color_mode,
-            ColorMode::Color
-        ));
-        // color -> Color
-        let color = PrinterCapabilities {
-            bilevel: false,
-            color_known: true,
-            accepts_png: true,
+    fn override_color_still_negotiates_resolution() {
+        let ovr = RenderOverride {
+            color_mode: Some(crate::render::ColorMode::Color),
             resolution_dpi: None,
-            loaded_media_width_mm: None,
-            model: None,
         };
-        assert!(matches!(
-            negotiated_profile(&color).color_mode,
-            ColorMode::Color
-        ));
+        let caps = PrinterCapabilities::from_parts(
+            &["bi-level".into()],
+            &[],
+            &["image/png".into()],
+            Some((300, 300, 3)),
+            None,
+        );
+        let eff = effective_render(&ovr, Some(&caps));
+        assert!(matches!(eff.color_mode, crate::render::ColorMode::Color)); // override wins
+        assert_eq!(eff.resolution_dpi, Some(300)); // still negotiated
+    }
+
+    #[test]
+    fn override_resolution_still_negotiates_bilevel() {
+        let ovr = RenderOverride {
+            color_mode: None,
+            resolution_dpi: Some(203),
+        };
+        // bilevel AND accepts PNG -> negotiated color is BiLevel.
+        let caps = PrinterCapabilities::from_parts(
+            &["bi-level".into()],
+            &[],
+            &["image/png".into()],
+            Some((300, 300, 3)),
+            None,
+        );
+        let eff = effective_render(&ovr, Some(&caps));
+        assert!(matches!(eff.color_mode, crate::render::ColorMode::BiLevel)); // still negotiated
+        assert_eq!(eff.resolution_dpi, Some(203)); // override wins
+    }
+
+    #[test]
+    fn negotiated_bilevel_requires_png_but_resolution_stands_alone() {
+        // bilevel but NO png support -> must NOT auto-pick BiLevel (would force PNG); resolution still negotiates.
+        let caps = PrinterCapabilities::from_parts(
+            &["bi-level".into()],
+            &[],
+            &[],
+            Some((300, 300, 3)),
+            None,
+        );
+        let eff = effective_render(&RenderOverride::default(), Some(&caps));
+        assert!(matches!(eff.color_mode, crate::render::ColorMode::Color));
+        assert_eq!(eff.resolution_dpi, Some(300));
+    }
+
+    #[test]
+    fn no_override_no_caps_is_default() {
+        let eff = effective_render(&RenderOverride::default(), None);
+        assert!(matches!(eff.color_mode, crate::render::ColorMode::Color));
+        assert_eq!(eff.resolution_dpi, None);
     }
 
     #[test]
@@ -757,8 +800,9 @@ mod tests {
         assert!(validate_config("zebra", &json!({})).is_err()); // unknown kind
 
         let driver = build_driver("cups", &json!({ "uri": "ipp://h/p" })).unwrap();
-        // no render config -> None (auto-negotiated at print time)
-        assert!(driver.configured_render_options().is_none());
+        // no render config -> both fields None (auto-negotiated at print time)
+        let ovr = driver.configured_render_override();
+        assert!(ovr.color_mode.is_none() && ovr.resolution_dpi.is_none());
         assert!(build_driver("zebra", &json!({})).is_err());
     }
 
@@ -821,12 +865,20 @@ mod tests {
     fn cups_driver_render_options_reflects_profile() {
         use crate::render::ColorMode;
         let d = CupsDriver::from_value(&json!({ "uri": "ipp://h/q", "render": { "color_mode": "bilevel", "resolution": 203 } })).unwrap();
-        let opts = d.configured_render_options().expect("render present");
-        assert!(matches!(opts.color_mode, ColorMode::BiLevel));
-        assert_eq!(opts.resolution_dpi, Some(203));
-        // absent render config -> None
+        let ovr = d.configured_render_override();
+        assert!(matches!(ovr.color_mode, Some(ColorMode::BiLevel)));
+        assert_eq!(ovr.resolution_dpi, Some(203));
+        // only resolution set -> color_mode stays None (negotiate it)
+        let d_res =
+            CupsDriver::from_value(&json!({ "uri": "ipp://h/q", "render": { "resolution": 203 } }))
+                .unwrap();
+        let ovr_res = d_res.configured_render_override();
+        assert!(ovr_res.color_mode.is_none());
+        assert_eq!(ovr_res.resolution_dpi, Some(203));
+        // absent render config -> both None
         let d2 = CupsDriver::from_value(&json!({ "uri": "ipp://h/q" })).unwrap();
-        assert!(d2.configured_render_options().is_none());
+        let ovr2 = d2.configured_render_override();
+        assert!(ovr2.color_mode.is_none() && ovr2.resolution_dpi.is_none());
     }
 
     #[test]
@@ -866,11 +918,12 @@ mod tests {
         let d = FakeDriver::from_value(
             &json!({ "fail": false, "render": { "color_mode": "bilevel" } }),
         );
-        let opts = d.configured_render_options().expect("render present");
-        assert!(matches!(opts.color_mode, ColorMode::BiLevel));
-        // no render -> None
+        let ovr = d.configured_render_override();
+        assert!(matches!(ovr.color_mode, Some(ColorMode::BiLevel)));
+        // no render -> both None
         let d2 = FakeDriver::from_value(&json!({ "fail": false }));
-        assert!(d2.configured_render_options().is_none());
+        let ovr2 = d2.configured_render_override();
+        assert!(ovr2.color_mode.is_none() && ovr2.resolution_dpi.is_none());
         // capabilities parsed correctly
         let d3 = FakeDriver::from_value(
             &json!({ "fail": false, "capabilities": { "bilevel": true, "accepts_png": true, "resolution": 203 } }),
