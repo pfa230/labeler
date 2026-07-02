@@ -150,6 +150,7 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/templates/{id}/source", get(template_source))
         .route("/templates/{id}/thumbnail", get(thumbnail))
         .route("/printers", get(list_printers).post(create_printer))
+        .route("/printers/probe", post(probe_printer))
         .route(
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
@@ -884,6 +885,77 @@ pub async fn clear_printer_default(
     let _guard = state.write_lock.lock().await;
     state.store().clear_default_printer(&id).await?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
+}
+
+/// Request body for `POST /printers/probe`: an unsaved driver config to test-connect. Auth is out of
+/// scope (#118), so no `id` and no stored-secret merge.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct ProbeRequest {
+    #[serde(default)]
+    pub kind: Option<String>,
+    pub config: serde_json::Value,
+}
+
+/// The printer's self-reported capabilities, shaped for UI feedback.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ProbeCapabilities {
+    pub model: Option<String>,
+    pub media_width_mm: Option<f32>,
+    pub resolution_dpi: Option<u32>,
+    /// `"color"`, `"bilevel"`, or `"unknown"` (printer advertised no color/raster attribute).
+    pub color: String,
+    pub accepts_png: bool,
+}
+
+/// Result of a probe. Always returned inside a `200`; reachability is data, not the HTTP status.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProbeResponse {
+    Ok { capabilities: ProbeCapabilities },
+    Unreachable { detail: String },
+}
+
+impl ProbeResponse {
+    fn ok(caps: crate::driver::PrinterCapabilities) -> Self {
+        let color = if caps.bilevel {
+            "bilevel"
+        } else if caps.color_known {
+            "color"
+        } else {
+            "unknown"
+        };
+        ProbeResponse::Ok {
+            capabilities: ProbeCapabilities {
+                model: caps.model,
+                media_width_mm: caps.loaded_media_width_mm,
+                resolution_dpi: caps.resolution_dpi,
+                color: color.to_string(),
+                accepts_png: caps.accepts_png,
+            },
+        }
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/printers/probe",
+    request_body = ProbeRequest,
+    responses(
+        (status = 200, description = "Probe result (ok or unreachable)", body = ProbeResponse),
+        (status = 422, description = "Invalid printer config", body = ErrorResponse)
+    )
+)]
+pub async fn probe_printer(Json(req): Json<ProbeRequest>) -> Result<Json<ProbeResponse>, AppError> {
+    let kind = req.kind.as_deref().unwrap_or("cups").to_string();
+    let config = req.config;
+    crate::driver::validate_config(&kind, &config)
+        .map_err(|e| AppError::printer_invalid(e.to_string()))?;
+    let driver = crate::driver::build_driver(&kind, &config)
+        .map_err(|e| AppError::printer_invalid(e.to_string()))?;
+    Ok(Json(match driver.probe().await {
+        crate::driver::ProbeOutcome::Ok(c) => ProbeResponse::ok(c),
+        crate::driver::ProbeOutcome::Unreachable(d) => ProbeResponse::Unreachable { detail: d },
+    }))
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]

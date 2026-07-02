@@ -43,6 +43,7 @@ path falls back to `index.html` for client-side routing. The served UI dir is `L
 | GET / POST | `/api/printers` | List / create printers | `200` / `201` |
 | GET / PUT / DELETE | `/api/printers/{id}` | Printer detail / replace / delete | `200` / `204` / `404` |
 | POST / DELETE | `/api/printers/{id}/default` | Set this printer as the sole default / clear its default flag | `204` / `404` |
+| POST | `/api/printers/probe` | Test-connect an unsaved printer config; returns its self-reported capabilities | `200` / `422` |
 | GET | `/api/variables` | All template variables as a key/value object | `200 {…}` |
 | PUT | `/api/variables/{key}` | Upsert a variable | `200` / `400` |
 | GET | `/api/settings` | Resolved app settings (effective value + `is_default` per key) | `200` |
@@ -691,7 +692,7 @@ behind a `store` module.
   query failure or a 3-second timeout also causes the same graceful fallback; negotiation never blocks a
   print job.
 
-  **Per-field override precedence (ADR-0035).** `config.render` is resolved per field, not
+  **Per-field override precedence (ADR-0039).** `config.render` is resolved per field, not
   all-or-nothing. Each of `color_mode` and `resolution` independently resolves to: the configured
   override if set, else the negotiated value, else the default. So overriding only `resolution` still
   negotiates `color_mode`, and vice versa. labeler queries `Get-Printer-Attributes` whenever *either*
@@ -699,7 +700,7 @@ behind a `store` module.
   printer is bilevel AND advertises `image/png` (a bilevel single/tape job is sent as `image/png`, so a
   bilevel-but-non-PNG printer must not be auto-switched); negotiated `resolution` uses the reported
   square DPI. This supersedes the earlier behavior where any `config.render` suppressed negotiation
-  entirely. See [ADR-0035](adr/0035-per-field-render-override.md).
+  entirely. See [ADR-0039](adr/0039-per-field-render-override.md).
 
   **Print preflight media gate (slice 4).** Before dispatching a print job for a `single` template,
   labeler optionally checks that the template's declared tape width matches the media loaded in the
@@ -822,13 +823,21 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
-- **2026-07-01**: Per-field render override (ADR-0035; #117). `config.render` is now resolved per
+- **2026-07-02**: Printer probe endpoint (ADR-0040; #117). `POST /api/printers/probe` test-connects an
+  unsaved driver config `{ kind?, config }` via IPP Get-Printer-Attributes and always returns `200`
+  with the reachability as data: `{ status: "ok", capabilities: { model, media_width_mm,
+  resolution_dpi, color: "color"|"bilevel"|"unknown", accepts_png } }` or `{ status: "unreachable",
+  detail }`. A malformed config/URI is `422`. All IPP dialing (probe and `/print`) is now screened
+  through the outbound IP policy in `src/egress.rs` (blocks loopback, link-local/metadata, multicast).
+  Auth is out of scope here (#118): probe sends no credentials and merges no stored secret. See
+  [ADR-0040](adr/0040-printer-probe-endpoint.md).
+- **2026-07-01**: Per-field render override (ADR-0039; #117). `config.render` is now resolved per
   field: each of `color_mode`/`resolution` independently is the configured override, else the
   negotiated value, else the default. Overriding one field no longer suppresses negotiation of the
   other (the prior behavior, where any `config.render` disabled `Get-Printer-Attributes` entirely).
   Negotiated bilevel still requires the printer to advertise `image/png`. `PrinterCapabilities` also
   now carries the reported `printer-make-and-model` and a `color_known` signal (color-capable vs
-  unknown). See the Printing section and [ADR-0035](adr/0035-per-field-render-override.md).
+  unknown). See the Printing section and [ADR-0039](adr/0039-per-field-render-override.md).
 - **2026-07-01**: Per-user Favorites and Recent rows on the Labels grid (#115). Adds a stable actor
   identity (`Principal::actor_id()`: user id / `local` / `token:{id}`); a `favorites (user_id,
   template_id)` table with `GET /favorites` and `PUT`/`DELETE /favorites/{template_id}`; and
