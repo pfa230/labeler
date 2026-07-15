@@ -12,7 +12,7 @@ COPY src/ src/
 COPY templates/ templates/
 RUN cargo build --release --locked
 
-FROM debian:trixie-slim@sha256:28de0877c2189802884ccd20f15ee41c203573bd87bb6b883f5f46362d24c5c2 AS runtime
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
 # ca-certificates: the `ipp` printing path (reqwest 0.13 -> rustls-platform-verifier) uses the system
 # trust store for `ipps://` printers. distroless bundled certs; debian-slim does not. gosu drops the
 # entrypoint from root to PUID:PGID. See ADR-0029.
