@@ -10,9 +10,9 @@ use crate::models::{
 use crate::templates::TemplateDefinition;
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, fit_text_auto_length,
-    fit_text_to_box, format_length, interpolate, line_height_units, parse_image_data_uri,
-    resolve_dimension, resolve_image_asset, to_nonbreaking, to_page_coords, typst_alignment,
-    typst_font_options, value_to_string, MeasuredText,
+    fit_text_to_box, format_length, interpolate, parse_image_data_uri, resolve_dimension,
+    resolve_image_asset, to_nonbreaking, to_page_coords, typst_alignment, typst_font_options,
+    value_to_string, MeasuredText,
 };
 use serde_json::Value as JsonValue;
 use std::cell::{Cell, RefCell};
@@ -727,35 +727,22 @@ impl<'a> RenderContext<'a> {
                     Some(self.frame_height_units - point.y),
                     "height",
                 )?;
-                let line_h = line_height_units(m.font, self.unit)?;
-                let n = m.lines.len() as f32;
-                let block_h = line_h * n;
                 let slot_top = self.frame_height_units - point.y - slot_h;
-                use crate::models::VerticalAlign;
-                let dy_units = match alignment.vertical {
-                    VerticalAlign::Top => slot_top,
-                    VerticalAlign::Bottom => slot_top + (slot_h - block_h).max(0.0),
-                    VerticalAlign::Center => slot_top + ((slot_h - block_h) / 2.0).max(0.0),
-                };
                 let body = m
                     .lines
                     .iter()
                     .map(|l| format!("#text(\"{}\", size: {}pt)", escape_typst_string(l), m.font))
                     .collect::<Vec<_>>()
                     .join("#linebreak()");
-                // Derive the horizontal keyword directly; `typst_alignment` returns a combined
-                // "vertical + horizontal" String, not a tuple, so do NOT use it here.
-                use crate::models::HorizontalAlign;
-                let halign = match alignment.horizontal {
-                    HorizontalAlign::Left => "left",
-                    HorizontalAlign::Center => "center",
-                    HorizontalAlign::Right => "right",
-                };
-                let inner = format!("#align({halign})[{body}]");
+                // Vertical placement is Typst's job, not ours: its line box runs cap-height to
+                // baseline, not the full fontdue line height, so any dy we compute from font
+                // metrics lands the glyphs high (#123). Box the whole slot and let `#align` place
+                // the block inside it, exactly as the fixed-size path below does.
+                let inner = format!("#align({})[{body}]", typst_alignment(alignment));
                 let dx = format_length(left, self.unit)?;
-                let dy = format_length(dy_units, self.unit)?;
+                let dy = format_length(slot_top, self.unit)?;
                 let box_width = format_length(m.width, self.unit)?;
-                let box_height = format_length(block_h, self.unit)?;
+                let box_height = format_length(slot_h, self.unit)?;
                 let content = self.wrap_rotation(inner, placement.rotate);
                 writeln!(
                     out,
@@ -1261,8 +1248,9 @@ mod tests {
         render_single_label, render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
     };
     use crate::models::{
-        Alignment, Dimension, Fit, FontSize, Frame, LabelInput, Layout, LayoutItem, Options,
-        Padding, Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat,
+        Alignment, AutoSize, Dimension, Fit, FontSize, Frame, HorizontalAlign, LabelInput, Layout,
+        LayoutItem, Options, Padding, Placement, Position, SheetPosition, Size, SizeValue,
+        TemplateFormat, VerticalAlign,
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
@@ -1609,6 +1597,133 @@ mod tests {
         )
         .expect("render nested rotated containers");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    /// An auto-length (dynamic-width) tape template whose single text item owns the whole
+    /// `height_mm`-tall label, so the item's slot is exactly the rendered image. 180 dpi keeps the
+    /// pixel geometry the same as the bundled brother tapes.
+    fn autolength_tape(
+        text: &str,
+        multiline: bool,
+        vertical: VerticalAlign,
+        font_pt: f32,
+    ) -> TemplateDefinition {
+        const HEIGHT_MM: f32 = 20.0;
+        TemplateDefinition {
+            id: "tape".to_string(),
+            name: "Tape".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(HEIGHT_MM),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some(text.to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(HEIGHT_MM)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(font_pt),
+                multiline,
+                alignment: Alignment {
+                    horizontal: HorizontalAlign::Center,
+                    vertical,
+                },
+            }]),
+            version: None,
+        }
+    }
+
+    /// First and last image rows carrying ink, plus the image height.
+    fn ink_rows(png: &[u8]) -> (u32, u32, u32) {
+        let img = image::load_from_memory(png).expect("decode").to_luma8();
+        let (w, h) = (img.width(), img.height());
+        let inked: Vec<u32> = (0..h)
+            .filter(|&y| (0..w).any(|x| img.get_pixel(x, y).0[0] < 128))
+            .collect();
+        assert!(!inked.is_empty(), "rendered label has no ink");
+        (inked[0], inked[inked.len() - 1], h)
+    }
+
+    fn render_tape(template: &TemplateDefinition) -> Vec<u8> {
+        render_single_label(
+            template,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("render tape label")
+    }
+
+    /// #123: auto-length text placed its own box using fontdue's full line height (~1.21 em) while
+    /// Typst lays the line out cap-height-to-baseline (~0.73 em) at the box top, so centered text
+    /// floated ~0.24 em high. "test" has no descender, so its ink box is cap-height-to-baseline and
+    /// centering it must put the ink centre on the slot centre. Two font sizes: the old error scaled
+    /// with the em (~6.5 px at 12 pt, ~13 px at 24 pt), so any re-introduced metric-derived offset
+    /// blows the tolerance at 24 pt even if it hid at 12 pt.
+    #[test]
+    fn autolength_text_centers_vertically() {
+        for (label, multiline, text) in [
+            ("single line", false, "test"),
+            ("multiline", true, "test\ntest"),
+        ] {
+            for font_pt in [12.0, 24.0] {
+                let png = render_tape(&autolength_tape(
+                    text,
+                    multiline,
+                    VerticalAlign::Center,
+                    font_pt,
+                ));
+                let (top, bottom, height) = ink_rows(&png);
+                let offset = (top + bottom) as f32 / 2.0 - (height - 1) as f32 / 2.0;
+                assert!(
+                    offset.abs() <= 2.0,
+                    "{label} at {font_pt}pt: ink rows {top}..{bottom} in {height}px label are off-centre by {offset:+.1}px"
+                );
+            }
+        }
+    }
+
+    /// Guards the other two `alignment.vertical` values (ADR-0030 honours them literally), so a
+    /// centering fix cannot hardcode centre.
+    #[test]
+    fn autolength_text_top_and_bottom_pin_to_slot_edges() {
+        let (top_first, top_last, height) = ink_rows(&render_tape(&autolength_tape(
+            "test",
+            false,
+            VerticalAlign::Top,
+            12.0,
+        )));
+        let (bottom_first, bottom_last, _) = ink_rows(&render_tape(&autolength_tape(
+            "test",
+            false,
+            VerticalAlign::Bottom,
+            12.0,
+        )));
+        assert!(
+            top_first < 3,
+            "top-aligned ink must start at the slot top, got row {top_first}"
+        );
+        assert!(
+            height - 1 - bottom_last < 3,
+            "bottom-aligned ink must end at the slot bottom, got row {bottom_last} of {height}"
+        );
+        assert!(
+            bottom_first > top_last,
+            "bottom alignment must sit below top alignment ({bottom_first} vs {top_last})"
+        );
     }
 
     fn no_settings() -> BTreeMap<String, String> {
