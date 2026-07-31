@@ -132,16 +132,23 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
     <div className="flex flex-col gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)" }}>
       <div className="flex flex-wrap items-end gap-3">
         {isNew && (
-          <label className="flex flex-col gap-1">
+          <label className="flex w-36 flex-col gap-1">
             <span className="text-xs" style={{ color: "var(--muted)" }}>id</span>
             <input aria-label="printer id" value={id} onChange={(e) => setId(e.target.value)} className={inputClass} style={inputStyle} />
           </label>
         )}
-        <label className="flex flex-col gap-1">
+        <label className="flex grow basis-56 flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>name</span>
           <input aria-label="printer name" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="ml-auto flex items-center gap-2 pb-2">
+          <input type="checkbox" aria-label="enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+          <span className="text-sm">enabled</span>
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex grow basis-72 flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>address</span>
           <input
             aria-label="address"
@@ -161,10 +168,6 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
         >
           {probe.isPending ? "Testing…" : "Test connection"}
         </button>
-        <label className="flex items-center gap-2 pb-2">
-          <input type="checkbox" aria-label="enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          <span className="text-sm">enabled</span>
-        </label>
       </div>
 
       {caps && (
