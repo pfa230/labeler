@@ -323,6 +323,16 @@ Wrapped lines are precomputed in the measurement pass and emitted verbatim in th
 omit `alignment.vertical` use `top`. To keep text centered, set `vertical: center` explicitly. The
 bundled tape templates already set `vertical: center` and are unaffected.
 
+**What `alignment.vertical` aligns.** It positions Typst's own line box, which spans **cap-height to
+baseline** (Typst's default `top-edge`/`bottom-edge`), not the font's full ascender-to-descender line
+height. So `top` puts the first line's cap-height on the slot top, `bottom` puts the last baseline on
+the slot bottom, and `center` centers the cap-height-to-baseline block. Consequence: descenders fall
+outside the aligned box, and because every item is clipped to its box, `vertical: bottom` **cuts the
+descenders** of `g j p q y` at the slot edge. Leave room (a shorter slot, or container padding) for
+bottom-aligned text with descenders. `center` normally has the headroom already. This is engine-wide,
+not tape-specific: both render paths delegate to `#align` (ADR-0041) and neither computes a vertical
+offset from font metrics.
+
 **`sheet`** — a grid of identical label slots on a fixed page:
 
 ```yaml
@@ -823,6 +833,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-07-31**: Fixed vertical alignment on auto-length (tape) text (ADR-0041; #123). The
+  auto-length render path placed the text block itself, sizing it with `fontdue`'s full line height
+  (~1.21 em) while Typst lays a line out cap-height-to-baseline (~0.73 em) at the top of that block,
+  so `vertical: center` floated ~0.24 em high (measured -1.41 mm on `brother_12mm`, -1.90 mm on
+  `brother_24mm_multiline`) and `bottom` sat ~0.48 em above the slot bottom. Placement is now
+  delegated to Typst's `#align` inside a slot-height box, as the fixed-size path already did. Tape
+  labels render text lower than before; templates need no change. §3.1 now documents what
+  `alignment.vertical` aligns.
 - **2026-07-02**: Render engine upgraded to Typst 0.15 (typst-as-lib 0.16; #101). The bundled
   variable `InterVariable.ttf` now renders real font weights: Typst 0.15 drives the `wght` axis from
   `text(weight:)`, where 0.14 ignored it. This lands the upgrade path ADR-0035 deferred; exposing a
