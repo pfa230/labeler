@@ -4,8 +4,13 @@ Date: 2026-07-31
 
 ## Status
 
-Accepted. Corrects how [ADR-0030](0030-multiline-auto-length-tape.md) ("`alignment.vertical` is
-honored literally") is implemented for auto-length text. Issue
+**Superseded by [ADR-0045](0045-vertical-text-alignment.md)**, which consolidates every alignment
+decision into one document. Its core decision — Typst computes the placement, we never derive a
+vertical offset from font metrics — survives there unchanged; only the choice of *which* box gets
+placed moved on. Kept for history; read 0045 instead.
+
+Originally: Accepted, correcting how [ADR-0030](0030-multiline-auto-length-tape.md)
+("`alignment.vertical` is honored literally") is implemented for auto-length text. Issue
 [#123](https://github.com/pfa230/labeler/issues/123).
 
 ## Context

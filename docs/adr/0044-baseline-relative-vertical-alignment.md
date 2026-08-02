@@ -4,10 +4,13 @@ Date: 2026-08-02
 
 ## Status
 
-Accepted. Supersedes [ADR-0043](0043-ink-based-vertical-alignment.md), which chose per-string ink
-centring. Reinstates the metric-box model of
-[ADR-0041](0041-vertical-alignment-delegated-to-typst.md) and keeps its "delegate placement to
-`#align`" decision. Issue [#133](https://github.com/pfa230/labeler/issues/133); reopens
+**Superseded by [ADR-0045](0045-vertical-text-alignment.md)**, which merges this decision with
+ADR-0041 and ADR-0043 into a single document. The decision itself is unchanged — alignment is
+baseline-relative, using Typst's default cap-height→baseline box. Kept for history; read 0045
+instead.
+
+Originally: Accepted, superseding ADR-0043. Issue
+[#133](https://github.com/pfa230/labeler/issues/133); reopens
 [#124](https://github.com/pfa230/labeler/issues/124).
 
 ## Context
