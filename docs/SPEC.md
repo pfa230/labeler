@@ -322,21 +322,22 @@ Wrapped lines are precomputed in the measurement pass and emitted verbatim in th
 omit `alignment.vertical` use `top`. To keep text centered, set `vertical: center` explicitly. The
 bundled tape templates already set `vertical: center` and are unaffected.
 
-**What `alignment.vertical` aligns.** It positions the **ink** — the bounding box of the glyphs
-actually drawn — not a font metric box. The renderer sets Typst's `top-edge`/`bottom-edge` to
-`"bounds"`, so the aligned frame is the drawn marks: `top` puts the highest ink on the slot top,
-`bottom` puts the lowest ink (including descenders) on the slot bottom, and `center` centres the ink
-box. Descenders are therefore never clipped at a `bottom` edge, and a lowercase word centres like an
-all-caps one (ADR-0043, #127).
+**What `alignment.vertical` aligns.** It positions a **fixed metric box**, so the baseline lands in
+the same place regardless of which glyphs a string contains: `test`, `testj` and `es` from one
+template all sit on one line. The box is Typst's default, cap-height to baseline — the same box CSS
+`text-box-trim` and Figma's vertical trim use, and the convention Pango, Pillow, TeX (`\strut`) and
+Flutter (`StrutStyle`) all follow (ADR-0044, #133).
 
-The cost, accepted deliberately: **the baseline is not constant between labels.** `MESSAGE` and
-`message` from the same template sit at slightly different heights, because each is centred on its own
-marks. Short strings of punctuation or digits are centred on their own small ink box, which can look
-unexpected (`.` centres its dot in the slot). Blank first/last lines are dropped before rendering, so
-a leading or trailing newline does not push the visible text off centre; interior blank lines are kept
-as spacing.
+Consequences worth knowing when authoring a template:
 
-A blank line, or text that draws nothing, has no ink and is simply not drawn.
+- **Descenders hang below the box.** `g j p q y` extend past the baseline, so at a `bottom` edge they
+  fall outside the clipped slot and are cut (#124). Leave room, or avoid `bottom` for text with
+  descenders.
+- **Lowercase-only text sits lower in its slot than all-caps.** The box always reserves cap-height
+  space above the baseline whether or not the string uses it. This is inherent to baseline alignment,
+  not a bug — it is what every other renderer produces.
+- Blank first/last lines are dropped before rendering, so a leading or trailing newline does not push
+  the visible text off centre; interior blank lines are kept as spacing.
 
 **`sheet`** — a grid of identical label slots on a fixed page:
 
@@ -836,6 +837,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-08-02**: Vertical alignment is baseline-relative again (ADR-0044; #133, reverting the
+  mechanism of ADR-0043/#127 and reopening #124). #127 centred each string's own ink box, which
+  centred every label perfectly but moved the baseline between labels — a `j` or a `t` changed the box
+  height and so the alignment. Alignment now uses Typst's default cap-height→baseline box, matching
+  Pango, Pillow, TeX, Flutter, CSS `text-box-trim` and Figma. Measured on `brother_12mm` at 180 dpi,
+  the baseline sits on the same row for `test`, `testj`, `es`, `message` and `MESSAGE`. Labels shift
+  slightly again; descenders once more overhang a `bottom` edge (#124).
 
 - **2026-08-02**: Vertical alignment now positions the drawn ink instead of a font metric box
   (ADR-0043; #127, closes #124). The renderer sets Typst's `top-edge`/`bottom-edge` to `"bounds"`, so
