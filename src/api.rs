@@ -1374,9 +1374,6 @@ async fn run_batch(
                 .get_printer(printer_id)
                 .await?
                 .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
-            if !printer.enabled {
-                return Err(AppError::printer_disabled(printer_id));
-            }
             let driver = crate::driver::build_driver(&printer.kind, &printer.config)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
             let ovr = driver.configured_render_override();
@@ -1484,7 +1481,7 @@ async fn run_batch(
         (status = 200, description = "Download blob (zip/pdf) or print summary"),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
-        (status = 409, description = "Printer disabled", body = ErrorResponse),
+        (status = 409, description = "Media mismatch", body = ErrorResponse),
         (status = 413, description = "Batch too large", body = ErrorResponse),
         (status = 422, description = "One or more labels invalid", body = ErrorResponse),
         (status = 502, description = "Printer transport failure", body = ErrorResponse)
@@ -1524,7 +1521,7 @@ pub async fn batch(
         (status = 200, description = "Print summary", body = BatchSummary),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
-        (status = 409, description = "Printer disabled", body = ErrorResponse),
+        (status = 409, description = "Media mismatch", body = ErrorResponse),
         (status = 413, description = "Request body too large", body = ErrorResponse),
         (status = 502, description = "Printer transport failure", body = ErrorResponse)
     )

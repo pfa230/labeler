@@ -34,13 +34,13 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const isLg = useMediaQuery("(min-width: 1024px)");
   const [previewOpen, setPreviewOpen] = useState(false);
 
-  // Printer preselect, derived at render (no effect; #116): enabled default -> sole enabled -> none.
+  // Printer preselect, derived at render (no effect; #116): default -> sole printer -> none.
   // `value.printer` stores only EXPLICIT user choices ("" = explicit None, an id = explicit pick,
   // undefined = untouched -> use the preselect), so a printers refetch never clobbers a choice.
   const { data: printers } = usePrinters();
   const preselect = useMemo(() => {
-    const enabled = (printers ?? []).filter((p) => p.enabled);
-    return enabled.find((p) => p.is_default)?.id ?? (enabled.length === 1 ? enabled[0].id : undefined);
+    const all = printers ?? [];
+    return all.find((p) => p.is_default)?.id ?? (all.length === 1 ? all[0].id : undefined);
   }, [printers]);
   const effectivePrinter = value.printer === undefined ? preselect : value.printer || undefined;
 

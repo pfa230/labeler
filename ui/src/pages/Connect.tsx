@@ -66,7 +66,7 @@ export function Connect() {
           detail={detail}
           stale={isPlaceholderData}
           selected={selected}
-          printers={(printers ?? []).filter((p) => p.enabled)}
+          printers={printers ?? []}
         />
       )}
 

@@ -36,7 +36,7 @@ const sheet: TemplateDetail = {
   layout: [{ type: "text", name: "message" }],
 };
 
-const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null, enabled: true }];
+const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null }];
 const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 
 function stubFetch(printersList: unknown[] = printers) {
@@ -188,12 +188,11 @@ describe("PrintForm phone-first layout", () => {
 });
 
 describe("PrintForm printer preselect", () => {
-  const p = (id: string, enabled: boolean, is_default = false) => ({
+  const p = (id: string, is_default = false) => ({
     id,
     name: id,
     kind: "cups",
     config: null,
-    enabled,
     is_default,
   });
 
@@ -210,22 +209,22 @@ describe("PrintForm printer preselect", () => {
 
   const printerSelect = async () => (await screen.findByLabelText("printer")) as HTMLSelectElement;
 
-  it("preselects the enabled default printer over other enabled printers", async () => {
-    renderWith([p("a", true), p("b", true, true)]);
+  it("preselects the default printer over other printers", async () => {
+    renderWith([p("a"), p("b", true)]);
     const select = await printerSelect();
     await waitFor(() => expect(select.value).toBe("b"));
   });
 
-  it("preselects the sole enabled printer when there is no default", async () => {
-    renderWith([p("only", true), p("off", false)]);
+  it("preselects the sole printer when there is no default", async () => {
+    renderWith([p("only")]);
     const select = await printerSelect();
     await waitFor(() => expect(select.value).toBe("only"));
   });
 
-  it("selects none when multiple enabled printers have no default", async () => {
-    renderWith([p("a", true), p("b", true)]);
+  it("selects none when multiple printers have no default", async () => {
+    renderWith([p("a"), p("b")]);
     const select = await printerSelect();
-    // Let the preselect effect run; it must leave the selection empty.
+    // Wait for the printers to load; the render-derived preselect (#116) must leave it empty.
     await waitFor(() => expect(countCalls("/api/printers")).toBeGreaterThan(0));
     expect(select.value).toBe("");
     expect(screen.getByRole("button", { name: /^print$/i })).toBeDisabled();

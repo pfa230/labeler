@@ -47,7 +47,7 @@ export function Import() {
           ))}
         </select>
       </label>
-      <CsvEditor detail={detail} stale={isPlaceholderData} printers={(printers ?? []).filter((p) => p.enabled)} push={push} />
+      <CsvEditor detail={detail} stale={isPlaceholderData} printers={printers ?? []} push={push} />
     </div>
   );
 }

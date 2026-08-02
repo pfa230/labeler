@@ -20,7 +20,7 @@ export interface TemplateDetail {
   format: TemplateFormat; options?: Options; layout: LayoutItem[]; version?: string;
 }
 export interface BatchSummary { total: number; succeeded: number; failed: { index: number; error: string }[]; jobs: number }
-export interface Printer { id: string; name: string; kind: string; config: unknown; enabled: boolean; is_default?: boolean }
+export interface Printer { id: string; name: string; kind: string; config: unknown; is_default?: boolean }
 
 export interface ProbeCapabilities {
   model?: string | null;
