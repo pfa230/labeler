@@ -322,15 +322,21 @@ Wrapped lines are precomputed in the measurement pass and emitted verbatim in th
 omit `alignment.vertical` use `top`. To keep text centered, set `vertical: center` explicitly. The
 bundled tape templates already set `vertical: center` and are unaffected.
 
-**What `alignment.vertical` aligns.** It positions Typst's own line box, which spans **cap-height to
-baseline** (Typst's default `top-edge`/`bottom-edge`), not the font's full ascender-to-descender line
-height. So `top` puts the first line's cap-height on the slot top, `bottom` puts the last baseline on
-the slot bottom, and `center` centers the cap-height-to-baseline block. Consequence: descenders fall
-outside the aligned box, and because every item is clipped to its box, `vertical: bottom` **cuts the
-descenders** of `g j p q y` at the slot edge. Leave room (a shorter slot, or container padding) for
-bottom-aligned text with descenders. `center` normally has the headroom already. This is engine-wide,
-not tape-specific: both render paths delegate to `#align` (ADR-0041) and neither computes a vertical
-offset from font metrics.
+**What `alignment.vertical` aligns.** It positions the **ink** — the bounding box of the glyphs
+actually drawn — not a font metric box. The renderer sets Typst's `top-edge`/`bottom-edge` to
+`"bounds"`, so the aligned frame is the drawn marks: `top` puts the highest ink on the slot top,
+`bottom` puts the lowest ink (including descenders) on the slot bottom, and `center` centres the ink
+box. Descenders are therefore never clipped at a `bottom` edge, and a lowercase word centres like an
+all-caps one (ADR-0043, #127).
+
+The cost, accepted deliberately: **the baseline is not constant between labels.** `MESSAGE` and
+`message` from the same template sit at slightly different heights, because each is centred on its own
+marks. Short strings of punctuation or digits are centred on their own small ink box, which can look
+unexpected (`.` centres its dot in the slot). Blank first/last lines are dropped before rendering, so
+a leading or trailing newline does not push the visible text off centre; interior blank lines are kept
+as spacing.
+
+A blank line, or text that draws nothing, has no ink and is simply not drawn.
 
 **`sheet`** — a grid of identical label slots on a fixed page:
 
@@ -830,6 +836,15 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-08-02**: Vertical alignment now positions the drawn ink instead of a font metric box
+  (ADR-0043; #127, closes #124). The renderer sets Typst's `top-edge`/`bottom-edge` to `"bounds"`, so
+  `center` centres the glyphs actually drawn and `bottom` stops clipping descenders. Previously the
+  cap-height-to-baseline box was centred, which made the result depend on which glyph classes a string
+  contained: on `brother_12mm` at 180 dpi, `message` measured 20 px above / 3 px below its 56 px slot
+  while `MESSAGE` measured 11/12. **Every label shifts slightly**, and baselines are no longer constant
+  between labels from one template — an accepted trade for each label reading correctly on its own.
+  Blank leading/trailing lines are dropped at render time.
 
 - **2026-08-02**: Removed the printer `enabled` flag (ADR-0042; #126). The field is gone from the
   printer record, the `printers.enabled` column is dropped by migration, and `409 PrinterDisabled` is

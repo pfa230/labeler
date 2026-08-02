@@ -149,7 +149,7 @@ fn compile_label_doc(
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
     )
     .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
+    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"), top-edge: \"bounds\", bottom-edge: \"bounds\")")
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     let context = RenderContext::new(
@@ -361,7 +361,7 @@ pub fn render_sheet_pages(
             .map_err(|err| {
                 AppError::render_failed(format!("failed to build typst source: {err}"))
             })?;
-            writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))").map_err(
+            writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"), top-edge: \"bounds\", bottom-edge: \"bounds\")").map_err(
                 |err| AppError::render_failed(format!("failed to build typst source: {err}")),
             )?;
         } else {
@@ -711,6 +711,17 @@ impl<'a> RenderContext<'a> {
         let point = placement.at.point();
         let left = point.x;
 
+        // A blank first/last line carries no ink but still gets a line box, which shoves the visible
+        // text off centre. Drop them at emission (#127); interior blanks are real spacing and stay.
+        fn trim_blank_edges(lines: &[String]) -> Vec<String> {
+            let start = lines.iter().position(|l| !l.trim().is_empty());
+            let end = lines.iter().rposition(|l| !l.trim().is_empty());
+            match (start, end) {
+                (Some(s), Some(e)) => lines[s..=e].to_vec(),
+                _ => Vec::new(),
+            }
+        }
+
         // When auto-length is active and this text item has auto width, consume the next measured fit.
         if let Some(al) = &self.auto_length {
             if placement.size.0[0].is_auto() {
@@ -728,8 +739,7 @@ impl<'a> RenderContext<'a> {
                     "height",
                 )?;
                 let slot_top = self.frame_height_units - point.y - slot_h;
-                let body = m
-                    .lines
+                let body = trim_blank_edges(&m.lines)
                     .iter()
                     .map(|l| format!("#text(\"{}\", size: {}pt)", escape_typst_string(l), m.font))
                     .collect::<Vec<_>>()
@@ -771,6 +781,8 @@ impl<'a> RenderContext<'a> {
                 self.unit,
             )?,
         };
+        let text =
+            trim_blank_edges(&text.lines().map(str::to_string).collect::<Vec<_>>()).join("\n");
         let text = escape_typst_string(&text);
         let dx = format_length(left, self.unit)?;
         let dy = format_length(self.frame_height_units - top, self.unit)?;
@@ -1694,6 +1706,88 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #127: centring follows the ink, not a metric box. Before this, `message` (no capitals, no
+    /// ascenders, one descender) measured 20px above / 3px below in a 56px slot while `MESSAGE` was
+    /// already centred — the skew tracked which glyph classes the string happened to contain.
+    #[test]
+    fn centering_follows_the_ink_across_glyph_classes() {
+        for text in ["MESSAGE", "message", "typogy", "test"] {
+            let png = render_tape(&autolength_tape(text, false, VerticalAlign::Center, 18.0));
+            let (top, bottom, height) = ink_rows(&png);
+            let offset = (top + bottom) as f32 / 2.0 - (height - 1) as f32 / 2.0;
+            assert!(
+                offset.abs() <= 2.0,
+                "{text:?}: ink rows {top}..{bottom} of {height}px are off-centre by {offset:+.1}px"
+            );
+        }
+    }
+
+    /// #124, closed by #127: `bottom` pins the ink's lowest row, so descenders land inside the clip
+    /// instead of being cut at the slot edge; `top` likewise pins the highest ink.
+    #[test]
+    fn top_and_bottom_pin_the_ink_not_the_baseline() {
+        // Reaching the slot edge is not enough: clipped ink also ends at the edge. Compare the ink
+        // HEIGHT against the same string rendered centred (where it cannot clip) — losing rows to
+        // the clip is what the old baseline-pinning behaviour did.
+        let ink_height = |text: &str, v: VerticalAlign| {
+            let (top, bottom, height) =
+                ink_rows(&render_tape(&autolength_tape(text, false, v, 18.0)));
+            (top, bottom, height, bottom - top)
+        };
+
+        let (_, _, _, natural_desc) = ink_height("typogy", VerticalAlign::Center);
+        let (_, bottom, height, pinned_desc) = ink_height("typogy", VerticalAlign::Bottom);
+        // 1px of tolerance: `bottom` puts the descender's last row exactly on the slot edge, where
+        // subpixel rounding can drop a single row. The old baseline-pinning behaviour lost ~10.
+        assert!(
+            natural_desc.saturating_sub(pinned_desc) <= 1,
+            "bottom alignment clipped the descender: {pinned_desc}px of ink vs {natural_desc}px centred"
+        );
+        assert!(
+            height - 1 - bottom <= 2,
+            "descender must reach the slot bottom, ink ended at row {bottom} of {height}"
+        );
+
+        let (_, _, _, natural_asc) = ink_height("Ml", VerticalAlign::Center);
+        let (top, _, _, pinned_asc) = ink_height("Ml", VerticalAlign::Top);
+        assert!(
+            natural_asc.saturating_sub(pinned_asc) <= 1,
+            "top alignment clipped the ascender: {pinned_asc}px of ink vs {natural_asc}px centred"
+        );
+        assert!(
+            top <= 2,
+            "ascender must start at the slot top, began at {top}"
+        );
+    }
+
+    /// A blank edge line carries no ink, so it is trimmed at emission (#127): it must not drag the
+    /// visible text off centre. `fit_text_auto_length` does preserve them — `"\nmessage"` measures as
+    /// `["", "message"]` — and a leading one adds a real line box, so without the trim the text sits
+    /// a full line-advance low. (A *trailing* blank is trimmed for the same reason but is not
+    /// separately observable: Typst gives a trailing empty line no box.)
+    #[test]
+    fn blank_edge_line_does_not_shift_centering() {
+        let plain = render_tape(&autolength_tape(
+            "message",
+            true,
+            VerticalAlign::Center,
+            18.0,
+        ));
+        let leading = render_tape(&autolength_tape(
+            "\nmessage",
+            true,
+            VerticalAlign::Center,
+            18.0,
+        ));
+        let (t1, b1, _) = ink_rows(&plain);
+        let (t2, b2, _) = ink_rows(&leading);
+        assert_eq!(
+            t2 + b2,
+            t1 + b1,
+            "a leading blank line changed the ink centre ({t2}..{b2} vs {t1}..{b1})"
+        );
     }
 
     /// Guards the other two `alignment.vertical` values (ADR-0030 honours them literally), so a
