@@ -326,7 +326,7 @@ bundled tape templates already set `vertical: center` and are unaffected.
 the same place regardless of which glyphs a string contains: `test`, `testj` and `es` from one
 template all sit on one line. The box is Typst's default, cap-height to baseline — the same box CSS
 `text-box-trim` and Figma's vertical trim use, and the convention Pango, Pillow, TeX (`\strut`) and
-Flutter (`StrutStyle`) all follow (ADR-0044, #133).
+Flutter (`StrutStyle`) all follow (ADR-0045, #133).
 
 Consequences worth knowing when authoring a template:
 
@@ -838,23 +838,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
-- **2026-08-02**: Vertical alignment is baseline-relative again (ADR-0044; #133, reverting the
-  mechanism of ADR-0043/#127 and reopening #124). #127 centred each string's own ink box, which
-  centred every label perfectly but moved the baseline between labels — a `j` or a `t` changed the box
-  height and so the alignment. Alignment now uses Typst's default cap-height→baseline box, matching
-  Pango, Pillow, TeX, Flutter, CSS `text-box-trim` and Figma. Measured on `brother_12mm` at 180 dpi,
-  the baseline sits on the same row for `test`, `testj`, `es`, `message` and `MESSAGE`. Labels shift
-  slightly again; descenders once more overhang a `bottom` edge (#124).
-
-- **2026-08-02**: Vertical alignment now positions the drawn ink instead of a font metric box
-  (ADR-0043; #127, closes #124). The renderer sets Typst's `top-edge`/`bottom-edge` to `"bounds"`, so
-  `center` centres the glyphs actually drawn and `bottom` stops clipping descenders. Previously the
-  cap-height-to-baseline box was centred, which made the result depend on which glyph classes a string
-  contained: on `brother_12mm` at 180 dpi, `message` measured 20 px above / 3 px below its 56 px slot
-  while `MESSAGE` measured 11/12. **Every label shifts slightly**, and baselines are no longer constant
-  between labels from one template — an accepted trade for each label reading correctly on its own.
-  Blank leading/trailing lines are dropped at render time.
-
+- **2026-08-02**: Vertical alignment settled as baseline-relative (ADR-0045, consolidating #123,
+  #127 and #133; #124 left open). Alignment places Typst's default cap-height→baseline box, so the
+  baseline lands in the same place whatever glyphs a string contains — measured on `brother_12mm` at
+  180 dpi, `test`, `testj`, `es`, `message` and `MESSAGE` all sit on row 51. This matches Pango,
+  Pillow, TeX, Flutter, CSS `text-box-trim` and Figma. Two intermediate models shipped and were
+  reverted the same day: centring the per-string ink box (#127) centred each label perfectly but let
+  a `j` or a `t` move the baseline between labels. Blank leading/trailing lines are dropped at render
+  time. Descenders overhang a `bottom` edge and are clipped (#124).
 - **2026-08-02**: Removed the printer `enabled` flag (ADR-0042; #126). The field is gone from the
   printer record, the `printers.enabled` column is dropped by migration, and `409 PrinterDisabled` is
   removed from the error contract — a breaking change to a documented-stable `code` string,
@@ -864,7 +855,8 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   **default → sole printer → none**. Requests that still send `enabled` are accepted and ignored
   (the field is simply unknown to the deserializer).
 
-- **2026-07-31**: Fixed vertical alignment on auto-length (tape) text (ADR-0041; #123). The
+- **2026-07-31**: Fixed vertical alignment on auto-length (tape) text (ADR-0041, since
+  consolidated into ADR-0045; #123). The
   auto-length render path placed the text block itself, sizing it with `fontdue`'s full line height
   (~1.21 em) while Typst lays a line out cap-height-to-baseline (~0.73 em) at the top of that block,
   so `vertical: center` floated ~0.24 em high (measured -1.41 mm on `brother_12mm`, -1.90 mm on

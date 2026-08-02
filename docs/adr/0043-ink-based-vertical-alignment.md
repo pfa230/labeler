@@ -4,11 +4,13 @@ Date: 2026-08-02
 
 ## Status
 
-Accepted. Supersedes the "centre the cap-height box" clause of
-[ADR-0041](0041-vertical-alignment-delegated-to-typst.md); its "delegate placement to `#align`
-rather than computing offsets from font metrics" decision stands and is in fact reinforced here.
-Issue [#127](https://github.com/pfa230/labeler/issues/127), which also closes
-[#124](https://github.com/pfa230/labeler/issues/124).
+**Superseded by [ADR-0045](0045-vertical-text-alignment.md).** This ADR chose per-string ink
+centring; it was live on `main` for about an hour and reverted in #133 because the baseline moved
+between labels (`test` vs `testj` vs `es`). Kept for history — the measurements and the argument for
+why a metric box cannot fix a glyph-dependent skew are carried into 0045. Read 0045 instead.
+
+Originally: Accepted, superseding the "centre the cap-height box" clause of ADR-0041. Issue
+[#127](https://github.com/pfa230/labeler/issues/127).
 
 ## Context
 
