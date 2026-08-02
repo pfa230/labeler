@@ -2317,13 +2317,13 @@ mod tests {
 
     #[test]
     fn starter_tape_templates_render() {
-        let registry =
-            crate::templates::TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let registry = crate::templates::load_all_for_tests().0;
         let data = HashMap::from([
             ("message".to_string(), json!("Hello world")),
             ("code".to_string(), json!("QR-1")),
         ]);
         for id in [
+            "brother_9mm",
             "brother_12mm",
             "brother_18mm",
             "brother_18mm_qr",
@@ -2432,8 +2432,7 @@ mod tests {
 
     #[test]
     fn homebox_qr_template_renders() {
-        let registry =
-            crate::templates::TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let registry = crate::templates::load_all_for_tests().0;
         let template = registry.get("homebox-qr").expect("template homebox-qr");
         let data = HashMap::from([
             ("id".to_string(), json!("A1")),
@@ -2719,8 +2718,7 @@ mod tests {
         };
         let dir = std::path::PathBuf::from(dir);
         std::fs::create_dir_all(&dir).expect("create dump dir");
-        let registry =
-            crate::templates::TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let registry = crate::templates::load_all_for_tests().0;
         // homebox-qr interpolates {vars.qr_base_url}; placeholder_data excludes variables by design.
         let settings =
             BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
