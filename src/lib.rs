@@ -2269,8 +2269,7 @@ layout:
         let app = build_app();
         let create = json!({
             "id": "sec", "name": "Sec", "kind": "cups",
-            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" },
-            "enabled": true
+            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" }
         });
         let resp = app
             .clone()
@@ -2316,7 +2315,7 @@ layout:
         );
 
         // PUT omitting password must succeed (keep); response still omits password.
-        let upd = json!({ "id": "sec", "name": "Sec2", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" }, "enabled": true });
+        let upd = json!({ "id": "sec", "name": "Sec2", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" } });
         let p = app
             .clone()
             .oneshot(json_req("PUT", "/api/printers/sec", upd.to_string()))
@@ -2335,8 +2334,7 @@ layout:
 
         let create = json!({
             "id": "persist", "name": "Persist", "kind": "cups",
-            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" },
-            "enabled": true
+            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" }
         });
         let resp = app
             .clone()
@@ -2346,7 +2344,7 @@ layout:
         assert_eq!(resp.status(), StatusCode::CREATED);
 
         // PUT omitting password (change only the name): the stored secret must be KEPT.
-        let upd = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" }, "enabled": true });
+        let upd = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" } });
         let p = app
             .clone()
             .oneshot(json_req("PUT", "/api/printers/persist", upd.to_string()))
@@ -2367,7 +2365,7 @@ layout:
         );
 
         // PUT with password: null: the stored secret must be CLEARED.
-        let clr = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u", "password": null }, "enabled": true });
+        let clr = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u", "password": null } });
         let c = app
             .clone()
             .oneshot(json_req("PUT", "/api/printers/persist", clr.to_string()))

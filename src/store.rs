@@ -15,16 +15,10 @@ pub struct Printer {
     pub name: String,
     pub kind: String,
     pub config: JsonValue,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
     // Read-only in the API: set only via POST/DELETE /printers/{id}/default; create/replace ignore it.
     #[serde(default)]
     #[schema(read_only)]
     pub is_default: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +133,7 @@ fn migrations() -> Migrations<'static> {
             PRIMARY KEY (user_id, template_id)
         );",
         ),
+        M::up("ALTER TABLE printers DROP COLUMN enabled;"),
     ])
 }
 
@@ -164,9 +159,8 @@ impl Store {
 
     pub async fn list_printers(&self) -> Result<Vec<Printer>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt = conn.prepare(
-            "SELECT id, name, kind, config, enabled, is_default FROM printers ORDER BY id",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, kind, config, is_default FROM printers ORDER BY id")?;
         let rows = stmt.query_map([], row_to_printer_parts)?;
         let mut out = Vec::new();
         for row in rows {
@@ -177,9 +171,8 @@ impl Store {
 
     pub async fn get_printer(&self, id: &str) -> Result<Option<Printer>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt = conn.prepare(
-            "SELECT id, name, kind, config, enabled, is_default FROM printers WHERE id = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, kind, config, is_default FROM printers WHERE id = ?1")?;
         let mut rows = stmt.query_map([id], row_to_printer_parts)?;
         match rows.next() {
             Some(row) => Ok(Some(printer_from_parts(row?)?)),
@@ -190,14 +183,13 @@ impl Store {
     pub async fn upsert_printer(&self, printer: &Printer) -> Result<(), StoreError> {
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
-            "INSERT INTO printers (id, name, kind, config, enabled) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET name = ?2, kind = ?3, config = ?4, enabled = ?5",
+            "INSERT INTO printers (id, name, kind, config) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, kind = ?3, config = ?4",
             rusqlite::params![
                 printer.id,
                 printer.name,
                 printer.kind,
                 serde_json::to_string(&printer.config)?,
-                printer.enabled as i64,
             ],
         )?;
         Ok(())
@@ -692,7 +684,7 @@ fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
     })
 }
 
-type PrinterParts = (String, String, String, String, i64, i64);
+type PrinterParts = (String, String, String, String, i64);
 
 fn row_to_printer_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterParts> {
     Ok((
@@ -701,18 +693,16 @@ fn row_to_printer_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterPart
         row.get(2)?,
         row.get(3)?,
         row.get(4)?,
-        row.get(5)?,
     ))
 }
 
 fn printer_from_parts(parts: PrinterParts) -> Result<Printer, StoreError> {
-    let (id, name, kind, config, enabled, is_default) = parts;
+    let (id, name, kind, config, is_default) = parts;
     Ok(Printer {
         id,
         name,
         kind,
         config: serde_json::from_str(&config)?,
-        enabled: enabled != 0,
         is_default: is_default != 0,
     })
 }
@@ -732,7 +722,6 @@ mod tests {
             name: "P1".to_string(),
             kind: "cups".to_string(),
             config: json!({ "uri": "ipp://x" }),
-            enabled: true,
             is_default: false,
         };
         store.upsert_printer(&printer).await.unwrap();
@@ -933,6 +922,51 @@ mod tests {
         assert_eq!(
             store.get_setting("job_log_retention_days").await.unwrap(),
             None
+        );
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    /// #126: an existing database still carrying the dropped column must upgrade cleanly, and a
+    /// printer that was disabled must survive as an ordinary printer. It becomes printable — that is
+    /// the documented behaviour change, not an accident. `cargo test` otherwise only ever builds
+    /// fresh databases, so nothing else exercises the upgrade path a deployment actually takes.
+    #[test]
+    fn migration_drops_enabled_and_keeps_printers() {
+        let mut conn = SqlConnection::open_in_memory().expect("open");
+        let migrations = migrations();
+        // Fresh db: user_version is 0, so every migration is pending and the count is the total.
+        // The version just before this change is therefore total - 1.
+        let prior = migrations.pending_migrations(&conn).expect("count") as usize - 1;
+        migrations
+            .to_version(&mut conn, prior)
+            .expect("migrate to the version before the drop");
+
+        conn.execute(
+            "INSERT INTO printers (id, name, kind, config, enabled)
+             VALUES ('old', 'Old', 'cups', '{\"uri\":\"ipp://x\"}', 0)",
+            [],
+        )
+        .expect("seed a disabled printer");
+
+        migrations.to_latest(&mut conn).expect("migrate to latest");
+
+        let name: String = conn
+            .query_row("SELECT name FROM printers WHERE id = 'old'", [], |r| {
+                r.get(0)
+            })
+            .expect("the printer survives the migration");
+        assert_eq!(name, "Old");
+
+        let err = conn
+            .prepare("SELECT enabled FROM printers")
+            .expect_err("the enabled column must be gone");
+        assert!(
+            err.to_string().contains("enabled"),
+            "expected a no-such-column error, got: {err}"
         );
     }
 }

@@ -59,7 +59,6 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
   // "auto" means: omit from config so the printer's reported value is negotiated at print time.
   const [colorMode, setColorMode] = useState(initial ? cupsRenderStringField(initial, "color_mode") || "auto" : "auto");
   const [resolution, setResolution] = useState(initial ? cupsRenderStringField(initial, "resolution") : "");
-  const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [probeRes, setProbeRes] = useState<ProbeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -109,7 +108,7 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
       return;
     }
     setError(null);
-    const printer: Printer = { id, name: name.trim(), kind: "cups", config: buildConfig(), enabled };
+    const printer: Printer = { id, name: name.trim(), kind: "cups", config: buildConfig() };
     save.mutate(
       { printer, isNew },
       {
@@ -140,10 +139,6 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
         <label className="flex grow basis-56 flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>name</span>
           <input aria-label="printer name" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} style={inputStyle} />
-        </label>
-        <label className="ml-auto flex items-center gap-2 pb-2">
-          <input type="checkbox" aria-label="enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          <span className="text-sm">enabled</span>
         </label>
       </div>
 
@@ -253,7 +248,6 @@ function PrinterRow({
       <td className={td}>{printer.name}</td>
       <td className={`${td} font-mono`}>{printer.kind}</td>
       <td className={`${td} font-mono`}>{cupsUri(printer)}</td>
-      <td className={td}>{printer.enabled ? "yes" : "no"}</td>
       <td className={td}>
         <input
           type="radio"
@@ -342,7 +336,6 @@ export function PrintersSection() {
               <th className={th} style={{ color: "var(--muted)" }}>Name</th>
               <th className={th} style={{ color: "var(--muted)" }}>Kind</th>
               <th className={th} style={{ color: "var(--muted)" }}>URI</th>
-              <th className={th} style={{ color: "var(--muted)" }}>Enabled</th>
               <th className={th} style={{ color: "var(--muted)" }}>Default</th>
               <th className={th} style={{ color: "var(--muted)" }}></th>
             </tr>
@@ -358,7 +351,7 @@ export function PrintersSection() {
               />
             ))}
             <tr style={{ borderTop: "1px solid var(--border)" }}>
-              <td className={td} colSpan={4} style={{ color: "var(--muted)" }}>No default printer</td>
+              <td className={td} colSpan={3} style={{ color: "var(--muted)" }}>No default printer</td>
               <td className={td}>
                 <input
                   type="radio"

@@ -38,7 +38,7 @@ export function FieldForm({
   const fields = referencedFields(detail.layout, value.option);
   const imgs = new Set(imageFields(detail.layout, value.option));
   const { data: printers } = usePrinters();
-  const enabledPrinters = (printers ?? []).filter((p) => p.enabled);
+  const allPrinters = printers ?? [];
 
   const setData = (field: string, v: string) =>
     onChange({ ...value, data: { ...value.data, [field]: v } });
@@ -121,7 +121,7 @@ export function FieldForm({
           style={inputStyle}
         >
           <option value="">— none (download only) —</option>
-          {enabledPrinters.map((p) => (
+          {allPrinters.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
             </option>

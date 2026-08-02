@@ -212,7 +212,7 @@ optionally repeated, to a named printer. See [ADR-0031](adr/0031-inbound-print-w
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `template` | string | Yes | Template id; `404` if not found. |
-| `printer` | string | Yes | Printer id; `404` if not found, `409` if disabled. |
+| `printer` | string | Yes | Printer id; `404` if not found. |
 | `fields` | object | No (defaults to `{}`) | Mapped to the label `data` for field binding. |
 | `option` | object | No | Template variant selection; validated against the template's declared `options`. |
 | `copies` | integer 1..100 | No | Number of label instances to print (default `1`). |
@@ -241,7 +241,6 @@ as a single print job per page, mirroring `/batch`). Send failures are reported 
 | 400 | `InvalidRequest` | Malformed JSON or `copies` outside `[1, 100]`. |
 | 404 | `TemplateNotFound` | Unknown `template` id. |
 | 404 | `PrinterNotFound` | Unknown `printer` id. |
-| 409 | `PrinterDisabled` | Printer exists but is disabled. |
 | 409 | `MediaMismatch` | Template `media_width` and the printer's loaded media width differ by more than 1 mm (preflight gate). |
 | 413 | `PayloadTooLarge` | Request body exceeds 64 KiB. |
 | 422 | `BatchInvalid` | A rendered label is invalid (same render path as `/batch`). |
@@ -644,7 +643,7 @@ Architecture: [ADR-0007](adr/0007-printer-architecture-and-transport-model.md). 
 variables, a job log) lives in SQLite at `{config}/labeler.db` (`LABELER_CONFIG_DIR`, default `/config`),
 behind a `store` module.
 
-- **Printers** are "machine" instances `{ id, name, kind, config, enabled }` with an opaque
+- **Printers** are "machine" instances `{ id, name, kind, config }` with an opaque
   per-`kind` JSON `config`, managed via `/printers` CRUD (`id` is a validated slug). `kind` selects a
   `PrinterDriver`; create/replace validate the config for that driver.
 - **Printing is driven by `POST /batch` with `mode: print`** (see §2.2). With a `printer`, it builds that
@@ -827,11 +826,19 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   path, sheet CSVs are supported: the rows compose a paginated PDF that prints as one job. For single
   templates it dispatches one print job per row (so a continuous-tape printer auto-cuts between labels),
   recording each job, and **continues past** per-row print transport failures. It returns `200` with a
-  `BatchSummary` `{ total, succeeded, failed: [{ index, error }], jobs }`. Unknown template/printer → 404;
-  disabled printer → 409.
+  `BatchSummary` `{ total, succeeded, failed: [{ index, error }], jobs }`. Unknown template/printer → 404.
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-08-02**: Removed the printer `enabled` flag (ADR-0042; #126). The field is gone from the
+  printer record, the `printers.enabled` column is dropped by migration, and `409 PrinterDisabled` is
+  removed from the error contract — a breaking change to a documented-stable `code` string,
+  acceptable because nothing can emit it once the gate is gone. **A printer that was disabled becomes
+  printable on upgrade**: no migration preserves the intent, because the intent no longer exists.
+  Printer pickers now list every configured printer, and the print-form preselect is
+  **default → sole printer → none**. Requests that still send `enabled` are accepted and ignored
+  (the field is simply unknown to the deserializer).
 
 - **2026-07-31**: Fixed vertical alignment on auto-length (tape) text (ADR-0041; #123). The
   auto-length render path placed the text block itself, sizing it with `fontdue`'s full line height
@@ -873,8 +880,8 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   printer** is modeled as a read-only `is_default` flag on the printer (`Printer.is_default`), set via
   `POST /api/printers/{id}/default` and cleared via `DELETE /api/printers/{id}/default` — at most one
   default, enforced in one transaction; `POST`/`PUT /api/printers` never set it (create → non-default,
-  replace → preserves). The print form preselects the printer as **enabled default → sole enabled →
-  none**.
+  replace → preserves). The print form preselects the printer as **default → sole printer → none**
+  (the `enabled` qualifier was removed with the flag itself; ADR-0042, #126).
 - **2026-06-29**: Layout-aware container rotation (ADR-0036; #98). `rotate` becomes a container-only,
   orthogonal (`{0,90,180,270}`), counter-clockwise inner transform: a portrait design seats onto a
   landscape slot. The container's `at`/`size` stay parent-frame; the inner author canvas (and child
