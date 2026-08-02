@@ -149,7 +149,7 @@ fn compile_label_doc(
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
     )
     .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"), top-edge: \"bounds\", bottom-edge: \"bounds\")")
+    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     let context = RenderContext::new(
@@ -361,7 +361,7 @@ pub fn render_sheet_pages(
             .map_err(|err| {
                 AppError::render_failed(format!("failed to build typst source: {err}"))
             })?;
-            writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"), top-edge: \"bounds\", bottom-edge: \"bounds\")").map_err(
+            writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))").map_err(
                 |err| AppError::render_failed(format!("failed to build typst source: {err}")),
             )?;
         } else {
@@ -1708,57 +1708,50 @@ mod tests {
         }
     }
 
-    /// #127: centring follows the ink, not a metric box. Before this, `message` (no capitals, no
-    /// ascenders, one descender) measured 20px above / 3px below in a 56px slot while `MESSAGE` was
-    /// already centred — the skew tracked which glyph classes the string happened to contain.
+    /// #133: alignment is baseline-relative, the industry norm. A fixed metric box (Typst's default
+    /// cap-height→baseline, the same box CSS `text-box-trim` and Figma's vertical trim use) means the
+    /// baseline lands in the same place no matter which glyphs a string contains — so `test`,
+    /// `testj` and `es` sit on one line. #127 briefly centred the per-string ink box instead, which
+    /// centred each label perfectly but let `j` and `t` move the baseline between labels.
     #[test]
-    fn centering_follows_the_ink_across_glyph_classes() {
-        for text in ["MESSAGE", "message", "typogy", "test"] {
-            let png = render_tape(&autolength_tape(text, false, VerticalAlign::Center, 18.0));
-            let (top, bottom, height) = ink_rows(&png);
-            let offset = (top + bottom) as f32 / 2.0 - (height - 1) as f32 / 2.0;
+    fn baseline_is_stable_across_glyph_classes() {
+        // Strings with no descender end their ink ON the baseline, so the last inked row is a direct
+        // read of where the baseline sits.
+        let baseline_of = |text: &str| {
+            let (_, bottom, _) = ink_rows(&render_tape(&autolength_tape(
+                text,
+                false,
+                VerticalAlign::Center,
+                18.0,
+            )));
+            bottom
+        };
+        let reference = baseline_of("test");
+        for text in ["es", "MESSAGE", "Ml", "123"] {
+            let got = baseline_of(text);
             assert!(
-                offset.abs() <= 2.0,
-                "{text:?}: ink rows {top}..{bottom} of {height}px are off-centre by {offset:+.1}px"
+                got.abs_diff(reference) <= 1,
+                "{text:?} put its baseline at row {got}, but \"test\" is at {reference}: \
+                 alignment must not depend on which glyphs the string contains"
             );
         }
-    }
 
-    /// #124, closed by #127: `bottom` pins the ink's lowest row, so descenders land inside the clip
-    /// instead of being cut at the slot edge; `top` likewise pins the highest ink.
-    #[test]
-    fn top_and_bottom_pin_the_ink_not_the_baseline() {
-        // Reaching the slot edge is not enough: clipped ink also ends at the edge. Compare the ink
-        // HEIGHT against the same string rendered centred (where it cannot clip) — losing rows to
-        // the clip is what the old baseline-pinning behaviour did.
-        let ink_height = |text: &str, v: VerticalAlign| {
-            let (top, bottom, height) =
-                ink_rows(&render_tape(&autolength_tape(text, false, v, 18.0)));
-            (top, bottom, height, bottom - top)
-        };
-
-        let (_, _, _, natural_desc) = ink_height("typogy", VerticalAlign::Center);
-        let (_, bottom, height, pinned_desc) = ink_height("typogy", VerticalAlign::Bottom);
-        // 1px of tolerance: `bottom` puts the descender's last row exactly on the slot edge, where
-        // subpixel rounding can drop a single row. The old baseline-pinning behaviour lost ~10.
+        // Descenders hang below that same baseline rather than moving it: the ink runs lower, by
+        // about the descender depth, and by the SAME amount for every descender string.
+        let with_desc: Vec<u32> = ["testj", "message", "typogy"]
+            .iter()
+            .map(|t| baseline_of(t))
+            .collect();
+        for (text, got) in ["testj", "message", "typogy"].iter().zip(&with_desc) {
+            assert!(
+                *got > reference,
+                "{text:?} has a descender, so its ink must extend below the baseline ({got} vs {reference})"
+            );
+        }
+        let spread = with_desc.iter().max().unwrap() - with_desc.iter().min().unwrap();
         assert!(
-            natural_desc.saturating_sub(pinned_desc) <= 1,
-            "bottom alignment clipped the descender: {pinned_desc}px of ink vs {natural_desc}px centred"
-        );
-        assert!(
-            height - 1 - bottom <= 2,
-            "descender must reach the slot bottom, ink ended at row {bottom} of {height}"
-        );
-
-        let (_, _, _, natural_asc) = ink_height("Ml", VerticalAlign::Center);
-        let (top, _, _, pinned_asc) = ink_height("Ml", VerticalAlign::Top);
-        assert!(
-            natural_asc.saturating_sub(pinned_asc) <= 1,
-            "top alignment clipped the ascender: {pinned_asc}px of ink vs {natural_asc}px centred"
-        );
-        assert!(
-            top <= 2,
-            "ascender must start at the slot top, began at {top}"
+            spread <= 1,
+            "descender strings must all hang the same distance below the baseline, spread was {spread}px"
         );
     }
 
