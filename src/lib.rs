@@ -52,7 +52,7 @@ mod resolve_dir_tests {
 #[cfg(test)]
 mod tests {
     use super::store::Store;
-    use super::{app, AppState, TemplateRegistry};
+    use super::{app, AppState};
     use std::future::IntoFuture;
     use std::sync::Arc;
     use std::time::Duration;
@@ -67,7 +67,7 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         let state = Arc::new(AppState::new(templates, "templates".into(), store));
         let server = axum::serve(listener, app(state)).with_graceful_shutdown(async {
@@ -173,10 +173,10 @@ mod http_tests {
     /// Like `build_app` but also returns the shared `AppState`, so a test can read the store directly
     /// (e.g. to assert a write-only secret persisted, since the API never echoes it back).
     fn build_app_with_state() -> (axum::Router, Arc<AppState>) {
-        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         seed_token(&store);
-        let state = Arc::new(AppState::new(templates, "templates".into(), store));
+        let state = Arc::new(AppState::new(templates, templates_dir, store));
         (with_auth(app(state.clone())), state)
     }
 
@@ -191,7 +191,7 @@ mod http_tests {
     }
 
     fn app_with_ui(dir: &std::path::Path) -> axum::Router {
-        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         seed_token(&store);
         with_auth(app(Arc::new(
@@ -200,7 +200,7 @@ mod http_tests {
     }
 
     fn loopback_state() -> Arc<AppState> {
-        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         seed_token(&store);
         Arc::new(AppState::new(templates, "templates".into(), store).with_loopback_egress())
@@ -2605,7 +2605,7 @@ layout:
 #[cfg(test)]
 mod auth_http_tests {
     use super::store::Store;
-    use super::{app, AppState, TemplateRegistry};
+    use super::{app, AppState};
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -2615,7 +2615,7 @@ mod auth_http_tests {
     use tower::ServiceExt;
 
     fn test_app() -> axum::Router {
-        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         app(Arc::new(AppState::new(
             templates,
@@ -2625,7 +2625,7 @@ mod auth_http_tests {
     }
 
     fn test_app_no_auth() -> axum::Router {
-        let templates = TemplateRegistry::load_from_dir("templates").expect("load templates");
+        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         app(Arc::new(
             AppState::new(templates, "templates".into(), store).with_no_auth(true),

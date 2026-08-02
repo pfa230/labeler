@@ -438,7 +438,7 @@ options:
   else `422 InvalidOptionValue`. Supplying `option` to a template without `options` is `400`.
 - A `container` may carry an `option` map. The container (and its subtree) renders only when the
   request's selection matches all of the container's option entries. This is how one template supports
-  multiple layouts (e.g. horizontal vs. vertical) — see `templates/avery5163.yaml`.
+  multiple layouts (e.g. horizontal vs. vertical) — see `tests/fixtures/templates/avery5163.yaml`.
 
 ## 6. Coordinate system
 
@@ -837,6 +837,14 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-08-02**: Trimmed the bundled template set to four Brother tape sizes — `brother_9mm` (new,
+  7.1 mm printable per Brother's published print area), `brother_12mm`, `brother_18mm`,
+  `brother_24mm` (#134). `avery5163`, `homebox-qr`, `brother_18mm_qr`, `brother_24mm_qr` and
+  `brother_24mm_multiline` moved to `tests/fixtures/templates/`: they stop shipping and stop seeding,
+  but still back the tests for sheet format, options, container rotation, QR layout and
+  interpolation. Seeding is first-run only, so existing installs keep every template they already
+  have; this changes fresh installs only. What the starter set *should* contain is #135.
 
 - **2026-08-02**: Vertical alignment settled as baseline-relative (ADR-0045, consolidating #123,
   #127 and #133; #124 left open). Alignment places Typst's default cap-height→baseline box, so the
