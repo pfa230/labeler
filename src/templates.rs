@@ -722,12 +722,12 @@ impl From<&TemplateDefinition> for TemplateDetail {
     }
 }
 
-/// Test-only registry covering the shipped templates **and** `tests/fixtures/templates/`.
+/// Test-only registry covering the whole `catalog/` tree.
 ///
-/// The bundled set is deliberately small (#134: four Brother tape sizes). The templates that
-/// demonstrate sheet format, options, container rotation, QR layout and interpolation still need
-/// test coverage, so they live under `tests/fixtures/templates/` and are merged in here rather than
-/// shipped to users. Copies both directories into a temp dir because `load_from_dir` takes one path,
+/// Nothing ships with the binary any more (#137): templates live in `catalog/` and users install
+/// what they want. The suite still needs all of them — sheet format, options, container rotation, QR
+/// layout and interpolation are only covered by catalog entries. Flattens the tree into a temp dir
+/// because `load_from_dir` takes one path and does not recurse,
 /// and returns that dir so a test's `templates_dir` matches its registry — the source/save/delete
 /// endpoints read YAML off disk, so a registry that disagreed with the dir would 404 on them.
 #[cfg(test)]
@@ -740,16 +740,21 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&dir).expect("create merged template dir");
-    for src in ["templates", "tests/fixtures/templates"] {
-        for entry in std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {src}: {e}")) {
+    // The catalog is nested (tape/brother, sheet/avery, examples) but the registry — and
+    // {config}/templates, where installs land — is flat, so flatten while copying. Ids are unique
+    // across the tree, enforced by `catalog_ids_are_unique_and_match_filenames` (#137).
+    fn copy_yaml_into(src: &FsPath, dest: &FsPath) {
+        for entry in std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {src:?}: {e}")) {
             let path = entry.expect("dir entry").path();
-            let is_yaml = path.extension().is_some_and(|e| e == "yaml" || e == "yml");
-            if is_yaml {
+            if path.is_dir() {
+                copy_yaml_into(&path, dest);
+            } else if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
                 let name = path.file_name().expect("file name");
-                std::fs::copy(&path, dir.join(name)).expect("copy template");
+                std::fs::copy(&path, dest.join(name)).expect("copy template");
             }
         }
     }
+    copy_yaml_into(FsPath::new("catalog"), &dir);
     let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
     (registry, dir)
 }
