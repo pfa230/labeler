@@ -52,10 +52,6 @@ async fn main() {
     let store = Store::open(&config_dir.join("labeler.db"))
         .unwrap_or_else(|err| panic!("failed to open store: {err}"));
 
-    labeler::bundled::seed_templates_once(&store, &templates_dir)
-        .await
-        .unwrap_or_else(|err| panic!("failed to seed bundled templates: {err}"));
-
     let templates = TemplateRegistry::load_from_dir(&templates_dir)
         .unwrap_or_else(|err| panic!("failed to load templates: {err}"));
     tracing::info!(count = templates.len(), "templates loaded");

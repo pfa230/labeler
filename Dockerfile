@@ -9,7 +9,6 @@ FROM rust:1-trixie@sha256:1f0dbad1df66647807e6952d1db85d0b2bda7606cb2139d82517e4
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
-COPY templates/ templates/
 RUN cargo build --release --locked
 
 FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
