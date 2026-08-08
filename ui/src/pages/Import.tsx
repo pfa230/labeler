@@ -27,12 +27,21 @@ const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-no
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
 
 export function Import() {
-  const { data: templates } = useTemplates();
+  const { data: templates, isError: templatesFailed } = useTemplates();
   const { data: printers } = usePrinters();
   const { push } = useToast();
 
   const [templateId, setTemplateId] = useState("");
   const { data: detail, isPlaceholderData } = useTemplate(templateId);
+
+  if (templatesFailed) {
+    return (
+      <div className="flex flex-col gap-4">
+        <h1 className="text-2xl font-semibold">Import</h1>
+        <p style={{ color: "var(--bad)" }}>Couldn&apos;t load templates.</p>
+      </div>
+    );
+  }
 
   if (templates && (templates.templates ?? []).length === 0) {
     return (

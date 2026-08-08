@@ -24,7 +24,7 @@ const MATERIALIZE_CAP = 200; // backend /materialize rejects more than this in o
 
 export function Connect() {
   const { data: connections } = useConnections();
-  const { data: templates } = useTemplates();
+  const { data: templates, isError: templatesFailed } = useTemplates();
   const { data: printers } = usePrinters();
 
   const [connectionId, setConnectionId] = useState("");
@@ -48,7 +48,11 @@ export function Connect() {
         </label>
       </div>
 
-      {connectionId && schema && (templates?.templates ?? []).length === 0 && (
+      {connectionId && schema && templatesFailed && (
+        <p style={{ color: "var(--bad)" }}>Couldn&apos;t load templates.</p>
+      )}
+
+      {connectionId && schema && !templatesFailed && templates && (templates.templates ?? []).length === 0 && (
         <EmptyTemplates context="Printing from a connector needs a template to render each item into." />
       )}
 

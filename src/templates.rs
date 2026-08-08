@@ -746,11 +746,22 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
     fn copy_yaml_into(src: &FsPath, dest: &FsPath) {
         for entry in std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {src:?}: {e}")) {
             let path = entry.expect("dir entry").path();
-            if path.is_dir() {
+            // symlink_metadata, not is_dir: a symlinked directory under catalog/ could form a cycle
+            // and recurse forever.
+            let meta = std::fs::symlink_metadata(&path).expect("stat catalog entry");
+            if meta.is_dir() {
                 copy_yaml_into(&path, dest);
             } else if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
                 let name = path.file_name().expect("file name");
-                std::fs::copy(&path, dest.join(name)).expect("copy template");
+                let target = dest.join(name);
+                // Flattening means two catalog files with the same filename in different directories
+                // would silently overwrite each other here, before load_from_dir could ever notice a
+                // duplicate id. Fail loudly instead; the CI gate then explains which files collide.
+                assert!(
+                    !target.exists(),
+                    "two catalog templates share the filename {name:?}; ids must be unique tree-wide"
+                );
+                std::fs::copy(&path, target).expect("copy template");
             }
         }
     }
