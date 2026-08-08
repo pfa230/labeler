@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useFavorites, useRecentTemplates, useSetFavorite, useTemplates } from "../api/queries";
 import { useToast } from "../app/toast-context";
+import { EmptyTemplates } from "../components/EmptyTemplates";
 import type { TemplateSummary } from "../api/types";
 
 function FormatBadge({ type }: { type: string }) {
@@ -172,11 +173,10 @@ export function Templates() {
           {error instanceof Error ? error.message : "Failed to load templates"}
         </p>
       )}
-      {data && filtered.length === 0 && (
-        <p style={{ color: "var(--muted)" }}>
-          {query ? "No templates match your search." : "No templates available."}
-        </p>
+      {data && filtered.length === 0 && query && (
+        <p style={{ color: "var(--muted)" }}>No templates match your search.</p>
       )}
+      {data && (data.templates ?? []).length === 0 && !query && <EmptyTemplates />}
       {!searching && favTemplates.length > 0 && (
         <section aria-label="Favorites" className="flex flex-col gap-2">
           <h2 className="text-sm font-medium" style={{ color: "var(--muted)" }}>

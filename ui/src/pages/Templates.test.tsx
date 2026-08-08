@@ -41,7 +41,7 @@ function jsonResponse(body: unknown) {
 // Route the fetch mock by URL: /api/templates returns the template list, while /api/favorites and
 // /api/recent-templates default to [] (so their rows stay hidden). Favorites is a mutable closure so a
 // PUT/DELETE to /api/favorites/{id} updates what the next refetch returns.
-function stubFetch(opts?: { favorites?: string[]; recent?: string[] }) {
+function stubFetch(opts?: { favorites?: string[]; recent?: string[]; empty?: boolean }) {
   let favorites = [...(opts?.favorites ?? [])];
   const recent = [...(opts?.recent ?? [])];
   const calls: { method: string; url: string }[] = [];
@@ -57,7 +57,7 @@ function stubFetch(opts?: { favorites?: string[]; recent?: string[] }) {
     }
     if (url === "/api/favorites") return jsonResponse(favorites);
     if (url === "/api/recent-templates") return jsonResponse(recent);
-    return jsonResponse({ templates });
+    return jsonResponse({ templates: opts?.empty ? [] : templates });
   });
   vi.stubGlobal("fetch", fetchMock);
   return calls;
@@ -182,5 +182,30 @@ describe("Templates list", () => {
         calls.some((c) => c.method === "DELETE" && c.url === "/api/favorites/brother_24mm_qr"),
       ).toBe(true),
     );
+  });
+
+  it("shows the first-run empty state, not a bare sentence, when nothing is installed", async () => {
+    stubFetch({ empty: true });
+    renderPage();
+    expect(await screen.findByText(/no templates yet/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /browse the catalog/i })).toHaveAttribute(
+      "href",
+      "/templates/catalog",
+    );
+    expect(screen.getByRole("link", { name: /paste yaml/i })).toHaveAttribute(
+      "href",
+      "/templates/new",
+    );
+  });
+
+  it("keeps the search-miss message distinct from having nothing installed", async () => {
+    stubFetch();
+    renderPage();
+    await screen.findByText("Brother 24mm");
+    fireEvent.change(screen.getByLabelText(/search templates/i), {
+      target: { value: "zzzz-no-match" },
+    });
+    expect(await screen.findByText(/no templates match your search/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no templates yet/i)).toBeNull();
   });
 });

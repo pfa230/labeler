@@ -438,7 +438,7 @@ options:
   else `422 InvalidOptionValue`. Supplying `option` to a template without `options` is `400`.
 - A `container` may carry an `option` map. The container (and its subtree) renders only when the
   request's selection matches all of the container's option entries. This is how one template supports
-  multiple layouts (e.g. horizontal vs. vertical) — see `tests/fixtures/templates/avery5163.yaml`.
+  multiple layouts (e.g. horizontal vs. vertical) — see `catalog/sheet/avery/avery5163.yaml`.
 
 ## 6. Coordinate system
 
@@ -837,6 +837,16 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-08-08**: Templates are no longer bundled or seeded (ADR-0046; #137). They live in `catalog/`
+  in the repo, structured `<media-class>/<vendor>/`, with a CI-generated `catalog/index.json`. A new
+  deployment starts with **zero** templates; the Labels, Import and Connect screens offer a catalog to
+  install from. The browser fetches the entry from GitHub raw and POSTs it to the existing
+  `POST /api/templates` — the server makes no outbound request, so air-gapped installs behave the same
+  and fall back to pasting YAML. `include_dir` embedding, `seed_templates_once` and the
+  `templates_seeded` flag read are gone; the flag row is left in existing databases, unread. Existing
+  installs keep every template they already have. Compatibility is validate-before-write: a template
+  using syntax this server does not understand fails with `422` and installs nothing.
 
 - **2026-08-02**: Trimmed the bundled template set to four Brother tape sizes — `brother_9mm` (new,
   7.1 mm printable per Brother's published print area), `brother_12mm`, `brother_18mm`,
