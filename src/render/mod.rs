@@ -1219,6 +1219,23 @@ fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Ve
     }
 }
 
+/// The request data keys a template needs, deduped and sorted.
+///
+/// Shares the walker behind `placeholder_data`, so it inherits the rule that `{vars.*}` and
+/// `{datetime[.*]}` are NOT request fields — they resolve from the variables store and the datetime
+/// resolver. The catalog index lists this so an entry advertises only what the caller must supply
+/// (#137); `homebox-qr` would otherwise appear to demand `vars.qr_base_url`.
+pub fn template_fields(template: &TemplateDefinition) -> Vec<String> {
+    let Layout::Items(items) = &template.layout;
+    let mut text = Vec::new();
+    let mut image = Vec::new();
+    walk_placeholder(items, &mut text, &mut image);
+    let mut all: Vec<String> = text.into_iter().chain(image).collect();
+    all.sort();
+    all.dedup();
+    all
+}
+
 /// Build non-empty placeholder data for every referenced data field. Image fields get a 1×1 PNG;
 /// other fields get their own name as a stand-in. `{vars.*}` is excluded (resolved from the store).
 pub fn placeholder_data(template: &TemplateDefinition) -> HashMap<String, JsonValue> {
@@ -1257,7 +1274,8 @@ pub fn default_option_selection(template: &TemplateDefinition) -> Option<BTreeMa
 mod tests {
     use super::{
         count_pdf_pages, default_option_selection, placeholder_data, render_sheet_pages,
-        render_single_label, render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
+        render_single_label, render_single_label_pdf, render_thumbnail_png, template_fields,
+        SAMPLE_PNG_DATA_URI,
     };
     use crate::models::{
         Alignment, AutoSize, Dimension, Fit, FontSize, Frame, HorizontalAlign, LabelInput, Layout,
@@ -1813,6 +1831,20 @@ mod tests {
         );
     }
 
+    /// #137: the catalog index lists the request fields a template needs. `{vars.*}` and
+    /// `{datetime.*}` resolve from the variables store and the datetime resolver, not the caller, so
+    /// they must not appear — `homebox-qr` would otherwise advertise `vars.qr_base_url` as something
+    /// the user has to supply.
+    #[test]
+    fn template_fields_lists_request_keys_only() {
+        let registry = crate::templates::load_all_for_tests().0;
+        let t = registry.get("homebox-qr").expect("homebox-qr");
+        assert_eq!(
+            template_fields(t),
+            vec!["id".to_string(), "message".to_string()]
+        );
+    }
+
     fn no_settings() -> BTreeMap<String, String> {
         BTreeMap::new()
     }
@@ -2315,25 +2347,78 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
+    /// #137: every catalog entry must parse, validate and render. Replaces the hardcoded starter-tape
+    /// list — the catalog is the product surface now, so all of it is the gate and a broken entry
+    /// cannot sit there unnoticed.
     #[test]
-    fn starter_tape_templates_render() {
+    fn every_catalog_template_renders() {
         let registry = crate::templates::load_all_for_tests().0;
-        let data = HashMap::from([
-            ("message".to_string(), json!("Hello world")),
-            ("code".to_string(), json!("QR-1")),
-        ]);
-        for id in [
-            "brother_9mm",
-            "brother_12mm",
-            "brother_18mm",
-            "brother_18mm_qr",
-            "brother_24mm",
-            "brother_24mm_qr",
-        ] {
-            let template = registry.get(id).unwrap_or_else(|| panic!("template {id}"));
-            let png = render_single_label(template, &data, None, &no_settings(), &no_datetime())
-                .expect("render tape");
-            assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        assert!(
+            registry.len() >= 9,
+            "catalog looks empty ({} templates) — did the walk find catalog/?",
+            registry.len()
+        );
+        // homebox-qr interpolates {vars.qr_base_url} and {datetime.iso_date}; supply both so the
+        // demo entry is covered rather than skipped.
+        let settings =
+            BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
+        let formats = BTreeMap::from([("iso_date".to_string(), "%Y-%m-%d".to_string())]);
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now: chrono::Local::now(),
+        };
+        for summary in registry.summaries() {
+            let template = registry.get(&summary.id).expect("template");
+            let data = placeholder_data(template);
+            let selection = default_option_selection(template);
+            let png = render_thumbnail_png(template, &data, selection.as_ref(), &settings, &dt)
+                .unwrap_or_else(|e| panic!("render {}: {e:?}", summary.id));
+            assert_eq!(
+                &png[..8],
+                b"\x89PNG\r\n\x1a\n",
+                "{} did not render a PNG",
+                summary.id
+            );
+        }
+    }
+
+    /// Ids are the API key, the `/print/{id}` route and what print webhooks hardcode, and installs
+    /// land flat in `{config}/templates` — so a duplicate id anywhere in the nested catalog would
+    /// collide on install, and an id that differs from its filename would install under a name the
+    /// catalog does not know (#137).
+    #[test]
+    fn catalog_ids_are_unique_and_match_filenames() {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read catalog") {
+                let path = entry.expect("entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|x| x == "yaml" || x == "yml") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(std::path::Path::new("catalog"), &mut files);
+        assert!(!files.is_empty(), "no catalog templates found");
+
+        let mut seen: HashMap<String, std::path::PathBuf> = HashMap::new();
+        for path in files {
+            let yaml = std::fs::read_to_string(&path).expect("read template");
+            let id = yaml
+                .lines()
+                .find_map(|l| l.strip_prefix("id:"))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| panic!("{path:?} has no id"));
+            let stem = path
+                .file_stem()
+                .expect("stem")
+                .to_string_lossy()
+                .to_string();
+            assert_eq!(id, stem, "{path:?}: id must equal the filename stem");
+            if let Some(prev) = seen.insert(id.clone(), path.clone()) {
+                panic!("duplicate catalog id {id}: {prev:?} and {path:?}");
+            }
         }
     }
 
