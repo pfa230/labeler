@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type SelectedRow } from "../api/connectors";
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
+import { EmptyTemplates } from "../components/EmptyTemplates";
 import { referencedFields, defaultOptions } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
 import {
@@ -23,7 +24,7 @@ const MATERIALIZE_CAP = 200; // backend /materialize rejects more than this in o
 
 export function Connect() {
   const { data: connections } = useConnections();
-  const { data: templates } = useTemplates();
+  const { data: templates, isError: templatesFailed } = useTemplates();
   const { data: printers } = usePrinters();
 
   const [connectionId, setConnectionId] = useState("");
@@ -47,7 +48,15 @@ export function Connect() {
         </label>
       </div>
 
-      {connectionId && schema && (
+      {connectionId && schema && templatesFailed && (
+        <p style={{ color: "var(--bad)" }}>Couldn&apos;t load templates.</p>
+      )}
+
+      {connectionId && schema && !templatesFailed && templates && (templates.templates ?? []).length === 0 && (
+        <EmptyTemplates context="Printing from a connector needs a template to render each item into." />
+      )}
+
+      {connectionId && schema && (templates?.templates ?? []).length > 0 && (
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium">Template</span>
           <select aria-label="template" value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={inputClass} style={inputStyle}>

@@ -40,11 +40,17 @@ docker compose up -d --build      # serves on http://localhost:${HOST_PORT:-8080
 See [`docs/DEPLOY.md`](docs/DEPLOY.md) for configuration, persistent volumes and backups, and CUPS/IPP
 printing setup.
 
-YAML templates are loaded from `templates/` at startup; an invalid template stops the service from
-starting. Starter templates: `avery5163` (US Letter sheet); the Brother continuous-tape set
-`brother_12mm` / `brother_18mm` / `brother_24mm` (text only) plus `brother_18mm_qr` / `brother_24mm_qr`
-(QR + text); and `homebox-qr`, a Homebox asset label whose QR links to an item, demonstrating variable
-interpolation.
+YAML templates are loaded from `{config}/templates/` at startup; an invalid template stops the
+service from starting.
+
+**A new install starts with no templates.** Install what you need from the catalog in the UI
+(Labels → Browse the catalog), or paste YAML. The catalog lives in this repo under `catalog/`,
+organised by media class and vendor: the Brother continuous-tape set
+`brother_9mm` / `brother_12mm` / `brother_18mm` / `brother_24mm` (text only) plus `brother_18mm_qr` /
+`brother_24mm_qr` and `brother_24mm_multiline`; `avery5163` (US Letter sheet, and the multi-variant
+example with options and rotation); and `homebox-qr`, a Homebox asset label whose QR links to an item,
+demonstrating variable interpolation. Your browser downloads the entry and the server validates and
+stores it — the server itself never reaches out, so air-gapped deployments paste YAML instead.
 
 ## Endpoints
 

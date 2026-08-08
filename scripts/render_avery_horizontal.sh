@@ -8,6 +8,12 @@ OUT=${OUT:-avery-horizontal.pdf}
 
 # avery5163 is a sheet template: POST /api/batch in download mode lays the labels into
 # slots and returns one paginated PDF.
+#
+# Templates are no longer seeded on first run (#137), so install it first if this 404s:
+#   curl -fsSL https://raw.githubusercontent.com/pfa230/labeler/main/catalog/sheet/avery/avery5163.yaml \
+#     | curl -fsS -X POST "$HOST/api/templates" \
+#         -H "Authorization: Bearer ${LABELER_API_TOKEN:?}" \
+#         -H 'content-type: text/yaml' --data-binary @-
 curl -sS -X POST "$HOST/api/batch" \
   -H 'content-type: application/json' \
   -H "Authorization: Bearer ${LABELER_API_TOKEN:?set LABELER_API_TOKEN}" \

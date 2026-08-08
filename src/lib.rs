@@ -1,7 +1,6 @@
 pub mod api;
 pub mod auth;
 pub mod batch;
-pub mod bundled;
 pub mod connector;
 mod convert;
 pub mod datetime_fmt;
@@ -67,9 +66,9 @@ mod tests {
         let addr = listener.local_addr().expect("local addr");
 
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
-        let state = Arc::new(AppState::new(templates, "templates".into(), store));
+        let state = Arc::new(AppState::new(templates, templates_dir, store));
         let server = axum::serve(listener, app(state)).with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
         });
@@ -191,19 +190,19 @@ mod http_tests {
     }
 
     fn app_with_ui(dir: &std::path::Path) -> axum::Router {
-        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         seed_token(&store);
         with_auth(app(Arc::new(
-            AppState::new(templates, "templates".into(), store).with_ui_dir(dir),
+            AppState::new(templates, templates_dir, store).with_ui_dir(dir),
         )))
     }
 
     fn loopback_state() -> Arc<AppState> {
-        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         seed_token(&store);
-        Arc::new(AppState::new(templates, "templates".into(), store).with_loopback_egress())
+        Arc::new(AppState::new(templates, templates_dir, store).with_loopback_egress())
     }
 
     async fn json_response(response: axum::response::Response) -> Value {
@@ -2615,20 +2614,16 @@ mod auth_http_tests {
     use tower::ServiceExt;
 
     fn test_app() -> axum::Router {
-        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
-        app(Arc::new(AppState::new(
-            templates,
-            "templates".into(),
-            store,
-        )))
+        app(Arc::new(AppState::new(templates, templates_dir, store)))
     }
 
     fn test_app_no_auth() -> axum::Router {
-        let (templates, _templates_dir) = crate::templates::load_all_for_tests();
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
         app(Arc::new(
-            AppState::new(templates, "templates".into(), store).with_no_auth(true),
+            AppState::new(templates, templates_dir, store).with_no_auth(true),
         ))
     }
 

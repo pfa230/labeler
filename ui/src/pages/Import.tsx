@@ -18,6 +18,7 @@ import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
+import { EmptyTemplates } from "../components/EmptyTemplates";
 import type { TemplateDetail } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
@@ -26,12 +27,30 @@ const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-no
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
 
 export function Import() {
-  const { data: templates } = useTemplates();
+  const { data: templates, isError: templatesFailed } = useTemplates();
   const { data: printers } = usePrinters();
   const { push } = useToast();
 
   const [templateId, setTemplateId] = useState("");
   const { data: detail, isPlaceholderData } = useTemplate(templateId);
+
+  if (templatesFailed) {
+    return (
+      <div className="flex flex-col gap-4">
+        <h1 className="text-2xl font-semibold">Import</h1>
+        <p style={{ color: "var(--bad)" }}>Couldn&apos;t load templates.</p>
+      </div>
+    );
+  }
+
+  if (templates && (templates.templates ?? []).length === 0) {
+    return (
+      <div className="flex flex-col gap-4">
+        <h1 className="text-2xl font-semibold">Import</h1>
+        <EmptyTemplates context="Importing a CSV needs a template to render each row into." />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">

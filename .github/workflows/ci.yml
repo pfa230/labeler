@@ -45,6 +45,14 @@ jobs:
       - name: Test
         run: cargo test
 
+      # The committed index is what the UI fetches to browse the catalog (#137). Regenerate and
+      # diff, so a template added without rerunning the generator fails here rather than shipping
+      # an index that omits it.
+      - name: Catalog index is current
+        run: |
+          cargo run --bin catalog-index
+          git diff --exit-code catalog/index.json
+
   ui:
     runs-on: ubuntu-latest
     defaults:
