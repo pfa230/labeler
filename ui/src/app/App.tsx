@@ -5,6 +5,7 @@ import { RedirectIfAuthed } from "./RedirectIfAuthed";
 import { Templates } from "../pages/Templates";
 import { TemplateDetail } from "../pages/TemplateDetail";
 import { NewTemplate } from "../pages/NewTemplate";
+import { Catalog } from "../pages/Catalog";
 import { Print } from "../pages/Print";
 import { Import } from "../pages/Import";
 import { Connect } from "../pages/Connect";
@@ -24,6 +25,7 @@ export function App() {
           <Route element={<Shell />}>
             <Route index element={<Templates />} />
             <Route path="templates" element={<Navigate to="/" replace />} />
+            <Route path="templates/catalog" element={<Catalog />} />
             <Route path="templates/new" element={<NewTemplate />} />
             <Route path="templates/:id" element={<TemplateDetail />} />
             <Route path="print" element={<Print />} />

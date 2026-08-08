@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type SelectedRow } from "../api/connectors";
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
+import { EmptyTemplates } from "../components/EmptyTemplates";
 import { referencedFields, defaultOptions } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
 import {
@@ -47,7 +48,11 @@ export function Connect() {
         </label>
       </div>
 
-      {connectionId && schema && (
+      {connectionId && schema && (templates?.templates ?? []).length === 0 && (
+        <EmptyTemplates context="Printing from a connector needs a template to render each item into." />
+      )}
+
+      {connectionId && schema && (templates?.templates ?? []).length > 0 && (
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium">Template</span>
           <select aria-label="template" value={templateId} onChange={(e) => setTemplateId(e.target.value)} className={inputClass} style={inputStyle}>

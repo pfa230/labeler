@@ -1,5 +1,5 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getJson, sendJson, del, putVoid } from "./client";
+import { ApiError, getJson, sendJson, del, putVoid } from "./client";
 import type { TemplateSummary, TemplateDetail, Printer, ProbeResult } from "./types";
 
 export function useTemplates() {
@@ -44,18 +44,41 @@ export function useTemplateSource(id: string) {
     enabled: !!id,
   });
 }
+// Raw-YAML writes cannot go through client.ts's JSON helpers, so they build their own request — but
+// they must still throw ApiError, not a bare Error. Installing from the catalog branches on the
+// status: 409 means "already installed, offer Replace", 422 means "this template needs a newer
+// labeler" (#137). Existing callers only read .message, which ApiError inherits.
+async function yamlWrite(method: "POST" | "PUT", url: string, yaml: string): Promise<TemplateDetail> {
+  const res = await fetch(url, { method, headers: { "content-type": "text/yaml" }, body: yaml });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new ApiError(
+      res.status,
+      body?.error?.code ?? "Unknown",
+      body?.error?.message ?? `${method} failed (${res.status})`,
+      body?.error?.details,
+    );
+  }
+  return (await res.json()) as TemplateDetail;
+}
+
 export function useCreateTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (yaml: string) => {
-      const res = await fetch("/api/templates", { method: "POST", headers: { "content-type": "text/yaml" }, body: yaml });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error?.message ?? `create failed (${res.status})`);
-      }
-      return (await res.json()) as TemplateDetail;
-    },
+    mutationFn: (yaml: string) => yamlWrite("POST", "/api/templates", yaml),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
+export function useReplaceTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, yaml }: { id: string; yaml: string }) =>
+      yamlWrite("PUT", `/api/templates/${encodeURIComponent(id)}`, yaml),
+    onSuccess: (_data, { id }) => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["template", id] });
+    },
   });
 }
 
