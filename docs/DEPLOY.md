@@ -152,14 +152,29 @@ One named volume holds all state:
 - `labeler-config`: the SQLite database, label templates, and assets. The entrypoint chowns `/config`
   to `PUID:PGID` on every start.
 
-**Bundled templates are seeded on first run.** When the service starts with an empty (or new) config
-dir, it writes the bundled starter templates into `{config}/templates/` and records a `templates_seeded`
-flag in the database. After that, `{config}/templates/` is fully user-owned: add, edit, and delete
-templates freely. Deletes are permanent; the bundled templates are NOT re-injected on upgrade.
+**No templates are installed on first run.** A new deployment starts with an empty
+`{config}/templates/` and the Labels screen offers a catalog to install from. Nothing ships inside the
+image (ADR-0046, #137): templates live in the repo under `catalog/`, your browser downloads the one
+you pick, and the server validates and stores it. Everything in `{config}/templates/` is yours — add,
+edit and delete freely; nothing is re-injected on upgrade.
+
+Installing without the UI, which is also the **air-gapped** path (the server itself never reaches the
+internet — only your browser does):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pfa230/labeler/main/catalog/tape/brother/brother_12mm.yaml \
+  | curl -fsS -X POST http://localhost:8080/api/templates \
+      -H "Authorization: Bearer $LABELER_API_TOKEN" \
+      -H "content-type: text/yaml" --data-binary @-
+```
+
+Offline, fetch the YAML on any machine that has network and paste it into **Labels → Paste YAML**, or
+POST the file directly. `catalog/index.json` lists every entry with its id, format, media width and
+required fields.
 
 **`docker compose down -v` and `docker volume rm` DELETE this state.** A plain `docker compose down`
-keeps the volume; only `-v` wipes it. After a wipe, the bundled templates are seeded again (since
-the flag is gone with the database) and other settings/printers are lost.
+keeps the volume; only `-v` wipes it. After a wipe you start empty again, and installed templates,
+settings and printers are gone.
 
 Back up with the app stopped (a file-level copy of a live SQLite db can be inconsistent):
 
