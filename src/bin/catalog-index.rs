@@ -65,11 +65,15 @@ fn main() {
             .map(|c| c.as_os_str().to_string_lossy().to_string())
             .collect();
         // catalog/<category>/<vendor>/<file>.yaml, or catalog/<category>/<file>.yaml for examples.
-        let category = parts.first().cloned().unwrap_or_default();
-        let vendor = if parts.len() > 2 {
-            Some(parts[1].clone())
-        } else {
-            None
+        // Fail on any other shape: a file dropped directly in catalog/ would otherwise be indexed
+        // with its own filename as the category, and a deeper path would silently lose components.
+        let (category, vendor) = match parts.len() {
+            2 => (parts[0].clone(), None),
+            3 => (parts[0].clone(), Some(parts[1].clone())),
+            _ => panic!(
+                "{}: expected catalog/<category>/<file>.yaml or catalog/<category>/<vendor>/<file>.yaml",
+                rel.display()
+            ),
         };
         entries.push(serde_json::json!({
             "id": template.id,

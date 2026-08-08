@@ -438,7 +438,7 @@ options:
   else `422 InvalidOptionValue`. Supplying `option` to a template without `options` is `400`.
 - A `container` may carry an `option` map. The container (and its subtree) renders only when the
   request's selection matches all of the container's option entries. This is how one template supports
-  multiple layouts (e.g. horizontal vs. vertical) — see `tests/fixtures/templates/avery5163.yaml`.
+  multiple layouts (e.g. horizontal vs. vertical) — see `catalog/sheet/avery/avery5163.yaml`.
 
 ## 6. Coordinate system
 

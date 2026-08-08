@@ -97,7 +97,7 @@ export function Catalog() {
   const replace = useReplaceTemplate();
   const { push } = useToast();
   const [conflict, setConflict] = useState<Conflict | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
+  const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
 
   const installed = useMemo(
     () => new Set((installedQuery.data?.templates ?? []).map((t) => t.id)),
@@ -113,18 +113,44 @@ export function Catalog() {
     return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [catalog.data]);
 
+  const setBusyFor = (id: string, on: boolean) =>
+    setBusy((prev) => {
+      const next = new Set(prev);
+      if (on) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+
   const install = async (entry: CatalogEntry) => {
-    setBusyId(entry.id);
+    setBusyFor(entry.id, true);
+    let incoming: string | null = null;
     try {
-      const yaml = await fetchCatalogYaml(entry);
-      await create.mutateAsync(yaml);
+      incoming = await fetchCatalogYaml(entry);
+      await create.mutateAsync(incoming);
       push({ kind: "ok", message: `Installed ${entry.id}` });
     } catch (err) {
-      // 409 means it is already on disk: offer Replace with a diff rather than silently overwriting.
-      if (err instanceof ApiError && err.status === 409) {
-        const res = await fetch(`/api/templates/${encodeURIComponent(entry.id)}/source`);
-        const existing = res.ok ? await res.text() : "";
-        setConflict({ entry, incoming: await fetchCatalogYaml(entry), existing });
+      // 409 means it is already on disk: offer Replace with a diff rather than silently
+      // overwriting. Reuse the YAML already downloaded above — re-fetching here would put a second
+      // network call inside the catch, where a failure becomes an unhandled rejection with no toast.
+      if (err instanceof ApiError && err.status === 409 && incoming !== null) {
+        try {
+          const res = await fetch(`/api/templates/${encodeURIComponent(entry.id)}/source`);
+          if (!res.ok) {
+            throw new Error(`could not read the installed template (${res.status})`, {
+              cause: err,
+            });
+          }
+          setConflict({ entry, incoming, existing: await res.text() });
+        } catch (readErr) {
+          // Showing a diff with a blank "Installed" side would hide the real failure.
+          push({
+            kind: "error",
+            message: readErr instanceof Error ? readErr.message : "Could not compare templates",
+          });
+        }
       } else if (err instanceof ApiError && err.status === 422) {
         push({
           kind: "error",
@@ -134,7 +160,7 @@ export function Catalog() {
         push({ kind: "error", message: err instanceof Error ? err.message : "Install failed" });
       }
     } finally {
-      setBusyId(null);
+      setBusyFor(entry.id, false);
     }
   };
 
@@ -190,7 +216,7 @@ export function Catalog() {
                 key={entry.id}
                 entry={entry}
                 installed={installed.has(entry.id)}
-                busy={busyId === entry.id}
+                busy={busy.has(entry.id)}
                 onInstall={() => void install(entry)}
               />
             ))}
