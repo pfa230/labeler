@@ -1,6 +1,6 @@
 use base64::Engine;
 use hmac::{Hmac, Mac};
-use rand::RngCore;
+use rand::Rng;
 use sha2::Sha256;
 
 use super::ConnectorError;
@@ -13,7 +13,7 @@ pub struct SigningKey([u8; 32]);
 impl SigningKey {
     pub fn random() -> Self {
         let mut k = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut k);
+        rand::rng().fill_bytes(&mut k);
         Self(k)
     }
 }

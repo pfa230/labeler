@@ -1,14 +1,22 @@
-use argon2::password_hash::{
-    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
-};
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use base64::Engine;
-use rand::RngCore;
+// rand 0.10 renamed `RngCore` to `Rng` (re-exported from rand_core) and `OsRng` to `rngs::SysRng`.
+// SysRng is fallible (`TryRng`), and neither of these functions can return an RNG error, so both use
+// `rand::rng()` — ThreadRng, a ChaCha12 CSPRNG seeded from the OS and periodically reseeded. That is
+// what the token path already used, and it is the rand book's recommended source for secrets.
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 /// Hash a password with argon2id (default params). Returns the PHC string to store.
 pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
-    let salt = SaltString::generate(&mut OsRng);
+    // Generate the salt here rather than via `SaltString::generate(&mut OsRng)`: argon2 0.5 re-exports
+    // its own (older) rand_core, and which of its features are enabled depends on what else in the
+    // graph pulls that crate in. Drawing 16 bytes ourselves keeps salt generation independent of
+    // argon2's dependency tree.
+    let mut salt_bytes = [0u8; 16];
+    rand::rng().fill_bytes(&mut salt_bytes);
+    let salt = SaltString::encode_b64(&salt_bytes)?;
     Ok(Argon2::default()
         .hash_password(password.as_bytes(), &salt)?
         .to_string())
@@ -34,7 +42,7 @@ const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$
 /// A random URL-safe 256-bit secret (for session cookie values, API tokens, and record ids).
 pub fn random_secret() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -54,6 +62,31 @@ mod tests {
         let h = hash_password("hunter2").unwrap();
         assert!(verify_password("hunter2", &h));
         assert!(!verify_password("wrong", &h));
+    }
+
+    /// The round-trip test above passes even with a constant salt, which is exactly what a botched
+    /// RNG migration produces. Hashing the same password twice must give different PHC strings
+    /// (#131: salt generation moved off argon2's re-exported rand_core when rand went 0.8 -> 0.10).
+    #[test]
+    fn each_hash_uses_a_fresh_salt() {
+        let a = hash_password("hunter2").unwrap();
+        let b = hash_password("hunter2").unwrap();
+        assert_ne!(
+            a, b,
+            "same password hashed twice must not produce identical PHC strings"
+        );
+        assert!(verify_password("hunter2", &a) && verify_password("hunter2", &b));
+    }
+
+    /// Secrets must not repeat: random_secret backs session cookies, API tokens and record ids.
+    #[test]
+    fn secrets_do_not_repeat() {
+        let secrets: std::collections::HashSet<String> = (0..64).map(|_| random_secret()).collect();
+        assert_eq!(
+            secrets.len(),
+            64,
+            "random_secret produced a collision in 64 draws"
+        );
     }
 
     #[test]
