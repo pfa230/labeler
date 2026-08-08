@@ -18,6 +18,7 @@ import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
+import { EmptyTemplates } from "../components/EmptyTemplates";
 import type { TemplateDetail } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
@@ -32,6 +33,15 @@ export function Import() {
 
   const [templateId, setTemplateId] = useState("");
   const { data: detail, isPlaceholderData } = useTemplate(templateId);
+
+  if (templates && (templates.templates ?? []).length === 0) {
+    return (
+      <div className="flex flex-col gap-4">
+        <h1 className="text-2xl font-semibold">Import</h1>
+        <EmptyTemplates context="Importing a CSV needs a template to render each row into." />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">
