@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { TemplateDetail } from "./TemplateDetail";
@@ -19,6 +19,9 @@ const detail = {
 };
 
 const source = "id: brother_24mm_qr\nname: Brother 24mm Continuous Label\n";
+
+const other = { ...detail, id: "other_label", name: "Other Label" };
+const otherSource = "id: other_label\nname: Other Label\n";
 
 // What GET /source currently returns. A PUT overwrites it, so the stub models the server: the bytes
 // the client sent are what a later read gets back.
@@ -53,6 +56,15 @@ function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200) {
               { status: putStatus, headers: { "content-type": "application/json" } },
             );
       }
+      if (url.endsWith("/api/templates/other_label/source")) {
+        return new Response(otherSource, { status: 200, headers: { "content-type": "text/yaml" } });
+      }
+      if (url.endsWith("/api/templates/other_label")) {
+        return new Response(JSON.stringify(other), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
         return sourceStatus === 200
           ? new Response(currentSource, { status: 200, headers: { "content-type": "text/yaml" } })
@@ -75,12 +87,22 @@ function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200) {
   );
 }
 
+function GoToOther() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate("/templates/other_label")}>
+      go to other
+    </button>
+  );
+}
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
         <MemoryRouter initialEntries={["/templates/brother_24mm_qr"]}>
+          <GoToOther />
           <Routes>
             <Route path="/templates/:id" element={<TemplateDetail />} />
             {/* The list is the app's index route; "/templates" is only a redirect to it. */}
@@ -229,6 +251,24 @@ describe("Template detail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
 
     expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue("changed");
+  });
+
+  it("drops an open draft when the route moves to another template", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Mine\n" },
+    });
+
+    // React Router reuses the templates/:id component, so without a reset the draft would follow.
+    fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
+
+    expect(await screen.findByText("Other Label")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /template yaml/i })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(otherSource);
   });
 
   it("disables Edit and shows an error when the source cannot be loaded", async () => {
