@@ -85,7 +85,10 @@ previously-loaded set, so a bad file never takes the service down.
 - `PUT /templates/{id}` replaces from a raw YAML body; the body `id` must equal the path `{id}` (else
   `400`); `404` if it does not exist.
 - `DELETE /templates/{id}` removes the template's backing file and returns `204`; `400` on an invalid
-  id, `404` when the registry holds no such id. The delete is permanent: nothing re-seeds templates
+  id, `404` when the registry holds no such id, `422` when the file was removed but reloading the
+  directory then found some *other* template invalid (the previous set stays live, so the deleted id
+  lingers in memory until a later reload succeeds; retrying the delete once the directory is fixed
+  converges). The delete is permanent: nothing re-seeds templates
   (the binary has shipped none since #137), so a deleted template does not return on restart. It also
   drops every user's favorite for that id, so a later template reusing the id does not inherit them.
   Recents are left alone: they derive from the print-job log, and deleting a template must not erase

@@ -426,7 +426,8 @@ pub async fn replace_template(
         (status = 204, description = "Template deleted"),
         (status = 400, description = "Invalid id", body = ErrorResponse),
         (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 500, description = "File removal, reload, or the favorites prune failed", body = ErrorResponse)
+        (status = 422, description = "File removed, but reloading the directory found an invalid template", body = ErrorResponse),
+        (status = 500, description = "File removal or the favorites prune failed", body = ErrorResponse)
     )
 )]
 pub async fn delete_template(
