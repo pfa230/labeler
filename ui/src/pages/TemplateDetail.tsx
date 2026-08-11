@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useDeleteTemplate, useTemplate, useTemplateSource } from "../api/queries";
+import { useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
 import { useToast } from "../app/toast-context";
 import { useTemplatePreview } from "../lib/preview";
 import { referencedFields, referencedVariables } from "../lib/templateFields";
@@ -34,11 +34,19 @@ function Chip({ children }: { children: React.ReactNode }) {
 export function TemplateDetail() {
   const { id = "" } = useParams();
   const { data: detail, isLoading, isError, error } = useTemplate(id);
-  const { data: source } = useTemplateSource(id);
+  const { data: source, isError: sourceFailed } = useTemplateSource(id);
   const { url: previewUrl, error: previewError, loading: previewLoading } = useTemplatePreview(detail);
   const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  // The text this edit started from. Not derived from `source`: a failed save drops the source query
+  // and the refetch that follows can move `source` to match the draft (the persisted-but-422 case),
+  // which would make a modified draft look untouched and skip the discard confirm.
+  const [baseline, setBaseline] = useState("");
+  const [discarding, setDiscarding] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const remove = useDeleteTemplate();
+  const save = useReplaceTemplate();
   const { push } = useToast();
 
   if (isLoading) return <p style={{ color: "var(--muted)" }}>loading…</p>;
@@ -195,13 +203,119 @@ export function TemplateDetail() {
         className="rounded-lg border p-4"
         style={{ background: "var(--surface)", borderColor: "var(--border)" }}
       >
+        {/* Every control sits in the body, never in the <summary>: a click anywhere in a summary
+            toggles the disclosure, so an Edit button there would open edit mode and collapse the
+            panel holding the textarea in the same click (#141). */}
         <summary className="cursor-pointer font-semibold">Raw YAML</summary>
-        <pre
-          className="mt-3 overflow-auto rounded-md p-3 text-xs"
-          style={{ background: "var(--bg)", color: "var(--ink)" }}
-        >
-          {source ?? "loading…"}
-        </pre>
+        {draft === null ? (
+          <>
+            <pre
+              className="mt-3 overflow-auto rounded-md p-3 text-xs"
+              style={{ background: "var(--bg)", color: "var(--ink)" }}
+            >
+              {sourceFailed ? "Could not load the template source." : (source ?? "loading…")}
+            </pre>
+            <button
+              type="button"
+              // A failed refetch can leave stale data alongside isError, so both checks matter:
+              // editing text the server has disowned would save it straight back.
+              disabled={sourceFailed || source === undefined}
+              onClick={() => {
+                setSaveError(null);
+                // Reset the confirm too, or edit mode reopens straight into Discard/Keep editing.
+                setDiscarding(false);
+                setBaseline(source ?? "");
+                setDraft(source ?? "");
+              }}
+              className="mt-3 rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50"
+              style={{ color: "var(--accent)" }}
+            >
+              Edit
+            </button>
+          </>
+        ) : (
+          <>
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              spellCheck={false}
+              rows={20}
+              aria-label="Template YAML"
+              className="mt-3 w-full rounded-md border p-3 font-mono text-sm focus-visible:outline-none focus-visible:ring-2"
+              style={{ background: "var(--bg)", borderColor: "var(--border)", color: "var(--ink)" }}
+            />
+            {saveError && <p style={{ color: "var(--bad)" }}>{saveError}</p>}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={save.isPending}
+                onClick={() =>
+                  save.mutate(
+                    { id: detail.id, yaml: draft },
+                    {
+                      onSuccess: () => {
+                        setDraft(null);
+                        setDiscarding(false);
+                        setSaveError(null);
+                        push({ kind: "ok", message: `Saved ${detail.id}` });
+                      },
+                      onError: (err) => {
+                        // Inline as well as the toast: a validation error names a path
+                        // (layout[2].size) that belongs next to the text it refers to.
+                        const message = err instanceof Error ? err.message : "Save failed";
+                        setSaveError(message);
+                        push({ kind: "error", message });
+                      },
+                    },
+                  )
+                }
+                className="rounded-md px-3 py-2 text-sm font-medium"
+                style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+              >
+                Save
+              </button>
+              {discarding ? (
+                <>
+                  <span style={{ color: "var(--muted)" }}>Discard changes?</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDiscarding(false);
+                      setDraft(null);
+                      setSaveError(null);
+                    }}
+                    className="rounded-md px-3 py-2 text-sm"
+                    style={{ color: "var(--bad)" }}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDiscarding(false)}
+                    className="rounded-md px-3 py-2 text-sm"
+                    style={{ color: "var(--muted)" }}
+                  >
+                    Keep editing
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Ask only when there is something to lose, measured against the text this edit
+                    // started from rather than whatever the source query holds now.
+                    if (draft !== baseline) setDiscarding(true);
+                    else setDraft(null);
+                  }}
+                  className="rounded-md px-3 py-2 text-sm"
+                  style={{ color: "var(--muted)" }}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          </>
+        )}
       </details>
     </div>
   );

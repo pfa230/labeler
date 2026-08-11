@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
@@ -20,7 +20,11 @@ const detail = {
 
 const source = "id: brother_24mm_qr\nname: Brother 24mm Continuous Label\n";
 
-function stubFetch(deleteStatus = 204) {
+// What GET /source currently returns. A PUT overwrites it, so the stub models the server: the bytes
+// the client sent are what a later read gets back.
+let currentSource = source;
+
+function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -33,8 +37,26 @@ function stubFetch(deleteStatus = 204) {
               { status: deleteStatus, headers: { "content-type": "application/json" } },
             );
       }
+      if (init?.method === "PUT") {
+        // Both branches persist. A 422 does not imply an unchanged file: the server writes before it
+        // reloads, so a failed reload leaves the edit on disk (SPEC, PUT /templates/{id}).
+        currentSource = String(init.body);
+        return putStatus === 200
+          ? new Response(JSON.stringify(detail), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          : new Response(
+              JSON.stringify({
+                error: { code: "TemplateInvalid", message: "layout[0].size: out of bounds" },
+              }),
+              { status: putStatus, headers: { "content-type": "application/json" } },
+            );
+      }
       if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
-        return new Response(source, { status: 200, headers: { "content-type": "text/yaml" } });
+        return sourceStatus === 200
+          ? new Response(currentSource, { status: 200, headers: { "content-type": "text/yaml" } })
+          : new Response("nope", { status: sourceStatus });
       }
       if (url.endsWith("/api/templates/brother_24mm_qr")) {
         return new Response(JSON.stringify(detail), {
@@ -73,7 +95,10 @@ function renderPage() {
 describe("Template detail", () => {
   // Wrapped, not passed by reference: beforeEach hands the hook a test context, which would land in
   // stubFetch's deleteStatus parameter.
-  beforeEach(() => stubFetch());
+  beforeEach(() => {
+    currentSource = source;
+    stubFetch();
+  });
 
   it("renders name, referenced fields, format badge, and a use-to-print link", async () => {
     renderPage();
@@ -117,6 +142,101 @@ describe("Template detail", () => {
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
     const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
     expect(calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+  });
+
+  it("saves an edit through PUT and leaves edit mode", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Edited\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByRole("button", { name: "Edit" })).toBeInTheDocument();
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    const put = calls.find(([, init]) => init?.method === "PUT");
+    expect(String(put?.[1]?.body)).toContain("name: Edited");
+  });
+
+  it("keeps the draft and shows the server message when the save fails", async () => {
+    stubFetch(204, 422);
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Broken\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Twice by design: inline beside the textarea, and in the toast.
+    expect(await screen.findAllByText(/layout\[0\]\.size: out of bounds/)).toHaveLength(2);
+    expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(
+      "id: brother_24mm_qr\nname: Broken\n",
+    );
+  });
+
+  it("re-entering edit after a save shows the saved text", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Saved\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    // Fails with a bare invalidation: the stale cached source wins the race and reseeds pre-save text.
+    expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(
+      "id: brother_24mm_qr\nname: Saved\n",
+    );
+  });
+
+  it("after a failed save, the next edit seeds from what is actually stored", async () => {
+    // The persisted-but-422 case: the stub kept the submitted bytes (the write landed) and still
+    // returned 422 (the reload failed), so the cached source is now wrong in the other direction.
+    stubFetch(204, 422);
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "id: brother_24mm_qr\nname: Persisted\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findAllByText(/out of bounds/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Discard" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    // Content, not fetch counts: removeQueries refetches on the same re-render the error handler
+    // causes, so a before/after tally races the behavior it is meant to check.
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(
+        "id: brother_24mm_qr\nname: Persisted\n",
+      ),
+    );
+  });
+
+  it("cancelling a modified draft asks before discarding", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /template yaml/i }), {
+      target: { value: "changed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep editing" }));
+
+    expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue("changed");
+  });
+
+  it("disables Edit and shows an error when the source cannot be loaded", async () => {
+    stubFetch(204, 200, 500);
+    renderPage();
+    fireEvent.click(await screen.findByText(/raw yaml/i));
+    expect(await screen.findByText(/could not load the template source/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
   });
 
   it("keeps the user on the page when the delete fails", async () => {
