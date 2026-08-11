@@ -91,9 +91,13 @@ export function useReplaceTemplate() {
   return useMutation({
     mutationFn: ({ id, yaml }: { id: string; yaml: string }) =>
       yamlWrite("PUT", `/api/templates/${encodeURIComponent(id)}`, yaml),
-    onSuccess: (_data, { id, yaml }) => {
+    onSuccess: async (_data, { id, yaml }) => {
       qc.invalidateQueries({ queryKey: ["templates"] });
       qc.invalidateQueries({ queryKey: ["template", id] });
+      // Cancel first: a failed save removes the source query, and the refetch that follows can still
+      // be in flight when a corrected save lands. Its older response would otherwise resolve after
+      // this write and clobber the YAML we know the server just stored.
+      await qc.cancelQueries({ queryKey: ["template-source", id] });
       // setQueryData, not invalidateQueries: the value is known rather than merely stale, and an
       // invalidated query keeps serving the old text while it refetches — long enough for a quick
       // second Edit to seed from pre-save YAML (#141).
