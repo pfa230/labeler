@@ -83,7 +83,11 @@ previously-loaded set, so a bad file never takes the service down.
 - `POST /templates` creates from a raw YAML body; the `id` comes from the body; `409 Conflict` if it
   already exists.
 - `PUT /templates/{id}` replaces from a raw YAML body; the body `id` must equal the path `{id}` (else
-  `400`); `404` if it does not exist.
+  `400`); `404` if it does not exist. A `422` has two sources and they differ in effect: the submitted
+  body failing `parse_and_validate`, which is rejected before anything is written, or the directory
+  reload that *follows* a successful write finding some other template invalid — in which case the
+  file has already been replaced while the registry keeps the previous set, and retrying the save once
+  the directory is valid converges. Callers must not read a `422` as "nothing was saved".
 - `DELETE /templates/{id}` removes the template's backing file and returns `204`; `400` on an invalid
   id, `404` when the registry holds no such id, `422` when the file was removed but reloading the
   directory then found some *other* template invalid (the previous set stays live, so the deleted id
@@ -101,7 +105,8 @@ previously-loaded set, so a bad file never takes the service down.
   sheet) so the preview is label-sized regardless of format. Variables (`{vars.X}`) are resolved from
   the store; undefined variable references cause a `422`. The default option selection (first allowed
   value per option key) is used automatically. The response carries `ETag` (a quoted SHA-256 of the
-  template YAML) and `Cache-Control: no-cache`; callers that send `If-None-Match` with a matching ETag
+  rendered PNG bytes, so it moves with the template, the renderer, the interpolated variables and the
+  datetime formats alike; #129) and `Cache-Control: no-cache`; callers that send `If-None-Match` with a matching ETag
   receive `304 Not Modified`. Error codes: `404 TemplateNotFound` for unknown ids, `422` for
   render/interpolation failures.
 
@@ -853,6 +858,12 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-11**: Template YAML is editable from the detail page (#141). The Raw YAML section gains an
+  `Edit` control that opens a textarea over the stored source; `Save` issues the `PUT`, validation
+  errors render inline beside the text they refer to, and cancelling a modified draft asks first.
+  Leaving the page mid-edit still discards: an in-app navigation guard needs the data-router
+  conversion tracked in #143. Also documents that a `PUT` `422` may follow a write that already
+  landed, and corrects a stale line describing the thumbnail `ETag` as a hash of the template YAML.
 - **2026-08-11**: Templates can be deleted from the UI, on the template detail page behind an inline
   confirm (#140). Deleting now prunes every user's favorite for that id, so a later template reusing
   the id does not inherit them; recents are untouched because they derive from the print-job log
