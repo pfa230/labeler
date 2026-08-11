@@ -84,7 +84,12 @@ previously-loaded set, so a bad file never takes the service down.
   already exists.
 - `PUT /templates/{id}` replaces from a raw YAML body; the body `id` must equal the path `{id}` (else
   `400`); `404` if it does not exist.
-- `DELETE /templates/{id}` removes the template.
+- `DELETE /templates/{id}` removes the template's backing file and returns `204`; `400` on an invalid
+  id, `404` when the registry holds no such id. The delete is permanent: nothing re-seeds templates
+  (the binary has shipped none since #137), so a deleted template does not return on restart. It also
+  drops every user's favorite for that id, so a later template reusing the id does not inherit them.
+  Recents are left alone: they derive from the print-job log, and deleting a template must not erase
+  the record that labels were printed from it (ADR-0048).
 - `GET /templates/{id}/source` returns the raw stored YAML (`text/yaml`) for the read-only source view;
   `400` on an invalid id, `404` if the file is missing.
 - `GET /templates/{id}/thumbnail` renders a representative PNG for the template using placeholder data
@@ -263,7 +268,10 @@ curl -X POST http://labeler.lan:8080/api/print \
 ## 3. Template schema
 
 Templates are `*.yaml` / `*.yml` files in the templates directory (`{config}/templates/`, where
-`{config}` is `LABELER_CONFIG_DIR`). Top-level fields:
+`{config}` is `LABELER_CONFIG_DIR`). A file's name need not match the `id` inside it: the registry
+keys on the `id` and remembers which file each id came from, and `GET /templates/{id}/source`, `PUT`
+and `DELETE` act on that file. `POST /templates` writes a new template as `{id}.yaml`. Top-level
+fields:
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -760,7 +768,10 @@ Per-user Favorites and Recent rows surface the common few templates at the top o
 - **Favorites** are stored in a `favorites (user_id, template_id)` table. `GET /favorites` returns the
   caller's favorited ids in favoriting order, filtered against the live registry (favorited-then-deleted
   templates are dropped on read). `PUT /favorites/{template_id}` favorites (idempotent; `404` if the id
-  is not a known template) and `DELETE` unfavorites (idempotent). Mutations take the write lock.
+  is not a known template) and `DELETE` unfavorites (idempotent). Mutations take the write lock, and
+  `PUT` checks the registry under that lock so it cannot insert a row for a template being deleted.
+  Deleting a template now removes every user's row for it outright (ADR-0048), so the read-side filter
+  only covers rows orphaned some other way.
 - **Recents.** `GET /recent-templates?limit=N` (default 6, cap 20; `limit` clamps to `[1,20]`) returns the
   caller's most-recently-printed distinct template ids, ordered by most recent print (`MAX(ts)`, with
   `MAX(id)` as a deterministic tiebreak because `ts` has one-second resolution), filtered against the
@@ -839,6 +850,13 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-11**: Templates can be deleted from the UI, on the template detail page behind an inline
+  confirm (#140). Deleting now prunes every user's favorite for that id, so a later template reusing
+  the id does not inherit them; recents are untouched because they derive from the print-job log
+  (ADR-0048). The file-backed endpoints (`GET .../source`, `PUT`, `DELETE`) resolve the file the
+  registry actually loaded a template from instead of assuming `{id}.yaml`, which fixes `DELETE`
+  returning `404` for a `.yml`-backed template and `PUT` writing a duplicate-id sibling that broke
+  the reload.
 - **2026-08-11**: The catalog is a designed set of five single-field templates (ADR-0047, #135):
   `brother_9mm`, `brother_12mm`, `brother_18mm`, `brother_24mm` and `avery5163`, each exposing one
   text field named `message`. `avery5163` is now a plain 2x4 label; its previous multi-variant asset

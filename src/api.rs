@@ -424,7 +424,9 @@ pub async fn replace_template(
     params(("id" = String, Path, description = "Template ID")),
     responses(
         (status = 204, description = "Template deleted"),
-        (status = 404, description = "Template not found", body = ErrorResponse)
+        (status = 400, description = "Invalid id", body = ErrorResponse),
+        (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 500, description = "File removal, reload, or the favorites prune failed", body = ErrorResponse)
     )
 )]
 pub async fn delete_template(
