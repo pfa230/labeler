@@ -4,10 +4,13 @@ set -euo pipefail
 # Requires LABELER_API_TOKEN in the environment: all /api routes need auth (ADR-0017).
 # Create a token in the UI (Settings) and export it before running this script.
 HOST=${HOST:-http://localhost:8080}
-OUT=${OUT:-avery-horizontal.pdf}
+OUT=${OUT:-avery-sheet.pdf}
 
-# avery5163 is a sheet template: POST /api/batch in download mode lays the labels into
-# slots and returns one paginated PDF.
+# avery5163 is the starter sheet template: POST /api/batch in download mode lays the labels
+# into slots and returns one paginated PDF. This script renders three filled slots.
+#
+# The multi-variant layout (with orientation and outline options) now lives in
+# tests/fixtures/templates/avery5163_asset_tag.yaml.
 #
 # Templates are no longer seeded on first run (#137), so install it first if this 404s:
 #   curl -fsSL https://raw.githubusercontent.com/pfa230/labeler/main/catalog/sheet/avery/avery5163.yaml \
@@ -21,19 +24,9 @@ curl -sS -X POST "$HOST/api/batch" \
     "template":"avery5163",
     "mode":"download",
     "labels":[
-      {
-        "option": {
-          "orientation": "horizontal",
-          "outline": "yes"
-        },
-        "data": {
-          "id": "BOX.073",
-          "url": "https://example.com/BOX.073",
-          "name": "Floor Grinder",
-          "tags": "Power tools",
-          "description": "Angle grinder with floor grinding attachment and dust shroud"
-        }
-      }
+      { "data": { "message": "BOX.073 — Floor Grinder" } },
+      { "data": { "message": "BOX.074 — Angle grinder, dust shroud" } },
+      { "data": { "message": "BOX.075 — Spare discs" } }
     ]
   }' > "$OUT"
 
