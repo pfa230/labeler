@@ -1637,6 +1637,99 @@ layout:
     }
 
     #[tokio::test]
+    async fn delete_removes_a_yml_backed_template() {
+        let dir = temp_templates_dir();
+        // The registry loads *.yml as well as *.yaml, so this template is live — and must be
+        // deletable through the API, not only by hand (#140).
+        std::fs::write(dir.join("y1.yml"), template_yaml("y1")).unwrap();
+        let app = build_app_in(&dir);
+        assert_eq!(template_count(&app).await, 1);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/y1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(
+            !dir.join("y1.yml").exists(),
+            "the .yml file is still on disk"
+        );
+        assert_eq!(template_count(&app).await, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A template's filename is only conventionally its id: the registry keys on the `id` inside the
+    /// YAML. Every file-backed endpoint must therefore act on the file the registry actually loaded.
+    #[tokio::test]
+    async fn file_endpoints_resolve_a_template_whose_filename_differs_from_its_id() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("custom.yaml"), template_yaml("y2")).unwrap();
+        let app = build_app_in(&dir);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/y2/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // PUT must overwrite custom.yaml in place. A y2.yaml sibling would give two files one id,
+        // and the reload inside the handler would fail the duplicate-id check.
+        let body200 = template_yaml("y2").replace("dpi: 300", "dpi: 200");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/y2", "PUT", body200))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(
+            !dir.join("y2.yaml").exists(),
+            "PUT created a duplicate-id sibling"
+        );
+        assert_eq!(template_count(&app).await, 1);
+
+        // POST for an id the registry already holds is a conflict whatever the file is called.
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("y2")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/y2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(
+            !dir.join("custom.yaml").exists(),
+            "the backing file is still on disk"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn template_create_duplicate_returns_409() {
         let dir = temp_templates_dir();
         std::fs::write(dir.join("dup.yaml"), template_yaml("dup")).unwrap();
