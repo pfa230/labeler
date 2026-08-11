@@ -7,6 +7,7 @@ use axum::{
     Router,
 };
 use axum_extra::extract::cookie::CookieJar;
+use sha2::Digest;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -489,21 +490,6 @@ pub async fn thumbnail(
     let template = registry
         .get(&id)
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let hash = registry
-        .content_hash(&id)
-        .expect("content_hash present for a loaded template");
-    let etag = format!("\"{}\"", hash);
-
-    if let Some(inm) = headers.get(axum::http::header::IF_NONE_MATCH) {
-        if inm.to_str().map(|v| v == "*" || v == etag).unwrap_or(false) {
-            return Ok((
-                axum::http::StatusCode::NOT_MODIFIED,
-                [(axum::http::header::ETAG, etag.as_str())],
-            )
-                .into_response());
-        }
-    }
-
     let data = crate::render::placeholder_data(template);
     let option = crate::render::default_option_selection(template);
     let variables = state.store().all_variables().await?;
@@ -516,6 +502,24 @@ pub async fn thumbnail(
     };
     let png =
         crate::render::render_thumbnail_png(template, &data, option.as_ref(), &variables, &dt)?;
+
+    // #129: key the ETag on the rendered bytes, not the template YAML. The image depends on the
+    // template AND the renderer AND the variables it interpolates AND the datetime formats, so a key
+    // built from a list of inputs goes stale as soon as that list is incomplete — which is the bug
+    // this replaces (the YAML hash covered one input of four). Hashing the payload cannot be
+    // incomplete. The cost is that revalidation no longer skips the render, so a `304` saves the
+    // transfer but not the work; at catalog scale that is well under a second per grid refresh.
+    let etag = format!("\"{}\"", hex::encode(sha2::Sha256::digest(&png)));
+
+    if let Some(inm) = headers.get(axum::http::header::IF_NONE_MATCH) {
+        if inm.to_str().map(|v| v == "*" || v == etag).unwrap_or(false) {
+            return Ok((
+                axum::http::StatusCode::NOT_MODIFIED,
+                [(axum::http::header::ETAG, etag.as_str())],
+            )
+                .into_response());
+        }
+    }
 
     Ok((
         axum::http::StatusCode::OK,
