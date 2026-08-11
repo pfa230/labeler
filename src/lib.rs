@@ -588,6 +588,60 @@ mod http_tests {
         assert!(body.is_empty(), "304 body must be empty");
     }
 
+    async fn set_variable(app: &axum::Router, key: &str, value: &str) {
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                &format!("/api/variables/{key}"),
+                json!({ "value": value }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert!(
+            res.status().is_success(),
+            "seeding {key} failed: {}",
+            res.status()
+        );
+    }
+
+    async fn thumbnail_etag(app: &axum::Router, id: &str) -> String {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/templates/{id}/thumbnail"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::OK);
+        res.headers()
+            .get("etag")
+            .expect("etag header")
+            .to_str()
+            .expect("ascii etag")
+            .to_string()
+    }
+
+    /// #129: the ETag keys on the rendered bytes, so every render input is covered — not just the
+    /// template YAML. The image also depends on the renderer, on the variables it interpolates and
+    /// on the datetime formats; keying on the YAML alone served stale previews forever. Changing an
+    /// interpolated variable changes the picture, so it must change the tag.
+    #[tokio::test]
+    async fn thumbnail_etag_changes_when_an_interpolated_variable_changes() {
+        let app = build_app();
+        set_variable(&app, "qr_base_url", "https://one.example.com").await;
+        let first = thumbnail_etag(&app, "homebox-qr").await;
+        set_variable(&app, "qr_base_url", "https://two.example.com").await;
+        let second = thumbnail_etag(&app, "homebox-qr").await;
+        assert_ne!(
+            first, second,
+            "same template, different QR target, but the ETag did not move"
+        );
+    }
+
     #[tokio::test]
     async fn thumbnail_etag_rotates_on_content_change() {
         // Uses a temp dir + build_app_in so the replace (PUT) writes to a throwaway

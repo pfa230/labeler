@@ -27,12 +27,18 @@ function TemplateCard({
 }) {
   const [failed, setFailed] = useState(false);
   return (
-    <div className="relative">
+    // #128: the card is no longer one giant anchor. Interactive controls cannot nest inside an <a>,
+    // so when the whole card was the link the ⓘ and ☆ had to be absolutely positioned over it — which
+    // put them on top of the thumbnail, the one thing the card exists to show. Linking only the image
+    // and title lets the controls sit in normal flow, and drops the absolute/z-index stacking with it.
+    <div
+      className="flex h-full flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md"
+      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+    >
       <Link
         to={`/print/${encodeURIComponent(template.id)}`}
         aria-label={`Print ${template.name}`}
-        className="flex h-full flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2"
-        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+        className="flex flex-col gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2"
       >
         {failed ? (
           <div
@@ -52,41 +58,49 @@ function TemplateCard({
             style={{ background: "var(--bg)", borderColor: "var(--border)" }}
           />
         )}
-        <div className="flex items-center justify-between gap-2">
-          <h2 className="font-semibold" style={{ color: "var(--ink)" }}>
-            {template.name}
-          </h2>
+        <h2 className="font-semibold" style={{ color: "var(--ink)" }}>
+          {template.name}
+        </h2>
+      </Link>
+      <div className="mt-auto flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <FormatBadge type={template.format.type} />
+          <code
+            className="truncate rounded px-1.5 py-0.5 text-xs"
+            style={{ background: "var(--bg)", color: "var(--muted)" }}
+          >
+            {template.id}
+          </code>
         </div>
-        <code
-          className="self-start rounded px-1.5 py-0.5 text-xs"
-          style={{ background: "var(--bg)", color: "var(--muted)" }}
-        >
-          {template.id}
-        </code>
-      </Link>
-      <Link
-        to={`/templates/${encodeURIComponent(template.id)}`}
-        aria-label={`${template.name} template details`}
-        className="absolute right-2 top-2 z-10 flex h-11 w-11 items-center justify-center rounded-md border text-sm focus-visible:outline-none focus-visible:ring-2"
-        style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--muted)" }}
-      >
-        ⓘ
-      </Link>
-      <button
-        type="button"
-        onClick={onToggleFavorite}
-        aria-label={favorite ? `unfavorite ${template.name}` : `favorite ${template.name}`}
-        aria-pressed={favorite}
-        className="absolute right-2 top-14 z-10 flex h-11 w-11 items-center justify-center rounded-md border text-lg focus-visible:outline-none focus-visible:ring-2"
-        style={{
-          background: "var(--surface)",
-          borderColor: "var(--border)",
-          color: favorite ? "var(--accent)" : "var(--muted)",
-        }}
-      >
-        {favorite ? "★" : "☆"}
-      </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Link
+            to={`/templates/${encodeURIComponent(template.id)}`}
+            aria-label={`${template.name} template details`}
+            className="flex h-11 w-11 items-center justify-center rounded-md border text-sm focus-visible:outline-none focus-visible:ring-2"
+            style={{
+              background: "var(--surface)",
+              borderColor: "var(--border)",
+              color: "var(--muted)",
+            }}
+          >
+            ⓘ
+          </Link>
+          <button
+            type="button"
+            onClick={onToggleFavorite}
+            aria-label={favorite ? `unfavorite ${template.name}` : `favorite ${template.name}`}
+            aria-pressed={favorite}
+            className="flex h-11 w-11 items-center justify-center rounded-md border text-lg focus-visible:outline-none focus-visible:ring-2"
+            style={{
+              background: "var(--surface)",
+              borderColor: "var(--border)",
+              color: favorite ? "var(--accent)" : "var(--muted)",
+            }}
+          >
+            {favorite ? "★" : "☆"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
