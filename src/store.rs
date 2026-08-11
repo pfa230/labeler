@@ -354,6 +354,21 @@ impl Store {
         Ok(())
     }
 
+    /// Drop every user's favorite row for `template_id`. Called when the template is deleted so a
+    /// later template reusing the id does not inherit favorites pointing at the old one. Not scoped
+    /// to one actor: the delete invalidates the row for everybody, not just the caller (#140).
+    pub async fn remove_favorites_for_template(
+        &self,
+        template_id: &str,
+    ) -> Result<usize, StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let removed = conn.execute(
+            "DELETE FROM favorites WHERE template_id = ?1",
+            rusqlite::params![template_id],
+        )?;
+        Ok(removed)
+    }
+
     /// Most recently printed distinct templates for this user (deterministic: MAX(id) tiebreak).
     pub async fn recent_templates(
         &self,
@@ -791,6 +806,23 @@ mod tests {
             store.list_favorites("u1").await.unwrap(),
             vec!["tpl_b".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn remove_favorites_for_template_drops_every_users_row() {
+        let store = Store::open_in_memory().unwrap();
+        store.add_favorite("u1", "t1").await.unwrap();
+        store.add_favorite("u2", "t1").await.unwrap();
+        store.add_favorite("u1", "t2").await.unwrap();
+
+        // Favorites are keyed by actor, so deleting the template must clear it for everyone.
+        assert_eq!(store.remove_favorites_for_template("t1").await.unwrap(), 2);
+        assert_eq!(
+            store.list_favorites("u1").await.unwrap(),
+            vec!["t2".to_string()]
+        );
+        assert!(store.list_favorites("u2").await.unwrap().is_empty());
+        assert_eq!(store.remove_favorites_for_template("t1").await.unwrap(), 0);
     }
 
     #[tokio::test]
