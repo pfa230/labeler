@@ -91,9 +91,19 @@ export function useReplaceTemplate() {
   return useMutation({
     mutationFn: ({ id, yaml }: { id: string; yaml: string }) =>
       yamlWrite("PUT", `/api/templates/${encodeURIComponent(id)}`, yaml),
-    onSuccess: (_data, { id }) => {
+    onSuccess: (_data, { id, yaml }) => {
       qc.invalidateQueries({ queryKey: ["templates"] });
       qc.invalidateQueries({ queryKey: ["template", id] });
+      // setQueryData, not invalidateQueries: the value is known rather than merely stale, and an
+      // invalidated query keeps serving the old text while it refetches — long enough for a quick
+      // second Edit to seed from pre-save YAML (#141).
+      qc.setQueryData(["template-source", id], yaml);
+    },
+    // A failed PUT does not imply an unchanged file: the write lands before the reload, so a 422
+    // from the reload leaves the edit on disk while the cache holds the pre-edit text. Neither
+    // value is trustworthy, so drop it and let /source say what is stored.
+    onError: (_err, { id }) => {
+      qc.removeQueries({ queryKey: ["template-source", id] });
     },
   });
 }
