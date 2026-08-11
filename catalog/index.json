@@ -1,18 +1,14 @@
 [
   {
     "category": "sheet",
-    "description": "Standard shipping labels on US Letter sheets",
+    "description": "Ten 2x4 inch labels per US Letter sheet, single text field",
     "fields": [
-      "description",
-      "id",
-      "name",
-      "tags",
-      "url"
+      "message"
     ],
     "format": "sheet",
     "id": "avery5163",
     "media_width_mm": null,
-    "name": "Avery 5163 2x4 Shipping Label",
+    "name": "Avery 5163 2\" x 4\" Shipping Label",
     "path": "sheet/avery/avery5163.yaml",
     "vendor": "avery"
   },

@@ -856,7 +856,7 @@ mod http_tests {
             }
         });
         let payload = json!({
-            "template": "avery5163",
+            "template": "avery5163_asset_tag",
             "mode": "download",
             "labels": [label.clone(), label]
         });
@@ -871,6 +871,26 @@ mod http_tests {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
         assert!(content_type.starts_with("application/pdf"));
+        let body = bytes_response(response).await;
+        assert!(body.starts_with(b"%PDF"), "missing PDF header");
+    }
+
+    /// The starter Avery is a sheet with no options and one `message` field (#135). Every other
+    /// sheet test drives the multi-variant fixture, so without this the simple path is unrendered.
+    #[tokio::test]
+    async fn batch_sheet_single_field_download_returns_pdf() {
+        let app = build_app();
+        let label = json!({ "data": { "message": "Kitchen — spare parts" } });
+        let payload = json!({
+            "template": "avery5163",
+            "mode": "download",
+            "labels": [label.clone(), label]
+        });
+        let response = app
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
         let body = bytes_response(response).await;
         assert!(body.starts_with(b"%PDF"), "missing PDF header");
     }
@@ -1000,7 +1020,7 @@ mod http_tests {
             }
         });
         let payload = json!({
-            "template": "avery5163",
+            "template": "avery5163_asset_tag",
             "mode": "print",
             "printer": "bad-sheet-printer",
             "labels": [label.clone(), label]
@@ -1034,7 +1054,7 @@ mod http_tests {
             }
         });
         let payload = json!({
-            "template": "avery5163",
+            "template": "avery5163_asset_tag",
             "mode": "print",
             "printer": "ok-sheet-printer",
             "labels": [label.clone(), label]
@@ -1313,15 +1333,15 @@ mod http_tests {
     #[tokio::test]
     async fn import_csv_routes_option_columns() {
         let app = build_app();
-        // avery5163 declares orientation/outline. The `option.orientation` column routes into the
-        // per-row option selection, so the horizontal variant renders.
+        // avery5163_asset_tag declares orientation/outline. The `option.orientation` column routes
+        // into the per-row option selection, so the horizontal variant renders.
         let csv = "id,url,name,tags,description,option.orientation,option.outline\n\
             A1,https://x,Widget,t,desc,horizontal,yes\n";
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=avery5163&mode=download")
+                    .uri("/api/import/csv?template=avery5163_asset_tag&mode=download")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1334,15 +1354,15 @@ mod http_tests {
     #[tokio::test]
     async fn import_csv_undeclared_option_column_returns_400() {
         let app = build_app();
-        // avery5163 does not declare `bogus`; an undeclared option.<name> column must be rejected
-        // (per SPEC section E), not silently ignored.
+        // avery5163_asset_tag does not declare `bogus`; an undeclared option.<name> column must be
+        // rejected (per SPEC section E), not silently ignored.
         let csv = "id,url,name,tags,description,option.bogus\n\
             A1,https://x,Widget,t,desc,whatever\n";
         let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=avery5163")
+                    .uri("/api/import/csv?template=avery5163_asset_tag")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
@@ -1363,7 +1383,7 @@ mod http_tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/import/csv?template=avery5163&mode=download")
+                    .uri("/api/import/csv?template=avery5163_asset_tag&mode=download")
                     .header("content-type", "text/csv")
                     .body(Body::from(csv))
                     .unwrap(),
