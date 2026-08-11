@@ -1944,6 +1944,104 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A rejected edit must not touch the stored template: `parse_and_validate` runs before the
+    /// write, so both the served source and the file on disk stay as they were.
+    #[tokio::test]
+    async fn template_replace_invalid_yaml_leaves_the_stored_template_unchanged() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("inv.yaml"), template_yaml("inv")).unwrap();
+        let app = build_app_in(&dir);
+
+        // 40mm wide inside a 20mm frame: parses fine, fails validate_bounds.
+        let bad = template_yaml("inv").replace("size: [20.0, 5.0]", "size: [40.0, 5.0]");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/inv", "PUT", bad))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/inv/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            String::from_utf8(body.to_vec()).unwrap(),
+            template_yaml("inv"),
+            "a rejected edit rewrote the file"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `replace_template` writes, then reloads the whole directory — so an unrelated invalid file
+    /// fails the reload after the edit has already landed. The `422` therefore does not mean
+    /// "nothing was saved", and the UI must not assume it does (#141). Retrying once the directory
+    /// is fixed converges.
+    #[tokio::test]
+    async fn template_replace_persists_even_when_an_invalid_sibling_fails_the_reload() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("p1.yaml"), template_yaml("p1")).unwrap();
+        let app = build_app_in(&dir);
+
+        std::fs::write(dir.join("bad.yaml"), "id: bad\nunit: nope\n").unwrap();
+        let edited = template_yaml("p1").replace("dpi: 300", "dpi: 200");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/p1", "PUT", edited.clone()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // The write landed even though the request failed…
+        assert_eq!(
+            std::fs::read_to_string(dir.join("p1.yaml")).unwrap(),
+            edited
+        );
+        // …while the registry still serves the pre-edit set.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/p1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let detail = json_response(resp).await;
+        assert_eq!(detail["dpi"], 300);
+
+        std::fs::remove_file(dir.join("bad.yaml")).unwrap();
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/p1", "PUT", edited))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/p1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let detail = json_response(resp).await;
+        assert_eq!(detail["dpi"], 200);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     // A valid write persists even if an unrelated invalid file makes the post-write reload fail (422).
     #[tokio::test]
     async fn create_persists_but_reload_reports_invalid_sibling() {
