@@ -27,7 +27,7 @@ const otherSource = "id: other_label\nname: Other Label\n";
 // the client sent are what a later read gets back.
 let currentSource = source;
 
-function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200) {
+function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200, slowOtherDetail = false) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -60,6 +60,9 @@ function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200) {
         return new Response(otherSource, { status: 200, headers: { "content-type": "text/yaml" } });
       }
       if (url.endsWith("/api/templates/other_label")) {
+        // Optionally slow: useTemplate keeps the previous detail as placeholder data, so this window
+        // is exactly when the page shows template A's detail under template B's URL.
+        if (slowOtherDetail) await new Promise((r) => setTimeout(r, 300));
         return new Response(JSON.stringify(other), {
           status: 200,
           headers: { "content-type": "application/json" },
@@ -254,6 +257,10 @@ describe("Template detail", () => {
   });
 
   it("drops an open draft when the route moves to another template", async () => {
+    // The new detail is slow on purpose: `useTemplate` serves the old one as placeholder data
+    // meanwhile, so keying the editor on detail.id would keep the previous template's draft mounted
+    // and savable while the URL already points at the new one.
+    stubFetch(204, 200, 200, true);
     renderPage();
     fireEvent.click(await screen.findByText(/raw yaml/i));
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
@@ -264,8 +271,9 @@ describe("Template detail", () => {
     // React Router reuses the templates/:id component, so without a reset the draft would follow.
     fireEvent.click(screen.getByRole("button", { name: /go to other/i }));
 
-    expect(await screen.findByText("Other Label")).toBeInTheDocument();
+    // Immediately, while the new detail is still loading: the draft must already be gone.
     expect(screen.queryByRole("textbox", { name: /template yaml/i })).not.toBeInTheDocument();
+    expect(await screen.findByText("Other Label")).toBeInTheDocument();
     fireEvent.click(await screen.findByText(/raw yaml/i));
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
     expect(screen.getByRole("textbox", { name: /template yaml/i })).toHaveValue(otherSource);

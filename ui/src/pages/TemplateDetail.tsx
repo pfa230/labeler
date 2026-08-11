@@ -326,10 +326,13 @@ export function TemplateDetail() {
         </section>
       )}
 
-      {/* Keyed by id: React Router reuses this component across /templates/a -> /templates/b, and a
-          remount is how editor state is dropped on that move (an effect that reset it would be
-          setState-in-effect, which the lint rule rightly rejects). */}
-      <RawYamlSection key={detail.id} id={detail.id} />
+      {/* Keyed by the route param, not detail.id: React Router reuses this component across
+          /templates/a -> /templates/b, and `useTemplate` serves the previous detail as placeholder
+          data while the new one loads, so detail.id lags the URL. Keying on it would leave a's draft
+          mounted — and savable against a — while the address bar already reads b. The remount is how
+          editor state is dropped (an effect that reset it would be setState-in-effect, which the
+          lint rule rightly rejects). */}
+      <RawYamlSection key={id} id={id} />
     </div>
   );
 }
