@@ -70,6 +70,22 @@ export function useCreateTemplate() {
   });
 }
 
+export function useDeleteTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => del(`/templates/${encodeURIComponent(id)}`),
+    onSuccess: (_data, id) => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["favorites"] });
+      qc.invalidateQueries({ queryKey: ["recent-templates"] });
+      // Removed, not invalidated: these two can only refetch into a 404 now, and a browser Back
+      // would otherwise serve the cached body of a template that no longer exists.
+      qc.removeQueries({ queryKey: ["template", id] });
+      qc.removeQueries({ queryKey: ["template-source", id] });
+    },
+  });
+}
+
 export function useReplaceTemplate() {
   const qc = useQueryClient();
   return useMutation({

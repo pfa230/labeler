@@ -1,5 +1,7 @@
-import { Link, useParams } from "react-router-dom";
-import { useTemplate, useTemplateSource } from "../api/queries";
+import { useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useDeleteTemplate, useTemplate, useTemplateSource } from "../api/queries";
+import { useToast } from "../app/toast-context";
 import { useTemplatePreview } from "../lib/preview";
 import { referencedFields, referencedVariables } from "../lib/templateFields";
 import type { Dimension, TemplateFormat } from "../api/types";
@@ -34,6 +36,10 @@ export function TemplateDetail() {
   const { data: detail, isLoading, isError, error } = useTemplate(id);
   const { data: source } = useTemplateSource(id);
   const { url: previewUrl, error: previewError, loading: previewLoading } = useTemplatePreview(detail);
+  const navigate = useNavigate();
+  const [confirming, setConfirming] = useState(false);
+  const remove = useDeleteTemplate();
+  const { push } = useToast();
 
   if (isLoading) return <p style={{ color: "var(--muted)" }}>loading…</p>;
   if (isError || !detail) {
@@ -56,13 +62,62 @@ export function TemplateDetail() {
           <h1 className="text-2xl font-semibold">{detail.name}</h1>
           <p style={{ color: "var(--muted)" }}>{detail.description}</p>
         </div>
-        <Link
-          to={`/print/${encodeURIComponent(detail.id)}`}
-          className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
-          style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
-        >
-          Use to print
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            to={`/print/${encodeURIComponent(detail.id)}`}
+            className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+            style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+          >
+            Use to print
+          </Link>
+          {confirming ? (
+            <>
+              <button
+                type="button"
+                disabled={remove.isPending}
+                onClick={() =>
+                  remove.mutate(detail.id, {
+                    onSuccess: () => {
+                      push({ kind: "ok", message: `Deleted ${detail.id}` });
+                      // The list is the index route; "/templates" is only a redirect to it.
+                      navigate("/");
+                    },
+                    onError: (err) => {
+                      // Restore the plain Delete button: leaving Confirm/Cancel up reads as a retry
+                      // prompt for something that already ran.
+                      setConfirming(false);
+                      push({
+                        kind: "error",
+                        message: err instanceof Error ? err.message : "Delete failed",
+                      });
+                    },
+                  })
+                }
+                className="rounded-md px-3 py-2 text-sm font-medium"
+                style={{ color: "var(--bad)" }}
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirming(false)}
+                className="rounded-md px-3 py-2 text-sm"
+                style={{ color: "var(--muted)" }}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirming(true)}
+              className="rounded-md px-3 py-2 text-sm font-medium"
+              style={{ color: "var(--bad)" }}
+            >
+              Delete
+            </button>
+          )}
+        </div>
       </div>
 
       <PreviewPane name={detail.name} format={detail.format.type} preview={{ url: previewUrl, error: previewError, loading: previewLoading }} />
