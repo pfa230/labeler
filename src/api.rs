@@ -436,8 +436,19 @@ pub async fn delete_template(
     let _guard = state.write_lock.lock().await;
     let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    std::fs::remove_file(&path)
-        .map_err(|err| AppError::render_failed(format!("failed to delete template: {err}")))?;
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        // The registry can outlive the file: if a previous delete unlinked it but its `reload()`
+        // then failed on an unrelated invalid sibling, the old set stays live and still names this
+        // path. Treat an already-absent file as removed and carry on, so retrying the delete once
+        // the directory is fixed converges instead of failing forever on a file that is already gone.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(AppError::render_failed(format!(
+                "failed to delete template: {err}"
+            )))
+        }
+    }
     // After the unlink, before the reload. Unlink first because it is the step that realistically
     // fails, and a prune-first order would mean a failed unlink had already destroyed favorites for
     // a template that still exists. Before the reload because `reload()` re-reads the whole

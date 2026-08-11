@@ -1720,6 +1720,55 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A delete unlinks the file, then reloads — and the reload re-reads the whole directory, so an
+    /// unrelated invalid sibling fails it and leaves the previous set live (the deliberate policy in
+    /// `reload_invalid_file_keeps_previous_set`). The registry then names a file that is gone.
+    /// Retrying the delete once the directory is fixed must converge rather than error forever on
+    /// the missing file.
+    #[tokio::test]
+    async fn delete_converges_after_a_reload_failure_left_the_registry_stale() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("s1.yaml"), template_yaml("s1")).unwrap();
+        let app = build_app_in(&dir);
+
+        std::fs::write(dir.join("bad.yaml"), "id: bad\nunit: nope\n").unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/s1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            !dir.join("s1.yaml").exists(),
+            "the unlink should have happened"
+        );
+        // The reload failed, so the stale set still lists the template it can no longer serve.
+        assert_eq!(template_count(&app).await, 1);
+
+        std::fs::remove_file(dir.join("bad.yaml")).unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/s1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(template_count(&app).await, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn delete_removes_a_yml_backed_template() {
         let dir = temp_templates_dir();
