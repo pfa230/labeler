@@ -743,7 +743,7 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
     std::fs::create_dir_all(&dir).expect("create merged template dir");
     // The catalog is nested (tape/brother, sheet/avery, examples) but the registry — and
     // {config}/templates, where installs land — is flat, so flatten while copying. Ids are unique
-    // across the tree, enforced by `catalog_ids_are_unique_and_match_filenames` (#137).
+    // across the tree, enforced by `template_ids_are_unique_and_match_filenames` (#135).
     fn copy_yaml_into(src: &FsPath, dest: &FsPath) {
         for entry in std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {src:?}: {e}")) {
             let path = entry.expect("dir entry").path();
