@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
 import { useToast } from "../app/toast-context";
@@ -34,7 +34,7 @@ function Chip({ children }: { children: React.ReactNode }) {
 export function TemplateDetail() {
   const { id = "" } = useParams();
   const { data: detail, isLoading, isError, error } = useTemplate(id);
-  const { data: source, isError: sourceFailed } = useTemplateSource(id);
+  const { data: source, isError: sourceFailed, error: sourceError } = useTemplateSource(id);
   const { url: previewUrl, error: previewError, loading: previewLoading } = useTemplatePreview(detail);
   const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
@@ -47,6 +47,15 @@ export function TemplateDetail() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const remove = useDeleteTemplate();
   const save = useReplaceTemplate();
+
+  // React Router reuses this component across /templates/a -> /templates/b, so editor state would
+  // otherwise survive the move and show one template's YAML as another's.
+  useEffect(() => {
+    setDraft(null);
+    setBaseline("");
+    setDiscarding(false);
+    setSaveError(null);
+  }, [id]);
   const { push } = useToast();
 
   if (isLoading) return <p style={{ color: "var(--muted)" }}>loading…</p>;
@@ -213,7 +222,9 @@ export function TemplateDetail() {
               className="mt-3 overflow-auto rounded-md p-3 text-xs"
               style={{ background: "var(--bg)", color: "var(--ink)" }}
             >
-              {sourceFailed ? "Could not load the template source." : (source ?? "loading…")}
+              {sourceFailed
+                ? `Could not load the template source: ${sourceError instanceof Error ? sourceError.message : "unknown error"}`
+                : (source ?? "loading…")}
             </pre>
             <button
               type="button"
