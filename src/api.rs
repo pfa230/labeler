@@ -302,6 +302,22 @@ fn template_file_path(dir: &std::path::Path, id: &str) -> Result<PathBuf, AppErr
     Ok(dir.join(format!("{id}.yaml")))
 }
 
+/// The on-disk file backing `id`, per the registry. `None` for an id the registry does not hold.
+///
+/// It resolves through the registry and never guesses at a filename: `y1.yml` may well declare
+/// `id: other`, so treating a matching filename as the backing file would let `DELETE /templates/y1`
+/// unlink another template's file. A stray file the registry never loaded stays a filesystem
+/// concern (#140).
+fn existing_template_file(
+    registry: &TemplateRegistry,
+    dir: &std::path::Path,
+    id: &str,
+) -> Result<Option<PathBuf>, AppError> {
+    // Called for its id validation; the conventional path it returns is not the answer here.
+    template_file_path(dir, id)?;
+    Ok(registry.path(id).map(std::path::Path::to_path_buf))
+}
+
 fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
     let template =
         parse_template(body).map_err(|err| AppError::template_invalid(err.to_string()))?;
@@ -347,7 +363,10 @@ pub async fn create_template(
     let id = template.id.clone();
     let path = template_file_path(&state.templates_dir, &id)?;
     let _guard = state.write_lock.lock().await;
-    if path.exists() {
+    // Registry first: the id may already be held by a file under a different name, which
+    // `path.exists()` misses — and writing anyway leaves two files declaring one id, failing the
+    // reload below. The path check still covers a file the registry has not loaded.
+    if state.templates.load_full().get(&id).is_some() || path.exists() {
         return Err(AppError::template_exists(&id));
     }
     write_template_file(&path, &body)?;
@@ -384,11 +403,11 @@ pub async fn replace_template(
             template.id
         )));
     }
-    let path = template_file_path(&state.templates_dir, &id)?;
+    // Resolved under the lock, not before it: an in-flight delete would otherwise unlink the file
+    // between the resolve and the write, and this handler would recreate the template it removed.
     let _guard = state.write_lock.lock().await;
-    if !path.exists() {
-        return Err(AppError::template_not_found(id));
-    }
+    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     write_template_file(&path, &body)?;
     state.reload()?;
     let detail = state
@@ -412,11 +431,9 @@ pub async fn delete_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let path = template_file_path(&state.templates_dir, &id)?;
     let _guard = state.write_lock.lock().await;
-    if !path.exists() {
-        return Err(AppError::template_not_found(id));
-    }
+    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     std::fs::remove_file(&path)
         .map_err(|err| AppError::render_failed(format!("failed to delete template: {err}")))?;
     state.reload()?;
@@ -460,7 +477,8 @@ pub async fn template_source(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let path = template_file_path(&state.templates_dir, &id)?;
+    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     let yaml = std::fs::read_to_string(&path).map_err(|_| AppError::template_not_found(id))?;
     Ok((
         axum::http::StatusCode::OK,

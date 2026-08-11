@@ -29,6 +29,9 @@ pub struct TemplateDefinition {
 pub struct TemplateRegistry {
     templates: HashMap<String, TemplateDefinition>,
     hashes: HashMap<String, String>,
+    // The file each id was loaded from. A template's filename is only conventionally its id, so the
+    // file-backed endpoints (source/PUT/DELETE) cannot reconstruct this from the id alone (#140).
+    paths: HashMap<String, PathBuf>,
 }
 
 impl TemplateRegistry {
@@ -89,7 +92,11 @@ impl TemplateRegistry {
             templates.insert(template.id.clone(), template);
         }
 
-        Ok(Self { templates, hashes })
+        Ok(Self {
+            templates,
+            hashes,
+            paths: seen_paths,
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -107,6 +114,11 @@ impl TemplateRegistry {
     /// Lowercase hex SHA-256 of the template's raw YAML, used as a strong ETag.
     pub fn content_hash(&self, id: &str) -> Option<&str> {
         self.hashes.get(id).map(String::as_str)
+    }
+
+    /// The file this id was loaded from, or `None` if the registry does not hold the id.
+    pub fn path(&self, id: &str) -> Option<&FsPath> {
+        self.paths.get(id).map(PathBuf::as_path)
     }
 
     pub fn summaries(&self) -> Vec<TemplateSummary> {
