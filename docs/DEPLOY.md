@@ -168,6 +168,11 @@ curl -fsSL https://raw.githubusercontent.com/pfa230/labeler/main/catalog/tape/br
       -H "content-type: text/yaml" --data-binary @-
 ```
 
+**Other tape widths.** The catalog ships 9/12/18/24mm. For another width, install the closest
+template, then edit it in the UI (Labels → the template → Edit) or `PUT /api/templates/{id}`:
+`format.height` is the printable height (narrower than the nominal tape), `format.media_width` is the
+nominal width used for print preflight, and the `font_size` range wants scaling to match.
+
 Offline, fetch the YAML on any machine that has network and paste it into **Labels → Paste YAML**, or
 POST the file directly. `catalog/index.json` lists every entry with its id, format, media width and
 required fields.

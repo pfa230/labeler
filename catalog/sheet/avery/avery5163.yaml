@@ -1,14 +1,8 @@
 id: avery5163
-name: Avery 5163 2x4 Shipping Label
-description: Standard shipping labels on US Letter sheets
+name: Avery 5163 2" x 4" Shipping Label
+description: Ten 2x4 inch labels per US Letter sheet, single text field
 unit: in
 dpi: 300
-options:
-  orientation:
-    - horizontal
-    - vertical
-  outline:
-    - yes
 format:
   type: sheet
   paper_width: 8.5
@@ -30,110 +24,18 @@ format:
     - [4.33, 0.5]
 layout:
   - type: container
-    option:
-      outline: yes
     at: [0.0, 0.0]
     size: [4.0, 2.0]
-    frame:
-      thickness: 0.02
-      rounded: false
-    items: []
-  # Horizontal: 1.5in left column (QR over centered id) + full-height divider +
-  # 2.5in right column (name over a 3/4 rule, then tags above description).
-  - type: container
-    option:
-      orientation: horizontal
-    at: [0.0, 0.0]
-    size: [4.0, 2.0]
+    padding: 0.15
     items:
-      - type: qr
-        name: url
-        at: [0.1, 0.45]
-        size: [1.3, 1.3]
-        params:
-          quiet_zone: 0.0
       - type: text
-        name: id
-        at: [0.1, 0.1]
-        size: [1.3, 0.35]
-        font_size: {min: 11.0, max: 22.0}
-        alignment: {horizontal: center, vertical: center}
-      - type: line
-        at: [1.5, 0.0]
-        to: [1.5, 2.0]
-        thickness: 0.01
-      - type: line
-        at: [1.5, 1.5]
-        to: [4.0, 1.5]
-        thickness: 0.01
-      - type: text
-        name: name
-        at: [1.6, 1.5]
-        size: [2.3, 0.4]
-        font_size: {min: 12.0, max: 24.0}
+        name: message
+        at: [0.0, 0.0]
+        size: [3.7, 1.7]
+        font_size:
+          min: 10.0
+          max: 48.0
         multiline: true
-        alignment: {horizontal: left, vertical: center}
-      - type: text
-        name: tags
-        at: [1.6, 0.75]
-        size: [2.3, 0.65]
-        font_size: 12.0
-        multiline: true
-        alignment: {horizontal: left, vertical: center}
-      - type: text
-        name: description
-        at: [1.6, 0.1]
-        size: [2.3, 0.65]
-        font_size: 12.0
-        multiline: true
-        alignment: {horizontal: left, vertical: center}
-  # Vertical: a portrait design authored in the swapped [2,4] author canvas, rotated 90 CCW
-  # onto the landscape slot (#98). QR top, id, rule, name, rule, tags, description.
-  - type: container
-    option:
-      orientation: vertical
-    at: [0.0, 0.0]
-    size: [4.0, 2.0]
-    rotate: 90
-    items:
-      - type: qr
-        name: url
-        at: [0.2, 2.3]
-        size: [1.6, 1.6]
-        params:
-          quiet_zone: 0.0
-      - type: text
-        name: id
-        at: [0.1, 1.92]
-        size: [1.8, 0.38]
-        font_size: {min: 10.0, max: 20.0}
-        alignment: {horizontal: center, vertical: center}
-      - type: line
-        at: [0.0, 1.92]
-        to: [2.0, 1.92]
-        thickness: 0.007
-      - type: text
-        name: name
-        at: [0.1, 1.01]
-        size: [1.8, 0.91]
-        font_size: {min: 13.0, max: 26.0}
-        multiline: true
-        alignment: {horizontal: center, vertical: center}
-      - type: line
-        at: [0.0, 1.01]
-        to: [2.0, 1.01]
-        thickness: 0.007
-      - type: text
-        name: tags
-        at: [0.1, 0.5]
-        size: [1.8, 0.41]
-        font_size: 12.0
-        multiline: true
-        alignment: {horizontal: left, vertical: top}
-      - type: text
-        name: description
-        at: [0.1, 0.1]
-        size: [1.8, 0.4]
-        font_size: 12.0
-        multiline: true
-        alignment: {horizontal: left, vertical: top}
+        alignment:
+          horizontal: center
+          vertical: center

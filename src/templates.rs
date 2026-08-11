@@ -722,14 +722,15 @@ impl From<&TemplateDefinition> for TemplateDetail {
     }
 }
 
-/// Test-only registry covering the whole `catalog/` tree.
+/// Test-only registry covering the whole `catalog/` tree plus `tests/fixtures/templates/`.
 ///
 /// Nothing ships with the binary any more (#137): templates live in `catalog/` and users install
 /// what they want. The suite still needs all of them — sheet format, options, container rotation, QR
-/// layout and interpolation are only covered by catalog entries. Flattens the tree into a temp dir
-/// because `load_from_dir` takes one path and does not recurse,
-/// and returns that dir so a test's `templates_dir` matches its registry — the source/save/delete
-/// endpoints read YAML off disk, so a registry that disagreed with the dir would 404 on them.
+/// layout and interpolation are only covered by catalog entries or the engine-demo fixtures moved out
+/// of `catalog/` in #135. Flattens both trees into a single temp dir because `load_from_dir` takes one
+/// path and does not recurse, and returns that dir so a test's `templates_dir` matches its registry —
+/// the source/save/delete endpoints read YAML off disk, so a registry that disagreed with the dir
+/// would 404 on them.
 #[cfg(test)]
 pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -742,7 +743,7 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
     std::fs::create_dir_all(&dir).expect("create merged template dir");
     // The catalog is nested (tape/brother, sheet/avery, examples) but the registry — and
     // {config}/templates, where installs land — is flat, so flatten while copying. Ids are unique
-    // across the tree, enforced by `catalog_ids_are_unique_and_match_filenames` (#137).
+    // across the tree, enforced by `template_ids_are_unique_and_match_filenames` (#135).
     fn copy_yaml_into(src: &FsPath, dest: &FsPath) {
         for entry in std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {src:?}: {e}")) {
             let path = entry.expect("dir entry").path();
@@ -766,6 +767,12 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
         }
     }
     copy_yaml_into(FsPath::new("catalog"), &dir);
+    // The engine demos (QR, multiline, sheet options, rotation, interpolation) are test corpus, not
+    // catalog entries (#135). They flatten into the same dir: ids are unique across both roots,
+    // enforced by `template_ids_are_unique_and_match_filenames`. The files must be copied, not just
+    // registered — this dir becomes `templates_dir`, and GET /templates/{id}/source reads
+    // {templates_dir}/{id}.yaml off disk.
+    copy_yaml_into(FsPath::new("tests/fixtures/templates"), &dir);
     let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
     (registry, dir)
 }

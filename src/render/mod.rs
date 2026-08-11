@@ -1284,7 +1284,7 @@ mod tests {
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
 
     #[test]
     fn measure_skips_children_of_rotated_container() {
@@ -2347,16 +2347,33 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
-    /// #137: every catalog entry must parse, validate and render. Replaces the hardcoded starter-tape
-    /// list — the catalog is the product surface now, so all of it is the gate and a broken entry
-    /// cannot sit there unnoticed.
+    /// #135: every template in either root must parse, validate and render — the five catalog
+    /// entries and the five fixtures alike. Deliberately wider than the catalog: `brother_18mm_qr`,
+    /// `brother_9mm` and `brother_18mm` have zero references anywhere in `src/`, so this gate is the
+    /// only thing proving they work. An exact set, not a floor: "render whatever the loader found"
+    /// passes vacuously the moment a root is misconfigured and the loader quietly returns fewer.
     #[test]
-    fn every_catalog_template_renders() {
+    fn every_template_renders() {
         let registry = crate::templates::load_all_for_tests().0;
-        assert!(
-            registry.len() >= 9,
-            "catalog looks empty ({} templates) — did the walk find catalog/?",
-            registry.len()
+        // Bind the Vec: `summaries()` returns by value, so borrowing `&str` straight out of the
+        // call expression drops the temporary while the set still holds references (E0716).
+        let summaries = registry.summaries();
+        let found: BTreeSet<&str> = summaries.iter().map(|s| s.id.as_str()).collect();
+        let expected: BTreeSet<&str> = BTreeSet::from([
+            "avery5163",
+            "avery5163_asset_tag",
+            "brother_12mm",
+            "brother_18mm",
+            "brother_18mm_qr",
+            "brother_24mm",
+            "brother_24mm_multiline",
+            "brother_24mm_qr",
+            "brother_9mm",
+            "homebox-qr",
+        ]);
+        assert_eq!(
+            found, expected,
+            "template roots do not hold the expected set"
         );
         // homebox-qr interpolates {vars.qr_base_url} and {datetime.iso_date}; supply both so the
         // demo entry is covered rather than skipped.
@@ -2382,25 +2399,57 @@ mod tests {
         }
     }
 
+    fn walk_templates(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+            let path = entry.expect("entry").path();
+            let meta = std::fs::symlink_metadata(&path).expect("stat template entry");
+            if meta.is_dir() {
+                walk_templates(&path, out);
+            } else if path.extension().is_some_and(|x| x == "yaml" || x == "yml") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// #135: the catalog is the product surface and is designed, not accreted. An exact set rather
+    /// than a count: it names what ships, and it fails on a silent rename as well as an addition.
+    /// Fixtures live in `tests/fixtures/templates/` and must never appear here.
+    #[test]
+    fn catalog_is_exactly_the_starter_set() {
+        let mut files = Vec::new();
+        walk_templates(std::path::Path::new("catalog"), &mut files);
+        let found: BTreeSet<String> = files
+            .iter()
+            .map(|p| p.file_stem().expect("stem").to_string_lossy().to_string())
+            .collect();
+        let expected: BTreeSet<String> = [
+            "avery5163",
+            "brother_12mm",
+            "brother_18mm",
+            "brother_24mm",
+            "brother_9mm",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            found, expected,
+            "catalog contents changed; update this gate and docs/adr/0047 deliberately"
+        );
+    }
+
     /// Ids are the API key, the `/print/{id}` route and what print webhooks hardcode, and installs
     /// land flat in `{config}/templates` — so a duplicate id anywhere in the nested catalog would
     /// collide on install, and an id that differs from its filename would install under a name the
     /// catalog does not know (#137).
     #[test]
-    fn catalog_ids_are_unique_and_match_filenames() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-            for entry in std::fs::read_dir(dir).expect("read catalog") {
-                let path = entry.expect("entry").path();
-                if path.is_dir() {
-                    walk(&path, out);
-                } else if path.extension().is_some_and(|x| x == "yaml" || x == "yml") {
-                    out.push(path);
-                }
-            }
-        }
+    fn template_ids_are_unique_and_match_filenames() {
         let mut files = Vec::new();
-        walk(std::path::Path::new("catalog"), &mut files);
-        assert!(!files.is_empty(), "no catalog templates found");
+        walk_templates(std::path::Path::new("catalog"), &mut files);
+        // Both roots flatten into one dir at test time, so a cross-root duplicate would overwrite a
+        // file before `load_from_dir` could ever see two ids (#135).
+        walk_templates(std::path::Path::new("tests/fixtures/templates"), &mut files);
+        assert!(!files.is_empty(), "no templates found");
 
         let mut seen: HashMap<String, std::path::PathBuf> = HashMap::new();
         for path in files {

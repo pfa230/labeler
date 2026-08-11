@@ -145,7 +145,7 @@ response (download yields a binary, print yields a JSON summary). See [ADR-0011]
 
 ```json
 {
-  "template": "avery5163",
+  "template": "avery5163_asset_tag",
   "mode": "download",
   "start_slot": 0,
   "labels": [
@@ -438,7 +438,8 @@ options:
   else `422 InvalidOptionValue`. Supplying `option` to a template without `options` is `400`.
 - A `container` may carry an `option` map. The container (and its subtree) renders only when the
   request's selection matches all of the container's option entries. This is how one template supports
-  multiple layouts (e.g. horizontal vs. vertical) — see `catalog/sheet/avery/avery5163.yaml`.
+  multiple layouts (e.g. horizontal vs. vertical) — see
+  `tests/fixtures/templates/avery5163_asset_tag.yaml`.
 
 ## 6. Coordinate system
 
@@ -837,6 +838,17 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-08-11**: The catalog is a designed set of five single-field templates (ADR-0047, #135):
+  `brother_9mm`, `brother_12mm`, `brother_18mm`, `brother_24mm` and `avery5163`, each exposing one
+  text field named `message`. `avery5163` is now a plain 2x4 label; its previous multi-variant asset
+  tag moved to `tests/fixtures/templates/avery5163_asset_tag.yaml` alongside `brother_18mm_qr`,
+  `brother_24mm_qr`, `brother_24mm_multiline` and `homebox-qr`. **Correcting the 2026-08-02 entry
+  below:** #134 did move those five to `tests/fixtures/templates/`, but #137 moved them back into
+  `catalog/` as part of the catalog refactor, so they have been on the browse list since. They are
+  test corpus again, and this time a gate pins the catalog to the five ids above. Redefining the
+  published `avery5163` id is a **breaking catalog contract change**: the index advertised
+  `description, id, name, tags, url` for that id and now advertises `message`.
 
 - **2026-08-08**: Templates are no longer bundled or seeded (ADR-0046; #137). They live in `catalog/`
   in the repo, structured `<media-class>/<vendor>/`, with a CI-generated `catalog/index.json`. A new
