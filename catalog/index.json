@@ -1,32 +1,14 @@
 [
   {
-    "category": "examples",
-    "description": "Asset label whose QR links a configured base URL to an item id (variables interpolation demo)",
-    "fields": [
-      "id",
-      "message"
-    ],
-    "format": "single",
-    "id": "homebox-qr",
-    "media_width_mm": null,
-    "name": "Homebox QR Asset Label",
-    "path": "examples/homebox-qr.yaml",
-    "vendor": null
-  },
-  {
     "category": "sheet",
-    "description": "Standard shipping labels on US Letter sheets",
+    "description": "Ten 2x4 inch labels per US Letter sheet, single text field",
     "fields": [
-      "description",
-      "id",
-      "name",
-      "tags",
-      "url"
+      "message"
     ],
     "format": "sheet",
     "id": "avery5163",
     "media_width_mm": null,
-    "name": "Avery 5163 2x4 Shipping Label",
+    "name": "Avery 5163 2\" x 4\" Shipping Label",
     "path": "sheet/avery/avery5163.yaml",
     "vendor": "avery"
   },
@@ -58,20 +40,6 @@
   },
   {
     "category": "tape",
-    "description": "Continuous tape, 18mm nominal (15.8mm printable at 180 dpi), QR left + text",
-    "fields": [
-      "code",
-      "message"
-    ],
-    "format": "single",
-    "id": "brother_18mm_qr",
-    "media_width_mm": 18.0,
-    "name": "Brother 18mm Continuous Label (QR + text)",
-    "path": "tape/brother/brother_18mm_qr.yaml",
-    "vendor": "brother"
-  },
-  {
-    "category": "tape",
     "description": "Continuous tape, 24mm nominal (18.1mm printable at 180 dpi), text only",
     "fields": [
       "message"
@@ -81,33 +49,6 @@
     "media_width_mm": 24.0,
     "name": "Brother 24mm Continuous Label (text only)",
     "path": "tape/brother/brother_24mm.yaml",
-    "vendor": "brother"
-  },
-  {
-    "category": "tape",
-    "description": "Continuous tape, 24mm nominal (18.1mm printable at 180 dpi), multiline text with auto-length",
-    "fields": [
-      "message"
-    ],
-    "format": "single",
-    "id": "brother_24mm_multiline",
-    "media_width_mm": 24.0,
-    "name": "Brother 24mm Continuous Label (multiline)",
-    "path": "tape/brother/brother_24mm_multiline.yaml",
-    "vendor": "brother"
-  },
-  {
-    "category": "tape",
-    "description": "Continuous tape, 24mm nominal (18.1mm printable at 180 dpi), QR left + text",
-    "fields": [
-      "code",
-      "message"
-    ],
-    "format": "single",
-    "id": "brother_24mm_qr",
-    "media_width_mm": 24.0,
-    "name": "Brother 24mm Continuous Label (QR + text)",
-    "path": "tape/brother/brother_24mm_qr.yaml",
     "vendor": "brother"
   },
   {

@@ -45,12 +45,17 @@ service from starting.
 
 **A new install starts with no templates.** Install what you need from the catalog in the UI
 (Labels → Browse the catalog), or paste YAML. The catalog lives in this repo under `catalog/`,
-organised by media class and vendor: the Brother continuous-tape set
-`brother_9mm` / `brother_12mm` / `brother_18mm` / `brother_24mm` (text only) plus `brother_18mm_qr` /
-`brother_24mm_qr` and `brother_24mm_multiline`; `avery5163` (US Letter sheet, and the multi-variant
-example with options and rotation); and `homebox-qr`, a Homebox asset label whose QR links to an item,
-demonstrating variable interpolation. Your browser downloads the entry and the server validates and
-stores it — the server itself never reaches out, so air-gapped deployments paste YAML instead.
+organised by media class and vendor: the Brother continuous-tape set `brother_9mm` / `brother_12mm` /
+`brother_18mm` / `brother_24mm`, and `avery5163`, ten 2x4 inch labels per US Letter sheet. Every one
+takes a single text field named `message`, so an import maps one column and works against any of
+them. Your browser downloads the entry and the server validates and stores it — the server itself
+never reaches out, so air-gapped deployments paste YAML instead.
+
+**On other tape widths.** Copy the closest tape template and change three things: `format.height`
+(the printable height, narrower than the nominal tape), `format.media_width` (the nominal width, used
+for print preflight), and the `font_size` range. Templates demonstrating engine features — QR
+layouts, multiline, sheet options and rotation, variable interpolation — are not in the catalog; they
+live in `tests/fixtures/templates/` and are worth reading when authoring your own.
 
 ## Endpoints
 
@@ -65,7 +70,7 @@ All routes are under `/api` (the root is reserved for the web UI); unknown `/api
 - `GET /api/openapi.json` → OpenAPI document
 - `GET /api/docs/` → Swagger UI
 
-`scripts/render_avery_horizontal.sh` posts a sample request to a running server and writes a PDF. All
+`scripts/render_avery_sheet.sh` posts a sample request to a running server and writes a PDF. All
 `/api` routes require authentication (ADR-0017), so export `LABELER_API_TOKEN` (create one in the UI
 under Settings) before running it; the script sends it as `Authorization: Bearer $LABELER_API_TOKEN`.
 

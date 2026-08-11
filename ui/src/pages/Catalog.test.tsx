@@ -27,7 +27,7 @@ const index = [
     vendor: "avery",
     format: "sheet",
     media_width_mm: null,
-    fields: ["id", "name"],
+    fields: ["message"],
   },
 ];
 
