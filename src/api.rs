@@ -436,6 +436,14 @@ pub async fn delete_template(
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     std::fs::remove_file(&path)
         .map_err(|err| AppError::render_failed(format!("failed to delete template: {err}")))?;
+    // After the unlink, before the reload. Unlink first because it is the step that realistically
+    // fails, and a prune-first order would mean a failed unlink had already destroyed favorites for
+    // a template that still exists. Before the reload because `reload()` re-reads the whole
+    // directory and can fail on an unrelated invalid sibling (see
+    // `reload_invalid_file_keeps_previous_set`) — with the prune after it, that unrelated failure
+    // would leave the file deleted and the favorite alive, the exact state this prune prevents.
+    // Recents are not pruned: they derive from the job log, which is print history (#94).
+    state.store().remove_favorites_for_template(&id).await?;
     state.reload()?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -1820,10 +1828,12 @@ pub async fn add_favorite(
     axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
     Path(template_id): Path<String>,
 ) -> Result<Response, AppError> {
+    let _guard = state.write_lock.lock().await;
+    // Under the lock, not before it: an in-flight delete would otherwise prune between this check
+    // and the insert below, leaving exactly the stale row the prune exists to remove (#140).
     if state.templates.load_full().get(&template_id).is_none() {
         return Err(AppError::template_not_found(template_id));
     }
-    let _guard = state.write_lock.lock().await;
     state
         .store()
         .add_favorite(&principal.actor_id(), &template_id)

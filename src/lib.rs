@@ -1637,6 +1637,90 @@ layout:
     }
 
     #[tokio::test]
+    async fn delete_missing_template_returns_404() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateNotFound");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The read-side registry filter hides a stale favorite, so asserting it is gone right after the
+    /// delete would pass with or without the prune. Re-creating the id is what discriminates: an
+    /// unpruned row becomes visible again, attached to a template the user never favorited (#140).
+    #[tokio::test]
+    async fn deleting_a_template_prunes_its_favorites() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("f1.yaml"), template_yaml("f1")).unwrap();
+        let app = build_app_in(&dir);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/favorites/f1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/f1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("f1")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/favorites")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let body = json_response(resp).await;
+        assert_eq!(
+            body.as_array().expect("favorites array").len(),
+            0,
+            "a favorite survived the delete and re-attached to the new template"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn delete_removes_a_yml_backed_template() {
         let dir = temp_templates_dir();
         // The registry loads *.yml as well as *.yaml, so this template is live — and must be
