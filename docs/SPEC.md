@@ -376,9 +376,10 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units (see §6). |
-| `size` | `[w, h]` | — | Each entry is a number or `auto`. |
-| `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. |
+| `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units; may be edge-relative (see §6). |
+| `size` | `[w, h]` | — | Each entry is a number or `auto`. Mutually exclusive with `to`; exactly one is required (a `container` defaults to `[auto, auto]`). |
+| `to` | `[x, y]` | — | Opposite (top-right) corner; `size = to - at` after both corners resolve. Mutually exclusive with `size`. |
+| `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. An error alongside `to`, which has no `auto` axis. |
 | `rotate` | number (deg) | — | **Container only.** Orthogonal CCW rotation of the container's inner content; see §4.2. An error on any non-container item. |
 
 `auto` size resolves to `max_w`/`max_h` if present; for `container` it falls back to the parent frame's
@@ -408,9 +409,9 @@ be > 0. (`line` does not use `size`; see §4.1.)
   Bytes are decoded server-side and injected into Typst as a virtual file; there is no server-side URL
   fetching (see ADR-0009). The assets root is `{config}/assets/` (`LABELER_CONFIG_DIR`). Missing data
   key → `MissingField`; bad base64 / unsupported format / asset path problems → `UnsupportedLayoutItem`.
-- **`line`** — `at` (start, default `[0,0]`) and `to` (end), both absolute in frame coordinates, plus
-  `thickness` (> 0). Lines have no box `size`/`fit`/rotation. Endpoints must differ and lie within the
-  layout bounds.
+- **`line`** — `at` (start, default `[0,0]`) and `to` (end), both in frame coordinates, either absolute
+  or edge-relative (§6); endpoints must differ **after** resolution. Plus `thickness` (> 0). Lines have
+  no box `size`/`fit`/rotation. Endpoints must lie within the layout bounds.
 - **`container`** — a recursive group. Fields: placement (size defaults to `auto`/`auto` = fill parent),
   optional `option` gate (§5), optional `frame` (`thickness` > 0, `rounded` bool), `padding`, and
   `items` (nested layout). Children are positioned relative to the container's padded inner box.
@@ -438,10 +439,11 @@ A `container` may set `rotate` to turn a portrait design onto a landscape slot (
   `[inner_h, inner_w]`. Padding is **author-space** (it rotates with the design; `padding.top` is
   "above" in reading orientation regardless of angle). The physical `frame` outline is **not**
   rotated.
-- **No `auto` under rotation.** A rotated container must have an explicit `size`, and no descendant
-  inside it may use `auto` width/height (author-horizontal maps to physical-vertical, which the
-  dynamic-width measurement model does not handle). The measurement pass does not recurse into a
-  rotated container.
+- **No `auto` under rotation.** A rotated container must have an extent that resolves at compile time:
+  an explicit `size`, or a `to` whose width is not frame-dependent (both corners plain, or both
+  edge-relative, which cancel). No descendant may use `auto` (author-horizontal maps to
+  physical-vertical, which the dynamic-width measurement model does not handle). The measurement pass
+  does not recurse into a rotated container.
 
 ## 5. Options
 
@@ -469,6 +471,29 @@ measured against the container's **padded inner** width/height, not the page.
 
 When changing placement math, this conversion and the per-container reframing are the two things to get
 right.
+
+A coordinate component may be **edge-relative**: a *sign-negative* value is measured inward from the
+frame's far edge rather than outward from its origin.
+
+| Component | Sign | Measured from |
+| --- | --- | --- |
+| `x` | non-negative | left edge |
+| `x` | sign-negative | **right** edge: `frame_width + x` |
+| `y` | non-negative | bottom edge |
+| `y` | sign-negative | **top** edge: `frame_height + y` |
+
+`-0.0` (or `-0`) is the far edge exactly; `-2.0` is 2 units inside it. The test is the sign bit, not
+`< 0`, because `-0.0 < 0.0` is false. Edge-relative components apply to `at` and to `line`/box `to`,
+never to `size`, `max_w`, `max_h`, `padding`, or `thickness`, and they resolve against the **current**
+frame: the page, a container's padded inner box, or a rotated container's swapped author canvas.
+
+On a dynamic-width `single` the final width is not known until the measure pass runs, so an
+edge-relative `x` is bounds-checked against `width.max` at load time and re-checked at render. An
+edge-relative coordinate never contributes a frame-dependent width to the measured content extent, but
+an item that sizes itself to its content still contributes that content: a text box spanning to the
+right edge is measured at its natural width, so several full-width centered lines size the label to the
+longest of them. An edge-relative `at.x` contributes only its inset, and cannot be combined with an
+`auto` or frame-dependent width on a dynamic-width template.
 
 ## 7. Rendering pipeline
 
@@ -865,6 +890,8 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
+  (ADR-0050, #146, #147).
 - **2026-08-12**: Text items accept `font_weight` (100-900 in steps of 100; #97), honored by the
   renderer and by the auto-shrink fitter. Fitting now measures the font instance Typst actually
   renders — the `wght` axis from the item's weight and the `opsz` axis from the font size, both of
