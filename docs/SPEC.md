@@ -346,9 +346,18 @@ Flutter (`StrutStyle`) all follow (ADR-0045, #133).
 
 Consequences worth knowing when authoring a template:
 
-- **Descenders hang below the box.** `g j p q y` extend past the baseline, so at a `bottom` edge they
-  fall outside the clipped slot and are cut (#124). Leave room, or avoid `bottom` for text with
-  descenders.
+- **`top` and `bottom` inset the block so its ink stays inside the slot.** The line box runs
+  cap-height to baseline, so `g j p q y` fall below it and accented capitals (`É`) rise above it —
+  outside the clipped slot. A `top`- or `bottom`-aligned block is therefore padded at its aligned edge
+  by the font's overflow there (`ascender − cap_height`, `|descender|`; both 0.2412em in Inter), and
+  the auto-shrink fitter reserves *both* overflows for such items so the edge the text is not aligned
+  to cannot clip either. A height-bound `top`/`bottom` item consequently fits at a smaller size than
+  the cap-height box alone would allow (ADR-0050).
+- **Two limits worth knowing.** `center` is not inset: it splits the slack already, and reserving both
+  sides would cost a full em and shrink every centered template. Centered text can therefore still
+  clip in a slot shorter than `1.21 × font_size`. And the reservation covers the font's
+  ascender/descender band, not glyphs outside it — Inter has 211 that ink above its ascender and 197
+  below its descender (`Ǻ`, circled letters), which can still clip at any alignment.
 - **Lowercase-only text sits lower in its slot than all-caps.** The box always reserves cap-height
   space above the baseline whether or not the string uses it. This is inherent to baseline alignment,
   not a bug — it is what every other renderer produces.
@@ -865,6 +874,12 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: `top`- and `bottom`-aligned text no longer loses its descenders or accents to the
+  slot's clip box (#124, ADR-0050). Such blocks are inset at their aligned edge by ~0.24em, and the
+  fitter reserves both ink overflows for them, so a height-bound `top`/`bottom` item may fit at a
+  slightly smaller size than before. Centered text is untouched — the bundled tape templates render
+  byte-for-byte identically — and `center` keeps its documented limit of clipping in a slot shorter
+  than `1.21 × font_size`.
 - **2026-08-12**: Text items accept `font_weight` (100-900 in steps of 100; #97), honored by the
   renderer and by the auto-shrink fitter. Fitting now measures the font instance Typst actually
   renders — the `wght` axis from the item's weight and the `opsz` axis from the font size, both of
