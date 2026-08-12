@@ -23,6 +23,23 @@ use typst_layout::PagedDocument;
 
 /// Typst 0.15's `typst_render::render` takes `&RenderOptions` instead of a bare pixels-per-point
 /// scalar; build one carrying the requested scale (bleed off, matching the previous behavior).
+/// Wrap `body` in a `#pad` at the aligned edge. Typst's `#pad` grows the frame and translates the
+/// child inward, so aligning the padded block insets the content by exactly `pad` — which is how ink
+/// falling outside the cap-height/baseline line box (accents above, descenders below) stays inside
+/// the clipped slot (#124). Center pads nothing: it already splits the slack, and reserving both
+/// sides would cost a full em and shrink the bundled tape templates (ADR-0050).
+fn pad_block(body: &str, pad: f32, vertical: crate::models::VerticalAlign) -> String {
+    use crate::models::VerticalAlign;
+    if pad <= 0.0 {
+        return body.to_string();
+    }
+    match vertical {
+        VerticalAlign::Top => format!("#pad(top: {pad:.2}pt)[{body}]"),
+        VerticalAlign::Bottom => format!("#pad(bottom: {pad:.2}pt)[{body}]"),
+        VerticalAlign::Center => body.to_string(),
+    }
+}
+
 fn render_options(pixels_per_point: f32) -> typst_render::RenderOptions {
     typst_render::RenderOptions {
         pixel_per_pt: typst::utils::Scalar::new(pixels_per_point as f64),
@@ -510,6 +527,7 @@ impl<'a> RenderContext<'a> {
                     font_size,
                     font_weight,
                     multiline,
+                    alignment,
                     ..
                 } => {
                     let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
@@ -528,6 +546,7 @@ impl<'a> RenderContext<'a> {
                             font_size,
                             *multiline,
                             weight,
+                            alignment.vertical,
                             helpers::FitBox {
                                 width_units: budget,
                                 height_units: box_h,
@@ -781,6 +800,13 @@ impl<'a> RenderContext<'a> {
                 // baseline, not the full fontdue line height, so any dy we compute from font
                 // metrics lands the glyphs high (#123). Box the whole slot and let `#align` place
                 // the block inside it, exactly as the fixed-size path below does.
+                // #124: pad the aligned edge so the ink Typst's cap-height/baseline line box leaves
+                // outside — accents above, descenders below — lands inside the clipped slot.
+                let body = pad_block(
+                    &body,
+                    helpers::pad_pt(weight, m.font, alignment.vertical)?,
+                    alignment.vertical,
+                );
                 let inner = format!("#align({})[{body}]", typst_alignment(alignment));
                 let dx = format_length(left, self.unit)?;
                 let dy = format_length(slot_top, self.unit)?;
@@ -808,6 +834,7 @@ impl<'a> RenderContext<'a> {
                 &text,
                 multiline,
                 weight,
+                alignment.vertical,
                 *min,
                 *max,
                 helpers::FitBox {
@@ -826,7 +853,13 @@ impl<'a> RenderContext<'a> {
         let box_height = format_length(box_height_units, self.unit)?;
 
         let align = typst_alignment(alignment);
-        let content = format!("#align({align})[#text(\"{text}\", size: {size}pt{weight_arg})]");
+        let body = format!("#text(\"{text}\", size: {size}pt{weight_arg})");
+        let body = pad_block(
+            &body,
+            helpers::pad_pt(weight, size, alignment.vertical)?,
+            alignment.vertical,
+        );
+        let content = format!("#align({align})[{body}]");
         let content = self.wrap_rotation(content, placement.rotate);
         writeln!(
             out,
@@ -1879,6 +1912,71 @@ mod tests {
         }
     }
 
+    /// A tape whose slot height is the caller's choice, so the same string can be rendered with room
+    /// to spare and then in a slot tight enough that the old cap-height/baseline box would clip.
+    fn tape_of_height(
+        text: &str,
+        vertical: VerticalAlign,
+        font_pt: f32,
+        height_mm: f32,
+    ) -> TemplateDefinition {
+        let mut t = autolength_tape(text, false, vertical, font_pt);
+        t.format = TemplateFormat::Single {
+            width: Dimension::Dynamic {
+                min: Some(10.0),
+                max: Some(200.0),
+            },
+            height: Dimension::Fixed(height_mm),
+            media_width: None,
+        };
+        let Layout::Items(items) = &mut t.layout;
+        if let Some(LayoutItem::Text { placement, .. }) = items.first_mut() {
+            placement.size = Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(height_mm)]);
+        }
+        t
+    }
+
+    fn ink_pixels(png: &[u8]) -> u64 {
+        let img = image::load_from_memory(png).expect("decode").to_luma8();
+        img.pixels().map(|p| (255 - p.0[0]) as u64).sum()
+    }
+
+    /// Clipping removes ink, so the same string at the same size must put the same ink on the page in
+    /// a generous slot and in a tight one. Fixed `font_size` throughout: that bypasses the fitter, so
+    /// this tests the *placement* pad alone — which is the half that fixes #124's reported defect.
+    /// The reservation half is covered by the fitting tests in helpers.rs.
+    #[test]
+    fn ink_survives_a_tight_slot_at_top_and_bottom_alignment() {
+        for (text, vertical) in [
+            ("Édgy", VerticalAlign::Top),
+            ("gjpqy", VerticalAlign::Bottom),
+            ("Édgy", VerticalAlign::Bottom),
+            ("gjpqy", VerticalAlign::Top),
+        ] {
+            // The control is a *centered* render in a roomy slot, not a taller slot at the same
+            // alignment: bottom alignment puts the baseline on the slot floor however tall the slot
+            // is, so an aligned control would clip exactly as much as the subject and the comparison
+            // would be blind. Centered in 30mm, nothing can be cut.
+            let generous = ink_pixels(&render_tape(&tape_of_height(
+                text,
+                VerticalAlign::Center,
+                12.0,
+                30.0,
+            )));
+            // 5.3mm just holds the 12pt ink band (1.21em = 5.12mm): enough room for the glyphs, but
+            // only if the block is inset. Unpadded, the baseline sits on the slot edge and the
+            // descenders or accents fall outside. A slot smaller than the band cannot be saved by
+            // placement at a fixed font size, which is what the fitter reservation is for.
+            let tight = ink_pixels(&render_tape(&tape_of_height(text, vertical, 12.0, 5.3)));
+            let loss = (generous as f64 - tight as f64) / generous as f64;
+            assert!(
+                loss < 0.005,
+                "{text} {vertical:?}: the tight slot lost {:.1}% of the ink",
+                loss * 100.0
+            );
+        }
+    }
+
     /// First and last image rows carrying ink, plus the image height.
     fn ink_rows(png: &[u8]) -> (u32, u32, u32) {
         let img = image::load_from_memory(png).expect("decode").to_luma8();
@@ -2007,6 +2105,12 @@ mod tests {
 
     /// Guards the other two `alignment.vertical` values (ADR-0030 honours them literally), so a
     /// centering fix cannot hardcode centre.
+    ///
+    /// #124 turned "pinned to the edge" into "inset by the font's ink overflow", so this asserts the
+    /// *metric* inset rather than contact. It deliberately does not require the ink to touch the
+    /// slot edge: the pad is `ascender − cap_height` / `|descender|`, which overshoots `test`'s
+    /// actual glyphs, so demanding contact would fail a correct implementation and push it toward
+    /// glyph-dependent placement — the thing ADR-0050 rejects.
     #[test]
     fn autolength_text_top_and_bottom_pin_to_slot_edges() {
         let (top_first, top_last, height) = ink_rows(&render_tape(&autolength_tape(
@@ -2021,13 +2125,23 @@ mod tests {
             VerticalAlign::Bottom,
             12.0,
         )));
+        // The pad is 0.2412em at 12pt = 2.89pt of an 18mm-tall tape rendered at `height` rows, plus
+        // the cap-height gap `test` leaves under the ascender line. Bound it generously above and
+        // require it to be non-zero below: zero would mean the pad never reached this path.
+        let px_per_pt = height as f32 / super::helpers::units_to_pt_for_test(18.0, "mm");
+        let pad_px = 0.2412 * 12.0 * px_per_pt;
         assert!(
-            top_first < 3,
-            "top-aligned ink must start at the slot top, got row {top_first}"
+            top_first as f32 >= pad_px * 0.5,
+            "top-aligned ink must be inset by the pad, got row {top_first} (pad ≈ {pad_px:.1}px)"
         );
         assert!(
-            height - 1 - bottom_last < 3,
-            "bottom-aligned ink must end at the slot bottom, got row {bottom_last} of {height}"
+            (top_first as f32) < pad_px * 3.0,
+            "top-aligned ink is far below the pad, got row {top_first} (pad ≈ {pad_px:.1}px)"
+        );
+        let bottom_gap = (height - 1 - bottom_last) as f32;
+        assert!(
+            bottom_gap >= pad_px * 0.5 && bottom_gap < pad_px * 3.0,
+            "bottom-aligned ink must be inset by the pad, got gap {bottom_gap} (pad ≈ {pad_px:.1}px)"
         );
         assert!(
             bottom_first > top_last,

@@ -274,6 +274,7 @@ pub(super) fn largest_fitting_font(
     text: &str,
     multiline: bool,
     weight: u16,
+    vertical: VerticalAlign,
     min_size: f32,
     max_size: f32,
     fit: FitBox,
@@ -290,7 +291,7 @@ pub(super) fn largest_fitting_font(
     while size >= min_size - f32::EPSILON {
         // opsz tracks the size Typst would render this candidate at.
         face.set_variation(OPSZ, size);
-        if text_fits(&face, text, multiline, size, width_pt, height_pt) {
+        if text_fits(&face, text, multiline, size, width_pt, height_pt, vertical) {
             return size;
         }
         size -= 0.5;
@@ -302,16 +303,17 @@ pub(super) fn fit_text_to_box(
     text: &str,
     multiline: bool,
     weight: u16,
+    vertical: VerticalAlign,
     min_size: f32,
     max_size: f32,
     fit: FitBox,
 ) -> Result<(f32, String), AppError> {
-    let fitted = largest_fitting_font(text, multiline, weight, min_size, max_size, fit);
+    let fitted = largest_fitting_font(text, multiline, weight, vertical, min_size, max_size, fit);
     let face = instance(weight, fitted)?;
     let face = &face;
     let width_pt = units_to_pt(fit.width_units, fit.unit);
     let height_pt = units_to_pt(fit.height_units, fit.unit);
-    if text_fits(face, text, multiline, fitted, width_pt, height_pt) {
+    if text_fits(face, text, multiline, fitted, width_pt, height_pt, vertical) {
         if multiline {
             let lines = wrap_text(face, text, fitted, width_pt);
             return Ok((fitted, lines.join("\n")));
@@ -319,7 +321,7 @@ pub(super) fn fit_text_to_box(
         return Ok((fitted, text.to_string()));
     }
     let trimmed = if multiline {
-        trim_multiline(face, text, fitted, width_pt, height_pt)
+        trim_multiline(face, text, fitted, width_pt, height_pt, vertical)
     } else {
         trim_single_line(face, text, fitted, width_pt)
     };
@@ -333,13 +335,14 @@ fn text_fits(
     size: f32,
     width_pt: f32,
     height_pt: f32,
+    vertical: VerticalAlign,
 ) -> bool {
     if multiline {
         let lines = wrap_text(face, text, size, width_pt);
-        block_height(face, size, lines.len()) <= height_pt + 0.01
+        block_height(face, size, lines.len(), vertical) <= height_pt + 0.01
     } else {
         text_width(face, text, size) <= width_pt + 0.01
-            && block_height(face, size, 1) <= height_pt + 0.01
+            && block_height(face, size, 1, vertical) <= height_pt + 0.01
     }
 }
 
@@ -365,12 +368,15 @@ fn trim_multiline(
     size: f32,
     width_pt: f32,
     height_pt: f32,
+    vertical: VerticalAlign,
 ) -> String {
     const ELLIPSIS: &str = "...";
-    // Inverse of block_height: n*cap + (n-1)*leading <= H  =>  n <= (H + leading) / (cap + leading)
-    let max_lines = ((height_pt + leading(size)) / (cap_height(face, size) + leading(size)))
-        .floor()
-        .max(1.0) as usize;
+    // Inverse of block_height, with the edge reservation taken off the top:
+    // n*cap + (n-1)*leading <= H - overflow  =>  n <= (H - overflow + leading) / (cap + leading)
+    let max_lines = ((height_pt - overflow_em(face, vertical) * size + leading(size))
+        / (cap_height(face, size) + leading(size)))
+    .floor()
+    .max(1.0) as usize;
     let mut lines = wrap_text(face, text, size, width_pt);
     if lines.len() <= max_lines {
         return lines.join("\n");
@@ -477,15 +483,78 @@ fn text_width(face: &ttf_parser::Face, text: &str, size: f32) -> f32 {
         * size
 }
 
+/// Typst reads the typographic (OS/2 sTypo*) metrics and falls back to hhea; match it, or every
+/// derived number is measured against a font the renderer is not using
+/// (typst-library `text/font/metrics.rs`).
+fn typo_ascender(face: &ttf_parser::Face) -> f32 {
+    f32::from(
+        face.typographic_ascender()
+            .unwrap_or_else(|| face.ascender()),
+    )
+}
+
+fn typo_descender(face: &ttf_parser::Face) -> f32 {
+    f32::from(
+        face.typographic_descender()
+            .unwrap_or_else(|| face.descender()),
+    )
+}
+
 /// Typst's line box runs cap-height to baseline (`text/mod.rs` top/bottom edge defaults).
 fn cap_height(face: &ttf_parser::Face, size: f32) -> f32 {
+    let upem = f32::from(face.units_per_em());
+    // Falls back to the *typographic* ascender, as Typst does, not the hhea one. Only differs for a
+    // font supplied through LABELER_FONTS_DIR, which is exactly what the bundled-font tests cannot see.
+    let cap = face
+        .capital_height()
+        .filter(|v| *v > 0)
+        .map(f32::from)
+        .unwrap_or_else(|| typo_ascender(face));
+    cap / upem * size
+}
+
+/// Ink above the cap-height line, as a fraction of the em: where accents live.
+fn ascent_overflow_em(face: &ttf_parser::Face) -> f32 {
     let upem = f32::from(face.units_per_em());
     let cap = face
         .capital_height()
         .filter(|v| *v > 0)
         .map(f32::from)
-        .unwrap_or_else(|| f32::from(face.ascender()));
-    cap / upem * size
+        .unwrap_or_else(|| typo_ascender(face));
+    ((typo_ascender(face) - cap) / upem).max(0.0)
+}
+
+/// Ink below the baseline, as a fraction of the em: where descenders live.
+fn descent_overflow_em(face: &ttf_parser::Face) -> f32 {
+    (-typo_descender(face) / f32::from(face.units_per_em())).max(0.0)
+}
+
+/// The inset the renderer emits at the aligned edge, so ink stays inside the clipped slot (#124).
+fn pad_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
+    match vertical {
+        VerticalAlign::Top => ascent_overflow_em(face),
+        VerticalAlign::Bottom => descent_overflow_em(face),
+        VerticalAlign::Center => 0.0,
+    }
+}
+
+/// The pad in points, for callers outside this module: `render/mod.rs` has no `Face` and `instance`
+/// stays private.
+pub(super) fn pad_pt(weight: u16, size: f32, vertical: VerticalAlign) -> Result<f32, AppError> {
+    let face = instance(weight, size)?;
+    Ok(pad_em(&face, vertical) * size)
+}
+
+/// What the *fitter* holds back so the edge the text is not aligned to cannot clip either: a
+/// top-aligned block pushed down by its top pad still has descenders near the slot floor. Both
+/// overflows, so it is neither `pad_em` nor the 1.21em band — the cap-height line covers the rest.
+fn overflow_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
+    match vertical {
+        VerticalAlign::Top | VerticalAlign::Bottom => {
+            ascent_overflow_em(face) + descent_overflow_em(face)
+        }
+        VerticalAlign::Center => 0.0,
+    }
 }
 
 /// Typst's default paragraph leading, 0.65em (`model/par.rs`). Sits *between* lines only.
@@ -496,21 +565,28 @@ fn leading(size: f32) -> f32 {
 /// Height of an `n`-line block as Typst stacks it: leading between lines, not after the last one
 /// (typst-layout `collect.rs` pushes it only when `i > 0`). A fused per-line constant — which is what
 /// a "line height" is — overshoots by one leading per block and shrinks text that would have fit.
-fn block_height(face: &ttf_parser::Face, size: f32, lines: usize) -> f32 {
+fn block_height(face: &ttf_parser::Face, size: f32, lines: usize, vertical: VerticalAlign) -> f32 {
     let n = lines.max(1) as f32;
-    n * cap_height(face, size) + (n - 1.0) * leading(size)
+    // The overflow is read off *this* face, already instanced at the candidate size: the metrics move
+    // with the opsz axis, so a ratio captured earlier would belong to a different instance.
+    n * cap_height(face, size) + (n - 1.0) * leading(size) + overflow_em(face, vertical) * size
 }
 
 #[cfg(test)]
 pub(crate) fn block_height_for_test(weight: u16, size: f32, lines: usize) -> f32 {
     let face = instance(weight, size).expect("face");
-    block_height(&face, size, lines)
+    block_height(&face, size, lines, VerticalAlign::Center)
 }
 
 #[cfg(test)]
 pub(crate) fn text_width_for_test(weight: u16, size: f32, text: &str) -> f32 {
     let face = instance(weight, size).expect("face");
     text_width(&face, text, size)
+}
+
+#[cfg(test)]
+pub(crate) fn units_to_pt_for_test(value: f32, unit: &str) -> f32 {
+    units_to_pt(value, unit)
 }
 
 fn units_to_pt(value: f32, unit: &str) -> f32 {
@@ -547,6 +623,7 @@ pub(super) fn fit_text_auto_length(
     font_size: &FontSize,
     multiline: bool,
     weight: u16,
+    vertical: VerticalAlign,
     fit: FitBox,
 ) -> Result<MeasuredText, AppError> {
     let (budget_w_units, unit) = (fit.width_units, fit.unit);
@@ -558,12 +635,12 @@ pub(super) fn fit_text_auto_length(
         let size = match font_size {
             FontSize::Fixed(s) => *s,
             FontSize::Range { min, max } => {
-                largest_fitting_font(&line, false, weight, *min, *max, fit)
+                largest_fitting_font(&line, false, weight, vertical, *min, *max, fit)
             }
         };
         let face = instance(weight, size)?;
         let face = &face;
-        if text_fits(face, &line, false, size, budget_pt, height_pt) {
+        if text_fits(face, &line, false, size, budget_pt, height_pt, vertical) {
             let w = pt_to_units(text_width(face, &line, size), unit).min(budget_w_units);
             return Ok(MeasuredText {
                 font: size,
@@ -583,11 +660,11 @@ pub(super) fn fit_text_auto_length(
     let size = match font_size {
         FontSize::Fixed(s) => *s,
         FontSize::Range { min, max } => {
-            largest_fitting_font(raw_text, true, weight, *min, *max, fit)
+            largest_fitting_font(raw_text, true, weight, vertical, *min, *max, fit)
         }
     };
     let face = instance(weight, size)?;
-    let (lines, max_w_pt) = wrap_lines_fit(&face, raw_text, size, budget_pt, height_pt);
+    let (lines, max_w_pt) = wrap_lines_fit(&face, raw_text, size, budget_pt, height_pt, vertical);
     let width = pt_to_units(max_w_pt, unit).min(budget_w_units);
     Ok(MeasuredText {
         font: size,
@@ -607,12 +684,14 @@ fn wrap_lines_fit(
     size: f32,
     width_pt: f32,
     height_pt: f32,
+    vertical: VerticalAlign,
 ) -> (Vec<String>, f32) {
     const ELLIPSIS: &str = "...";
-    // Inverse of block_height, as in trim_multiline: leading sits between lines, not after each.
-    let max_lines = ((height_pt + leading(size)) / (cap_height(face, size) + leading(size)))
-        .floor()
-        .max(1.0) as usize;
+    // Inverse of block_height, as in trim_multiline, minus the edge reservation.
+    let max_lines = ((height_pt - overflow_em(face, vertical) * size + leading(size))
+        / (cap_height(face, size) + leading(size)))
+    .floor()
+    .max(1.0) as usize;
     let mut lines = wrap_text(face, text, size, width_pt);
     if lines.len() > max_lines {
         lines.truncate(max_lines);
@@ -843,6 +922,7 @@ mod tests {
 mod helpers_tests {
     use super::{fit_text_auto_length, largest_fitting_font, FitBox};
     use crate::models::FontSize;
+    use crate::models::VerticalAlign;
 
     #[test]
     fn largest_fitting_font_picks_max_then_steps_down() {
@@ -851,6 +931,7 @@ mod helpers_tests {
                 "Hi",
                 false,
                 400,
+                VerticalAlign::Center,
                 6.0,
                 20.0,
                 FitBox {
@@ -866,6 +947,7 @@ mod helpers_tests {
                 "A long label that cannot fit",
                 false,
                 400,
+                VerticalAlign::Center,
                 6.0,
                 20.0,
                 FitBox {
@@ -888,6 +970,7 @@ mod helpers_tests {
             },
             false,
             400,
+            VerticalAlign::Center,
             FitBox {
                 width_units: 200.0,
                 height_units: 50.0,
@@ -910,6 +993,7 @@ mod helpers_tests {
             },
             false,
             400,
+            VerticalAlign::Center,
             FitBox {
                 width_units: 8.0,
                 height_units: 3.0,
@@ -930,6 +1014,7 @@ mod helpers_tests {
             &FontSize::Fixed(12.0),
             false,
             400,
+            VerticalAlign::Center,
             FitBox {
                 width_units: 200.0,
                 height_units: 50.0,
@@ -952,6 +1037,7 @@ mod helpers_tests {
             },
             true,
             400,
+            VerticalAlign::Center,
             FitBox { width_units: 20.0, height_units: // budget width units (mm)
             20.0, unit: // box height units (mm): room for several lines
             "mm" },
@@ -977,6 +1063,7 @@ mod helpers_tests {
             },
             true,
             400,
+            VerticalAlign::Center,
             FitBox {
                 width_units: 50.0,
                 height_units: 20.0,
@@ -995,6 +1082,7 @@ mod helpers_tests {
             &FontSize::Range { min: 6.0, max: 6.0 }, // fixed-ish via min==max to force overflow
             true,
             400,
+            VerticalAlign::Center,
             FitBox { width_units: 12.0, height_units: // narrow
             6.0, unit: // short height: few lines
             "mm" },
@@ -1019,6 +1107,7 @@ mod helpers_tests {
             },
             true,
             400,
+            VerticalAlign::Center,
             FitBox {
                 width_units: 50.0,
                 height_units: 20.0,
@@ -1104,7 +1193,61 @@ mod interpolate_tests {
 
 #[cfg(test)]
 mod measurement_tests {
-    use super::{instance, load_face, text_width};
+    use super::{
+        cap_height, instance, largest_fitting_font, load_face, overflow_em, pad_em, pad_pt,
+        text_width, units_to_pt, FitBox,
+    };
+    use crate::models::VerticalAlign;
+
+    #[test]
+    fn overflow_is_the_ink_outside_the_cap_height_line() {
+        let face = instance(400, 14.0).expect("face");
+        let top = pad_em(&face, VerticalAlign::Top);
+        let bottom = pad_em(&face, VerticalAlign::Bottom);
+        // Inter: cap 1490, ascender 1984, descender -494 of 2048. Both pads work out to 494 units —
+        // the same number by coincidence, not because they are the same quantity.
+        assert!((top - 0.2412).abs() < 0.001, "top pad {top}");
+        assert!((bottom - 0.2412).abs() < 0.001, "bottom pad {bottom}");
+
+        // The fit reservation is both overflows: neither one pad, nor the 1.21em band.
+        let both = overflow_em(&face, VerticalAlign::Top);
+        assert!((both - (top + bottom)).abs() < 1e-6, "overflow {both}");
+        assert!((both - 0.4824).abs() < 0.001, "overflow {both}");
+
+        // Center reserves and pads nothing (spec Decision 2).
+        assert_eq!(pad_em(&face, VerticalAlign::Center), 0.0);
+        assert_eq!(overflow_em(&face, VerticalAlign::Center), 0.0);
+
+        // pad_pt is the same number in points, for callers with no Face.
+        let pt = pad_pt(400, 20.0, VerticalAlign::Bottom).expect("pad_pt");
+        assert!((pt - bottom * 20.0).abs() < 1e-4, "pad_pt {pt}");
+    }
+
+    /// A height-bound item must leave room for the ink outside the cap-height line, so an aligned
+    /// item fits at a smaller size than a centered one in the same slot (#124).
+    #[test]
+    fn a_height_bound_aligned_fit_reserves_the_overflow() {
+        let fit = FitBox {
+            width_units: 400.0,
+            height_units: 10.0,
+            unit: "mm",
+        };
+        let aligned =
+            largest_fitting_font("Hxy", false, 400, VerticalAlign::Bottom, 6.0, 80.0, fit);
+        let centered =
+            largest_fitting_font("Hxy", false, 400, VerticalAlign::Center, 6.0, 80.0, fit);
+        assert!(
+            aligned < centered,
+            "bottom-aligned must reserve the overflow and land smaller ({aligned} vs {centered})"
+        );
+        let face = instance(400, aligned).expect("face");
+        let need = cap_height(&face, aligned) + overflow_em(&face, VerticalAlign::Bottom) * aligned;
+        assert!(
+            need <= units_to_pt(10.0, "mm") + 0.5,
+            "fitted {aligned}pt needs {need}pt in a {}pt slot",
+            units_to_pt(10.0, "mm")
+        );
+    }
 
     #[test]
     fn heavier_weight_measures_wider() {

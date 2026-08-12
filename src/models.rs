@@ -245,7 +245,7 @@ pub enum HorizontalAlign {
     Right,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
+#[derive(Copy, Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerticalAlign {
     #[default]
