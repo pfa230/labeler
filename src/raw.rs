@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, Fit, FontSize, Frame, Options, Placement, Position, QrParams, Size, TemplateFormat,
+    Alignment, Fit, FontSize, Frame, Options, Position, QrParams, Size, TemplateFormat,
 };
 
 #[derive(Debug, Deserialize)]
@@ -40,7 +40,7 @@ pub struct TextRaw {
     #[serde(default)]
     pub value: Option<String>,
     #[serde(flatten)]
-    pub placement: Placement,
+    pub placement: PlacementRaw,
     pub font_size: FontSize,
     #[serde(default)]
     pub font_weight: Option<u16>,
@@ -58,7 +58,7 @@ pub struct QrRaw {
     #[serde(default)]
     pub value: Option<String>,
     #[serde(flatten)]
-    pub placement: Placement,
+    pub placement: PlacementRaw,
     #[serde(default)]
     pub params: Option<QrParams>,
 }
@@ -71,7 +71,7 @@ pub struct ImageRaw {
     #[serde(default)]
     pub src: Option<String>,
     #[serde(flatten)]
-    pub placement: Placement,
+    pub placement: PlacementRaw,
     #[serde(default)]
     pub fit: Fit,
 }
@@ -88,16 +88,8 @@ pub struct LineRaw {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerRaw {
-    #[serde(default)]
-    pub at: Option<Position>,
-    #[serde(default)]
-    pub size: Option<Size>,
-    #[serde(default)]
-    pub max_w: Option<f32>,
-    #[serde(default)]
-    pub max_h: Option<f32>,
-    #[serde(default)]
-    pub rotate: Option<f32>,
+    #[serde(flatten)]
+    pub placement: PlacementRaw,
     #[serde(default)]
     pub option: Option<BTreeMap<String, String>>,
     #[serde(default)]
@@ -112,4 +104,21 @@ pub struct ContainerRaw {
 pub enum PaddingRaw {
     Uniform(f32),
     Trbl([f32; 4]),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlacementRaw {
+    #[serde(default)]
+    pub at: Option<Position>,
+    #[serde(default)]
+    pub size: Option<Size>,
+    #[serde(default)]
+    pub to: Option<Position>,
+    #[serde(default)]
+    pub max_w: Option<f32>,
+    #[serde(default)]
+    pub max_h: Option<f32>,
+    #[serde(default)]
+    pub rotate: Option<f32>,
 }

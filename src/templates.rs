@@ -7,7 +7,7 @@ use thiserror::Error;
 
 use crate::errors::TemplateError;
 use crate::models::{
-    resolve_coord, Dimension, FontSize, Layout, LayoutItem, Options, Point, Position, Size,
+    resolve_coord, Dimension, Extent, FontSize, Layout, LayoutItem, Options, Point, Position,
     SizeValue, TemplateDetail, TemplateFormat, TemplateSummary,
 };
 use crate::parse::parse_template;
@@ -364,7 +364,7 @@ fn validate_layout_item(
             validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
-                &placement.size,
+                &placement.extent,
                 placement.max_w,
                 placement.max_h,
                 auto_bounds.as_ref().or(layout_bounds),
@@ -391,7 +391,7 @@ fn validate_layout_item(
             validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
-                &placement.size,
+                &placement.extent,
                 placement.max_w,
                 placement.max_h,
                 auto_bounds.as_ref().or(layout_bounds),
@@ -427,7 +427,7 @@ fn validate_layout_item(
             validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
-                &placement.size,
+                &placement.extent,
                 placement.max_w,
                 placement.max_h,
                 auto_bounds.as_ref().or(layout_bounds),
@@ -504,7 +504,10 @@ fn validate_layout_item(
                 .and_then(crate::models::Rotation::from_degrees)
                 .unwrap_or(crate::models::Rotation::R0);
             if rotation.is_rotated() {
-                if placement.size.0[0].is_auto() || placement.size.0[1].is_auto() {
+                if placement
+                    .size_or_auto()
+                    .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto())
+                {
                     return Err("a rotated container must have an explicit size".to_string());
                 }
                 if subtree_uses_auto(items) {
@@ -513,7 +516,7 @@ fn validate_layout_item(
             }
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
-                &placement.size,
+                &placement.extent,
                 placement.max_w,
                 placement.max_h,
                 auto_bounds.as_ref().or(layout_bounds),
@@ -576,8 +579,9 @@ fn validate_layout_item(
             // Children of an auto-width container on a dynamic-width single may also use auto
             // width; they resolve to the container inner width at render time. Rotated containers
             // reject auto entirely (above), so child_dynamic is false there.
-            let child_dynamic =
-                is_dynamic_width && !rotation.is_rotated() && placement.size.0[0].is_auto();
+            let child_dynamic = is_dynamic_width
+                && !rotation.is_rotated()
+                && placement.size_or_auto().is_some_and(|s| s.0[0].is_auto());
             validate_layout_items(items, Some(&container_bounds), options, child_dynamic)?;
         }
     }
@@ -645,14 +649,15 @@ fn subtree_uses_auto(items: &[LayoutItem]) -> bool {
     items.iter().any(|item| match item {
         LayoutItem::Text { placement, .. }
         | LayoutItem::Qr { placement, .. }
-        | LayoutItem::Image { placement, .. } => {
-            placement.size.0[0].is_auto() || placement.size.0[1].is_auto()
-        }
+        | LayoutItem::Image { placement, .. } => placement
+            .size_or_auto()
+            .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto()),
         LayoutItem::Container {
             placement, items, ..
         } => {
-            placement.size.0[0].is_auto()
-                || placement.size.0[1].is_auto()
+            placement
+                .size_or_auto()
+                .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto())
                 || subtree_uses_auto(items)
         }
         LayoutItem::Line { .. } => false,
@@ -674,12 +679,16 @@ fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), Str
 }
 
 fn resolve_size(
-    size: &Size,
+    extent: &Extent,
     max_w: Option<f32>,
     max_h: Option<f32>,
     layout_bounds: Option<&LayoutBounds>,
     allow_auto_fill: bool,
 ) -> Result<(f32, f32), String> {
+    // Task 7 resolves `to` against the frame; until then it is a parse-time-only shape.
+    let Extent::Size(size) = extent else {
+        return Err("to is not supported yet".to_string());
+    };
     if let Some(max_w) = max_w {
         if max_w <= 0.0 {
             return Err("max_w must be greater than 0".to_string());
@@ -1180,13 +1189,10 @@ layout: []
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("value".to_string()),
                 value: None,
-                placement: crate::models::Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: Some(350),
                 multiline: false,
@@ -1219,13 +1225,10 @@ layout: []
                 LayoutItem::Text {
                     name: Some("value".to_string()),
                     value: None,
-                    placement: crate::models::Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: crate::models::Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
+                    ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     multiline: false,
@@ -1234,13 +1237,10 @@ layout: []
                 LayoutItem::Text {
                     name: Some("value".to_string()),
                     value: None,
-                    placement: crate::models::Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: crate::models::Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(1.0), SizeValue::Value(1.0)]),
+                    ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     multiline: false,
@@ -1271,13 +1271,10 @@ layout: []
                 LayoutItem::Text {
                     name: Some("value".to_string()),
                     value: None,
-                    placement: crate::models::Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: crate::models::Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     multiline: false,
@@ -1286,13 +1283,10 @@ layout: []
                 LayoutItem::Image {
                     name: Some("value".to_string()),
                     src: None,
-                    placement: crate::models::Placement {
-                        at: Position([0.0, 5.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: crate::models::Placement::sized(
+                        Position([0.0, 5.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    ),
                     fit: crate::models::Fit::Contain,
                 },
             ]),
@@ -1405,13 +1399,10 @@ layout: []
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("hello".to_string()),
-                placement: crate::models::Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -1446,16 +1437,13 @@ layout: []
             },
             options: None,
             layout: Layout::Items(vec![LayoutItem::Container {
-                placement: crate::models::Placement {
-                    at: Position([5.0, 0.0]),
-                    size: Size([
+                placement: crate::models::Placement::sized(
+                    Position([5.0, 0.0]),
+                    Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
                         SizeValue::Value(12.0),
                     ]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                ),
                 option: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
@@ -1488,13 +1476,10 @@ layout: []
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("hello".to_string()),
-                placement: crate::models::Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: true,
@@ -1527,13 +1512,10 @@ layout: []
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("hello".to_string()),
-                placement: crate::models::Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(8.0), SizeValue::Value(6.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -1563,13 +1545,10 @@ layout: []
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("hello".to_string()),
-                placement: crate::models::Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(40.0), SizeValue::Value(6.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(40.0), SizeValue::Value(6.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: true,

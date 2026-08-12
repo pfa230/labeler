@@ -4,8 +4,8 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Point,
-    Position, Rotation, Size, SizeValue, TemplateFormat,
+    resolve_coord, Dimension, Extent, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement,
+    Point, Position, Rotation, SizeValue, TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
@@ -616,10 +616,11 @@ impl<'a> RenderContext<'a> {
                     // measuring it unweighted would size the box for text that renders wider.
                     let weight = font_weight.unwrap_or(400);
                     let at = placement.at.point();
-                    let size_w = &placement.size.0[0];
-                    let box_h = placement.size.0[1]
-                        .value()
-                        .unwrap_or(self.frame_height_units - at.y);
+                    let size = placement.size_or_auto().ok_or_else(|| {
+                        AppError::unsupported_layout_item("to is not supported yet")
+                    })?;
+                    let size_w = &size.0[0];
+                    let box_h = size.0[1].value().unwrap_or(self.frame_height_units - at.y);
                     if size_w.is_auto() {
                         let budget = (budget_w - at.x).max(0.0);
                         let m = fit_text_auto_length(
@@ -642,9 +643,10 @@ impl<'a> RenderContext<'a> {
                 }
                 LayoutItem::Qr { placement, .. } | LayoutItem::Image { placement, .. } => {
                     let at_x = placement.at.point().x;
-                    let w = placement.size.0[0]
-                        .value()
-                        .unwrap_or((budget_w - at_x).max(0.0));
+                    let size = placement.size_or_auto().ok_or_else(|| {
+                        AppError::unsupported_layout_item("to is not supported yet")
+                    })?;
+                    let w = size.0[0].value().unwrap_or((budget_w - at_x).max(0.0));
                     at_x + w
                 }
                 // An edge-relative endpoint is positioned against the very width being measured,
@@ -669,7 +671,10 @@ impl<'a> RenderContext<'a> {
                         }
                     }
                     let at_x = placement.at.point().x;
-                    let size_w = &placement.size.0[0];
+                    let size = placement.size_or_auto().ok_or_else(|| {
+                        AppError::unsupported_layout_item("to is not supported yet")
+                    })?;
+                    let size_w = &size.0[0];
                     if size_w.is_auto() {
                         // auto-width container: width determined by children + padding
                         let inner_budget =
@@ -703,7 +708,7 @@ impl<'a> RenderContext<'a> {
                         if !rotation.is_rotated() {
                             let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
                             let inner_h = {
-                                let size_h = &placement.size.0[1];
+                                let size_h = &size.0[1];
                                 let explicit_h = size_h
                                     .value()
                                     .unwrap_or(self.frame_height_units - placement.at.point().y);
@@ -855,7 +860,10 @@ impl<'a> RenderContext<'a> {
 
         // When auto-length is active and this text item has auto width, consume the next measured fit.
         if let Some(al) = self.auto_length() {
-            if placement.size.0[0].is_auto() && !placement.at.x().is_sign_negative() {
+            let auto_width_size = placement
+                .size_or_auto()
+                .filter(|size| size.0[0].is_auto() && !placement.at.x().is_sign_negative());
+            if let Some(size) = auto_width_size {
                 let idx = al.cursor.get();
                 let m = al.texts.get(idx).ok_or_else(|| {
                     AppError::render_failed(format!("auto-length cursor overrun at index {idx}"))
@@ -864,7 +872,7 @@ impl<'a> RenderContext<'a> {
 
                 // The text's allotted vertical slot (`size` height or the remaining frame height).
                 let slot_h = self.resolve_size_value(
-                    &placement.size.0[1],
+                    &size.0[1],
                     placement.max_h,
                     Some(self.frame_height_units - point.y),
                     "height",
@@ -904,7 +912,7 @@ impl<'a> RenderContext<'a> {
         }
 
         let (width, box_height_units) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
+            self.resolve_size(&placement.extent, placement.max_w, placement.max_h, false)?;
         self.check_box_bounds(&point, width, box_height_units)?;
         let bottom = point.y;
         let top = bottom + box_height_units;
@@ -951,7 +959,7 @@ impl<'a> RenderContext<'a> {
         params: &Option<crate::models::QrParams>,
     ) -> Result<(), AppError> {
         let (width, height) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
+            self.resolve_size(&placement.extent, placement.max_w, placement.max_h, false)?;
         let point = self.resolve_point(&placement.at)?;
         self.check_box_bounds(&point, width, height)?;
         let left = point.x;
@@ -1001,7 +1009,7 @@ impl<'a> RenderContext<'a> {
             }
         };
         let (width, height) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
+            self.resolve_size(&placement.extent, placement.max_w, placement.max_h, false)?;
         let point = self.resolve_point(&placement.at)?;
         self.check_box_bounds(&point, width, height)?;
         let left = point.x;
@@ -1089,14 +1097,16 @@ impl<'a> RenderContext<'a> {
             // On a dynamic-width (auto-length) label, an auto-width container must span only
             // the remaining width from its left edge, not the full frame width. This matches the
             // measurement pass which budgets (budget_w - at.x) - padding for the container.
-            let width = if self.is_dynamic_width() && placement.size.0[0].is_auto() {
+            let width = if self.is_dynamic_width()
+                && placement.size_or_auto().is_some_and(|s| s.0[0].is_auto())
+            {
                 (self.frame_width_units - left).max(0.0)
             } else {
-                self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+                self.resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
                     .0
             };
             let height = self
-                .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+                .resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
                 .1;
             self.check_box_bounds(&point, width, height)?;
             let bottom = point.y;
@@ -1166,10 +1176,10 @@ impl<'a> RenderContext<'a> {
 
         // Rotated path (R90/R180/R270). Validation guarantees an explicit size and no auto here.
         let width = self
-            .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+            .resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
             .0;
         let height = self
-            .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+            .resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
             .1;
         self.check_box_bounds(&point, width, height)?;
         let bottom = point.y;
@@ -1245,11 +1255,15 @@ impl<'a> RenderContext<'a> {
 
     fn resolve_size(
         &self,
-        size: &Size,
+        extent: &Extent,
         max_w: Option<f32>,
         max_h: Option<f32>,
         allow_auto_fill: bool,
     ) -> Result<(f32, f32), AppError> {
+        // Task 7 resolves `to` against the frame; until then it is a parse-time-only shape.
+        let Extent::Size(size) = extent else {
+            return Err(AppError::unsupported_layout_item("to is not supported yet"));
+        };
         let fallback = if allow_auto_fill {
             Some((self.frame_width_units, self.frame_height_units))
         } else {
@@ -1430,8 +1444,8 @@ mod tests {
         SAMPLE_PNG_DATA_URI,
     };
     use crate::models::{
-        Alignment, AutoSize, Dimension, Fit, FontSize, Frame, HorizontalAlign, LabelInput, Layout,
-        LayoutItem, Options, Padding, Placement, Position, SheetPosition, Size, SizeValue,
+        Alignment, AutoSize, Dimension, Extent, Fit, FontSize, Frame, HorizontalAlign, LabelInput,
+        Layout, LayoutItem, Options, Padding, Placement, Position, SheetPosition, Size, SizeValue,
         TemplateFormat, VerticalAlign,
     };
     use crate::templates::TemplateDefinition;
@@ -1458,19 +1472,16 @@ mod tests {
         let item = LayoutItem::Text {
             name: None,
             value: Some(text.to_string()),
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([
                     match size_w {
                         Some(w) => SizeValue::Value(w),
                         None => SizeValue::Auto(crate::models::AutoSize::Auto),
                     },
                     SizeValue::Value(8.0),
                 ]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            ),
             font_size,
             font_weight: weight,
             multiline: false,
@@ -1566,16 +1577,13 @@ mod tests {
             let item = LayoutItem::Text {
                 name: None,
                 value: Some("Widget A-42 Storage".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
                         SizeValue::Value(8.0),
                     ]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: weight,
                 multiline: false,
@@ -1640,16 +1648,13 @@ mod tests {
         let auto_text = LayoutItem::Text {
             name: None,
             value: Some("hello".to_string()),
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
                     SizeValue::Value(10.0),
                 ]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             multiline: false,
@@ -1658,7 +1663,7 @@ mod tests {
         let make_container = |rotate: Option<f32>| LayoutItem::Container {
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
                 max_w: None,
                 max_h: None,
                 rotate,
@@ -1708,13 +1713,10 @@ mod tests {
             super::LengthMode::Fixed,
         );
         let container = LayoutItem::Container {
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+            ),
             option: None,
             frame: Some(Frame {
                 thickness: 0.3,
@@ -1750,7 +1752,7 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                    extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
                     max_w: None,
                     max_h: None,
                     rotate: Some(rotate),
@@ -1774,13 +1776,10 @@ mod tests {
             vec![LayoutItem::Text {
                 name: None,
                 value: Some("VERTICAL".to_string()),
-                placement: Placement {
-                    at: Position([2.0, 2.0]),
-                    size: Size([SizeValue::Value(30.0), SizeValue::Value(8.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([2.0, 2.0]),
+                    Size([SizeValue::Value(30.0), SizeValue::Value(8.0)]),
+                ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
@@ -1831,13 +1830,10 @@ mod tests {
             vec![LayoutItem::Qr {
                 name: None,
                 value: Some("X".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                ),
                 params: None,
             }],
         );
@@ -1857,13 +1853,10 @@ mod tests {
             vec![LayoutItem::Qr {
                 name: None,
                 value: Some("X".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                ),
                 params: None,
             }]
         };
@@ -1907,7 +1900,7 @@ mod tests {
         let inner = LayoutItem::Container {
             placement: Placement {
                 at: Position([2.0, 2.0]),
-                size: Size([SizeValue::Value(24.0), SizeValue::Value(24.0)]),
+                extent: Extent::Size(Size([SizeValue::Value(24.0), SizeValue::Value(24.0)])),
                 max_w: None,
                 max_h: None,
                 rotate: Some(90.0),
@@ -1918,13 +1911,10 @@ mod tests {
             items: vec![LayoutItem::Text {
                 name: None,
                 value: Some("inner".to_string()),
-                placement: Placement {
-                    at: Position([1.0, 1.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([1.0, 1.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -1934,7 +1924,7 @@ mod tests {
         let outer = LayoutItem::Container {
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
                 max_w: None,
                 max_h: None,
                 rotate: Some(90.0),
@@ -2006,13 +1996,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some(text.to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(HEIGHT_MM)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(HEIGHT_MM)]),
+                ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
                 multiline,
@@ -2227,13 +2214,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
@@ -2320,13 +2304,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
@@ -2371,13 +2352,10 @@ mod tests {
                 LayoutItem::Text {
                     name: Some("message".to_string()),
                     value: None,
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                    ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     multiline: false,
@@ -2386,13 +2364,10 @@ mod tests {
                 LayoutItem::Qr {
                     name: Some("code".to_string()),
                     value: None,
-                    placement: Placement {
-                        at: Position([20.0, 0.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([20.0, 0.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                    ),
                     params: None,
                 },
                 LayoutItem::Line {
@@ -2401,13 +2376,10 @@ mod tests {
                     thickness: 0.2,
                 },
                 LayoutItem::Container {
-                    placement: Placement {
-                        at: Position([0.5, 1.5]),
-                        size: Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.5, 1.5]),
+                        Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
+                    ),
                     option: None,
                     frame: Some(Frame {
                         thickness: 0.2,
@@ -2457,13 +2429,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
@@ -2503,13 +2472,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Image {
                 name: Some("logo".to_string()),
                 src: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                ),
                 fit: Fit::Contain,
             }]),
             version: None,
@@ -2568,13 +2534,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Image {
                 name: Some("logo".to_string()),
                 src: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                ),
                 fit: Fit::Contain,
             }]),
             version: None,
@@ -2596,13 +2559,10 @@ mod tests {
         template.layout = Layout::Items(vec![LayoutItem::Image {
             name: None,
             src: Some(src.to_string()),
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+            ),
             fit: Fit::Contain,
         }]);
         template
@@ -2682,13 +2642,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
@@ -2845,13 +2802,10 @@ mod tests {
                 LayoutItem::Text {
                     name: None,
                     value: Some("Item {id}".to_string()),
-                    placement: Placement {
-                        at: Position([0.0, 10.0]),
-                        size: Size([SizeValue::Value(40.0), SizeValue::Value(8.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 10.0]),
+                        Size([SizeValue::Value(40.0), SizeValue::Value(8.0)]),
+                    ),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
                     multiline: false,
@@ -2860,13 +2814,10 @@ mod tests {
                 LayoutItem::Qr {
                     name: None,
                     value: Some("{vars.qr_base_url}/{id}".to_string()),
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                    ),
                     params: None,
                 },
             ]),
@@ -2901,13 +2852,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("{x}".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 6.0]),
-                    size: Size([SizeValue::Value(60.0), SizeValue::Value(8.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 6.0]),
+                    Size([SizeValue::Value(60.0), SizeValue::Value(8.0)]),
+                ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
@@ -2984,13 +2932,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("hi".into()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -3019,13 +2964,10 @@ mod tests {
                 LayoutItem::Text {
                     name: Some("title".into()),
                     value: None,
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     multiline: false,
@@ -3034,25 +2976,19 @@ mod tests {
                 LayoutItem::Qr {
                     name: None,
                     value: Some("{url} {vars.base} {datetime} {datetime.short_date}".into()),
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                    ),
                     params: None,
                 },
                 LayoutItem::Image {
                     name: Some("logo".into()),
                     src: None,
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                    ),
                     fit: Fit::default(),
                 },
             ]),
@@ -3099,13 +3035,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("{} {real}".into()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(40.0), SizeValue::Value(20.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(40.0), SizeValue::Value(20.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -3393,16 +3326,13 @@ mod tests {
             let ctx =
                 super::RenderContext::new((25.0, 12.0), "mm", &data, None, &env, &images, mode);
             ctx.render_items(&[LayoutItem::Container {
-                placement: Placement {
-                    at: Position([at_x, 0.0]),
-                    size: Size([
+                placement: Placement::sized(
+                    Position([at_x, 0.0]),
+                    Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
                         SizeValue::Value(12.0),
                     ]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                ),
                 option: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
@@ -3496,13 +3426,10 @@ mod tests {
         let item = LayoutItem::Text {
             name: None,
             value: Some("x".to_string()),
-            placement: Placement {
-                at: Position([-20.0, 0.0]),
-                size: Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            placement: Placement::sized(
+                Position([-20.0, 0.0]),
+                Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+            ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             multiline: false,
@@ -3569,16 +3496,13 @@ mod tests {
                 LayoutItem::Text {
                     name: None,
                     value: Some("hi".to_string()),
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([
                             SizeValue::Auto(crate::models::AutoSize::Auto),
                             SizeValue::Value(6.0),
                         ]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     multiline: false,

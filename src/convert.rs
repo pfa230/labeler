@@ -1,7 +1,46 @@
 use crate::errors::TemplateError;
-use crate::models::{AutoSize, Layout, LayoutItem, Padding, Placement, Size, SizeValue};
-use crate::raw::{ContainerRaw, LayoutItemRaw, PaddingRaw, TemplateDefinitionRaw, TextRaw};
+use crate::models::{AutoSize, Extent, Layout, LayoutItem, Padding, Placement, Size, SizeValue};
+use crate::raw::{
+    ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, TemplateDefinitionRaw, TextRaw,
+};
 use crate::templates::TemplateDefinition;
+
+impl PlacementRaw {
+    /// `size` xor `to`. `default_extent` is what "neither" means for this item kind: `None` makes
+    /// it an error (text, qr, image), `Some` supplies the container's fill-the-parent default.
+    pub(crate) fn into_placement(
+        self,
+        default_extent: Option<Extent>,
+    ) -> Result<Placement, TemplateError> {
+        let extent = match (self.size, self.to) {
+            (Some(_), Some(_)) => {
+                return Err(TemplateError::Validation {
+                    path: "placement".to_string(),
+                    msg: "set exactly one of size or to, not both".to_string(),
+                })
+            }
+            (Some(size), None) => Extent::Size(size),
+            (None, Some(to)) => Extent::To(to),
+            (None, None) => default_extent.ok_or_else(|| TemplateError::Validation {
+                path: "placement".to_string(),
+                msg: "must set one of size or to".to_string(),
+            })?,
+        };
+        if matches!(extent, Extent::To(_)) && (self.max_w.is_some() || self.max_h.is_some()) {
+            return Err(TemplateError::Validation {
+                path: "placement".to_string(),
+                msg: "max_w and max_h resolve `auto` and cannot be combined with to".to_string(),
+            });
+        }
+        Ok(Placement {
+            at: self.at.unwrap_or_default(),
+            extent,
+            max_w: self.max_w,
+            max_h: self.max_h,
+            rotate: self.rotate,
+        })
+    }
+}
 
 impl TryFrom<PaddingRaw> for Padding {
     type Error = TemplateError;
@@ -37,18 +76,12 @@ impl TryFrom<ContainerRaw> for LayoutItem {
     type Error = TemplateError;
 
     fn try_from(raw: ContainerRaw) -> Result<Self, Self::Error> {
-        let at = raw.at.unwrap_or_default();
-        let size = raw.size.unwrap_or(Size([
+        // A container with neither `size` nor `to` keeps today's fill-the-parent default.
+        let default_extent = Some(Extent::Size(Size([
             SizeValue::Auto(AutoSize::Auto),
             SizeValue::Auto(AutoSize::Auto),
-        ]));
-        let placement = Placement {
-            at,
-            size,
-            max_w: raw.max_w,
-            max_h: raw.max_h,
-            rotate: raw.rotate,
-        };
+        ])));
+        let placement = raw.placement.into_placement(default_extent)?;
         let padding = match raw.padding {
             None => Padding::ZERO,
             Some(padding) => Padding::try_from(padding)?,
@@ -119,7 +152,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 Ok(LayoutItem::Text {
                     name,
                     value,
-                    placement,
+                    placement: placement.into_placement(None)?,
                     font_size,
                     font_weight,
                     multiline,
@@ -131,7 +164,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 Ok(LayoutItem::Qr {
                     name,
                     value,
-                    placement: raw.placement,
+                    placement: raw.placement.into_placement(None)?,
                     params: raw.params,
                 })
             }
@@ -147,7 +180,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 _ => Ok(LayoutItem::Image {
                     name: raw.name,
                     src: raw.src,
-                    placement: raw.placement,
+                    placement: raw.placement.into_placement(None)?,
                     fit: raw.fit,
                 }),
             },
@@ -224,5 +257,39 @@ mod tests {
             try_build("  - type: text\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn text_with_to_instead_of_size_ok() {
+        assert!(try_build(
+            "  - type: text\n    value: \"x\"\n    at: [0,0]\n    to: [10,5]\n    font_size: 8\n"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn text_with_both_size_and_to_errors() {
+        assert!(try_build("  - type: text\n    value: \"x\"\n    at: [0,0]\n    size: [10,5]\n    to: [10,5]\n    font_size: 8\n").is_err());
+    }
+
+    #[test]
+    fn text_with_neither_size_nor_to_errors() {
+        assert!(
+            try_build("  - type: text\n    value: \"x\"\n    at: [0,0]\n    font_size: 8\n")
+                .is_err()
+        );
+    }
+
+    /// max_w/max_h exist only to resolve `auto`, and a `to` box has no auto axis. Accepting them
+    /// would imply a clamp that never happens.
+    #[test]
+    fn to_with_max_w_errors() {
+        assert!(try_build("  - type: text\n    value: \"x\"\n    at: [0,0]\n    to: [10,5]\n    max_w: 8\n    font_size: 8\n").is_err());
+    }
+
+    /// A container with neither keeps today's fill-the-parent default.
+    #[test]
+    fn container_with_neither_defaults_to_auto() {
+        assert!(try_build("  - type: container\n    at: [0,0]\n    items: []\n").is_ok());
     }
 }
