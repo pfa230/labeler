@@ -43,6 +43,8 @@ pub struct TextRaw {
     pub placement: Placement,
     pub font_size: FontSize,
     #[serde(default)]
+    pub font_weight: Option<u16>,
+    #[serde(default)]
     pub multiline: bool,
     #[serde(default)]
     pub alignment: Alignment,

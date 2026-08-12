@@ -99,15 +99,29 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 value,
                 placement,
                 font_size,
+                font_weight,
                 multiline,
                 alignment,
             }) => {
                 let (name, value) = require_one_of("text", name, value)?;
+                // Also checked in `TemplateDefinition::validate`, which covers items built by any
+                // other route; here so an API caller gets the error with its JSON path.
+                if let Some(weight) = font_weight {
+                    if !(100..=900).contains(&weight) || weight % 100 != 0 {
+                        return Err(TemplateError::Validation {
+                            path: "text.font_weight".to_string(),
+                            msg: format!(
+                                "font_weight must be a multiple of 100 between 100 and 900, got {weight}"
+                            ),
+                        });
+                    }
+                }
                 Ok(LayoutItem::Text {
                     name,
                     value,
                     placement,
                     font_size,
+                    font_weight,
                     multiline,
                     alignment,
                 })

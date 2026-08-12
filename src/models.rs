@@ -292,6 +292,8 @@ pub enum LayoutItem {
         #[serde(flatten)]
         placement: Placement,
         font_size: FontSize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font_weight: Option<u16>,
         #[serde(default)]
         multiline: bool,
         #[serde(default)]
