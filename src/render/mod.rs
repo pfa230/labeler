@@ -808,8 +808,9 @@ impl<'a> RenderContext<'a> {
                             Extent::To(to) if to.x().is_sign_negative() => -to.x(),
                             _ => 0.0,
                         };
-                        let inner_budget =
-                            ((budget_w - at_x - inset) - padding.left - padding.right).max(0.0);
+                        let outer_cap = placement.max_w.unwrap_or(f32::INFINITY);
+                        let outer_budget = (budget_w - at_x - inset).min(outer_cap).max(0.0);
+                        let inner_budget = (outer_budget - padding.left - padding.right).max(0.0);
                         let inner_h = (self.measure_box_height(placement, at_y)?
                             - padding.top
                             - padding.bottom)
@@ -824,7 +825,10 @@ impl<'a> RenderContext<'a> {
                             LengthMode::Fixed,
                         );
                         let child_extent = ctx.measure(items, inner_budget, out)?;
-                        at_x + padding.left + child_extent + padding.right + inset
+                        // Capping only the budget would still let padding push the contribution
+                        // past the cap.
+                        let outer = (padding.left + child_extent + padding.right).min(outer_budget);
+                        at_x + outer + inset
                     } else {
                         // A numeric size or a numeric `to`: the footprint is known.
                         let (explicit_w, _) =
@@ -1332,7 +1336,13 @@ impl<'a> RenderContext<'a> {
             let width = if self.is_dynamic_width()
                 && placement.size_or_auto().is_some_and(|s| s.0[0].is_auto())
             {
-                (self.frame_width_units - left).max(0.0)
+                // Deliberately an explicit `min` rather than `resolve_size_value` with the
+                // narrowed remainder as its fallback: that helper rejects `<= 0`, and a zero
+                // remainder here is a legitimate outcome of measurement rather than an authoring
+                // error. A zero-width container renders an empty box, as it does today.
+                (self.frame_width_units - left)
+                    .min(placement.max_w.unwrap_or(f32::INFINITY))
+                    .max(0.0)
             } else {
                 self.resolve_size(
                     &placement.at,
@@ -1356,8 +1366,8 @@ impl<'a> RenderContext<'a> {
             let bottom = point.y;
             let top = bottom + height;
 
-            let inner_width = width - padding.left - padding.right;
-            let inner_height = height - padding.top - padding.bottom;
+            let inner_width = (width - padding.left - padding.right).max(0.0);
+            let inner_height = (height - padding.top - padding.bottom).max(0.0);
             let child_mode = match &self.mode {
                 LengthMode::Dynamic(al) => LengthMode::Dynamic(AutoLength {
                     texts: al.texts,
@@ -2033,6 +2043,249 @@ mod tests {
             .measure(&[item], budget, &mut measured)
             .expect("measure");
         (extent, measured.len())
+    }
+
+    /// Builds a `RenderContext` over a dynamic-width frame, so `render_container_item` takes its
+    /// auto-width branch. Empty `texts` is legitimate: the mode comes from the format, not from
+    /// whether any text needed measuring.
+    fn dynamic_ctx_source(frame_w: f32, item: LayoutItem) -> String {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let texts: Vec<super::MeasuredText> = Vec::new();
+        let cursor = std::cell::Cell::new(0usize);
+        let ctx = super::RenderContext::new(
+            (frame_w, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Dynamic(super::AutoLength {
+                texts: &texts,
+                cursor: &cursor,
+            }),
+        );
+        ctx.render_items(&[item]).expect("render")
+    }
+
+    fn capped_container(at_x: f32, max_w: Option<f32>, items: Vec<LayoutItem>) -> LayoutItem {
+        LayoutItem::Container {
+            placement: Placement {
+                at: Position([at_x, 0.0]),
+                extent: crate::models::Extent::Size(Size([
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::Value(12.0),
+                ])),
+                max_w,
+                max_h: None,
+                rotate: None,
+            },
+            option: None,
+            frame: None,
+            padding: crate::models::Padding::ZERO,
+            items,
+        }
+    }
+
+    /// The render half of #152. The frame is 100mm wide and the container sits at x=90, so the
+    /// remainder is 10mm and the 5mm cap is the binding constraint. Before the fix this branch
+    /// ignores `max_w` entirely and emits the 10mm remainder.
+    #[test]
+    fn max_w_caps_a_dynamic_container_at_render() {
+        let source = dynamic_ctx_source(100.0, capped_container(90.0, Some(5.0), vec![]));
+        assert!(
+            source.contains("width: 5mm"),
+            "the container must render at its 5mm cap, not the 10mm frame remainder: {source}"
+        );
+    }
+
+    /// The measure half of #152. The child is load-bearing: the cap only binds when the content
+    /// would otherwise exceed it, so an *empty* container measures the same before and after and
+    /// proves nothing. Uncapped this contributes at_x plus the child's full natural width; capped
+    /// it contributes at_x plus the cap.
+    #[test]
+    fn max_w_caps_a_dynamic_container_during_measurement() {
+        let child = LayoutItem::Text {
+            name: None,
+            value: Some("a string far wider than any five millimetre cap".to_string()),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: crate::models::Extent::Size(Size([
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::Value(8.0),
+                ])),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        };
+        let (uncapped, _) =
+            measured_extent_of(capped_container(10.0, None, vec![child.clone()]), 100.0);
+        let (capped, _) = measured_extent_of(capped_container(10.0, Some(5.0), vec![child]), 100.0);
+        assert!(
+            uncapped > 30.0,
+            "the child must be wide enough for the cap to bind, got {uncapped}"
+        );
+        assert!(
+            (capped - 15.0).abs() < 0.5,
+            "a container at x=10 capped to 5mm contributes 15, not {capped}"
+        );
+    }
+
+    /// #152's own repro template, asserted as *correctly* rejected. The load-time check was right
+    /// all along; the renderer was the liar. Testing only the rejection would pass even against
+    /// unfixed code, so this also pins that the container really does render at its cap, which is
+    /// what makes a child line reaching x=50 genuinely not fit.
+    #[test]
+    fn the_152_repro_is_rejected_and_the_rejection_is_correct() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 3.0]\n        to: [50.0, 3.0]\n        thickness: 0.2\n";
+        let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
+        let template = crate::templates::TemplateDefinition::try_from(raw).expect("converts");
+        assert!(
+            template.validate().is_err(),
+            "a 50mm line inside a 30mm-capped container must be rejected"
+        );
+        // And the rejection is correct because the container really is 30mm at render.
+        let source = dynamic_ctx_source(100.0, capped_container(0.0, Some(30.0), vec![]));
+        assert!(
+            source.contains("width: 30mm"),
+            "the container renders at its cap, so the rejected line truly does not fit: {source}"
+        );
+    }
+
+    /// A refactor guard only. This PASSES against unfixed code, because the branch is already
+    /// `(frame_width - left).max(0.0)`. It exists to catch a later rewrite that routes this branch
+    /// through `resolve_size_value`, which rejects `<= 0` and would break a legitimate zero
+    /// remainder. It is NOT a guard for #152.
+    #[test]
+    fn a_zero_remainder_container_renders_an_empty_box() {
+        let source = dynamic_ctx_source(90.0, capped_container(90.0, Some(30.0), vec![]));
+        assert!(
+            source.contains("width: 0mm"),
+            "a container with no room left renders an empty box rather than erroring: {source}"
+        );
+    }
+
+    /// Spec §4.1. The Task 1 loosening admits this at load and it then fails at render, because the
+    /// container has no width left for a divider. Like the test above, this PASSES after Task 1 and
+    /// before Task 5 — it is not a per-step regression guard. It is here to pin *how* such a
+    /// template fails: the standard explained error, not a panic and not a corrupt page.
+    #[test]
+    fn a_container_with_no_room_left_fails_cleanly_at_render() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n        thickness: 0.2\n";
+        let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
+        let template = crate::templates::TemplateDefinition::try_from(raw).expect("converts");
+        assert_eq!(
+            template.validate(),
+            Ok(()),
+            "the cap loosening admits this at load"
+        );
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a divider in a zero-width container cannot render");
+        assert!(
+            err.message_text().contains("must differ"),
+            "expected the standard degenerate-line error, got: {}",
+            err.message_text()
+        );
+    }
+
+    /// A cap below the container's own padding leaves no inner box at all. Before the cap this was
+    /// unreachable (the container always got the whole frame remainder); with it, the inner
+    /// dimensions must clamp at zero rather than going negative.
+    ///
+    /// What this test can and cannot assert, because it took four attempts to get right: a
+    /// zero-width inner frame cannot host *any* auto-width child, since `render_container_item`
+    /// computes height via `resolve_size(..).1`, which resolves the width axis first and rejects
+    /// `<= 0`. So the child errors either way and there is no "renders successfully" green to
+    /// reach. What the clamp changes is *which* error: without it the child's edge-relative `at.x`
+    /// resolves against a negative frame and fails in `resolve_point` with a coordinate error;
+    /// with it the frame is zero and the failure is the accurate size error. Asserting the error
+    /// kind is the discriminating assertion available here.
+    #[test]
+    fn a_cap_smaller_than_the_padding_clamps_the_inner_box() {
+        let item = LayoutItem::Container {
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: crate::models::Extent::Size(Size([
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::Value(12.0),
+                ])),
+                max_w: Some(2.0),
+                max_h: None,
+                rotate: None,
+            },
+            option: None,
+            frame: None,
+            padding: crate::models::Padding {
+                top: 3.0,
+                right: 3.0,
+                bottom: 3.0,
+                left: 3.0,
+            },
+            // The child is load-bearing: unclamped inner dimensions are only ever *passed into*
+            // the child context, so an empty container emits nothing and the bug stays invisible.
+            // Its position is edge-relative so it resolves against the inner frame width.
+            items: vec![LayoutItem::Container {
+                placement: Placement {
+                    at: Position([-0.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(1.0),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![],
+            }],
+        };
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let texts: Vec<super::MeasuredText> = Vec::new();
+        let cursor = std::cell::Cell::new(0usize);
+        let ctx = super::RenderContext::new(
+            (100.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Dynamic(super::AutoLength {
+                texts: &texts,
+                cursor: &cursor,
+            }),
+        );
+        let err = ctx
+            .render_items(&[item])
+            .expect_err("a zero-width inner frame cannot host an auto-width child");
+        assert!(
+            err.message_text().contains("must be greater than 0"),
+            "expected the size error a clamped zero-width frame produces, not the negative \
+             coordinate error an unclamped one produces; got: {}",
+            err.message_text()
+        );
     }
 
     fn to_text(at: [f32; 2], to: [f32; 2], value: &str) -> LayoutItem {
