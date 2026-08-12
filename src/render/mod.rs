@@ -1207,12 +1207,15 @@ impl<'a> RenderContext<'a> {
             }
         }
 
+        // `allow_auto_fill: true` matches text validation's `resolve_size` call in `templates.rs`:
+        // text always has a frame to fall back on, on every format, not only when auto-length is
+        // active (#155).
         let (width, box_height_units) = self.resolve_size(
             &placement.at,
             &placement.extent,
             placement.max_w,
             placement.max_h,
-            false,
+            true,
         )?;
         self.check_box_bounds(&point, width, box_height_units)?;
         let bottom = point.y;
@@ -2369,6 +2372,189 @@ mod tests {
         assert!(
             source.contains("width: 30mm"),
             "the container renders at its cap, so the rejected line truly does not fit: {source}"
+        );
+    }
+
+    /// The render half of #155: the fixed path had no fallback, so max_h resolved uncapped to 200
+    /// and overflowed a 40mm frame. Asserting the render succeeds is the point; before this task it
+    /// is a 422 on every label.
+    #[test]
+    fn the_155_repro_renders() {
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(60.0),
+                },
+                height: Dimension::Fixed(40.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: None,
+                value: Some("x".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Value(20.0),
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                    ])),
+                    max_w: None,
+                    max_h: Some(200.0),
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(8.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }]),
+            version: None,
+        };
+        assert_eq!(template.validate(), Ok(()));
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("#155: a max_h above the frame must cap, not overflow");
+    }
+
+    /// The number, not just the absence of an error. `render/mod.rs` has its own `resolve_size`
+    /// copy, so a fix applied only to `templates.rs` — or one that produced a different but still
+    /// in-bounds height — would satisfy the test above and still be wrong. Assert the emitted box.
+    #[test]
+    fn the_155_repro_renders_at_the_capped_height() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (60.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let source = ctx
+            .render_items(&[LayoutItem::Text {
+                name: None,
+                value: Some("x".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Value(20.0),
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                    ])),
+                    max_w: None,
+                    max_h: Some(200.0),
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(8.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }])
+            .expect("renders");
+        assert!(
+            source.contains("height: 40mm"),
+            "the box must be capped to the frame, not the 200mm max_h: {source}"
+        );
+    }
+
+    /// The render side of the fixed-format cases. Each asserts the emitted box, not that rendering
+    /// succeeded: a render-side fallback bug on either axis produces a different but still in-bounds
+    /// number, which an `.expect()` would accept.
+    #[test]
+    fn fixed_format_text_renders_at_the_remainder() {
+        fn source_at(frame: (f32, f32), at: [f32; 2], size: Size, max_h: Option<f32>) -> String {
+            use std::cell::RefCell;
+            let data: HashMap<String, super::JsonValue> = HashMap::new();
+            let settings = no_settings();
+            let datetime = no_datetime();
+            let env = super::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            let images = RefCell::new(super::ImageCollector::default());
+            let ctx = super::RenderContext::new(
+                frame,
+                "mm",
+                &data,
+                None,
+                &env,
+                &images,
+                super::LengthMode::Fixed,
+            );
+            ctx.render_items(&[LayoutItem::Text {
+                name: None,
+                value: Some("x".to_string()),
+                placement: Placement {
+                    at: Position(at),
+                    extent: crate::models::Extent::Size(size),
+                    max_w: None,
+                    max_h,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }])
+            .expect("renders")
+        }
+
+        // Height axis on a fixed label: 40 - 10 = 30.
+        let s = source_at(
+            (100.0, 40.0),
+            [0.0, 10.0],
+            Size([
+                SizeValue::Value(20.0),
+                SizeValue::Auto(crate::models::AutoSize::Auto),
+            ]),
+            None,
+        );
+        assert!(
+            s.contains("height: 30mm"),
+            "expected the remainder above at.y: {s}"
+        );
+
+        // The same with an oversized max_h: min(35, 30) = 30, not 35.
+        let s = source_at(
+            (100.0, 40.0),
+            [0.0, 10.0],
+            Size([
+                SizeValue::Value(20.0),
+                SizeValue::Auto(crate::models::AutoSize::Auto),
+            ]),
+            Some(35.0),
+        );
+        assert!(
+            s.contains("height: 30mm"),
+            "the cap must not exceed the remainder: {s}"
+        );
+
+        // Width axis on a sheet slot: 40 - 5 = 35.
+        let s = source_at(
+            (40.0, 20.0),
+            [5.0, 2.0],
+            Size([
+                SizeValue::Auto(crate::models::AutoSize::Auto),
+                SizeValue::Value(8.0),
+            ]),
+            None,
+        );
+        assert!(
+            s.contains("width: 35mm"),
+            "expected the remainder right of at.x: {s}"
         );
     }
 
