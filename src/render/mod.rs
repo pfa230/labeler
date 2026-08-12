@@ -489,23 +489,29 @@ fn item_anchor(item: &LayoutItem) -> Option<&Position> {
     }
 }
 
-/// `size = to - at`, both corners resolved against the frame first. Both components must be
-/// strictly positive: `to` is the top-right corner of a box whose bottom-left is `at`. Mirrors
-/// `templates::resolve_to_extent` (kept in sync per this file's compile-time/render-time note).
+/// `size = to - at`, both corners resolved against the frame first: `to` is the top-right corner of
+/// a box whose bottom-left is `at`. Mirrors `templates::resolve_to_extent` (kept in sync per this
+/// file's compile-time/render-time note) with one deliberate difference: a *zero* extent is legal
+/// here and rejected there. On a dynamic-width label an empty data value can measure to exactly
+/// `at.x`, so the label clamps to it and a `to`-spanning box collapses to zero width. That is an
+/// ordinary outcome of blank input, not an authoring mistake; a *negative* extent still is one, and
+/// the compile-time check (which resolves against the max-width frame) still rejects corners that
+/// are statically inverted or degenerate.
 fn resolve_to_extent(
     at: &Position,
     to: &Position,
     frame_w: f32,
     frame_h: f32,
 ) -> Result<(f32, f32), AppError> {
+    const EPS: f32 = 1.0e-4;
     let width = resolve_coord(to.x(), frame_w) - resolve_coord(at.x(), frame_w);
     let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
-    if width <= 0.0 || height <= 0.0 {
+    if width < -EPS || height < -EPS {
         return Err(AppError::unsupported_layout_item(
             "to must be above and to the right of at",
         ));
     }
-    Ok((width, height))
+    Ok((width.max(0.0), height.max(0.0)))
 }
 
 struct RenderContext<'a> {
@@ -739,11 +745,13 @@ impl<'a> RenderContext<'a> {
                         }
                     }
                 }
-                // An edge-relative endpoint is positioned against the very width being measured,
-                // so it cannot contribute to it.
+                // An edge-relative endpoint cannot contribute a frame-dependent term (the frame
+                // width is the unknown being solved for), but it does contribute its inset: the
+                // narrowest label the endpoint fits on, exactly as clause 1 does for a
+                // right-anchored box.
                 LayoutItem::Line { at, to, .. } => [at.x(), to.x()]
                     .into_iter()
-                    .filter(|x| !x.is_sign_negative())
+                    .map(|x| if x.is_sign_negative() { -x } else { x })
                     .fold(0.0f32, f32::max),
                 LayoutItem::Container {
                     placement,
@@ -3902,10 +3910,11 @@ mod tests {
         );
     }
 
-    /// A line with an edge-relative endpoint cannot define the width it is measured against, and has
-    /// no content of its own to fall back on, so it contributes nothing.
+    /// An edge-relative line endpoint contributes its inset, exactly as a right-anchored box does:
+    /// it cannot define the width it is measured against, but the label still has to be at least as
+    /// wide as the inset or the endpoint has nowhere to sit. Here the wider endpoint is 5mm in.
     #[test]
-    fn an_edge_relative_line_contributes_nothing_to_the_measured_extent() {
+    fn an_edge_relative_line_endpoint_contributes_its_inset() {
         use std::cell::RefCell;
         let data: HashMap<String, super::JsonValue> = HashMap::new();
         let settings = no_settings();
@@ -3931,7 +3940,7 @@ mod tests {
         };
         let mut measured = Vec::new();
         let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
-        assert_eq!(extent, 0.0);
+        assert_eq!(extent, 5.0);
         assert!(measured.is_empty());
     }
 
@@ -4053,20 +4062,56 @@ mod tests {
         }
     }
 
-    /// A 60mm inset passes load-time validation, because it is valid against the 100mm max. The label
-    /// then measures to ~10mm of text, the inset resolves to about -50, and that has to be the
-    /// standard error rather than a line drawn off the left of the label.
+    /// A right-anchored line beside content-sized text: the label must grow to hold the line's own
+    /// inset, the same way it grows to hold a right-anchored box. Before the line rule matched the
+    /// box rule this rendered a `a coordinate resolves outside the frame` error, because the label
+    /// resolved to the ~10mm of text and the 20mm inset then landed left of x=0.
     #[test]
-    fn a_deferred_line_coordinate_that_resolves_out_of_frame_errors_at_render() {
-        let template = dynamic_label_with_line(Position([0.0, 8.0]), Position([-60.0, 8.0]));
-        assert_eq!(
-            template.validate(),
-            Ok(()),
-            "the 60mm inset is valid against max"
-        );
+    fn a_right_anchored_line_widens_the_label_to_its_inset() {
+        let template = dynamic_label_with_line(Position([-20.0, 8.0]), Position([-0.0, 8.0]));
+        assert_eq!(template.validate(), Ok(()));
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
-            .expect_err("a 60mm inset on a ~10mm label must not render");
+        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("a right-anchored line must render beside auto-width text");
+        let width_px = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+        // 20mm at 180dpi is ~142px; the ~10mm of text alone would be about half that.
+        assert!(
+            width_px >= 138,
+            "the label must be at least as wide as the line's 20mm inset, got {width_px}px"
+        );
+    }
+
+    /// The render-time endpoint bound (`check_line`) is the mirror of the load-time one, per SPEC §7's
+    /// compile-time/render-time duplication. Load-time validation now rejects every template that
+    /// could reach it (a plain endpoint past `width.max` is rejected outright, and an edge-relative
+    /// one sizes the label to its own inset), so it is exercised here at the context level.
+    #[test]
+    fn a_line_endpoint_outside_the_frame_errors_at_render() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (10.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let err = ctx
+            .render_items(&[LayoutItem::Line {
+                at: Position([0.0, 6.0]),
+                to: Position([30.0, 6.0]),
+                thickness: 0.2,
+            }])
+            .expect_err("a 30mm endpoint on a 10mm frame must not render");
         assert!(
             err.message_text().contains("outside the frame"),
             "unexpected error: {}",
@@ -4094,6 +4139,133 @@ mod tests {
             .expect_err("a zero-length line must not render");
         assert!(
             err.message_text().contains("must differ"),
+            "unexpected error: {}",
+            err.message_text()
+        );
+    }
+
+    /// The #146/#147 acceptance template renders, and its width tracks its content. Visual
+    /// correctness was verified by looking at the PNG; this guards the mechanics.
+    #[test]
+    fn the_lines_divider_template_is_content_sized() {
+        let (registry, _dir) = crate::templates::load_all_for_tests();
+        let template = registry
+            .get("brother_24mm_lines_divider")
+            .expect("fixture template is loaded");
+        let render = |l1: &str, l2: &str| {
+            let mut data: HashMap<String, super::JsonValue> = HashMap::new();
+            data.insert("line1".to_string(), json!(l1));
+            data.insert("line2".to_string(), json!(l2));
+            let png = render_single_label(template, &data, None, &no_settings(), &no_datetime())
+                .expect("render");
+            u32::from_be_bytes([png[16], png[17], png[18], png[19]])
+        };
+        let short = render("Bin 7", "Shed");
+        let long = render("Storage Bin A-42", "Workshop / North Wall");
+        assert!(
+            long > short,
+            "an auto-length label must track its content: {long}px vs {short}px"
+        );
+    }
+
+    /// A blank optional field is ordinary in CSV-driven printing. The empty value measures to
+    /// nothing, the label clamps to the item's own `at.x`, and the `to`-spanning box collapses to
+    /// zero width — a legitimate render-time outcome of empty data, not an authoring error, so it
+    /// must render rather than 422. The same shape with a value still renders.
+    #[test]
+    fn an_empty_value_collapses_a_to_spanned_box_instead_of_erroring() {
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(60.0),
+                },
+                height: Dimension::Fixed(12.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: Some("v".to_string()),
+                value: None,
+                placement: Placement {
+                    at: Position([12.0, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 12.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }]),
+            version: None,
+        };
+        assert_eq!(template.validate(), Ok(()));
+        for value in ["hello", ""] {
+            let mut data: HashMap<String, super::JsonValue> = HashMap::new();
+            data.insert("v".to_string(), json!(value));
+            render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+                .unwrap_or_else(|err| {
+                    panic!("value {value:?} must render, got: {}", err.message_text())
+                });
+        }
+    }
+
+    /// A `to`-sized qr contributes nothing to the measured extent (it has no intrinsic content
+    /// width, ADR-0050 decision 11), so the label falls back to `width.min`. That only leaves room
+    /// for the item when its own `at.x` fits inside the fallback: anchored at x=30 on a 10mm label
+    /// there is no box left to draw, and it errors rather than silently disappearing. Pins the §6
+    /// wording.
+    #[test]
+    fn a_to_sized_qr_anchored_past_the_fallback_width_errors() {
+        let qr_at = |x: f32| TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(12.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Qr {
+                name: None,
+                value: Some("payload".to_string()),
+                placement: Placement {
+                    at: Position([x, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 12.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            }]),
+            version: None,
+        };
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+
+        let flush_left = qr_at(0.0);
+        assert_eq!(flush_left.validate(), Ok(()));
+        render_single_label(&flush_left, &data, None, &no_settings(), &no_datetime())
+            .expect("from x=0 the fallback width is the whole box");
+
+        let template = qr_at(30.0);
+        assert_eq!(template.validate(), Ok(()), "valid against the 100mm max");
+        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a 30mm anchor on a 10mm label leaves no box");
+        assert!(
+            err.message_text().contains("above and to the right"),
             "unexpected error: {}",
             err.message_text()
         );

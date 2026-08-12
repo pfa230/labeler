@@ -6,29 +6,33 @@ use crate::raw::{
 use crate::templates::TemplateDefinition;
 
 impl PlacementRaw {
-    /// `size` xor `to`. `default_extent` is what "neither" means for this item kind: `None` makes
-    /// it an error (text, qr, image), `Some` supplies the container's fill-the-parent default.
+    /// `size` xor `to`. `kind` is the item type (`text`, `qr`, `image`, `container`) and becomes the
+    /// error path, the way `require_one_of` does it: there is no `placement:` key in the YAML, so
+    /// naming one would point the author at something they cannot find. `default_extent` is what
+    /// "neither" means for this item kind: `None` makes it an error (text, qr, image), `Some`
+    /// supplies the container's fill-the-parent default.
     pub(crate) fn into_placement(
         self,
+        kind: &str,
         default_extent: Option<Extent>,
     ) -> Result<Placement, TemplateError> {
         let extent = match (self.size, self.to) {
             (Some(_), Some(_)) => {
                 return Err(TemplateError::Validation {
-                    path: "placement".to_string(),
+                    path: kind.to_string(),
                     msg: "set exactly one of size or to, not both".to_string(),
                 })
             }
             (Some(size), None) => Extent::Size(size),
             (None, Some(to)) => Extent::To(to),
             (None, None) => default_extent.ok_or_else(|| TemplateError::Validation {
-                path: "placement".to_string(),
+                path: kind.to_string(),
                 msg: "must set one of size or to".to_string(),
             })?,
         };
         if matches!(extent, Extent::To(_)) && (self.max_w.is_some() || self.max_h.is_some()) {
             return Err(TemplateError::Validation {
-                path: "placement".to_string(),
+                path: kind.to_string(),
                 msg: "max_w and max_h resolve `auto` and cannot be combined with to".to_string(),
             });
         }
@@ -81,7 +85,7 @@ impl TryFrom<ContainerRaw> for LayoutItem {
             SizeValue::Auto(AutoSize::Auto),
             SizeValue::Auto(AutoSize::Auto),
         ])));
-        let placement = raw.placement.into_placement(default_extent)?;
+        let placement = raw.placement.into_placement("container", default_extent)?;
         let padding = match raw.padding {
             None => Padding::ZERO,
             Some(padding) => Padding::try_from(padding)?,
@@ -152,7 +156,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 Ok(LayoutItem::Text {
                     name,
                     value,
-                    placement: placement.into_placement(None)?,
+                    placement: placement.into_placement("text", None)?,
                     font_size,
                     font_weight,
                     multiline,
@@ -164,7 +168,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 Ok(LayoutItem::Qr {
                     name,
                     value,
-                    placement: raw.placement.into_placement(None)?,
+                    placement: raw.placement.into_placement("qr", None)?,
                     params: raw.params,
                 })
             }
@@ -180,7 +184,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 _ => Ok(LayoutItem::Image {
                     name: raw.name,
                     src: raw.src,
-                    placement: raw.placement.into_placement(None)?,
+                    placement: raw.placement.into_placement("image", None)?,
                     fit: raw.fit,
                 }),
             },
