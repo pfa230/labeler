@@ -189,8 +189,10 @@ implemented yet.
 | `sheet` | labels laid into slots, paginated across pages, as one `application/pdf` | that paginated PDF sent as a single print job |
 
 **Validate-then-execute.** Every label is render-validated first. If any label has bad data, the request
-returns `422 BatchInvalid` with `details.failures: [{ index, code, message }]` listing every failing
-label, and nothing is produced or printed (atomic in both modes and both formats). Only once all labels
+returns `422 BatchInvalid` with `details.failures: [{ index, code, reason?, message }]` listing every
+failing label, and nothing is produced or printed (atomic in both modes and both formats). `reason` is
+present exactly when that failure's `code` is one that carries a reason (§10.1) and is omitted
+otherwise. Only once all labels
 validate does the endpoint execute: `download` streams the blob; `print` dispatches jobs and returns a
 `200` summary.
 
@@ -622,6 +624,22 @@ optional in the schema. The table grows as the remaining codes are migrated (#15
 | `TemplateInvalid` | `template_parse_failed` | The YAML did not parse. |
 | `TemplateInvalid` | `template_validation_failed` | The template parsed but failed structural validation. |
 | `TemplateInvalid` | `template_duplicate_id` | Two templates on disk declare the same id. |
+| `UnsupportedLayoutItem` | `coord_out_of_frame` | A resolved coordinate falls outside the frame. |
+| `UnsupportedLayoutItem` | `item_out_of_frame` | A resolved item box falls outside the frame. |
+| `UnsupportedLayoutItem` | `line_endpoint_out_of_frame` | A resolved line endpoint falls outside the frame. |
+| `UnsupportedLayoutItem` | `line_degenerate` | A line's start and end resolve to the same point. |
+| `UnsupportedLayoutItem` | `edge_rect_inverted` | `to` is not above and to the right of `at`. |
+| `UnsupportedLayoutItem` | `size_invalid` | A `size` component is not greater than 0. |
+| `UnsupportedLayoutItem` | `size_auto_without_max` | `size` is `auto` with no matching `max_*` to resolve it. |
+| `UnsupportedLayoutItem` | `max_size_invalid` | A `max_*` component is not greater than 0. |
+| `UnsupportedLayoutItem` | `image_source_missing` | An image item sets neither `src` nor `name`. |
+| `UnsupportedLayoutItem` | `image_format_unsupported` | The image's MIME type or file extension is not supported. |
+| `UnsupportedLayoutItem` | `image_data_invalid` | Inline image data is not a usable base64 `data:` URI. |
+| `UnsupportedLayoutItem` | `image_asset_missing` | The referenced asset file does not exist. |
+| `UnsupportedLayoutItem` | `image_asset_unreadable` | The asset file exists but could not be read. |
+| `UnsupportedLayoutItem` | `image_asset_path_escapes` | The asset path resolves outside the assets directory. |
+| `UnsupportedLayoutItem` | `assets_dir_unavailable` | The server's assets directory could not be resolved. |
+| `UnsupportedLayoutItem` | `qr_error_correction_invalid` | `error_correction` is not one of L, M, Q, H. |
 
 ## 11. Authentication
 
@@ -939,8 +957,9 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 - **2026-08-12**: Errors gain a machine-readable `details.reason` slug (§10.1, ADR-0052, #151), so
   the several unrelated causes that share one `code` can be told apart without matching prose. Purely
-  additive: `code` values, statuses and messages are unchanged, and `details` stays optional. Starts
-  with `TemplateInvalid`, whose three causes were previously flattened behind a single match arm.
+  additive: `code` values, statuses and messages are unchanged, and `details` stays optional. Covers
+  `TemplateInvalid` and `UnsupportedLayoutItem` so far. Per-label `/batch` failures carry the slug too
+  (§2.2), since a geometry failure is most likely to surface inside a sheet run.
 - **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
   (ADR-0051, #146, #147). Two behavior changes fall out of it: **a `line` endpoint outside the layout
   bounds is now an error rather than being clipped** (an absolute endpoint past `width.max` is rejected

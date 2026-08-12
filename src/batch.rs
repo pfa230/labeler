@@ -109,6 +109,7 @@ fn render_single_batch(
                 failures.push(BatchFailure {
                     index: idx,
                     code: err.code(),
+                    reason: err.reason(),
                     message: err.message_text(),
                 });
                 artifacts.push(Vec::new());

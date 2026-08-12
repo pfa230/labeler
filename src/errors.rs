@@ -46,11 +46,15 @@ pub struct AppError {
     reason: Option<Reason>,
 }
 
-/// One label's validation failure within a batch (its 0-based index + the error code/message).
+/// One label's validation failure within a batch (its 0-based index + the error code/reason/message).
 #[derive(Debug, serde::Serialize)]
 pub struct BatchFailure {
     pub index: usize,
     pub code: &'static str,
+    /// Present exactly when the failure's code carries a reason (SPEC §10.1). A per-label failure
+    /// can be a code outside the migrated four, so this is optional rather than required.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
     pub message: String,
 }
 
@@ -200,10 +204,11 @@ impl AppError {
         )
     }
 
-    pub fn unsupported_layout_item(message: impl Into<String>) -> Self {
-        Self::new(
+    pub fn unsupported_layout_item(reason: Reason, message: impl Into<String>) -> Self {
+        Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,
             CODE_UNSUPPORTED_LAYOUT,
+            reason,
             message,
             None,
         )
@@ -516,8 +521,39 @@ impl std::error::Error for TemplateError {}
 
 #[cfg(test)]
 mod tests {
-    use super::AppError;
+    use super::{AppError, BatchFailure};
     use axum::http::StatusCode;
+
+    /// Decision 4 of ADR-0052: a per-label failure carries `reason` exactly when its code is one of
+    /// the migrated four. Both halves matter — a required field would contradict the scoping, and a
+    /// missing one would leave the nested failures prose-discriminated.
+    #[test]
+    fn batch_failure_carries_reason_only_for_reasoned_codes() {
+        use crate::reason::Reason;
+
+        let reasoned = AppError::template_invalid(Reason::TemplateParseFailed, "boom");
+        let failure = BatchFailure {
+            index: 0,
+            code: reasoned.code(),
+            reason: reasoned.reason(),
+            message: reasoned.message_text(),
+        };
+        let json = serde_json::to_value(&failure).expect("serialize");
+        assert_eq!(json["reason"], "template_parse_failed");
+
+        let unreasoned = AppError::missing_field("code");
+        let failure = BatchFailure {
+            index: 1,
+            code: unreasoned.code(),
+            reason: unreasoned.reason(),
+            message: unreasoned.message_text(),
+        };
+        let json = serde_json::to_value(&failure).expect("serialize");
+        assert!(
+            json.get("reason").is_none(),
+            "an unreasoned code must omit the key, got {json}"
+        );
+    }
 
     #[test]
     fn connector_errors_keep_their_codes_and_statuses() {
