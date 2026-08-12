@@ -406,6 +406,10 @@ be > 0. (`line` does not use `size`; see §4.1.)
   than a synthetic one.
   `font_size` is either a fixed number or a range `{ min, max }`. A range auto-shrinks the text to fit
   the box (0.5pt steps) and truncates with an ellipsis if it still overflows.
+  `multiline: true` also changes the print form: that item's data fields render as a textarea rather
+  than a single-line input, so line breaks can be typed directly (#148). A field also used by a
+  single-line item *anywhere* in the template — including an option branch that is not currently
+  selected — is flagged there, because that item renders only its first line.
   Single-line text collapses spaces to non-breaking and renders only the first line. On dynamic-width
   `single` templates, `multiline: true` is also supported; see §3.1 for the wrap and sizing rules.
 - **`qr`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
@@ -875,6 +879,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: The print form renders a textarea for data fields belonging to a `multiline: true`
+  text item (#148). Previously every field was a single-line `<input>`, which cannot hold a newline at
+  all, so multiline templates could only be filled through CSV import or the API. A field shared with
+  a single-line item is flagged, since that item shows only its first line; the check spans every
+  option branch, because the form keeps one data object across option switches.
 - **2026-08-12**: `top`- and `bottom`-aligned text no longer loses its descenders or accents to the
   slot's clip box (#124, ADR-0050). Such blocks are inset at their aligned edge by ~0.24em, and the
   fitter reserves both ink overflows for them, so a height-bound `top`/`bottom` item may fit at a
