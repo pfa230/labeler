@@ -431,9 +431,9 @@ A `container` may set `rotate` to turn a portrait design onto a landscape slot (
   Any `rotate` on a non-container item, or a non-orthogonal value, is a validation error.
 - **Counter-clockwise.** Degrees are counter-clockwise. Author canvas corners map to physical box
   corners as: R90 BL→BR, BR→TR, TR→TL, TL→BL; R180 BL→TR, …; R270 BL→TL, ….
-- **`at`/`size` stay parent-frame.** A rotated container is placed and bounds-checked exactly like an
-  unrotated one: `size` is its footprint in the parent. Rotation is purely an inner transform, so
-  nested rotated containers compose without compounding coordinate flips.
+- **`at` and its extent stay parent-frame.** A rotated container is placed and bounds-checked exactly
+  like an unrotated one: `size`, or `to` once resolved (§6), is its footprint in the parent. Rotation is
+  purely an inner transform, so nested rotated containers compose without compounding coordinate flips.
 - **Inner author canvas swaps for 90/270.** Children are authored in the container's natural reading
   orientation; for `rotate: 90|270` the inner authoring box (and child bounds) swap to
   `[inner_h, inner_w]`. Padding is **author-space** (it rotates with the design; `padding.top` is
@@ -494,6 +494,13 @@ an item that sizes itself to its content still contributes that content: a text 
 right edge is measured at its natural width, so several full-width centered lines size the label to the
 longest of them. An edge-relative `at.x` contributes only its inset, and cannot be combined with an
 `auto` or frame-dependent width on a dynamic-width template.
+
+A `to`-sized `qr` or `image` is the exception: neither item type has an intrinsic content width the
+engine measures (see §4.1), so a frame-dependent `to` on either contributes nothing to the measured
+extent and the item simply stretches to whatever width the label resolves to. On a dynamic-width label
+where no other item sizes the content, that means the width falls back to `width.min` rather than
+erroring. Intrinsic qr/image content sizing is deferred; see
+[#149](https://github.com/pfa230/labeler/issues/149).
 
 ## 7. Rendering pipeline
 

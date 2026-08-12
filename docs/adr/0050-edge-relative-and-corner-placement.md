@@ -139,8 +139,8 @@ module_size plus quiet zone) nor a raster image (pixel dimensions) is measured f
 `size: auto` on either resolves to the remaining budget (it fills), so on an auto-length label
 neither item type can size the label to itself, and a `to`-sized one contributes `0` to the measured
 content extent rather than its own footprint. This is a new measurement capability, not a placement
-change, so it is out of scope here and filed as a follow-up issue
-(`Intrinsic content sizing for qr and image items`).
+change, so it is out of scope here and filed as a follow-up issue,
+[#149](https://github.com/pfa230/labeler/issues/149).
 
 ## Consequences
 
@@ -165,6 +165,7 @@ change, so it is out of scope here and filed as a follow-up issue
   deliberate sequencing choice to keep the mechanical 43-site diff separate from the commit a reviewer
   has to read for placement logic. No released state ever shipped a half-implemented `to`.
 - Rejected: measuring `qr`/`image` content size in this change (decision 11 — separate capability,
-  filed as a follow-up rather than folded in here); a `to.x`-only frame-dependence predicate (decision
-  5 — demonstrably wrong in both directions); negative `y` meaning "from the bottom" as #146 first
-  phrased it (decision 2 — redundant with non-negative `y` and asymmetric with `x`).
+  filed as a follow-up rather than folded in here, [#149](https://github.com/pfa230/labeler/issues/149));
+  a `to.x`-only frame-dependence predicate (decision 5 — demonstrably wrong in both directions);
+  negative `y` meaning "from the bottom" as #146 first phrased it (decision 2 — redundant with
+  non-negative `y` and asymmetric with `x`).
