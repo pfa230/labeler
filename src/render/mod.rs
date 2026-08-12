@@ -528,13 +528,58 @@ impl<'a> RenderContext<'a> {
         }
     }
 
-    /// Resolve a template position against this frame, edge-relative components included.
-    /// Task 5 adds the range check here; for now it is pure resolution.
+    /// Resolve a template position against this frame, edge-relative components included. Errors if
+    /// either axis resolves below zero: compile time cannot always prove this on a dynamic-width
+    /// label, since an edge-relative inset is only checked against `width.max` at load time.
     fn resolve_point(&self, p: &Position) -> Result<Point, AppError> {
-        Ok(Point {
-            x: resolve_coord(p.x(), self.frame_width_units),
-            y: resolve_coord(p.y(), self.frame_height_units),
-        })
+        const EPS: f32 = 1.0e-4;
+        let x = resolve_coord(p.x(), self.frame_width_units);
+        let y = resolve_coord(p.y(), self.frame_height_units);
+        if x < -EPS || y < -EPS {
+            return Err(AppError::unsupported_layout_item(format!(
+                "a coordinate resolves outside the frame: [{}, {}] against {}x{}",
+                p.x(),
+                p.y(),
+                self.frame_width_units,
+                self.frame_height_units
+            )));
+        }
+        Ok(Point { x, y })
+    }
+
+    /// Mirrors `templates::validate_bounds` for the cases compile time had to defer.
+    fn check_box_bounds(&self, point: &Point, width: f32, height: f32) -> Result<(), AppError> {
+        const EPS: f32 = 1.0e-4;
+        if point.x + width > self.frame_width_units + EPS
+            || point.y + height > self.frame_height_units + EPS
+        {
+            return Err(AppError::unsupported_layout_item(format!(
+                "an item resolves outside the frame: {width}x{height} at [{}, {}] in {}x{}",
+                point.x, point.y, self.frame_width_units, self.frame_height_units
+            )));
+        }
+        Ok(())
+    }
+
+    /// The line checks compile time had to defer: on a dynamic-width label an edge-relative
+    /// endpoint is resolved against `max`, so neither its upper bound nor its degeneracy against a
+    /// plain endpoint could be decided until the final width was known.
+    fn check_line(&self, start: &Point, end: &Point) -> Result<(), AppError> {
+        const EPS: f32 = 1.0e-4;
+        for p in [start, end] {
+            if p.x > self.frame_width_units + EPS || p.y > self.frame_height_units + EPS {
+                return Err(AppError::unsupported_layout_item(format!(
+                    "a line endpoint resolves outside the frame: [{}, {}] in {}x{}",
+                    p.x, p.y, self.frame_width_units, self.frame_height_units
+                )));
+            }
+        }
+        if (start.x - end.x).abs() < EPS && (start.y - end.y).abs() < EPS {
+            return Err(AppError::unsupported_layout_item(
+                "line start and end must differ after resolution",
+            ));
+        }
+        Ok(())
     }
 
     /// Walk items computing content right-extent and recording auto-width text fits (pre-order).
@@ -825,6 +870,7 @@ impl<'a> RenderContext<'a> {
                     "height",
                 )?;
                 let slot_top = self.frame_height_units - point.y - slot_h;
+                self.check_box_bounds(&point, m.width, slot_h)?;
                 let body = trim_blank_edges(&m.lines)
                     .iter()
                     .map(|l| {
@@ -859,6 +905,7 @@ impl<'a> RenderContext<'a> {
 
         let (width, box_height_units) =
             self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
+        self.check_box_bounds(&point, width, box_height_units)?;
         let bottom = point.y;
         let top = bottom + box_height_units;
         let (size, text) = match font_size {
@@ -906,6 +953,7 @@ impl<'a> RenderContext<'a> {
         let (width, height) =
             self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let point = self.resolve_point(&placement.at)?;
+        self.check_box_bounds(&point, width, height)?;
         let left = point.x;
         let bottom = point.y;
         let top = bottom + height;
@@ -955,6 +1003,7 @@ impl<'a> RenderContext<'a> {
         let (width, height) =
             self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
         let point = self.resolve_point(&placement.at)?;
+        self.check_box_bounds(&point, width, height)?;
         let left = point.x;
         let bottom = point.y;
         let top = bottom + height;
@@ -986,6 +1035,7 @@ impl<'a> RenderContext<'a> {
     ) -> Result<(), AppError> {
         let start_point = self.resolve_point(at)?;
         let end_point = self.resolve_point(to)?;
+        self.check_line(&start_point, &end_point)?;
         let (start_x, start_y) = to_page_coords(&start_point, self.frame_height_units);
         let (end_x, end_y) = to_page_coords(&end_point, self.frame_height_units);
         let dx = end_x - start_x;
@@ -1048,6 +1098,7 @@ impl<'a> RenderContext<'a> {
             let height = self
                 .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
                 .1;
+            self.check_box_bounds(&point, width, height)?;
             let bottom = point.y;
             let top = bottom + height;
 
@@ -1120,6 +1171,7 @@ impl<'a> RenderContext<'a> {
         let height = self
             .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
             .1;
+        self.check_box_bounds(&point, width, height)?;
         let bottom = point.y;
         let top = bottom + height;
 
@@ -3324,7 +3376,12 @@ mod tests {
     #[test]
     fn dynamic_width_mode_is_independent_of_measured_text() {
         use std::cell::RefCell;
-        fn container_width(mode: super::LengthMode<'_>) -> String {
+        // `at_x` differs per mode: the render-time bounds check (Task 5) now rejects a container
+        // that resolves past the frame edge, and the fixed-mode auto-width fallback fills the whole
+        // frame regardless of offset, so it needs `at_x = 0.0` to stay in bounds. Compile-time
+        // `validate_bounds` already forbids the x=5 fixed-mode combination on any real template
+        // (5 + 25 > 25), so this keeps the fixture reachable through the real pipeline.
+        fn container_width(mode: super::LengthMode<'_>, at_x: f32) -> String {
             let data: HashMap<String, super::JsonValue> = HashMap::new();
             let settings = no_settings();
             let datetime = no_datetime();
@@ -3337,7 +3394,7 @@ mod tests {
                 super::RenderContext::new((25.0, 12.0), "mm", &data, None, &env, &images, mode);
             ctx.render_items(&[LayoutItem::Container {
                 placement: Placement {
-                    at: Position([5.0, 0.0]),
+                    at: Position([at_x, 0.0]),
                     size: Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
                         SizeValue::Value(12.0),
@@ -3360,17 +3417,20 @@ mod tests {
 
         let cursor = std::cell::Cell::new(0usize);
         let empty: Vec<super::MeasuredText> = Vec::new();
-        let dynamic = container_width(super::LengthMode::Dynamic(super::AutoLength {
-            texts: &empty,
-            cursor: &cursor,
-        }));
+        let dynamic = container_width(
+            super::LengthMode::Dynamic(super::AutoLength {
+                texts: &empty,
+                cursor: &cursor,
+            }),
+            5.0,
+        );
         assert!(
             dynamic.contains("width: 20mm"),
             "a dynamic label with no measured text must still size the container to the remaining \
              width, got: {dynamic}"
         );
 
-        let fixed = container_width(super::LengthMode::Fixed);
+        let fixed = container_width(super::LengthMode::Fixed, 0.0);
         assert!(
             fixed.contains("width: 25mm"),
             "on a fixed label an auto container fills the frame, got: {fixed}"
@@ -3485,6 +3545,98 @@ mod tests {
         assert!(
             source.contains("end: (40mm, 0mm)"),
             "expected a 40mm-long line, got: {source}"
+        );
+    }
+
+    /// Builds a dynamic-width label whose text measures to roughly 10mm, plus one line.
+    fn dynamic_label_with_line(at: Position, to: Position) -> TemplateDefinition {
+        TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(5.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(12.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![
+                LayoutItem::Text {
+                    name: None,
+                    value: Some("hi".to_string()),
+                    placement: Placement {
+                        at: Position([0.0, 0.0]),
+                        size: Size([
+                            SizeValue::Auto(crate::models::AutoSize::Auto),
+                            SizeValue::Value(6.0),
+                        ]),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    font_size: FontSize::Fixed(6.0),
+                    font_weight: None,
+                    multiline: false,
+                    alignment: crate::models::Alignment::default(),
+                },
+                LayoutItem::Line {
+                    at,
+                    to,
+                    thickness: 0.2,
+                },
+            ]),
+            version: None,
+        }
+    }
+
+    /// A 60mm inset passes load-time validation, because it is valid against the 100mm max. The label
+    /// then measures to ~10mm of text, the inset resolves to about -50, and that has to be the
+    /// standard error rather than a line drawn off the left of the label.
+    #[test]
+    fn a_deferred_line_coordinate_that_resolves_out_of_frame_errors_at_render() {
+        let template = dynamic_label_with_line(Position([0.0, 8.0]), Position([-60.0, 8.0]));
+        assert_eq!(
+            template.validate(),
+            Ok(()),
+            "the 60mm inset is valid against max"
+        );
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a 60mm inset on a ~10mm label must not render");
+        assert!(
+            err.message_text().contains("outside the frame"),
+            "unexpected error: {}",
+            err.message_text()
+        );
+    }
+
+    /// Compile time could not compare these endpoints: one is edge-relative and one is not, and the
+    /// final width was unknown. The content measures well under `min`, so the clamp pins the label to
+    /// exactly 20mm, where the two endpoints coincide and the line is degenerate after all.
+    #[test]
+    fn a_line_that_becomes_degenerate_at_the_final_width_errors_at_render() {
+        let mut template = dynamic_label_with_line(Position([20.0, 8.0]), Position([-0.0, 8.0]));
+        template.format = TemplateFormat::Single {
+            width: Dimension::Dynamic {
+                min: Some(20.0),
+                max: Some(100.0),
+            },
+            height: Dimension::Fixed(12.0),
+            media_width: None,
+        };
+        assert_eq!(template.validate(), Ok(()), "not comparable at load time");
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a zero-length line must not render");
+        assert!(
+            err.message_text().contains("must differ"),
+            "unexpected error: {}",
+            err.message_text()
         );
     }
 }
