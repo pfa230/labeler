@@ -80,17 +80,10 @@ under Settings) before running it; the script sends it as `Authorization: Bearer
 
 ## Error model
 
-All errors are JSON with a stable schema:
-
-```json
-{
-  "error": {
-    "code": "TemplateNotFound",
-    "message": "No template with id 'xyz' was found",
-    "details": { "template": "xyz" }
-  }
-}
-```
+All errors are JSON as `{ "error": { code, message, details } }`. `code` is stable and part of the
+contract, and for some codes `details` carries a stable `reason` naming the specific cause; `message`
+is prose and is not something to match on. [`docs/SPEC.md`](docs/SPEC.md) §10 has the code table and
+§10.1 the reason table.
 
 ## Development
 
