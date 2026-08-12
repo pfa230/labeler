@@ -327,8 +327,9 @@ single templates are unaffected. See [ADR-0026](adr/0026-auto-length-dynamic-wid
 **Multiline text on dynamic-width singles.** `multiline: true` is supported on auto-length `single`
 templates (ADR-0030). Wrapping uses the item's auto-width budget (`width.max - at.x`, minus container
 padding). The renderer shrinks from `font_size.max` toward `font_size.min` (0.5 pt steps) until the
-text fits; line count is emergent (`floor((H + leading) / (cap_height + leading))` at the chosen font
-size, where `H` is the text item's box height). If the
+text fits; line count is emergent (`floor((H − overflow + leading) / (cap_height + leading))` at the
+chosen font size, where `H` is the text item's box height and `overflow` is the ink reservation for
+`top`/`bottom` alignment described below — zero for `center`). If the
 content still overflows at `font_size.min`, the fitting lines are kept and the last is ellipsized.
 The tape label extent is `at.x + longest_wrapped_line_width`, clamped to `[width.min, width.max]`.
 Wrapped lines are precomputed in the measurement pass and emitted verbatim in the render pass
