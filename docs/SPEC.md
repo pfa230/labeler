@@ -513,10 +513,14 @@ via JSON.
 
 ## 9. Fonts
 
-Inter is the only bundled font. It is embedded through `typst-kit` plus `InterVariable.ttf`
-(also loaded by `fontdue` for text measurement). The fonts directory is `LABELER_FONTS_DIR` (default
-`fonts/`); a custom fonts dir must contain `InterVariable.ttf`. Typst is configured to use
-`"Inter Variable"`, falling back to `"Inter"`.
+Inter is the only bundled font. It is embedded through `typst-kit` plus `InterVariable.ttf`, which is
+also parsed with `ttf-parser` for text measurement (ADR-0049). The fonts directory is
+`LABELER_FONTS_DIR` (default `fonts/`); a custom fonts dir must contain `InterVariable.ttf`, and it
+must carry the `wght` and `opsz` variation axes — the measurement path verifies both on load and fails
+with a clear error rather than silently measuring an unweighted instance. Typst is configured to use
+`"Inter"`: 0.15 strips the "Variable" suffix from stored family names only, so requesting
+`"Inter Variable"` logged an unknown-family warning on every compile and resolved through the
+fallback.
 
 ## 10. Error model
 

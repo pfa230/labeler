@@ -1416,6 +1416,54 @@ mod tests {
         );
     }
 
+    /// The measure pre-pass is a third, separate consumer of the weight, and the source assertions
+    /// cannot see it: it decides the auto width of a tape label before any text is emitted. If it
+    /// measured unweighted, a bold label would be sized for narrower text than it renders (#96).
+    #[test]
+    fn the_measure_pre_pass_sizes_an_auto_width_item_for_its_weight() {
+        fn measured_width(weight: Option<u16>) -> f32 {
+            use std::cell::RefCell;
+            let data: HashMap<String, super::JsonValue> = HashMap::new();
+            let settings = no_settings();
+            let datetime = no_datetime();
+            let env = super::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            let images = RefCell::new(super::ImageCollector::default());
+            let ctx =
+                super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+            let item = LayoutItem::Text {
+                name: None,
+                value: Some("Widget A-42 Storage".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(8.0),
+                    ]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(10.0),
+                font_weight: weight,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            };
+            let mut measured = Vec::new();
+            ctx.measure(&[item], 200.0, &mut measured).expect("measure");
+            measured[0].width
+        }
+
+        let regular = measured_width(None);
+        let bold = measured_width(Some(900));
+        assert!(
+            bold > regular,
+            "the pre-pass measured {bold} for weight 900 and {regular} unweighted: it ignored the weight"
+        );
+    }
+
     /// The renderer emitting `weight:` proves nothing about the *fitter* getting it: leaving 400
     /// wired into the fit calls would keep every other test green while #96 stayed unfixed. Bold is
     /// wider, so the same string in the same box must fit at a smaller size.
