@@ -1141,44 +1141,6 @@ pub async fn delete_connection_h(
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
-fn connector_status(
-    e: &crate::connector::ConnectorError,
-) -> (axum::http::StatusCode, &'static str, String) {
-    use crate::connector::ConnectorError::*;
-    use axum::http::StatusCode;
-    match e {
-        AuthFailed => (
-            StatusCode::BAD_GATEWAY,
-            "ConnectorAuthFailed",
-            "upstream authentication failed".into(),
-        ),
-        Forbidden => (
-            StatusCode::BAD_GATEWAY,
-            "ConnectorForbidden",
-            "upstream forbidden".into(),
-        ),
-        ConnectionFailed(m) => (StatusCode::BAD_GATEWAY, "ConnectorUnreachable", m.clone()),
-        InvalidFilter(m) => (StatusCode::BAD_REQUEST, "InvalidFilter", m.clone()),
-        UpstreamSchemaMismatch(m) => (StatusCode::BAD_GATEWAY, "UpstreamSchemaMismatch", m.clone()),
-        RateLimited => (
-            StatusCode::TOO_MANY_REQUESTS,
-            "RateLimited",
-            "upstream rate limited".into(),
-        ),
-        BudgetExceeded => (
-            StatusCode::BAD_REQUEST,
-            "BudgetExceeded",
-            "too many rows requested".into(),
-        ),
-        Upstream(m) => (StatusCode::BAD_GATEWAY, "Upstream", m.clone()),
-    }
-}
-
-fn connector_err(e: crate::connector::ConnectorError) -> AppError {
-    let (status, code, msg) = connector_status(&e);
-    AppError::new(status, code, msg, None)
-}
-
 async fn load_conn_and_connector<'a>(
     state: &'a AppState,
     id: &str,
@@ -1213,7 +1175,7 @@ pub async fn connection_schema(
     let schema = c
         .schema(&conn, state.egress())
         .await
-        .map_err(connector_err)?;
+        .map_err(AppError::from)?;
     Ok(Json(schema).into_response())
 }
 
@@ -1238,7 +1200,7 @@ pub async fn connection_browse(
     let page = c
         .browse(&conn, state.egress(), state.cursor_key(), req)
         .await
-        .map_err(connector_err)?;
+        .map_err(AppError::from)?;
     Ok(Json(page).into_response())
 }
 
@@ -1263,7 +1225,7 @@ pub async fn connection_materialize(
     let rows = c
         .materialize(&conn, state.egress(), req)
         .await
-        .map_err(connector_err)?;
+        .map_err(AppError::from)?;
     Ok(Json(rows).into_response())
 }
 
