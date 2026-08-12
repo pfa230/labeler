@@ -791,6 +791,10 @@ impl<'a> RenderContext<'a> {
                         // here would let an axis measurement never uses decide whether the template
                         // renders. `measure_box_height` is the height-only counterpart.
                         let w = match &placement.extent {
+                            // `None` here (unlike its three siblings) is safe only because this
+                            // arm is reached exactly when `width_is_frame_dependent()` is false,
+                            // which for `Extent::Size` means `size.0[0]` cannot be `auto` — so the
+                            // `Auto` branch that would need a fallback is unreachable from here.
                             Extent::Size(size) => {
                                 self.resolve_size_value(&size.0[0], placement.max_w, None, "width")?
                             }
@@ -922,7 +926,7 @@ impl<'a> RenderContext<'a> {
             Extent::Size(size) => self.resolve_size_value(
                 &size.0[1],
                 placement.max_h,
-                Some(self.frame_height_units - at_y),
+                Some((self.frame_height_units - at_y).max(0.0)),
                 "height",
             )?,
             Extent::To(to) => resolve_coord(to.y(), self.frame_height_units) - at_y,
@@ -1142,7 +1146,7 @@ impl<'a> RenderContext<'a> {
                     Extent::Size(size) => self.resolve_size_value(
                         &size.0[1],
                         placement.max_h,
-                        Some(self.frame_height_units - point.y),
+                        Some((self.frame_height_units - point.y).max(0.0)),
                         "height",
                     )?,
                     Extent::To(_) => self.measure_box_height(placement, point.y)?,
@@ -1705,10 +1709,26 @@ impl<'a> RenderContext<'a> {
                     }
                 };
                 if resolved <= 0.0 {
-                    return Err(AppError::unsupported_layout_item(
-                        Reason::MaxSizeInvalid,
-                        format!("max_{label} must be greater than 0"),
-                    ));
+                    // Blame whichever of `max`/`fallback` is actually `resolved` (the smaller of
+                    // the two, mirroring the `.min()` above): a `max_*` that isn't the binding
+                    // value is fine even if it happens to be set, and a fallback of `0` (the
+                    // anchor leaving no room) is not a `max_*` authoring error.
+                    let max_is_binding = match (max, fallback) {
+                        (Some(max), Some(fallback)) => max <= fallback,
+                        (Some(_), None) => true,
+                        (None, _) => false,
+                    };
+                    return Err(if max_is_binding {
+                        AppError::unsupported_layout_item(
+                            Reason::MaxSizeInvalid,
+                            format!("max_{label} must be greater than 0"),
+                        )
+                    } else {
+                        AppError::unsupported_layout_item(
+                            Reason::SizeAutoNoRoom,
+                            format!("no room left for an auto {label} at this anchor"),
+                        )
+                    });
                 }
                 Ok(resolved)
             }
@@ -3257,6 +3277,77 @@ mod tests {
             50.0,
             "a numeric size is never clamped by the bound"
         );
+    }
+
+    /// A zero (or negative) fallback with no `max_*` set is the anchor leaving no room, not an
+    /// invalid `max_*` — there isn't one to blame. Mirrors
+    /// `templates::a_zero_remainder_with_no_max_blames_the_anchor_not_a_max`.
+    #[test]
+    fn render_resolve_size_value_blames_the_anchor_when_max_is_absent() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (100.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
+        let err = ctx
+            .resolve_size_value(&auto, None, Some(0.0), "width")
+            .expect_err("a zero remainder with no max_w is an error");
+        assert_eq!(err.reason(), Some("size_auto_no_room"));
+        assert_eq!(
+            err.message_text(),
+            "no room left for an auto width at this anchor"
+        );
+
+        // `max_w` set and positive but not the binding value (the fallback is smaller): still a
+        // room problem, not a `max_w` problem.
+        let err = ctx
+            .resolve_size_value(&auto, Some(50.0), Some(0.0), "width")
+            .expect_err("a non-binding max_w does not rescue a zero remainder");
+        assert_eq!(err.reason(), Some("size_auto_no_room"));
+    }
+
+    /// A genuinely non-positive `max_*` keeps the original message and reason, as long as it is
+    /// the value that actually resolved.
+    #[test]
+    fn render_resolve_size_value_blames_a_non_positive_max() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (100.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
+        let err = ctx
+            .resolve_size_value(&auto, Some(-5.0), None, "width")
+            .expect_err("a non-positive max_w is an error");
+        assert_eq!(err.reason(), Some("max_size_invalid"));
+        assert_eq!(err.message_text(), "max_width must be greater than 0");
     }
 
     fn rotated_container_template(rotate: f32, items: Vec<LayoutItem>) -> TemplateDefinition {

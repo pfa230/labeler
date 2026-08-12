@@ -648,7 +648,8 @@ the `Reason` enum list exactly the same slugs, in both directions.
 | `UnsupportedLayoutItem` | `edge_rect_inverted` | `to` is not above and to the right of `at`. |
 | `UnsupportedLayoutItem` | `size_invalid` | A `size` component is not greater than 0. |
 | `UnsupportedLayoutItem` | `size_auto_without_max` | `size` is `auto` with no matching `max_*` to resolve it. |
-| `UnsupportedLayoutItem` | `max_size_invalid` | A `max_*` component is not greater than 0. |
+| `UnsupportedLayoutItem` | `size_auto_no_room` | `size` is `auto`, resolves via the anchor fallback (§4), and that fallback leaves no room (`<= 0`) on the axis; no binding `max_*` is at fault. |
+| `UnsupportedLayoutItem` | `max_size_invalid` | The binding `max_*` component is not greater than 0. |
 | `UnsupportedLayoutItem` | `image_source_missing` | An image item sets neither `src` nor `name`. |
 | `UnsupportedLayoutItem` | `image_format_unsupported` | The image's MIME type or file extension is not supported. |
 | `UnsupportedLayoutItem` | `image_data_invalid` | Inline image data is not a usable base64 `data:` URI. |

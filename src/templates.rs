@@ -733,7 +733,20 @@ fn resolve_size_value(
                 }
             };
             if resolved <= 0.0 {
-                return Err(format!("max_{label} must be greater than 0"));
+                // Blame whichever of `max`/`fallback` is actually `resolved` (the smaller of the
+                // two, mirroring the `.min()` above): a `max_*` that isn't the binding value is
+                // fine even if it happens to be set, and a fallback of `0` (the anchor leaving no
+                // room) is not a `max_*` authoring error.
+                let max_is_binding = match (max, fallback) {
+                    (Some(max), Some(fallback)) => max <= fallback,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                return Err(if max_is_binding {
+                    format!("max_{label} must be greater than 0")
+                } else {
+                    format!("no room left for an auto {label} at this anchor")
+                });
             }
             Ok(resolved)
         }
@@ -1110,6 +1123,39 @@ mod tests {
         assert_eq!(
             resolve_size_value(&SizeValue::Value(50.0), Some(30.0), Some(30.0), "width"),
             Ok(50.0)
+        );
+    }
+
+    /// A zero (or negative) fallback with no `max_*` set is the anchor leaving no room, not an
+    /// invalid `max_*` — there isn't one. Blaming `max_width` here points the author at a field
+    /// they never wrote.
+    #[test]
+    fn a_zero_remainder_with_no_max_blames_the_anchor_not_a_max() {
+        use super::resolve_size_value;
+        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
+        assert_eq!(
+            resolve_size_value(&auto, None, Some(0.0), "width"),
+            Err("no room left for an auto width at this anchor".to_string())
+        );
+    }
+
+    /// A genuinely non-positive `max_*` still gets the original message, whether or not a fallback
+    /// happens to be present, as long as `max_*` is the value that actually resolved (the smaller
+    /// of the two, or the only one set).
+    #[test]
+    fn a_non_positive_max_still_blames_the_max() {
+        use super::resolve_size_value;
+        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
+        assert_eq!(
+            resolve_size_value(&auto, Some(-5.0), None, "width"),
+            Err("max_width must be greater than 0".to_string())
+        );
+        // `max_*` is set and positive but is not the binding value (the fallback is smaller and
+        // is the actual culprit): still a room problem, not a `max_*` problem, even though a
+        // `max_*` happens to be set.
+        assert_eq!(
+            resolve_size_value(&auto, Some(50.0), Some(0.0), "width"),
+            Err("no room left for an auto width at this anchor".to_string())
         );
     }
 
