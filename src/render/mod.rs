@@ -832,7 +832,16 @@ impl<'a> RenderContext<'a> {
     /// never the raw value: mixing a resolved `to.y` with a raw `at.y` inflates the slot.
     fn measure_box_height(&self, placement: &Placement, at_y: f32) -> Result<f32, AppError> {
         Ok(match &placement.extent {
-            Extent::Size(size) => size.0[1].value().unwrap_or(self.frame_height_units - at_y),
+            // The same call `render_text_item` makes for this slot, so the two cannot disagree
+            // (#150). Only the height axis goes through the helper: `resolve_size` would also
+            // resolve the width and error on a `size: [40, auto]` container, which must keep
+            // measuring.
+            Extent::Size(size) => self.resolve_size_value(
+                &size.0[1],
+                placement.max_h,
+                Some(self.frame_height_units - at_y),
+                "height",
+            )?,
             Extent::To(to) => resolve_coord(to.y(), self.frame_height_units) - at_y,
         })
     }
@@ -4589,5 +4598,62 @@ mod tests {
             source.contains("width: 40mm"),
             "expected a full-width box, got: {source}"
         );
+    }
+
+    /// #150: the measure pass and the render pass must resolve the *same* vertical slot for the same
+    /// placement. `measure_box_height` ignored `max_h` while `render_text_item` honored it, so the
+    /// fitter chose a font for a taller box than the text landed in.
+    #[test]
+    fn measure_and_render_resolve_the_same_slot_height() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        // An auto height with a max_h well below the frame remainder above at.y.
+        let placement = Placement {
+            at: Position([0.0, 0.0]),
+            extent: crate::models::Extent::Size(Size([
+                SizeValue::Value(20.0),
+                SizeValue::Auto(crate::models::AutoSize::Auto),
+            ])),
+            max_w: None,
+            max_h: Some(6.0),
+            rotate: None,
+        };
+        let measured = ctx
+            .measure_box_height(&placement, 0.0)
+            .expect("measure height");
+        // What `render_text_item` resolves for the same slot.
+        let rendered = ctx
+            .resolve_size_value(
+                &Size([
+                    SizeValue::Value(20.0),
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                ])
+                .0[1],
+                placement.max_h,
+                Some(40.0 - 0.0),
+                "height",
+            )
+            .expect("render height");
+        assert_eq!(
+            measured, rendered,
+            "measure resolved {measured} and render resolved {rendered} for the same slot"
+        );
+        assert_eq!(measured, 6.0, "max_h below the frame remainder must bind");
     }
 }
