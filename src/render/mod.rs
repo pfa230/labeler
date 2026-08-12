@@ -120,7 +120,7 @@ fn compile_label_doc(
                 selected_option,
                 env,
                 &images,
-                None,
+                LengthMode::Fixed,
             );
             let content_extent = probe.measure(items, max_w, &mut m)?;
             width_units = content_extent.clamp(min_w, max_w);
@@ -132,13 +132,20 @@ fn compile_label_doc(
         cursor_cell = Cell::new(0usize);
     }
 
-    let auto_length = if measured.is_empty() {
-        None
-    } else {
-        Some(AutoLength {
+    let is_dynamic = matches!(
+        &template.format,
+        TemplateFormat::Single {
+            width: Dimension::Dynamic { .. },
+            ..
+        }
+    );
+    let mode = if is_dynamic {
+        LengthMode::Dynamic(AutoLength {
             texts: &measured,
             cursor: &cursor_cell,
         })
+    } else {
+        LengthMode::Fixed
     };
 
     let mut source = String::new();
@@ -159,11 +166,11 @@ fn compile_label_doc(
         selected_option,
         env,
         &images,
-        auto_length,
+        mode,
     );
     source.push_str(&context.render_items(items)?);
     // Assert we consumed exactly the texts we measured.
-    if cursor_cell.get() != measured.len() && !measured.is_empty() {
+    if cursor_cell.get() != measured.len() {
         return Err(AppError::render_failed(format!(
             "auto-length cursor mismatch: consumed {} of {} measured texts",
             cursor_cell.get(),
@@ -331,7 +338,7 @@ pub fn render_sheet_pages(
             selected_option,
             &env,
             &images,
-            None,
+            LengthMode::Fixed,
         );
         match context.render_items(items) {
             Ok(content) => rendered.push(content),
@@ -446,10 +453,17 @@ fn normalize_option<'a>(
 }
 
 /// State threaded through the render pass for dynamic-width auto-length labels.
-/// Both fields are `None` for fixed-width labels and sheets.
 struct AutoLength<'a> {
     texts: &'a [MeasuredText],
     cursor: &'a Cell<usize>,
+}
+
+/// Whether this frame is on a dynamic-width (auto-length) label. `Dynamic` carries the measured
+/// texts, which may legitimately be empty: a label can be sized by lines or containers alone.
+/// This is a property of the template format and must never be inferred from `texts.is_empty()`.
+enum LengthMode<'a> {
+    Fixed,
+    Dynamic(AutoLength<'a>),
 }
 
 /// Render-time environment: the variables map and the datetime resolver, passed together through
@@ -467,7 +481,7 @@ struct RenderContext<'a> {
     selected_option: Option<&'a BTreeMap<String, String>>,
     env: &'a RenderEnv<'a>,
     images: &'a RefCell<ImageCollector>,
-    auto_length: Option<AutoLength<'a>>,
+    mode: LengthMode<'a>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -478,7 +492,7 @@ impl<'a> RenderContext<'a> {
         selected_option: Option<&'a BTreeMap<String, String>>,
         env: &'a RenderEnv<'a>,
         images: &'a RefCell<ImageCollector>,
-        auto_length: Option<AutoLength<'a>>,
+        mode: LengthMode<'a>,
     ) -> Self {
         Self {
             frame_width_units: frame.0,
@@ -488,7 +502,18 @@ impl<'a> RenderContext<'a> {
             selected_option,
             env,
             images,
-            auto_length,
+            mode,
+        }
+    }
+
+    fn is_dynamic_width(&self) -> bool {
+        matches!(self.mode, LengthMode::Dynamic(_))
+    }
+
+    fn auto_length(&self) -> Option<&AutoLength<'a>> {
+        match &self.mode {
+            LengthMode::Dynamic(al) => Some(al),
+            LengthMode::Fixed => None,
         }
     }
 
@@ -582,7 +607,7 @@ impl<'a> RenderContext<'a> {
                             self.selected_option,
                             self.env,
                             self.images,
-                            None,
+                            LengthMode::Fixed,
                         );
                         let child_extent = ctx.measure(items, inner_budget, out)?;
                         at_x + padding.left + child_extent + padding.right
@@ -612,7 +637,7 @@ impl<'a> RenderContext<'a> {
                                 self.selected_option,
                                 self.env,
                                 self.images,
-                                None,
+                                LengthMode::Fixed,
                             );
                             ctx.measure(items, inner_w, out)?;
                         }
@@ -750,7 +775,7 @@ impl<'a> RenderContext<'a> {
         }
 
         // When auto-length is active and this text item has auto width, consume the next measured fit.
-        if let Some(al) = &self.auto_length {
+        if let Some(al) = self.auto_length() {
             if placement.size.0[0].is_auto() {
                 let idx = al.cursor.get();
                 let m = al.texts.get(idx).ok_or_else(|| {
@@ -978,7 +1003,7 @@ impl<'a> RenderContext<'a> {
             // On a dynamic-width (auto-length) label, an auto-width container must span only
             // the remaining width from its left edge, not the full frame width. This matches the
             // measurement pass which budgets (budget_w - at.x) - padding for the container.
-            let width = if self.auto_length.is_some() && placement.size.0[0].is_auto() {
+            let width = if self.is_dynamic_width() && placement.size.0[0].is_auto() {
                 (self.frame_width_units - left).max(0.0)
             } else {
                 self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
@@ -992,10 +1017,13 @@ impl<'a> RenderContext<'a> {
 
             let inner_width = width - padding.left - padding.right;
             let inner_height = height - padding.top - padding.bottom;
-            let child_auto_length = self.auto_length.as_ref().map(|al| AutoLength {
-                texts: al.texts,
-                cursor: al.cursor,
-            });
+            let child_mode = match &self.mode {
+                LengthMode::Dynamic(al) => LengthMode::Dynamic(AutoLength {
+                    texts: al.texts,
+                    cursor: al.cursor,
+                }),
+                LengthMode::Fixed => LengthMode::Fixed,
+            };
             let context = RenderContext::new(
                 (inner_width, inner_height),
                 self.unit,
@@ -1003,7 +1031,7 @@ impl<'a> RenderContext<'a> {
                 self.selected_option,
                 self.env,
                 self.images,
-                child_auto_length,
+                child_mode,
             );
             let child_source = context.render_items(items)?;
             let content = if padding == &crate::models::Padding::ZERO {
@@ -1073,7 +1101,7 @@ impl<'a> RenderContext<'a> {
         let content_w = canvas_w - padding.left - padding.right;
         let content_h = canvas_h - padding.top - padding.bottom;
 
-        // No auto_length under rotation (validation forbids auto descendants).
+        // No dynamic width under rotation (validation forbids auto descendants).
         let context = RenderContext::new(
             (content_w, content_h),
             self.unit,
@@ -1081,7 +1109,7 @@ impl<'a> RenderContext<'a> {
             self.selected_option,
             self.env,
             self.images,
-            None,
+            LengthMode::Fixed,
         );
         let child_source = context.render_items(items)?;
 
@@ -1362,8 +1390,15 @@ mod tests {
         };
         // The auto-width path replays what the measure pre-pass recorded, so that pass has to run
         // first and its results have to be handed to the render context.
-        let measuring =
-            super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let measuring = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
         let mut measured = Vec::new();
         measuring
             .measure(std::slice::from_ref(&item), 80.0, &mut measured)
@@ -1376,7 +1411,7 @@ mod tests {
             None,
             &env,
             &images,
-            Some(super::AutoLength {
+            super::LengthMode::Dynamic(super::AutoLength {
                 texts: &measured,
                 cursor: &cursor,
             }),
@@ -1431,8 +1466,15 @@ mod tests {
                 datetime: &datetime,
             };
             let images = RefCell::new(super::ImageCollector::default());
-            let ctx =
-                super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+            let ctx = super::RenderContext::new(
+                (80.0, 40.0),
+                "mm",
+                &data,
+                None,
+                &env,
+                &images,
+                super::LengthMode::Fixed,
+            );
             let item = LayoutItem::Text {
                 name: None,
                 value: Some("Widget A-42 Storage".to_string()),
@@ -1497,7 +1539,15 @@ mod tests {
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
 
         let auto_text = LayoutItem::Text {
             name: None,
@@ -1560,7 +1610,15 @@ mod tests {
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
         let container = LayoutItem::Container {
             placement: Placement {
                 at: Position([0.0, 0.0]),
@@ -3220,6 +3278,66 @@ mod tests {
             bold as f64 >= regular as f64 * 1.10,
             "weight 700 must add ≥10% ink over 400 (got {regular} vs {bold}, ratio {:.3})",
             bold as f64 / regular as f64
+        );
+    }
+
+    /// Dynamic-width mode is a property of the template format, not of whether any text needed
+    /// measuring: a label can be sized by a line or a non-text container alone. An auto-width
+    /// container at x=5 on a 25mm dynamic label must be 20mm wide, not the full 25mm, or it overruns
+    /// the page by exactly its own offset.
+    #[test]
+    fn dynamic_width_mode_is_independent_of_measured_text() {
+        use std::cell::RefCell;
+        fn container_width(mode: super::LengthMode<'_>) -> String {
+            let data: HashMap<String, super::JsonValue> = HashMap::new();
+            let settings = no_settings();
+            let datetime = no_datetime();
+            let env = super::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            let images = RefCell::new(super::ImageCollector::default());
+            let ctx =
+                super::RenderContext::new((25.0, 12.0), "mm", &data, None, &env, &images, mode);
+            ctx.render_items(&[LayoutItem::Container {
+                placement: Placement {
+                    at: Position([5.0, 0.0]),
+                    size: Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(12.0),
+                    ]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![LayoutItem::Line {
+                    at: Position([0.0, 6.0]),
+                    to: Position([20.0, 6.0]),
+                    thickness: 0.2,
+                }],
+            }])
+            .expect("render")
+        }
+
+        let cursor = std::cell::Cell::new(0usize);
+        let empty: Vec<super::MeasuredText> = Vec::new();
+        let dynamic = container_width(super::LengthMode::Dynamic(super::AutoLength {
+            texts: &empty,
+            cursor: &cursor,
+        }));
+        assert!(
+            dynamic.contains("width: 20mm"),
+            "a dynamic label with no measured text must still size the container to the remaining \
+             width, got: {dynamic}"
+        );
+
+        let fixed = container_width(super::LengthMode::Fixed);
+        assert!(
+            fixed.contains("width: 25mm"),
+            "on a fixed label an auto container fills the frame, got: {fixed}"
         );
     }
 }
