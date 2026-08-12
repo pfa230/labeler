@@ -7,6 +7,7 @@ use axum::{
 use serde_json::{json, Value};
 
 use crate::models::{ErrorBody, ErrorResponse};
+use crate::reason::Reason;
 use crate::store::StoreError;
 use crate::templates::TemplateRegistryError;
 
@@ -42,6 +43,7 @@ pub struct AppError {
     code: &'static str,
     message: String,
     details: Option<Value>,
+    reason: Option<Reason>,
 }
 
 /// One label's validation failure within a batch (its 0-based index + the error code/message).
@@ -64,7 +66,35 @@ impl AppError {
             code,
             message: message.into(),
             details,
+            reason: None,
         }
+    }
+
+    /// Build an error that carries a reason (ADR-0052). `extra` is merged alongside `reason` in
+    /// `details`; taking a `Map` rather than a `Value` makes a non-object `details` unrepresentable,
+    /// so the merge cannot lose data. This is the only writer of both `details` and `reason` for a
+    /// reasoned error, so the two cannot diverge.
+    fn reasoned(
+        status: StatusCode,
+        code: &'static str,
+        reason: Reason,
+        message: impl Into<String>,
+        extra: Option<serde_json::Map<String, Value>>,
+    ) -> Self {
+        let mut details = extra.unwrap_or_default();
+        details.insert("reason".to_string(), Value::from(reason.as_slug()));
+        Self {
+            status,
+            code,
+            message: message.into(),
+            details: Some(Value::Object(details)),
+            reason: Some(reason),
+        }
+    }
+
+    /// The `details.reason` slug, when this error carries one (SPEC §10.1).
+    pub fn reason(&self) -> Option<&'static str> {
+        self.reason.map(Reason::as_slug)
     }
 
     pub fn message_text(&self) -> String {
@@ -201,10 +231,11 @@ impl AppError {
         Self::new(StatusCode::BAD_REQUEST, CODE_INVALID_REQUEST, message, None)
     }
 
-    pub fn template_invalid(message: impl Into<String>) -> Self {
-        Self::new(
+    pub fn template_invalid(reason: Reason, message: impl Into<String>) -> Self {
+        Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,
             CODE_TEMPLATE_INVALID,
+            reason,
             message,
             None,
         )
@@ -358,7 +389,15 @@ impl From<TemplateRegistryError> for AppError {
         let message = err.to_string();
         match err {
             TemplateRegistryError::Io { .. } => AppError::render_failed(message),
-            _ => AppError::template_invalid(message),
+            TemplateRegistryError::Parse { .. } => {
+                AppError::template_invalid(Reason::TemplateParseFailed, message)
+            }
+            TemplateRegistryError::Validation { .. } => {
+                AppError::template_invalid(Reason::TemplateValidationFailed, message)
+            }
+            TemplateRegistryError::DuplicateId { .. } => {
+                AppError::template_invalid(Reason::TemplateDuplicateId, message)
+            }
         }
     }
 }

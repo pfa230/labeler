@@ -608,6 +608,21 @@ All errors return JSON:
 `code` strings are part of the contract; keep them stable. Authentication adds `Unauthorized` (401)
 and `Forbidden` (403); see §11.
 
+### 10.1 `details.reason`
+
+Decision: [ADR-0052](adr/0052-error-reason-discriminator.md). For the codes listed below, `details`
+is present and carries a stable `reason` slug naming the specific cause. `reason` is machine-readable
+and part of the contract; the `message` beside it is prose and is not — do not match on it.
+
+This is **not** a global promise. Codes absent from this table are unchanged, and `details` remains
+optional in the schema. The table grows as the remaining codes are migrated (#151).
+
+| Code | Reason | When |
+| --- | --- | --- |
+| `TemplateInvalid` | `template_parse_failed` | The YAML did not parse. |
+| `TemplateInvalid` | `template_validation_failed` | The template parsed but failed structural validation. |
+| `TemplateInvalid` | `template_duplicate_id` | Two templates on disk declare the same id. |
+
 ## 11. Authentication
 
 Decision: [ADR-0017](adr/0017-app-authentication.md). Flat authentication (real user accounts, no
@@ -922,6 +937,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: Errors gain a machine-readable `details.reason` slug (§10.1, ADR-0052, #151), so
+  the several unrelated causes that share one `code` can be told apart without matching prose. Purely
+  additive: `code` values, statuses and messages are unchanged, and `details` stays optional. Starts
+  with `TemplateInvalid`, whose three causes were previously flattened behind a single match arm.
 - **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
   (ADR-0051, #146, #147). Two behavior changes fall out of it: **a `line` endpoint outside the layout
   bounds is now an error rather than being clipped** (an absolute endpoint past `width.max` is rejected
