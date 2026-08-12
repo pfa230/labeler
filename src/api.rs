@@ -24,6 +24,7 @@ use crate::{
     },
     openapi::ApiDoc,
     parse::parse_template,
+    reason::Reason,
     render::{render_single_label_image, render_single_label_pdf, ColorMode, ImageRenderOptions},
     store::{Printer, Store},
     templates::{TemplateDefinition, TemplateRegistry, TemplateRegistryError},
@@ -319,9 +320,11 @@ fn existing_template_file(
 }
 
 fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
-    let template =
-        parse_template(body).map_err(|err| AppError::template_invalid(err.to_string()))?;
-    template.validate().map_err(AppError::template_invalid)?;
+    let template = parse_template(body)
+        .map_err(|err| AppError::template_invalid(Reason::TemplateParseFailed, err.to_string()))?;
+    template
+        .validate()
+        .map_err(|err| AppError::template_invalid(Reason::TemplateValidationFailed, err))?;
     Ok(template)
 }
 

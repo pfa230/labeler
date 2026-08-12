@@ -12,6 +12,7 @@ pub mod models;
 pub mod openapi;
 pub mod parse;
 mod raw;
+pub mod reason;
 pub mod render;
 pub mod settings;
 pub mod store;
@@ -1515,6 +1516,43 @@ layout:
     font_size: 10.0
 "#
         )
+    }
+
+    #[tokio::test]
+    async fn invalid_template_yaml_carries_a_reason() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let response = app
+            .oneshot(yaml_post(
+                "/api/templates",
+                "POST",
+                "id: [not a string".to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+    }
+
+    /// The point of #151: one code, two causes, told apart without reading the prose.
+    #[tokio::test]
+    async fn unvalidatable_template_carries_a_different_reason() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let yaml = template_yaml("v1").replace("id: v1", r#"id: """#);
+        let response = app
+            .oneshot(yaml_post("/api/templates", "POST", yaml))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
     }
 
     async fn template_count(app: &axum::Router) -> usize {
