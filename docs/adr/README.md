@@ -17,7 +17,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0004](0004-bottom-left-coordinate-system.md) | Bottom-left coordinate system | Accepted |
 | [0005](0005-recursive-containers-with-option-gating.md) | Recursive containers with option gating | Accepted |
 | [0006](0006-template-edit-ownership.md) | Template edit ownership: manual vs GUI | Accepted |
-| [0007](0007-printer-architecture-and-transport-model.md) | Printer architecture and transport model | Accepted |
+| [0007](0007-printer-architecture-and-transport-model.md) | Printer architecture and transport model | Accepted (record shape superseded by [0042](0042-remove-printer-enabled.md)) |
 | [0008](0008-ui-delivery.md) | Web UI delivery | Accepted |
 | [0009](0009-image-source-model.md) | Image source model | Accepted |
 | [0010](0010-variable-interpolation-layer.md) | Variable interpolation layer | Accepted |
@@ -44,7 +44,27 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0031](0031-inbound-print-webhook.md) | Inbound print webhook (POST /print) | Accepted |
 | [0032](0032-ipp-auth-custom-ca.md) | IPP basic-auth + custom-CA for printing | Accepted |
 | [0033](0033-capability-aware-rendering.md) | Capability-aware rendering (bi-level/resolution; media gate) | Accepted |
-| [0034](0034-single-config-dir.md) | Single config dir (LABELER_CONFIG_DIR; first-run template seeding) | Accepted |
+| [0034](0034-single-config-dir.md) | Single config dir (LABELER_CONFIG_DIR; first-run template seeding) | Accepted (seeding superseded by [0046](0046-template-catalog.md)) |
+| [0035](0035-font-weight-via-variable-font.md) | Font weight via the bundled variable font | Accepted |
+| [0036](0036-container-rotation.md) | Layout-aware container rotation | Accepted |
+| [0037](0037-effortless-print-form.md) | Effortless print form: copies routing + global default printer | Accepted |
+| [0038](0038-print-first-landing.md) | Print-first landing: grid as the print picker | Accepted |
+| [0039](0039-per-field-render-override.md) | Per-field render override (color and resolution) | Accepted |
+| [0040](0040-printer-probe-endpoint.md) | Printer probe endpoint and shared IPP egress screen | Accepted |
+| [0041](0041-vertical-alignment-delegated-to-typst.md) | Vertical text alignment is delegated to Typst | Superseded by [0045](0045-vertical-text-alignment.md) |
+| [0042](0042-remove-printer-enabled.md) | Remove the printer `enabled` flag | Accepted |
+| [0043](0043-ink-based-vertical-alignment.md) | Vertical alignment positions the ink, not a metric box | Superseded by [0045](0045-vertical-text-alignment.md) |
+| [0044](0044-baseline-relative-vertical-alignment.md) | Vertical alignment is baseline-relative, using a fixed metric box | Superseded by [0045](0045-vertical-text-alignment.md) |
+| [0045](0045-vertical-text-alignment.md) | Vertical text alignment | Accepted |
+| [0046](0046-template-catalog.md) | A template catalog replaces first-run seeding | Accepted |
+| [0047](0047-starter-template-set.md) | The catalog is a designed five-template starter set | Accepted |
+| [0048](0048-template-delete-prunes-favorites.md) | Deleting a template prunes favorites, not recents | Accepted |
+| [0049](0049-weight-aware-text-measurement.md) | Text measurement tracks the font instance Typst renders | Accepted |
+| [0050](0050-ink-reservation-at-slot-edges.md) | Reserve ink room at slot edges instead of changing the line box | Accepted |
+| [0051](0051-edge-relative-and-corner-placement.md) | Edge-relative coordinates and `to:` opposite-corner placement | Accepted |
+| [0052](0052-error-reason-discriminator.md) | A `details.reason` discriminator for `AppError` | Accepted |
+| [0053](0053-max-bounds-cap.md) | `max_w`/`max_h` cap an `auto` size, not substitute for its fallback | Accepted |
+| [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Accepted |
 
 ## Adding an ADR
 

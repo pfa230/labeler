@@ -12,3 +12,7 @@
 
 ui/node_modules
 ui/dist
+
+# Superpowers scratch: brainstorm specs, implementation plans, SDD ledgers (CLAUDE.md)
+/docs/superpowers/
+/.superpowers/
