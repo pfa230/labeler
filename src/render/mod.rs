@@ -2529,6 +2529,7 @@ mod tests {
             "brother_24mm",
             "brother_24mm_multiline",
             "brother_24mm_qr",
+            "brother_24mm_weights",
             "brother_9mm",
             "homebox-qr",
         ]);

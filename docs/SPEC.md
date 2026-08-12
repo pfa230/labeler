@@ -327,8 +327,8 @@ single templates are unaffected. See [ADR-0026](adr/0026-auto-length-dynamic-wid
 **Multiline text on dynamic-width singles.** `multiline: true` is supported on auto-length `single`
 templates (ADR-0030). Wrapping uses the item's auto-width budget (`width.max - at.x`, minus container
 padding). The renderer shrinks from `font_size.max` toward `font_size.min` (0.5 pt steps) until the
-text fits; line count is emergent (`floor(available_height / line_height)` at the chosen font size,
-where the available height is the text item's box height). If the
+text fits; line count is emergent (`floor((H + leading) / (cap_height + leading))` at the chosen font
+size, where `H` is the text item's box height). If the
 content still overflows at `font_size.min`, the fitting lines are kept and the last is ellipsized.
 The tape label extent is `at.x + longest_wrapped_line_width`, clamped to `[width.min, width.max]`.
 Wrapped lines are precomputed in the measurement pass and emitted verbatim in the render pass
@@ -389,10 +389,13 @@ be > 0. (`line` does not use `size`; see §4.1.)
 ### 4.1 Item types
 
 - **`text`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
-  placement, `font_size`, `multiline` (default `false`),
+  placement, `font_size`, `font_weight` (optional), `multiline` (default `false`),
   `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom; default `top`).
+  `font_weight` is a multiple of 100 between 100 and 900; omitting it leaves the font's default
+  (400). The bundled Inter is a variable font, so every step in that range is a real weight rather
+  than a synthetic one.
   `font_size` is either a fixed number or a range `{ min, max }`. A range auto-shrinks the text to fit
-  the box (0.5pt steps, `fontdue` metrics) and truncates with an ellipsis if it still overflows.
+  the box (0.5pt steps) and truncates with an ellipsis if it still overflows.
   Single-line text collapses spaces to non-breaking and renders only the first line. On dynamic-width
   `single` templates, `multiline: true` is also supported; see §3.1 for the wrap and sizing rules.
 - **`qr`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
@@ -858,6 +861,16 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: Text items accept `font_weight` (100-900 in steps of 100; #97), honored by the
+  renderer and by the auto-shrink fitter. Fitting now measures the font instance Typst actually
+  renders — the `wght` axis from the item's weight and the `opsz` axis from the font size, both of
+  which Typst sets itself — and models line stacking as cap-height boxes separated by leading rather
+  than as a flat per-line height (#96, ADR-0049). **Templates using a `font_size` range may therefore
+  render at a different size than before**: mostly larger, because the old measurement over-estimated
+  plain text at large sizes by up to 8% and single-line blocks by 66%; smaller for bold text and for
+  blocks of four lines or more, which it under-measured and which could overflow their clip box.
+  Fixed `font_size` with an explicit width is unaffected. Measurement is calibrated against the real
+  engine and matches it exactly for block height and line width.
 - **2026-08-11**: Template YAML is editable from the detail page (#141). The Raw YAML section gains an
   `Edit` control that opens a textarea over the stored source; `Save` issues the `PUT`, validation
   errors render inline beside the text they refer to, and cancelling a modified draft asks first.
