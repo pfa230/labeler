@@ -386,9 +386,10 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units (see §6). |
-| `size` | `[w, h]` | — | Each entry is a number or `auto`. |
-| `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. |
+| `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units; may be edge-relative (see §6). |
+| `size` | `[w, h]` | — | Each entry is a number or `auto`. Mutually exclusive with `to`; exactly one is required (a `container` defaults to `[auto, auto]`). |
+| `to` | `[x, y]` | — | Opposite (top-right) corner; `size = to - at` after both corners resolve. Mutually exclusive with `size`. |
+| `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. An error alongside `to`, which has no `auto` axis. |
 | `rotate` | number (deg) | — | **Container only.** Orthogonal CCW rotation of the container's inner content; see §4.2. An error on any non-container item. |
 
 `auto` size resolves to `max_w`/`max_h` if present; for `container` it falls back to the parent frame's
@@ -422,9 +423,11 @@ be > 0. (`line` does not use `size`; see §4.1.)
   Bytes are decoded server-side and injected into Typst as a virtual file; there is no server-side URL
   fetching (see ADR-0009). The assets root is `{config}/assets/` (`LABELER_CONFIG_DIR`). Missing data
   key → `MissingField`; bad base64 / unsupported format / asset path problems → `UnsupportedLayoutItem`.
-- **`line`** — `at` (start, default `[0,0]`) and `to` (end), both absolute in frame coordinates, plus
-  `thickness` (> 0). Lines have no box `size`/`fit`/rotation. Endpoints must differ and lie within the
-  layout bounds.
+- **`line`** — `at` (start, default `[0,0]`) and `to` (end), both in frame coordinates, either absolute
+  or edge-relative (§6); endpoints must differ **after** resolution. Plus `thickness` (> 0). Lines have
+  no box `size`/`fit`/rotation. Endpoints must lie within the layout bounds: an out-of-bounds endpoint
+  is an error, not clipped. An absolute endpoint past `width.max` is rejected at load even on a
+  dynamic-width template, since no final width can bring it back inside.
 - **`container`** — a recursive group. Fields: placement (size defaults to `auto`/`auto` = fill parent),
   optional `option` gate (§5), optional `frame` (`thickness` > 0, `rounded` bool), `padding`, and
   `items` (nested layout). Children are positioned relative to the container's padded inner box.
@@ -444,18 +447,20 @@ A `container` may set `rotate` to turn a portrait design onto a landscape slot (
   Any `rotate` on a non-container item, or a non-orthogonal value, is a validation error.
 - **Counter-clockwise.** Degrees are counter-clockwise. Author canvas corners map to physical box
   corners as: R90 BL→BR, BR→TR, TR→TL, TL→BL; R180 BL→TR, …; R270 BL→TL, ….
-- **`at`/`size` stay parent-frame.** A rotated container is placed and bounds-checked exactly like an
-  unrotated one: `size` is its footprint in the parent. Rotation is purely an inner transform, so
-  nested rotated containers compose without compounding coordinate flips.
+- **`at` and its extent stay parent-frame.** A rotated container is placed and bounds-checked exactly
+  like an unrotated one: `size`, or `to` once resolved (§6), is its footprint in the parent. Rotation is
+  purely an inner transform, so nested rotated containers compose without compounding coordinate flips.
 - **Inner author canvas swaps for 90/270.** Children are authored in the container's natural reading
   orientation; for `rotate: 90|270` the inner authoring box (and child bounds) swap to
   `[inner_h, inner_w]`. Padding is **author-space** (it rotates with the design; `padding.top` is
   "above" in reading orientation regardless of angle). The physical `frame` outline is **not**
   rotated.
-- **No `auto` under rotation.** A rotated container must have an explicit `size`, and no descendant
-  inside it may use `auto` width/height (author-horizontal maps to physical-vertical, which the
-  dynamic-width measurement model does not handle). The measurement pass does not recurse into a
-  rotated container.
+- **No `auto` under rotation.** A rotated container must have an extent that resolves at compile time:
+  an explicit `size`, or a `to`. A `to` is rejected only when its width is frame-dependent (exactly
+  one corner edge-relative) **and** the template is dynamic-width; on a fixed-width template there is
+  no frame whose width varies, so every `to` resolves. No descendant may use `auto` (author-horizontal
+  maps to physical-vertical, which the dynamic-width measurement model does not handle). The
+  measurement pass does not recurse into a rotated container.
 
 ## 5. Options
 
@@ -483,6 +488,44 @@ measured against the container's **padded inner** width/height, not the page.
 
 When changing placement math, this conversion and the per-container reframing are the two things to get
 right.
+
+A coordinate component may be **edge-relative**: a *sign-negative* value is measured inward from the
+frame's far edge rather than outward from its origin.
+
+| Component | Sign | Measured from |
+| --- | --- | --- |
+| `x` | non-negative | left edge |
+| `x` | sign-negative | **right** edge: `frame_width + x` |
+| `y` | non-negative | bottom edge |
+| `y` | sign-negative | **top** edge: `frame_height + y` |
+
+`-0.0` (or `-0`) is the far edge exactly; `-2.0` is 2 units inside it. The test is the sign bit, not
+`< 0`, because `-0.0 < 0.0` is false. Edge-relative components apply to `at` and to `line`/box `to`,
+never to `size`, `max_w`, `max_h`, `padding`, or `thickness`, and they resolve against the **current**
+frame: the page, a container's padded inner box, or a rotated container's swapped author canvas.
+
+On a dynamic-width `single` the final width is not known until the measure pass runs, so an
+edge-relative `x` is bounds-checked against `width.max` at load time and re-checked at render. An
+edge-relative coordinate never contributes a frame-dependent width to the measured content extent, but
+an item that sizes itself to its content still contributes that content: a text box spanning to the
+right edge is measured at its natural width, so several full-width centered lines size the label to the
+longest of them. An edge-relative coordinate contributes its **inset** — the narrowest label it fits
+on — and that rule is the same for a box's `at.x` and for either endpoint of a `line`. A right-anchored
+`at.x` cannot be combined with an `auto` or frame-dependent width on a dynamic-width template.
+
+A `to`-sized `qr` or `image` is the exception: neither item type has an intrinsic content width the
+engine measures (see §4.1), so a frame-dependent `to` on either contributes nothing to the measured
+extent and the item simply stretches to whatever width the label resolves to. On a dynamic-width label
+where no other item sizes the content, the width falls back to `width.min`, which is enough for the
+item only when its own `at.x` fits inside that fallback; anchored further right than `width.min` the
+box resolves to a negative width and the render fails with `UnsupportedLayoutItem`. Intrinsic qr/image
+content sizing is deferred; see [#149](https://github.com/pfa230/labeler/issues/149).
+
+A box whose extent resolves to exactly **zero** is not an error at render: an empty data value can
+measure to precisely the item's own `at.x`, collapsing a `to`-spanning box to zero width, and a blank
+optional field is ordinary input rather than an authoring mistake. A **negative** extent is still an
+error, and load-time validation (which resolves against the `width.max` frame) still rejects corners
+that are inverted or degenerate there.
 
 ## 7. Rendering pipeline
 
@@ -879,6 +922,12 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
+  (ADR-0051, #146, #147). Two behavior changes fall out of it: **a `line` endpoint outside the layout
+  bounds is now an error rather than being clipped** (an absolute endpoint past `width.max` is rejected
+  at load, an edge-relative one at render), and a box whose extent resolves to exactly zero renders as
+  an empty box instead of failing, so a blank data field no longer turns a `to`-spanning text into a
+  `422`.
 - **2026-08-12**: The print form renders a textarea for data fields belonging to a `multiline: true`
   text item (#148). Previously every field was a single-line `<input>`, which cannot hold a newline at
   all, so multiline templates could only be filled through CSV import or the API. A field shared with

@@ -127,6 +127,28 @@ mod tests {
         }
     }
 
+    /// The path has to name a key the author can find. There is no `placement:` key in the wire
+    /// format, so an item missing both `size` and `to` reports the item kind, as `require_one_of`
+    /// does for `name`/`value`.
+    #[test]
+    fn parse_nodes_missing_extent_is_reported_at_the_item_kind() {
+        let src = r#"
+- type: text
+  value: hello
+  at: [0.0, 0.0]
+  font_size: 6
+"#;
+
+        let err = parse_nodes(src).expect_err("expected error");
+        match err {
+            TemplateError::Validation { path, msg } => {
+                assert_eq!(path, "items[0].text");
+                assert_eq!(msg, "must set one of size or to");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
     #[test]
     fn parse_nodes_rejects_wrong_padding_length() {
         let src = r#"

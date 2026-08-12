@@ -94,6 +94,19 @@ impl Default for Point {
     }
 }
 
+/// Resolve a template coordinate against the frame it is placed in. A **sign-negative** value is
+/// measured inward from the frame's far edge: `-0.0` is the edge itself, `-2.0` is 2 units inside
+/// it. The test is the sign bit and not `< 0.0`, because `-0.0 < 0.0` is false and `-0.0` is how a
+/// template spells "the far edge". Total by design: a result below zero is a validation error the
+/// caller raises, not something this function can decide.
+pub fn resolve_coord(v: f32, frame_extent: f32) -> f32 {
+    if v.is_sign_negative() {
+        frame_extent + v
+    } else {
+        v
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(transparent)]
 pub struct Position(pub [f32; 2]);
@@ -110,6 +123,14 @@ impl Position {
             x: self.0[0],
             y: self.0[1],
         }
+    }
+
+    pub fn x(&self) -> f32 {
+        self.0[0]
+    }
+
+    pub fn y(&self) -> f32 {
+        self.0[1]
     }
 }
 
@@ -186,17 +207,59 @@ impl Rotation {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+/// How a box item's extent is expressed on the wire: `size:` (width and height) xor `to:` (the
+/// opposite corner). An enum rather than two `Option`s so "exactly one" is a type invariant.
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum Extent {
+    Size(Size),
+    To(Position),
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Placement {
     #[serde(default)]
     pub at: Position,
-    pub size: Size,
+    #[serde(flatten)]
+    pub extent: Extent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_w: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_h: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotate: Option<f32>,
+}
+
+impl Placement {
+    /// The common case: an `at`/`size` placement with no bounds or rotation.
+    pub fn sized(at: Position, size: Size) -> Self {
+        Self {
+            at,
+            extent: Extent::Size(size),
+            max_w: None,
+            max_h: None,
+            rotate: None,
+        }
+    }
+
+    /// The `Size` when the extent is expressed that way, for the `auto`-aware paths.
+    pub fn size_or_auto(&self) -> Option<&Size> {
+        match &self.extent {
+            Extent::Size(size) => Some(size),
+            Extent::To(_) => None,
+        }
+    }
+
+    /// True when the item's width cannot be known until the enclosing frame's width is.
+    pub fn width_is_frame_dependent(&self) -> bool {
+        match &self.extent {
+            Extent::Size(size) => size.0[0].is_auto(),
+            // `size = to.x - at.x`. Each edge-relative corner contributes one `frame_width` term,
+            // so two of them cancel and the width is a constant. Only exactly one is
+            // frame-dependent.
+            Extent::To(to) => self.at.x().is_sign_negative() != to.x().is_sign_negative(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
@@ -281,7 +344,7 @@ impl Fit {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutItem {
     Text {
@@ -369,7 +432,7 @@ pub struct Frame {
     pub rounded: bool,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(untagged)]
 pub enum Layout {
     Items(Vec<LayoutItem>),
@@ -481,5 +544,100 @@ mod rotation_tests {
         assert!(!Rotation::R0.swaps_axes() && !Rotation::R180.swaps_axes());
         assert!(Rotation::R90.is_rotated() && Rotation::R180.is_rotated());
         assert!(!Rotation::R0.is_rotated());
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{resolve_coord, AutoSize, Placement, Position, Size, SizeValue};
+
+    /// GET /templates/{id} must hand back the shape the author wrote. `rename_all` is load-bearing:
+    /// without it the flattened key is `Size`/`To`.
+    #[test]
+    fn placement_serializes_back_to_the_authored_key() {
+        let sized = Placement::sized(
+            Position([0.0, 0.0]),
+            Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+        );
+        let json = serde_json::to_string(&sized).unwrap();
+        assert!(json.contains("\"size\""), "got {json}");
+        assert!(!json.contains("\"to\""), "got {json}");
+
+        let cornered = Placement {
+            at: Position([0.0, 0.0]),
+            extent: super::Extent::To(Position([10.0, 5.0])),
+            max_w: None,
+            max_h: None,
+            rotate: None,
+        };
+        let json = serde_json::to_string(&cornered).unwrap();
+        assert!(json.contains("\"to\""), "got {json}");
+        assert!(!json.contains("\"size\""), "got {json}");
+    }
+
+    /// The edge sentinel is the sign bit, not `< 0.0`: `-0.0 < 0.0` is false, so a `< 0.0` test would
+    /// silently read "the far edge" as "the origin". YAML `-0` and `-0.0` both arrive sign-negative.
+    #[test]
+    fn resolve_coord_reads_the_sign_bit() {
+        assert_eq!(resolve_coord(0.0, 100.0), 0.0);
+        assert_eq!(resolve_coord(20.0, 100.0), 20.0);
+        assert_eq!(resolve_coord(-0.0, 100.0), 100.0);
+        assert_eq!(resolve_coord(-2.0, 100.0), 98.0);
+        // Rejecting an inset larger than the frame is the caller's job; the helper stays total.
+        assert_eq!(resolve_coord(-120.0, 100.0), -20.0);
+    }
+
+    fn placement(size: Size) -> Placement {
+        Placement::sized(Position([0.0, 0.0]), size)
+    }
+
+    #[test]
+    fn auto_width_is_frame_dependent_and_numeric_width_is_not() {
+        let auto = placement(Size([
+            SizeValue::Auto(AutoSize::Auto),
+            SizeValue::Value(8.0),
+        ]));
+        assert!(auto.width_is_frame_dependent());
+        let fixed = placement(Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]));
+        assert!(!fixed.width_is_frame_dependent());
+    }
+
+    #[test]
+    fn position_accessors_preserve_the_sign_bit() {
+        let p = Position([-0.0, 5.0]);
+        assert!(p.x().is_sign_negative());
+        assert!(!p.y().is_sign_negative());
+    }
+
+    /// `size = to.x - at.x`, and each edge-relative corner adds one `frame_width` term, so two cancel.
+    /// Only exactly one edge-relative corner makes the width frame-dependent.
+    #[test]
+    fn to_frame_dependence_is_the_xor_of_the_corners() {
+        fn dep(at: [f32; 2], to: [f32; 2]) -> bool {
+            Placement {
+                at: Position(at),
+                extent: super::Extent::To(Position(to)),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            }
+            .width_is_frame_dependent()
+        }
+        assert!(
+            !dep([0.0, 0.0], [30.0, 5.0]),
+            "two plain corners are a constant width"
+        );
+        assert!(
+            !dep([-20.0, 0.0], [-0.0, 5.0]),
+            "two edge corners cancel: a fixed 20-unit box"
+        );
+        assert!(
+            dep([0.0, 0.0], [-0.0, 5.0]),
+            "spanning to the right edge follows the frame"
+        );
+        assert!(
+            dep([-20.0, 0.0], [90.0, 5.0]),
+            "one edge corner leaves a frame term"
+        );
     }
 }

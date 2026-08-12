@@ -202,13 +202,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
