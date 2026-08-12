@@ -362,13 +362,18 @@ fn validate_layout_item(
             )?;
             validate_font_weight(*font_weight)?;
             validate_rotation(&placement.rotate, false)?;
+            // `allow_auto_fill` is always `true` for text: this axis asks whether the item type has
+            // a frame to fall back on (it does), not whether this template's width is dynamic. Keying
+            // it off `is_dynamic_width` instead was #155: it let validation accept a `max_h` above the
+            // frame on the strength of a fallback the render path (keyed off the item's own
+            // frame-dependence) did not have.
             let (width, height) = resolve_size(
                 &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
                 layout_bounds,
-                is_dynamic_width,
+                true,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
             validate_font_size(font_size)?;
@@ -1253,6 +1258,38 @@ mod tests {
     #[test]
     fn validate_accepts_a_capped_container_that_fits_the_remaining_width() {
         let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items: []\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// #155's validation half, which **passes before this task** — that is the bug: validation caps
+    /// `max_h: 200` against its full-frame fallback while the render path has no fallback at all.
+    /// Kept as the pin that the two layers stay agreed, not as a red for this step. The red is
+    /// `the_155_repro_renders`.
+    #[test]
+    fn the_155_repro_validates_and_its_height_is_capped() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    max_h: 200.0\n    font_size: 8\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// A fixed label, where text validation previously had no fallback at all.
+    #[test]
+    fn text_auto_height_on_a_fixed_label_falls_back_to_the_remainder() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// The false rejection this closes: it would have rendered at min(35, 30) = 30.
+    #[test]
+    fn text_auto_height_with_an_oversized_max_h_is_not_rejected_on_a_fixed_label() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    max_h: 35.0\n    font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// Sheets render with LengthMode::Fixed and are easy to forget in a change that started on
+    /// auto-length tape. An auto width with no max_w previously errored here.
+    #[test]
+    fn text_auto_width_on_a_sheet_falls_back_to_the_slot_remainder() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [auto, 8.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
