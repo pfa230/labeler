@@ -86,6 +86,25 @@ reasons! {
     BilevelRequiresPng => "bilevel_requires_png",
     UsernameEmpty => "username_empty",
     PasswordEmpty => "password_empty",
+
+    // RenderFailed
+    TypstCompileFailed => "typst_compile_failed",
+    TypstSourceBuildFailed => "typst_source_build_failed",
+    TypstNoPages => "typst_no_pages",
+    PngEncodeFailed => "png_encode_failed",
+    PdfEncodeFailed => "pdf_encode_failed",
+    AutoLengthCursorMismatch => "auto_length_cursor_mismatch",
+    ItemHasNoSource => "item_has_no_source",
+    QrGenerationFailed => "qr_generation_failed",
+    FontReadFailed => "font_read_failed",
+    FontParseFailed => "font_parse_failed",
+    FontAxisMissing => "font_axis_missing",
+    TemplatePathInvalid => "template_path_invalid",
+    TemplateWriteFailed => "template_write_failed",
+    TemplateMissingAfterWrite => "template_missing_after_write",
+    TemplateDeleteFailed => "template_delete_failed",
+    TemplateRegistryIo => "template_registry_io",
+    ZipWriteFailed => "zip_write_failed",
 }
 
 #[cfg(test)]

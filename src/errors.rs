@@ -226,10 +226,11 @@ impl AppError {
         )
     }
 
-    pub fn render_failed(message: impl Into<String>) -> Self {
-        Self::new(
+    pub fn render_failed(reason: Reason, message: impl Into<String>) -> Self {
+        Self::reasoned(
             StatusCode::INTERNAL_SERVER_ERROR,
             CODE_RENDER_FAILED,
+            reason,
             message,
             None,
         )
@@ -404,7 +405,9 @@ impl From<TemplateRegistryError> for AppError {
     fn from(err: TemplateRegistryError) -> Self {
         let message = err.to_string();
         match err {
-            TemplateRegistryError::Io { .. } => AppError::render_failed(message),
+            TemplateRegistryError::Io { .. } => {
+                AppError::render_failed(Reason::TemplateRegistryIo, message)
+            }
             TemplateRegistryError::Parse { .. } => {
                 AppError::template_invalid(Reason::TemplateParseFailed, message)
             }
@@ -534,6 +537,49 @@ impl std::error::Error for TemplateError {}
 mod tests {
     use super::{AppError, BatchFailure};
     use axum::http::StatusCode;
+
+    /// The SPEC §10.1 table is the published contract; the enum is what the code emits. If they
+    /// drift, clients switch on slugs that either no longer exist or were never documented. Checked
+    /// in both directions deliberately: an undocumented slug is as bad as a phantom one.
+    #[test]
+    fn spec_documents_every_reason_and_invents_none() {
+        use crate::reason::Reason;
+        use std::collections::HashSet;
+
+        let spec = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/SPEC.md"))
+            .expect("read SPEC.md");
+        let section = spec
+            .split("### 10.1")
+            .nth(1)
+            .expect("SPEC.md must have a §10.1 reason section");
+        let section = section.split("\n## ").next().unwrap_or(section);
+
+        // Column 2 is the slug, in backticks. The header cell reads "Reason" without backticks and
+        // the separator row has none either, so both drop out here.
+        let documented: HashSet<&str> = section
+            .lines()
+            .filter(|line| line.starts_with('|'))
+            .filter_map(|line| line.split('|').nth(2))
+            .map(str::trim)
+            .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
+            .collect();
+
+        let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
+
+        let mut undocumented: Vec<_> = declared.difference(&documented).collect();
+        undocumented.sort_unstable();
+        assert!(
+            undocumented.is_empty(),
+            "reasons missing from SPEC §10.1: {undocumented:?}"
+        );
+
+        let mut phantom: Vec<_> = documented.difference(&declared).collect();
+        phantom.sort_unstable();
+        assert!(
+            phantom.is_empty(),
+            "SPEC §10.1 documents reasons that do not exist: {phantom:?}"
+        );
+    }
 
     /// Decision 4 of ADR-0052: a per-label failure carries `reason` exactly when its code is one of
     /// the migrated four. Both halves matter — a required field would contradict the scoping, and a

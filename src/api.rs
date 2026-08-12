@@ -332,22 +332,32 @@ fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
 }
 
 fn write_template_file(path: &std::path::Path, body: &str) -> Result<(), AppError> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| AppError::render_failed("invalid template path"))?;
+    let dir = path.parent().ok_or_else(|| {
+        AppError::render_failed(Reason::TemplatePathInvalid, "invalid template path")
+    })?;
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| AppError::render_failed("invalid template path"))?;
+        .ok_or_else(|| {
+            AppError::render_failed(Reason::TemplatePathInvalid, "invalid template path")
+        })?;
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let tmp = dir.join(format!(".{file_name}.{nonce}.tmp"));
-    std::fs::write(&tmp, body)
-        .map_err(|err| AppError::render_failed(format!("failed to write template: {err}")))?;
-    std::fs::rename(&tmp, path)
-        .map_err(|err| AppError::render_failed(format!("failed to persist template: {err}")))?;
+    std::fs::write(&tmp, body).map_err(|err| {
+        AppError::render_failed(
+            Reason::TemplateWriteFailed,
+            format!("failed to write template: {err}"),
+        )
+    })?;
+    std::fs::rename(&tmp, path).map_err(|err| {
+        AppError::render_failed(
+            Reason::TemplateWriteFailed,
+            format!("failed to persist template: {err}"),
+        )
+    })?;
     Ok(())
 }
 
@@ -377,11 +387,12 @@ pub async fn create_template(
     }
     write_template_file(&path, &body)?;
     state.reload()?;
-    let detail = state
-        .templates
-        .load_full()
-        .detail(&id)
-        .ok_or_else(|| AppError::render_failed("template missing after write"))?;
+    let detail = state.templates.load_full().detail(&id).ok_or_else(|| {
+        AppError::render_failed(
+            Reason::TemplateMissingAfterWrite,
+            "template missing after write",
+        )
+    })?;
     Ok((axum::http::StatusCode::CREATED, Json(detail)).into_response())
 }
 
@@ -419,11 +430,12 @@ pub async fn replace_template(
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     write_template_file(&path, &body)?;
     state.reload()?;
-    let detail = state
-        .templates
-        .load_full()
-        .detail(&id)
-        .ok_or_else(|| AppError::render_failed("template missing after write"))?;
+    let detail = state.templates.load_full().detail(&id).ok_or_else(|| {
+        AppError::render_failed(
+            Reason::TemplateMissingAfterWrite,
+            "template missing after write",
+        )
+    })?;
     Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
 }
 
@@ -454,9 +466,10 @@ pub async fn delete_template(
         // the directory is fixed converges instead of failing forever on a file that is already gone.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(AppError::render_failed(format!(
-                "failed to delete template: {err}"
-            )))
+            return Err(AppError::render_failed(
+                Reason::TemplateDeleteFailed,
+                format!("failed to delete template: {err}"),
+            ))
         }
     }
     // After the unlink, before the reload. Unlink first because it is the step that realistically

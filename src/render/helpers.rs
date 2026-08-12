@@ -177,8 +177,12 @@ pub(super) fn build_qr_svg(payload: &[u8], params: &Option<QrParams>) -> Result<
         .transpose()?
         .unwrap_or(EcLevel::M);
 
-    let code = QrCode::with_error_correction_level(payload, ecc)
-        .map_err(|err| AppError::render_failed(format!("qr generation failed: {err}")))?;
+    let code = QrCode::with_error_correction_level(payload, ecc).map_err(|err| {
+        AppError::render_failed(
+            Reason::QrGenerationFailed,
+            format!("qr generation failed: {err}"),
+        )
+    })?;
 
     let mut renderer = code.render::<svg::Color>();
     renderer.quiet_zone(false);
@@ -227,8 +231,12 @@ const OPSZ: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"opsz");
 /// Parse a face and confirm it carries the axes the fitter varies. Byte-taking and free of the cache
 /// so a test can hand it any font without depending on which font some earlier test loaded first.
 fn load_face(bytes: &[u8]) -> Result<ttf_parser::Face<'_>, AppError> {
-    let face = ttf_parser::Face::parse(bytes, 0)
-        .map_err(|err| AppError::render_failed(format!("failed to parse font: {err}")))?;
+    let face = ttf_parser::Face::parse(bytes, 0).map_err(|err| {
+        AppError::render_failed(
+            Reason::FontParseFailed,
+            format!("failed to parse font: {err}"),
+        )
+    })?;
     // `set_variation` reports success for any variable face even when no axis matches the tag, so it
     // cannot serve as the check. Verify up front: a font without these axes would measure silently
     // unweighted, which is the bug this measurement path exists to remove (#96).
@@ -238,9 +246,10 @@ fn load_face(bytes: &[u8]) -> Result<ttf_parser::Face<'_>, AppError> {
             .into_iter()
             .any(|axis| axis.tag == tag)
         {
-            return Err(AppError::render_failed(format!(
-                "measurement font lacks the '{tag}' variation axis"
-            )));
+            return Err(AppError::render_failed(
+                Reason::FontAxisMissing,
+                format!("measurement font lacks the '{tag}' variation axis"),
+            ));
         }
     }
     Ok(face)
@@ -253,8 +262,12 @@ fn font_bytes() -> Result<&'static [u8], AppError> {
     }
     let path = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts")
         .join("InterVariable.ttf");
-    let bytes = std::fs::read(&path)
-        .map_err(|err| AppError::render_failed(format!("failed to read font: {err}")))?;
+    let bytes = std::fs::read(&path).map_err(|err| {
+        AppError::render_failed(
+            Reason::FontReadFailed,
+            format!("failed to read font: {err}"),
+        )
+    })?;
     load_face(&bytes)?;
     // A concurrent caller may win the race to populate the cache; either value is valid, so fall
     // back to the stored bytes rather than treating the lost race as an error.

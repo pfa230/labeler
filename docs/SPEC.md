@@ -616,8 +616,10 @@ Decision: [ADR-0052](adr/0052-error-reason-discriminator.md). For the codes list
 is present and carries a stable `reason` slug naming the specific cause. `reason` is machine-readable
 and part of the contract; the `message` beside it is prose and is not — do not match on it.
 
-This is **not** a global promise. Codes absent from this table are unchanged, and `details` remains
-optional in the schema. The table grows as the remaining codes are migrated (#151).
+This is **not** a global promise. The four codes below are the complete set that carries a `reason`;
+every other code is unchanged, and `details` remains optional in the schema. Extending the set to a
+fifth code is a decision to record against ADR-0052, not a detail. A test asserts that this table and
+the `Reason` enum list exactly the same slugs, in both directions.
 
 | Code | Reason | When |
 | --- | --- | --- |
@@ -673,6 +675,23 @@ optional in the schema. The table grows as the remaining codes are migrated (#15
 | `InvalidRequest` | `bilevel_requires_png` | `bilevel` was requested for a non-PNG output. |
 | `InvalidRequest` | `username_empty` | The username is empty. |
 | `InvalidRequest` | `password_empty` | The password is empty. |
+| `RenderFailed` | `typst_compile_failed` | Typst failed to compile the generated source. |
+| `RenderFailed` | `typst_source_build_failed` | Writing the generated Typst source failed. |
+| `RenderFailed` | `typst_no_pages` | Typst compiled but produced no pages. |
+| `RenderFailed` | `png_encode_failed` | Encoding the rendered pixmap to PNG failed. |
+| `RenderFailed` | `pdf_encode_failed` | Encoding the document to PDF failed. |
+| `RenderFailed` | `auto_length_cursor_mismatch` | Internal invariant: the auto-length measurement cursor did not line up with the items rendered. |
+| `RenderFailed` | `item_has_no_source` | Internal invariant: an item reached rendering with neither `name` nor `value`. |
+| `RenderFailed` | `qr_generation_failed` | The QR payload could not be encoded. |
+| `RenderFailed` | `font_read_failed` | The measurement font file could not be read. |
+| `RenderFailed` | `font_parse_failed` | The measurement font could not be parsed. |
+| `RenderFailed` | `font_axis_missing` | The measurement font lacks a variation axis the renderer needs. |
+| `RenderFailed` | `template_path_invalid` | The resolved template file path is not usable. |
+| `RenderFailed` | `template_write_failed` | Writing the template file to disk failed. |
+| `RenderFailed` | `template_missing_after_write` | The template was written but is absent from the reloaded registry. |
+| `RenderFailed` | `template_delete_failed` | Deleting the template file failed. |
+| `RenderFailed` | `template_registry_io` | Reading the templates directory failed. |
+| `RenderFailed` | `zip_write_failed` | Building the ZIP archive of rendered labels failed. |
 
 ## 11. Authentication
 
@@ -990,8 +1009,8 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 - **2026-08-12**: Errors gain a machine-readable `details.reason` slug (§10.1, ADR-0052, #151), so
   the several unrelated causes that share one `code` can be told apart without matching prose. Purely
-  additive: `code` values, statuses and messages are unchanged, and `details` stays optional. Covers
-  `TemplateInvalid`, `UnsupportedLayoutItem` and `InvalidRequest` so far. Per-label `/batch` failures carry the slug too
+  additive: `code` values, statuses and messages are unchanged, and `details` stays optional. Covers all four
+  affected codes: `TemplateInvalid`, `UnsupportedLayoutItem`, `InvalidRequest` and `RenderFailed`. Per-label `/batch` failures carry the slug too
   (§2.2), since a geometry failure is most likely to surface inside a sheet run.
 - **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
   (ADR-0051, #146, #147). Two behavior changes fall out of it: **a `line` endpoint outside the layout

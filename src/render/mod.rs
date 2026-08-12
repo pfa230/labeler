@@ -71,9 +71,12 @@ fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedD
     }
     let engine = builder.build();
     let warned = engine.compile::<PagedDocument>();
-    warned
-        .output
-        .map_err(|err| AppError::render_failed(format!("typst compile failed: {err}")))
+    warned.output.map_err(|err| {
+        AppError::render_failed(
+            Reason::TypstCompileFailed,
+            format!("typst compile failed: {err}"),
+        )
+    })
 }
 
 fn compile_single_doc(
@@ -173,9 +176,18 @@ fn compile_label_doc(
         source,
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
     )
-    .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: \"Inter\")")
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+    .map_err(|err| {
+        AppError::render_failed(
+            Reason::TypstSourceBuildFailed,
+            format!("failed to build typst source: {err}"),
+        )
+    })?;
+    writeln!(source, "#set text(font: \"Inter\")").map_err(|err| {
+        AppError::render_failed(
+            Reason::TypstSourceBuildFailed,
+            format!("failed to build typst source: {err}"),
+        )
+    })?;
 
     let context = RenderContext::new(
         (width_units, height_units),
@@ -189,11 +201,14 @@ fn compile_label_doc(
     source.push_str(&context.render_items(items)?);
     // Assert we consumed exactly the texts we measured.
     if cursor_cell.get() != measured.len() {
-        return Err(AppError::render_failed(format!(
-            "auto-length cursor mismatch: consumed {} of {} measured texts",
-            cursor_cell.get(),
-            measured.len()
-        )));
+        return Err(AppError::render_failed(
+            Reason::AutoLengthCursorMismatch,
+            format!(
+                "auto-length cursor mismatch: consumed {} of {} measured texts",
+                cursor_cell.get(),
+                measured.len()
+            ),
+        ));
     }
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
     compile_paged(source, images.into_inner().files)
@@ -209,14 +224,16 @@ pub fn render_thumbnail_png(
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
     let doc = compile_label_doc(template, data, option, &env)?;
-    let page = doc
-        .pages()
-        .first()
-        .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
+    let page = doc.pages().first().ok_or_else(|| {
+        AppError::render_failed(Reason::TypstNoPages, "typst did not produce any pages")
+    })?;
     let pixmap = typst_render::render(page, &render_options(template.dpi as f32 / 72.0));
-    pixmap
-        .encode_png()
-        .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
+    pixmap.encode_png().map_err(|err| {
+        AppError::render_failed(
+            Reason::PngEncodeFailed,
+            format!("failed to encode png: {err}"),
+        )
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -259,19 +276,21 @@ pub fn render_single_label_image(
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
     let doc = compile_single_doc(template, data, option, &env)?;
-    let page = doc
-        .pages()
-        .first()
-        .ok_or_else(|| AppError::render_failed("typst did not produce any pages"))?;
+    let page = doc.pages().first().ok_or_else(|| {
+        AppError::render_failed(Reason::TypstNoPages, "typst did not produce any pages")
+    })?;
 
     let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
     let mut pixmap = typst_render::render(page, &render_options(dpi as f32 / 72.0));
     if opts.color_mode == ColorMode::BiLevel {
         binarize_rgba(pixmap.data_mut());
     }
-    pixmap
-        .encode_png()
-        .map_err(|err| AppError::render_failed(format!("failed to encode png: {err}")))
+    pixmap.encode_png().map_err(|err| {
+        AppError::render_failed(
+            Reason::PngEncodeFailed,
+            format!("failed to encode png: {err}"),
+        )
+    })
 }
 
 pub fn render_single_label_pdf(
@@ -283,8 +302,12 @@ pub fn render_single_label_pdf(
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
     let doc = compile_single_doc(template, data, option, &env)?;
-    typst_pdf::pdf(&doc, &Default::default())
-        .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))
+    typst_pdf::pdf(&doc, &Default::default()).map_err(|err| {
+        AppError::render_failed(
+            Reason::PdfEncodeFailed,
+            format!("failed to encode pdf: {err:?}"),
+        )
+    })
 }
 
 pub fn render_sheet_pages(
@@ -389,14 +412,23 @@ pub fn render_sheet_pages(
                 "#set page(width: {page_w}, height: {page_h}, margin: 0{unit})"
             )
             .map_err(|err| {
-                AppError::render_failed(format!("failed to build typst source: {err}"))
+                AppError::render_failed(
+                    Reason::TypstSourceBuildFailed,
+                    format!("failed to build typst source: {err}"),
+                )
             })?;
             writeln!(source, "#set text(font: \"Inter\")").map_err(|err| {
-                AppError::render_failed(format!("failed to build typst source: {err}"))
+                AppError::render_failed(
+                    Reason::TypstSourceBuildFailed,
+                    format!("failed to build typst source: {err}"),
+                )
             })?;
         } else {
             writeln!(source, "#pagebreak()").map_err(|err| {
-                AppError::render_failed(format!("failed to build typst source: {err}"))
+                AppError::render_failed(
+                    Reason::TypstSourceBuildFailed,
+                    format!("failed to build typst source: {err}"),
+                )
             })?;
         }
         for (idx, (lp, ls)) in placements.iter().enumerate() {
@@ -415,15 +447,22 @@ pub fn render_sheet_pages(
                 rendered[idx]
             )
             .map_err(|err| {
-                AppError::render_failed(format!("failed to build typst source: {err}"))
+                AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            )
             })?;
         }
     }
     tracing::debug!(template = %template.id, typst = %source, "render typst source");
 
     let doc = compile_paged(source, images.into_inner().files)?;
-    typst_pdf::pdf(&doc, &Default::default())
-        .map_err(|err| AppError::render_failed(format!("failed to encode pdf: {err:?}")))
+    typst_pdf::pdf(&doc, &Default::default()).map_err(|err| {
+        AppError::render_failed(
+            Reason::PdfEncodeFailed,
+            format!("failed to encode pdf: {err:?}"),
+        )
+    })
 }
 
 /// Count rendered PDF pages by counting "/Type /Page" objects (excluding the "/Type /Pages" tree
@@ -991,9 +1030,10 @@ impl<'a> RenderContext<'a> {
             (None, Some(value)) => {
                 interpolate(value, self.data, self.env.settings, self.env.datetime)
             }
-            (None, None) => Err(AppError::render_failed(format!(
-                "{kind} item has neither name nor value"
-            ))),
+            (None, None) => Err(AppError::render_failed(
+                Reason::ItemHasNoSource,
+                format!("{kind} item has neither name nor value"),
+            )),
         }
     }
 
@@ -1047,7 +1087,10 @@ impl<'a> RenderContext<'a> {
             if placement.width_is_frame_dependent() && !placement.at.x().is_sign_negative() {
                 let idx = al.cursor.get();
                 let m = al.texts.get(idx).ok_or_else(|| {
-                    AppError::render_failed(format!("auto-length cursor overrun at index {idx}"))
+                    AppError::render_failed(
+                        Reason::AutoLengthCursorMismatch,
+                        format!("auto-length cursor overrun at index {idx}"),
+                    )
                 })?;
                 al.cursor.set(idx + 1);
 
@@ -1113,7 +1156,10 @@ impl<'a> RenderContext<'a> {
                     "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
                 )
                 .map_err(|err| {
-                    AppError::render_failed(format!("failed to build typst source: {err}"))
+                    AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            )
                 })?;
                 return Ok(());
             }
@@ -1166,7 +1212,10 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+        .map_err(|err| AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            ))?;
 
         Ok(())
     }
@@ -1205,7 +1254,10 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+        .map_err(|err| AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            ))?;
 
         Ok(())
     }
@@ -1260,7 +1312,10 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+        .map_err(|err| AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            ))?;
 
         Ok(())
     }
@@ -1292,7 +1347,12 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {start_x}, dy: {start_y})[{content}]"
         )
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+        .map_err(|err| {
+            AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            )
+        })?;
 
         Ok(())
     }
@@ -1404,7 +1464,10 @@ impl<'a> RenderContext<'a> {
                     "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
                 )
                 .map_err(|err| {
-                    AppError::render_failed(format!("failed to build typst source: {err}"))
+                    AppError::render_failed(
+                        Reason::TypstSourceBuildFailed,
+                        format!("failed to build typst source: {err}"),
+                    )
                 })?;
             }
 
@@ -1412,7 +1475,10 @@ impl<'a> RenderContext<'a> {
                 out,
                 "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
             )
-            .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+            .map_err(|err| AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            ))?;
 
             return Ok(());
         }
@@ -1494,7 +1560,10 @@ impl<'a> RenderContext<'a> {
                 "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
             )
             .map_err(|err| {
-                AppError::render_failed(format!("failed to build typst source: {err}"))
+                AppError::render_failed(
+                    Reason::TypstSourceBuildFailed,
+                    format!("failed to build typst source: {err}"),
+                )
             })?;
         }
 
@@ -1503,7 +1572,10 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{rotated}]]"
         )
-        .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
+        .map_err(|err| AppError::render_failed(
+                Reason::TypstSourceBuildFailed,
+                format!("failed to build typst source: {err}"),
+            ))?;
 
         Ok(())
     }

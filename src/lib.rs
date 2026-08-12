@@ -1592,6 +1592,27 @@ layout:
         );
     }
 
+    /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
+    /// request cannot provoke (`item_has_no_source` in particular is unreachable, since convert.rs
+    /// rejects a text item with neither name nor value at parse time). Deleting the templates
+    /// directory out from under a built app reaches the write failure without depending on the test
+    /// user's uid, which a read-only directory would.
+    #[tokio::test]
+    async fn a_failed_template_write_carries_a_reason() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        std::fs::remove_dir_all(&dir).expect("remove templates dir");
+
+        let response = app
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("wf1")))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "RenderFailed");
+        assert_eq!(body["error"]["details"]["reason"], "template_write_failed");
+    }
+
     async fn template_count(app: &axum::Router) -> usize {
         let response = app
             .clone()
