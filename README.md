@@ -51,6 +51,10 @@ takes a single text field named `message`, so an import maps one column and work
 them. Your browser downloads the entry and the server validates and stores it — the server itself
 never reaches out, so air-gapped deployments paste YAML instead.
 
+**Writing your own.** [`docs/AUTHORING.md`](docs/AUTHORING.md) walks the layout model through worked
+examples: coordinates, auto-length tape widths, `auto` sizing, edge-relative placement, containers,
+options, and a troubleshooting table.
+
 **On other tape widths.** Copy the closest tape template and change three things: `format.height`
 (the printable height, narrower than the nominal tape), `format.media_width` (the nominal width, used
 for print preflight), and the `font_size` range. Templates demonstrating engine features — QR
@@ -96,5 +100,6 @@ cargo clippy --all-targets --all-features
 cargo test
 ```
 
-[`CONTRIBUTING.md`](CONTRIBUTING.md) has the contributor workflow. The full API and template spec is in
-[`docs/SPEC.md`](docs/SPEC.md); design decisions are recorded as [ADRs](docs/adr/).
+[`CONTRIBUTING.md`](CONTRIBUTING.md) has the contributor workflow. [`docs/AUTHORING.md`](docs/AUTHORING.md)
+is the guide to writing templates; the full API and template spec is in [`docs/SPEC.md`](docs/SPEC.md);
+design decisions are recorded as [ADRs](docs/adr/).
