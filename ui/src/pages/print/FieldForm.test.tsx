@@ -159,6 +159,21 @@ describe("FieldForm", () => {
     }
   });
 
+  /// Field names only have to be non-empty, so a name with a space would build an id containing a
+  /// space — and aria-describedby is a whitespace-separated IDREFS list, which would silently point
+  /// at nothing.
+  it("associates the note even when the field name contains a space", async () => {
+    const layout: LayoutItem[] = [
+      { type: "text", name: "customer name", multiline: true },
+      { type: "text", value: "{customer name}" },
+    ];
+    renderForm(detailWith(layout), singleValue);
+    const note = await screen.findByText(/shows only the first line/i);
+    const id = note.getAttribute("id") ?? "";
+    expect(id).not.toContain(" ");
+    expect(await screen.findByLabelText("customer name")).toHaveAttribute("aria-describedby", id);
+  });
+
   it("does not flag a field used only by multiline items", async () => {
     renderForm(detailWith([{ type: "text", name: "body", multiline: true }]), singleValue);
     await screen.findByLabelText("body");
