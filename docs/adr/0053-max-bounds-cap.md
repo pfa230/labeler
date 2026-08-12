@@ -77,10 +77,17 @@ means "fill the parent frame". On a dynamic-width label, `auto` means "shrink to
 the mechanism auto-length templates are built on (SPEC §3.1). A cap therefore has to *limit content*
 on a dynamic label, not convert it to "fill" — a capped *empty* container that filled its cap would
 reserve the cap's width and print blank tape, which is precisely the defect this branch removes for
-`qr`. Both the measure and render halves of the dynamic-container arm resolve to
-`min(content + padding, cap)`, so an empty container still contributes (and renders) essentially
-nothing, and only a container whose content actually exceeds the cap is bound by it. This was the one
-genuine contradiction surfaced during implementation: an early formula treated a capped auto container
+`qr`. The two halves of the dynamic-container arm resolve differently, though: measure resolves
+`min(content + padding, cap)` (content-capped, so an empty container measures to essentially nothing),
+while render resolves `min(frame_width - left, cap)` (fill-capped, off the label's final width, not
+the container's own content). The two coincide exactly when the container is the widest element on
+the label, i.e. when it is what determined `frame_width` in the first place; when it is not, an empty
+capped container can still *render* at a nonzero width up to its cap even though it *measured* to
+nothing (`max_w_caps_a_dynamic_container_at_render` and `no_max_w_means_no_cap_anywhere` both exercise
+an empty container and pin nonzero render widths, 5mm and 90mm respectively — the fill, not the
+content). Only a container whose content actually exceeds the cap changes measurement; render is
+capped regardless of content. This was the one genuine contradiction surfaced during implementation:
+an early formula treated a capped auto container
 as filling to its cap regardless of content, which agreed with the fixed-width reading of `auto` but
 broke the "shrink to content" contract every other dynamic-width item honors. The ruling: content-capped
 wins, because the container-measure formula was already content-driven before this branch touched it,
@@ -166,7 +173,7 @@ was right, the renderer was lying" — not as "the check was too strict."
 - `brother_24mm_weights.yaml` (`at.x: 1.5`, `max_w: 117`, `width.max: 120`) goes from an effective
   118.5mm to a 117mm text budget. It renders identically in the test suite (short placeholder data),
   but a title wider than 117mm would now shrink or ellipsize sooner than before.
-- Two defects were found but deliberately not fixed here, filed as follow-ups per CLAUDE.md rather
+- Three defects were found but deliberately not fixed here, filed as follow-ups per CLAUDE.md rather
   than folded in: [#153](https://github.com/pfa230/labeler/issues/153), the `.min(outer_budget)` clamp
   on the dynamic container's measured contribution is unreachable for any template that passes
   `validate()` (compile-time validation already narrows the same bound before recursing into
@@ -176,6 +183,18 @@ was right, the renderer was lying" — not as "the check was too strict."
   validation, which can surface a misleading `max_{w,h} must be greater than 0` error blaming a bound
   neither the container nor its child ever set, when the real cause is the container's own padding
   exceeding its resolved size.
+- **This branch's own width-axis loosening (decision 1) has a height-axis counterpart for `text` that
+  it does not close, filed as [#155](https://github.com/pfa230/labeler/issues/155).** `text` is the one
+  item type where `allow_auto_fill` differs between validation (`templates.rs:371-378`, keyed off the
+  template's `is_dynamic_width`) and `render_text_item`'s non-auto-length path (`render/mod.rs:1128-1134`,
+  always `false`), so a fixed-width `text` item on a dynamic-width single validates an `auto` height
+  against the frame-height fallback (`min(max_h, frame_height)`) but renders it against no fallback at
+  all (`max_h` alone, uncapped). A `max_h: 200.0` on a 40mm-tall label now validates and then fails
+  every render with `an item resolves outside the frame`, where pre-branch the same template was
+  rejected at load. `qr`/`image` and `container` are unaffected: both layers agree on the flag for
+  those types. Not fixed here: the fix is a single shared height-fallback model for `text` across three
+  currently-disagreeing fallbacks (validation's frame height, the auto-length path's
+  `frame_height - at.y`, and the fixed path's `None`), which is a design decision, not a fix-wave edit.
 - Templates that set neither `max_w` nor `max_h` are untouched: every template in `catalog/` and
   `tests/fixtures/templates/` that sets neither bound renders to byte-identical Typst source before and
   after this branch.
