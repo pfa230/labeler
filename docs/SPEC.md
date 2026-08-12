@@ -5,6 +5,10 @@ the decision as an ADR under [`docs/adr/`](adr/).
 
 **Version:** 0.1.0
 
+**Audience:** this is the normative reference, organised by subsystem. To *write* a template, start
+with [`AUTHORING.md`](AUTHORING.md), which teaches the same rules by worked example and links back
+here.
+
 ## 1. Overview
 
 Labeler is a stateless REST service that renders labels from declarative YAML templates. It supports
@@ -1035,6 +1039,13 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: Docs only, no behavior change. Added [`AUTHORING.md`](AUTHORING.md), the
+  task-oriented template authoring guide (#156): the layout model taught through worked examples from
+  `catalog/` and `tests/fixtures/templates/`, covering the measure pre-pass, the two meanings of
+  `auto`, `max_*` as caps, edge-relative coordinates, `to` vs `size`, containers and option gating,
+  the load-time/render-time validation split, and a troubleshooting table. This spec stays normative;
+  the guide links here rather than restating rules. Backfilled the `adr/README.md` index (ADR-0035
+  through ADR-0054) and added a test that keeps it complete in both directions (#160).
 - **2026-08-12**: An `auto` size on `text`/`container` now falls back to the frame remaining **from the
   item's own anchor** (`frame - resolved_at`), not the whole frame, at both validation and render, on
   every format (ADR-0054, #155). Previously `text`'s fallback also differed between layers (validation
