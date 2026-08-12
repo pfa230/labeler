@@ -112,6 +112,14 @@ describe("Templates list", () => {
     expect(await screen.findByRole("heading", { name: "Labels" })).toBeInTheDocument();
   });
 
+  /// The catalog used to be reachable only from the empty-state card, which vanishes once any
+  /// template exists — so on a populated install it could only be reached by typing the URL.
+  it("offers a permanent way into the catalog, not just from the empty state", async () => {
+    renderPage();
+    const link = await screen.findByRole("link", { name: /browse catalog/i });
+    expect(link).toHaveAttribute("href", "/templates/catalog");
+  });
+
   it("filters cards by id from the search box", async () => {
     renderPage();
     await screen.findByText("Brother 24mm");

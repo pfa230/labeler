@@ -162,13 +162,26 @@ export function Templates() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">Labels</h1>
-        <Link
-          to="/templates/new"
-          className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
-          style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
-        >
-          New template
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* The catalog was reachable only from the empty-state card, which disappears as soon as
+              you install anything — so after the first template it could only be reached by typing
+              the URL. The starter set is deliberately small (ADR-0047) on the assumption people come
+              back to browse and adapt, so it needs a permanent way in. */}
+          <Link
+            to="/templates/catalog"
+            className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+          >
+            Browse catalog
+          </Link>
+          <Link
+            to="/templates/new"
+            className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+            style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+          >
+            New template
+          </Link>
+        </div>
       </div>
 
       <input
