@@ -351,9 +351,11 @@ fn validate_layout_item(
         LayoutItem::Text {
             placement,
             font_size,
+            font_weight,
             ..
         } => {
             validate_position(&placement.at)?;
+            validate_font_weight(*font_weight)?;
             validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
@@ -652,6 +654,18 @@ fn validate_bounds(
         return Err("item must fit within layout bounds".to_string());
     }
     Ok(())
+}
+
+/// The wght axis accepts any value in range; the multiple-of-100 rule is a CSS-style convention that
+/// keeps templates predictable. Enforced here as well as in `convert.rs` so a `LayoutItem` built by
+/// any route — including the many built directly in tests — is checked.
+fn validate_font_weight(font_weight: Option<u16>) -> Result<(), String> {
+    match font_weight {
+        Some(weight) if !(100..=900).contains(&weight) || weight % 100 != 0 => Err(format!(
+            "font_weight must be a multiple of 100 between 100 and 900, got {weight}"
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn validate_font_size(font_size: &FontSize) -> Result<(), String> {
@@ -1005,6 +1019,56 @@ layout: []
     }
 
     #[test]
+    fn validate_font_weight_accepts_only_hundreds_in_range() {
+        for bad in [0u16, 50, 350, 1000] {
+            let err = super::validate_font_weight(Some(bad)).expect_err("must be rejected");
+            assert!(err.contains("font_weight"), "unexpected message: {err}");
+        }
+        for good in [100u16, 400, 900] {
+            super::validate_font_weight(Some(good)).expect("must be accepted");
+        }
+        super::validate_font_weight(None).expect("absent is valid");
+    }
+
+    /// The unit test above passes even if nothing ever calls the validator. This one fails unless
+    /// `validate` actually reaches it, which is the point of centralising the rule here rather than
+    /// only in `convert.rs`: a `LayoutItem` built directly — as most of this suite does — is checked.
+    #[test]
+    fn validate_rejects_a_text_item_with_a_bad_font_weight() {
+        let template = TemplateDefinition {
+            id: "w".to_string(),
+            name: "w".to_string(),
+            description: "w".to_string(),
+            unit: "mm".to_string(),
+            dpi: 300,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(40.0),
+                height: Dimension::Fixed(20.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: Some("value".to_string()),
+                value: None,
+                placement: crate::models::Placement {
+                    at: Position([0.0, 0.0]),
+                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(10.0),
+                font_weight: Some(350),
+                multiline: false,
+                alignment: Alignment::default(),
+            }]),
+            version: None,
+        };
+        let err = template.validate().expect_err("350 must not validate");
+        assert!(err.contains("font_weight"), "unexpected message: {err}");
+    }
+
+    #[test]
     fn validate_rejects_duplicate_field_names() {
         let template = TemplateDefinition {
             id: "dup".to_string(),
@@ -1033,6 +1097,7 @@ layout: []
                         rotate: None,
                     },
                     font_size: FontSize::Fixed(10.0),
+                    font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
                 },
@@ -1047,6 +1112,7 @@ layout: []
                         rotate: None,
                     },
                     font_size: FontSize::Fixed(10.0),
+                    font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
                 },
@@ -1083,6 +1149,7 @@ layout: []
                         rotate: None,
                     },
                     font_size: FontSize::Fixed(10.0),
+                    font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
                 },
@@ -1195,6 +1262,7 @@ layout: []
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(6.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -1277,6 +1345,7 @@ layout: []
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(6.0),
+                font_weight: None,
                 multiline: true,
                 alignment: Alignment::default(),
             }]),
@@ -1315,6 +1384,7 @@ layout: []
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(6.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -1350,6 +1420,7 @@ layout: []
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(6.0),
+                font_weight: None,
                 multiline: true,
                 alignment: Alignment::default(),
             }]),

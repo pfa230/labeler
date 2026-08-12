@@ -149,7 +149,7 @@ fn compile_label_doc(
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
     )
     .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
-    writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))")
+    writeln!(source, "#set text(font: \"Inter\")")
         .map_err(|err| AppError::render_failed(format!("failed to build typst source: {err}")))?;
 
     let context = RenderContext::new(
@@ -361,9 +361,9 @@ pub fn render_sheet_pages(
             .map_err(|err| {
                 AppError::render_failed(format!("failed to build typst source: {err}"))
             })?;
-            writeln!(source, "#set text(font: (\"Inter Variable\", \"Inter\"))").map_err(
-                |err| AppError::render_failed(format!("failed to build typst source: {err}")),
-            )?;
+            writeln!(source, "#set text(font: \"Inter\")").map_err(|err| {
+                AppError::render_failed(format!("failed to build typst source: {err}"))
+            })?;
         } else {
             writeln!(source, "#pagebreak()").map_err(|err| {
                 AppError::render_failed(format!("failed to build typst source: {err}"))
@@ -508,10 +508,14 @@ impl<'a> RenderContext<'a> {
                     value,
                     placement,
                     font_size,
+                    font_weight,
                     multiline,
                     ..
                 } => {
                     let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
+                    // Same weight the render pass will use: this pre-pass decides the auto width, so
+                    // measuring it unweighted would size the box for text that renders wider.
+                    let weight = font_weight.unwrap_or(400);
                     let at = placement.at.point();
                     let size_w = &placement.size.0[0];
                     let box_h = placement.size.0[1]
@@ -523,7 +527,7 @@ impl<'a> RenderContext<'a> {
                             &text,
                             font_size,
                             *multiline,
-                            400,
+                            weight,
                             helpers::FitBox {
                                 width_units: budget,
                                 height_units: box_h,
@@ -631,12 +635,19 @@ impl<'a> RenderContext<'a> {
                     value,
                     placement,
                     font_size,
+                    font_weight,
                     multiline,
                     alignment,
                 } => {
                     let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
                     self.render_text_item(
-                        &mut out, text, placement, font_size, *multiline, alignment,
+                        &mut out,
+                        text,
+                        placement,
+                        font_size,
+                        *font_weight,
+                        *multiline,
+                        alignment,
                     )?;
                 }
                 LayoutItem::Qr {
@@ -696,15 +707,23 @@ impl<'a> RenderContext<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_text_item(
         &self,
         out: &mut String,
         raw_text: String,
         placement: &Placement,
         font_size: &FontSize,
+        font_weight: Option<u16>,
         multiline: bool,
         alignment: &crate::models::Alignment,
     ) -> Result<(), AppError> {
+        // Absent stays absent rather than emitting 400: an explicit weight would rewrite every
+        // existing template's generated source for no behavioral reason.
+        let weight_arg = font_weight
+            .map(|w| format!(", weight: {w}"))
+            .unwrap_or_default();
+        let weight = font_weight.unwrap_or(400);
         let text = if multiline {
             raw_text
         } else {
@@ -749,7 +768,13 @@ impl<'a> RenderContext<'a> {
                 let slot_top = self.frame_height_units - point.y - slot_h;
                 let body = trim_blank_edges(&m.lines)
                     .iter()
-                    .map(|l| format!("#text(\"{}\", size: {}pt)", escape_typst_string(l), m.font))
+                    .map(|l| {
+                        format!(
+                            "#text(\"{}\", size: {}pt{weight_arg})",
+                            escape_typst_string(l),
+                            m.font
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("#linebreak()");
                 // Vertical placement is Typst's job, not ours: its line box runs cap-height to
@@ -782,7 +807,7 @@ impl<'a> RenderContext<'a> {
             FontSize::Range { min, max } => fit_text_to_box(
                 &text,
                 multiline,
-                400,
+                weight,
                 *min,
                 *max,
                 helpers::FitBox {
@@ -801,7 +826,7 @@ impl<'a> RenderContext<'a> {
         let box_height = format_length(box_height_units, self.unit)?;
 
         let align = typst_alignment(alignment);
-        let content = format!("#align({align})[#text(\"{text}\", size: {size}pt)]");
+        let content = format!("#align({align})[#text(\"{text}\", size: {size}pt{weight_arg})]");
         let content = self.wrap_rotation(content, placement.rotate);
         writeln!(
             out,
@@ -1297,6 +1322,122 @@ mod tests {
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+    /// Build a one-text-item source. `size_w` of `None` means an auto width, which routes through
+    /// the auto-length path; `Some(w)` takes the fixed-size path. Both must carry the weight.
+    fn text_source(
+        weight: Option<u16>,
+        size_w: Option<f32>,
+        font_size: FontSize,
+        text: &str,
+    ) -> String {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let item = LayoutItem::Text {
+            name: None,
+            value: Some(text.to_string()),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                size: Size([
+                    match size_w {
+                        Some(w) => SizeValue::Value(w),
+                        None => SizeValue::Auto(crate::models::AutoSize::Auto),
+                    },
+                    SizeValue::Value(8.0),
+                ]),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size,
+            font_weight: weight,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        };
+        // The auto-width path replays what the measure pre-pass recorded, so that pass has to run
+        // first and its results have to be handed to the render context.
+        let measuring =
+            super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let mut measured = Vec::new();
+        measuring
+            .measure(std::slice::from_ref(&item), 80.0, &mut measured)
+            .expect("measure");
+        let cursor = std::cell::Cell::new(0);
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            Some(super::AutoLength {
+                texts: &measured,
+                cursor: &cursor,
+            }),
+        );
+        ctx.render_items(&[item]).expect("render text item")
+    }
+
+    fn fitted_pt(source: &str) -> f32 {
+        let at = source.find("size: ").expect("a size in the source") + 6;
+        let rest = &source[at..];
+        let end = rest.find("pt").expect("pt suffix");
+        rest[..end].parse().expect("a number")
+    }
+
+    /// #97 on the fixed-size path.
+    #[test]
+    fn font_weight_is_emitted_on_the_fixed_size_path() {
+        let src = text_source(Some(700), Some(60.0), FontSize::Fixed(10.0), "Widget");
+        assert!(src.contains("weight: 700"), "no weight in source: {src}");
+    }
+
+    /// #97 on the auto-length path. Wired separately from the fixed-size path, and a field carried
+    /// by only one of the two is a failure this codebase has had before.
+    #[test]
+    fn font_weight_is_emitted_on_the_auto_length_path() {
+        let src = text_source(Some(700), None, FontSize::Fixed(10.0), "Widget");
+        assert!(src.contains("weight: 700"), "no weight in source: {src}");
+    }
+
+    /// Absent means absent: existing templates keep byte-identical source (spec, Decision 2).
+    #[test]
+    fn no_font_weight_emits_no_weight_argument() {
+        let src = text_source(None, Some(60.0), FontSize::Fixed(10.0), "Widget");
+        assert!(
+            !src.contains("weight:"),
+            "unexpected weight in source: {src}"
+        );
+    }
+
+    /// The renderer emitting `weight:` proves nothing about the *fitter* getting it: leaving 400
+    /// wired into the fit calls would keep every other test green while #96 stayed unfixed. Bold is
+    /// wider, so the same string in the same box must fit at a smaller size.
+    #[test]
+    fn a_bold_item_fits_at_a_smaller_size_than_an_unweighted_one() {
+        let range = FontSize::Range {
+            min: 6.0,
+            max: 40.0,
+        };
+        let text = "Widget A-42 Storage Bin";
+        let regular = fitted_pt(&text_source(None, Some(40.0), range.clone(), text));
+        let bold = fitted_pt(&text_source(Some(900), Some(40.0), range, text));
+        assert!(
+            regular < 40.0,
+            "the box must actually constrain the fit (got {regular}pt)"
+        );
+        assert!(
+            bold < regular,
+            "bold fitted at {bold}pt, regular at {regular}pt: the fitter ignored the weight"
+        );
+    }
+
     #[test]
     fn measure_skips_children_of_rotated_container() {
         use std::cell::RefCell;
@@ -1324,6 +1465,7 @@ mod tests {
                 rotate: None,
             },
             font_size: FontSize::Fixed(6.0),
+            font_weight: None,
             multiline: false,
             alignment: Alignment::default(),
         };
@@ -1446,6 +1588,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(8.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }],
@@ -1589,6 +1732,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(6.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }],
@@ -1676,6 +1820,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(font_pt),
+                font_weight: None,
                 multiline,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
@@ -1896,6 +2041,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(8.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -1988,6 +2134,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(10.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -2038,6 +2185,7 @@ mod tests {
                         rotate: None,
                     },
                     font_size: FontSize::Fixed(10.0),
+                    font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
                 },
@@ -2123,6 +2271,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(10.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -2347,6 +2496,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(10.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -2508,6 +2658,7 @@ mod tests {
                         rotate: None,
                     },
                     font_size: FontSize::Fixed(8.0),
+                    font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
                 },
@@ -2563,6 +2714,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(8.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -2645,6 +2797,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(6.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
@@ -2679,6 +2832,7 @@ mod tests {
                         rotate: None,
                     },
                     font_size: FontSize::Fixed(6.0),
+                    font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
                 },
@@ -2758,6 +2912,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(6.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),

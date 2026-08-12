@@ -210,6 +210,7 @@ mod tests {
                     rotate: None,
                 },
                 font_size: FontSize::Fixed(8.0),
+                font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
             }]),
