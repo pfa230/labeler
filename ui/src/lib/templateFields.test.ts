@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { referencedFields, referencedVariables, defaultOptions, imageFields, reconcileRowOptions } from "./templateFields";
+import { referencedFields, referencedVariables, defaultOptions, imageFields, multilineFields, singleLineTextFields, reconcileRowOptions } from "./templateFields";
 import type { LayoutItem, Options } from "../api/types";
 
 const layout: LayoutItem[] = [
@@ -31,6 +31,60 @@ describe("referencedFields", () => {
 describe("imageFields", () => {
   it("returns data-bound image field names for the selection", () => {
     expect(imageFields(layout, { orientation: "horizontal" })).toEqual(["logo"]);
+  });
+});
+
+describe("multilineFields / singleLineTextFields", () => {
+  it("classifies fields by whether their text item is multiline", () => {
+    const layout: LayoutItem[] = [
+      { type: "text", name: "body", multiline: true },
+      { type: "text", name: "title" },
+      { type: "qr", name: "code" },
+      { type: "image", name: "logo" },
+    ];
+    expect(multilineFields(layout, {})).toEqual(["body"]);
+    expect(singleLineTextFields(layout, {})).toEqual(["title"]);
+  });
+
+  it("excludes vars and datetime tokens from both walks", () => {
+    const layout: LayoutItem[] = [
+      { type: "text", value: "{a} {vars.b} {datetime} {datetime.short}", multiline: true },
+      { type: "text", value: "{c} {vars.d}" },
+    ];
+    expect(multilineFields(layout, {})).toEqual(["a"]);
+    expect(singleLineTextFields(layout, {})).toEqual(["c"]);
+  });
+
+  /// The control follows the branch on screen…
+  it("gates multilineFields on the selected option", () => {
+    const layout: LayoutItem[] = [
+      {
+        type: "container",
+        option: { mode: "long" },
+        items: [{ type: "text", name: "body", multiline: true }],
+      },
+    ];
+    expect(multilineFields(layout, { mode: "long" })).toEqual(["body"]);
+    expect(multilineFields(layout, { mode: "short" })).toEqual([]);
+  });
+
+  /// …but an empty selection means "every branch", which is how the warning is computed. If someone
+  /// gates the warning, this is the test that fails (spec Decision 1).
+  it("walks every branch when the selection is empty", () => {
+    const layout: LayoutItem[] = [
+      {
+        type: "container",
+        option: { mode: "long" },
+        items: [{ type: "text", name: "shared", multiline: true }],
+      },
+      {
+        type: "container",
+        option: { mode: "short" },
+        items: [{ type: "text", name: "shared" }],
+      },
+    ];
+    expect(multilineFields(layout, {})).toEqual(["shared"]);
+    expect(singleLineTextFields(layout, {})).toEqual(["shared"]);
   });
 });
 
