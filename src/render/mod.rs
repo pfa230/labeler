@@ -520,7 +520,15 @@ impl<'a> RenderContext<'a> {
                     if size_w.is_auto() {
                         let budget = (budget_w - at.x).max(0.0);
                         let m = fit_text_auto_length(
-                            &text, font_size, *multiline, budget, box_h, self.unit,
+                            &text,
+                            font_size,
+                            *multiline,
+                            400,
+                            helpers::FitBox {
+                                width_units: budget,
+                                height_units: box_h,
+                                unit: self.unit,
+                            },
                         )?;
                         let w = m.width;
                         out.push(m);
@@ -774,11 +782,14 @@ impl<'a> RenderContext<'a> {
             FontSize::Range { min, max } => fit_text_to_box(
                 &text,
                 multiline,
+                400,
                 *min,
                 *max,
-                width,
-                box_height_units,
-                self.unit,
+                helpers::FitBox {
+                    width_units: width,
+                    height_units: box_height_units,
+                    unit: self.unit,
+                },
             )?,
         };
         let text =
@@ -2891,6 +2902,82 @@ mod tests {
                         .unwrap_or_else(|e| panic!("render {name}: {e:?}"));
                 std::fs::write(dir.join(format!("{name}.png")), png).expect("write png");
             }
+        }
+    }
+
+    /// Compile a probe source and hand back the document. Shares `weight_probe_ink`'s
+    /// zero-warnings assertion: a missing bundled Inter would otherwise resolve through the
+    /// embedded fallback and quietly calibrate the fitter against the wrong font.
+    fn compile_probe(source: &str) -> super::PagedDocument {
+        let engine = super::TypstEngine::builder()
+            .main_file(source.to_string())
+            .search_fonts_with(super::typst_font_options())
+            .build();
+        let warned = engine.compile::<super::PagedDocument>();
+        assert!(
+            warned.warnings.is_empty(),
+            "probe must compile without warnings: {:?}",
+            warned.warnings
+        );
+        warned.output.expect("compile probe")
+    }
+
+    /// Lay out `lines` lines at `size` on an auto-height page with no margin: the page height Typst
+    /// produces *is* the block height the fitter has to predict. Ink extents are the wrong quantity
+    /// here — they include descenders and exclude leading.
+    fn typst_block_height_pt(lines: usize, size: f32) -> f32 {
+        let body = (0..lines)
+            .map(|_| "Hxy")
+            .collect::<Vec<_>>()
+            .join("#linebreak()");
+        let source = format!(
+            "#set page(width: 200mm, height: auto, margin: 0mm)\n#set text(font: \"Inter\", size: {size}pt)\n{body}"
+        );
+        compile_probe(&source).pages()[0].frame.height().to_pt() as f32
+    }
+
+    fn typst_line_width_pt(text: &str, size: f32) -> f32 {
+        let source = format!(
+            "#set page(width: auto, height: auto, margin: 0mm)\n#set text(font: \"Inter\", size: {size}pt)\n{text}"
+        );
+        compile_probe(&source).pages()[0].frame.width().to_pt() as f32
+    }
+
+    /// The fitter's block model must match what Typst lays out, or auto-shrink is guessing. One, two
+    /// and three lines: a per-line constant that folds leading in is right at n=1 and wrong by one
+    /// leading per line after that, so a single count would not catch it (#96).
+    #[test]
+    fn block_height_matches_typst_layout() {
+        for lines in 1..=3usize {
+            let rendered = typst_block_height_pt(lines, 20.0);
+            let predicted = super::helpers::block_height_for_test(400, 20.0, lines);
+            let drift = (rendered - predicted).abs() / rendered;
+            // Measured 0.00% off at every count; 1% leaves room for a future font revision without
+            // letting a model error through.
+            assert!(
+                drift < 0.01,
+                "{lines} line(s): predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
+                drift * 100.0
+            );
+        }
+    }
+
+    /// The per-character advance sum must match a real shaped line. Not a claim of shaping parity —
+    /// the string has no kerning pairs or ligatures — but a units-per-em or scaling mistake would
+    /// otherwise pass every unit test that compares text_width against itself (#96). Two sizes,
+    /// because opsz differs between them.
+    #[test]
+    fn text_width_matches_typst_layout() {
+        let text = "HIHIHI 123";
+        for size in [10.0f32, 24.0] {
+            let rendered = typst_line_width_pt(text, size);
+            let predicted = super::helpers::text_width_for_test(400, size, text);
+            let drift = (rendered - predicted).abs() / rendered;
+            assert!(
+                drift < 0.01,
+                "{size}pt: predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
+                drift * 100.0
+            );
         }
     }
 
