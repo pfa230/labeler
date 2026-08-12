@@ -44,29 +44,35 @@ function walk(
   selected: Record<string, string>,
   onData: (t: string) => void,
   onImage: (t: string) => void,
+  onText: (t: string, multiline: boolean) => void = () => {},
 ) {
   const gating = Object.keys(selected).length > 0; // no selection => mirror backend's "render all" (no gate)
   for (const it of items) {
     if (it.type === "text" || it.type === "qr") {
-      if (it.name) onData(it.name);
-      else if (it.value) for (const t of tokens(it.value)) onData(t);
+      const emit = (t: string) => {
+        onData(t);
+        if (it.type === "text") onText(t, it.multiline === true); // a qr payload is never multiline
+      };
+      if (it.name) emit(it.name);
+      else if (it.value) for (const t of tokens(it.value)) emit(t);
     } else if (it.type === "image") {
       // a data-bound image is BOTH a referenced data field AND an image field (sample = data URI)
       if (it.name) { onData(it.name); onImage(it.name); }
     } else if (it.type === "container") {
       const match = !gating || Object.entries(it.option ?? {}).every(([k, v]) => selected[k] === v);
-      if (match) walk(it.items, selected, onData, onImage);
+      if (match) walk(it.items, selected, onData, onImage, onText);
     }
   }
 }
+
+// {vars.*}, {datetime} and {datetime.*} resolve server-side; they are never request data fields.
+const isDataField = (t: string) => !t.startsWith("vars.") && t !== "datetime" && !t.startsWith("datetime.");
 
 // Data fields the (option-selected) layout references: text/qr name|value tokens
 // (excluding vars.*, datetime, and datetime.*).
 export function referencedFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
   const set = new Set<string>();
-  walk(layout, selected, (t) => {
-    if (!t.startsWith("vars.") && t !== "datetime" && !t.startsWith("datetime.")) set.add(t);
-  }, () => {});
+  walk(layout, selected, (t) => { if (isDataField(t)) set.add(t); }, () => {});
   return [...set];
 }
 
@@ -74,6 +80,26 @@ export function referencedFields(layout: LayoutItem[], selected: Record<string, 
 export function imageFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
   const set = new Set<string>();
   walk(layout, selected, () => {}, (t) => set.add(t));
+  return [...set];
+}
+
+// Data fields whose text item is multiline. Pass the live selection to choose a control; pass `{}` to ask
+// "anywhere in this template", which is how the shared-field warning is computed: the form keeps one `data`
+// object across option switches, so a value typed under one branch is submitted under another.
+export function multilineFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
+  const set = new Set<string>();
+  walk(layout, selected, () => {}, () => {}, (t, multiline) => {
+    if (multiline && isDataField(t)) set.add(t);
+  });
+  return [...set];
+}
+
+// The complement: data fields rendered by a single-line text item (a qr payload is neither).
+export function singleLineTextFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
+  const set = new Set<string>();
+  walk(layout, selected, () => {}, () => {}, (t, multiline) => {
+    if (!multiline && isDataField(t)) set.add(t);
+  });
   return [...set];
 }
 
