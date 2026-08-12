@@ -389,13 +389,22 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 | `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units; may be edge-relative (see §6). |
 | `size` | `[w, h]` | — | Each entry is a number or `auto`. Mutually exclusive with `to`; exactly one is required (a `container` defaults to `[auto, auto]`). |
 | `to` | `[x, y]` | — | Opposite (top-right) corner; `size = to - at` after both corners resolve. Mutually exclusive with `size`. |
-| `max_w` / `max_h` | number | — | Upper bound used to resolve `auto`. An error alongside `to`, which has no `auto` axis. |
+| `max_w` / `max_h` | number | — | Upper bound that **caps** the resolution of `auto` on its axis, in validation, measurement, and rendering, on every format. An error alongside `to`, which has no `auto` axis. |
 | `rotate` | number (deg) | — | **Container only.** Orthogonal CCW rotation of the container's inner content; see §4.2. An error on any non-container item. |
 
-`auto` size resolves to `max_w`/`max_h` if present; for `container` it falls back to the parent frame's
-dimension. On a dynamic-width `single` template (§3.1), `auto` width resolves to the content width
-(`label_width - at.x`) derived from the pre-render measurement pass. A non-`auto` numeric size must
-be > 0. (`line` does not use `size`; see §4.1.)
+`auto` size resolves to `min(max_{w,h}, fallback)` when both are present, to whichever of the two is
+present when only one is, and is an error when neither is. The fallback is, for `container`, the
+parent frame's dimension; on a dynamic-width `single` template (§3.1), `auto` width instead resolves
+to the content width (`label_width - at.x`) derived from the pre-render measurement pass. `max_w` /
+`max_h` bind **only** `auto`: a numeric `size` component is never clamped by them, at any layer. A
+non-`auto` numeric size must be > 0. (`line` does not use `size`; see §4.1.)
+
+On a dynamic-width label, `max_w` therefore *caps a content-sized item* rather than being inert: `auto`
+there already means "shrink to content" (§3.1), and the bound further limits how much content-driven
+width an item may claim, capping both what the measurement pass reserves and what rendering draws. A
+`qr` or `image` is the one exception worth noting: since neither has a natural content size to shrink
+to, its `auto` means "fill what you are given" on every format, so `max_w` on either is what stops it
+from claiming the whole remaining budget. (ADR-0053)
 
 ### 4.1 Item types
 
@@ -922,6 +931,21 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: `max_w`/`max_h` now **cap** the resolution of `auto`, rather than substituting for
+  the fallback whenever present (ADR-0053, #152, #150). Two disagreements this closes: a
+  dynamic-width container's `max_w` was ignored at render (`render_container_item` used the frame
+  remainder unconditionally), which could make a load-time-valid template's own line children not fit
+  once rendered wider than validated, and `measure_box_height` ignored `max_h` entirely, so a
+  `font_size` range could be fitted to a taller box than the text was actually rendered into (#150).
+  An auto-width `qr`/`image`'s `max_w` is now also honored during measurement, not just at render, so
+  a capped code no longer sizes the whole label to `width.max` and leaves the rest blank tape. **This
+  is also a loosening**: because a cap larger than the room available is no longer binding, some
+  templates previously rejected with `item must fit within layout bounds` now resolve to the room
+  available and load — the opposite direction from what a bounds fix usually implies. That enlarges
+  the set of templates that validate and can still fail at render, which is the dynamic-width
+  deferral model of ADR-0051 §7 working as designed (validation bounds against `width.max`, rendering
+  checks the actual width), not a new defect class. #152's own repro template stays rejected, now
+  correctly: the load-time check was right, the renderer was lying.
 - **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
   (ADR-0051, #146, #147). Two behavior changes fall out of it: **a `line` endpoint outside the layout
   bounds is now an error rather than being clipped** (an absolute endpoint past `width.max` is rejected
