@@ -1293,6 +1293,16 @@ mod tests {
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
+    /// `frame - 0 == frame`, so the anchor subtraction is inert at the origin — but the fallback
+    /// itself is new for text on fixed formats, and #155's repro is an origin case. This test
+    /// exists because "origin items are unaffected" is the first wrong thing a reader assumes.
+    #[test]
+    fn the_origin_is_not_exempt() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    font_size: 6\n";
+        // No max_h, at the origin, on a fixed label: rejected before this branch, resolves to 40 now.
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
     fn temp_dir(label: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
         let unique = SystemTime::now()
