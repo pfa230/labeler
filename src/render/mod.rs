@@ -3212,6 +3212,7 @@ mod tests {
             "brother_18mm",
             "brother_18mm_qr",
             "brother_24mm",
+            "brother_24mm_lines_divider",
             "brother_24mm_multiline",
             "brother_24mm_qr",
             "brother_24mm_weights",

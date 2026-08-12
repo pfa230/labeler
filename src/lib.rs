@@ -3995,4 +3995,39 @@ mod auth_http_tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
+
+    /// The #146/#147 acceptance template renders, and its width tracks its content. Visual
+    /// correctness was verified by looking at the PNG; this guards the mechanics.
+    #[tokio::test]
+    async fn the_lines_divider_template_is_content_sized() {
+        let (registry, _dir) = crate::templates::load_all_for_tests();
+        let template = registry
+            .get("brother_24mm_lines_divider")
+            .expect("fixture template is loaded");
+        let render = |l1: &str, l2: &str| {
+            let mut data = std::collections::HashMap::new();
+            data.insert("line1".to_string(), serde_json::json!(l1));
+            data.insert("line2".to_string(), serde_json::json!(l2));
+            let formats = std::collections::BTreeMap::new();
+            let datetime = crate::datetime_fmt::DateTimeResolver {
+                formats: &formats,
+                now: chrono::Local::now(),
+            };
+            let png = crate::render::render_single_label(
+                template,
+                &data,
+                None,
+                &std::collections::BTreeMap::new(),
+                &datetime,
+            )
+            .expect("render");
+            u32::from_be_bytes([png[16], png[17], png[18], png[19]])
+        };
+        let short = render("Bin 7", "Shed");
+        let long = render("Storage Bin A-42", "Workshop / North Wall");
+        assert!(
+            long > short,
+            "an auto-length label must track its content: {long}px vs {short}px"
+        );
+    }
 }
