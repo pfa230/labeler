@@ -776,9 +776,16 @@ fn resolve_size_value(
             Ok(*value)
         }
         SizeValue::Auto(_) => {
-            let resolved = max
-                .or(fallback)
-                .ok_or_else(|| format!("size {label} is auto but no max_{label} provided"))?;
+            // `max_*` caps the resolution of `auto`; it does not replace the fallback. A cap
+            // larger than the room available is simply not binding, so the smaller wins.
+            let resolved = match (max, fallback) {
+                (Some(max), Some(fallback)) => max.min(fallback),
+                (Some(max), None) => max,
+                (None, Some(fallback)) => fallback,
+                (None, None) => {
+                    return Err(format!("size {label} is auto but no max_{label} provided"))
+                }
+            };
             if resolved <= 0.0 {
                 return Err(format!("max_{label} must be greater than 0"));
             }
@@ -1124,6 +1131,47 @@ mod tests {
     #[test]
     fn validate_accepts_an_edge_relative_line_on_a_dynamic_width_label() {
         let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [-30.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// `max_*` is a cap on the resolution of `auto`, not a substitute for the fallback. Discarding the
+    /// fallback is what made validation reject a container the renderer would have fitted (#152).
+    #[test]
+    fn resolve_size_value_caps_rather_than_substituting() {
+        use super::resolve_size_value;
+        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
+        // Both present: the smaller wins, in both orders.
+        assert_eq!(
+            resolve_size_value(&auto, Some(30.0), Some(10.0), "width"),
+            Ok(10.0)
+        );
+        assert_eq!(
+            resolve_size_value(&auto, Some(10.0), Some(30.0), "width"),
+            Ok(10.0)
+        );
+        // One present: it is used.
+        assert_eq!(
+            resolve_size_value(&auto, Some(30.0), None, "width"),
+            Ok(30.0)
+        );
+        assert_eq!(
+            resolve_size_value(&auto, None, Some(30.0), "width"),
+            Ok(30.0)
+        );
+        // Neither: the unchanged error.
+        assert!(resolve_size_value(&auto, None, None, "width").is_err());
+        // A numeric size is never clamped by the bound.
+        assert_eq!(
+            resolve_size_value(&SizeValue::Value(50.0), Some(30.0), Some(30.0), "width"),
+            Ok(50.0)
+        );
+    }
+
+    /// The #152 disagreement, from the validation side: a container whose cap exceeds the room left
+    /// must resolve to the room left and fit, not to the cap and overflow.
+    #[test]
+    fn validate_accepts_a_capped_container_that_fits_the_remaining_width() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
