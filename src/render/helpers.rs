@@ -67,9 +67,10 @@ pub(super) fn interpolate(
                     token.push(tc);
                 }
                 if !closed {
-                    return Err(AppError::invalid_request(format!(
-                        "unterminated '{{' in template '{template}'"
-                    )));
+                    return Err(AppError::invalid_request(
+                        Reason::InterpolationSyntax,
+                        format!("unterminated '{{' in template '{template}'"),
+                    ));
                 }
                 let resolved = if let Some(dt) = datetime.resolve(&token) {
                     dt?
@@ -91,9 +92,10 @@ pub(super) fn interpolate(
                     chars.next();
                     out.push('}');
                 } else {
-                    return Err(AppError::invalid_request(format!(
-                        "unmatched '}}' in template '{template}'"
-                    )));
+                    return Err(AppError::invalid_request(
+                        Reason::InterpolationSyntax,
+                        format!("unmatched '}}' in template '{template}'"),
+                    ));
                 }
             }
             other => out.push(other),

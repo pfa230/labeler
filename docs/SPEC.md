@@ -640,6 +640,39 @@ optional in the schema. The table grows as the remaining codes are migrated (#15
 | `UnsupportedLayoutItem` | `image_asset_path_escapes` | The asset path resolves outside the assets directory. |
 | `UnsupportedLayoutItem` | `assets_dir_unavailable` | The server's assets directory could not be resolved. |
 | `UnsupportedLayoutItem` | `qr_error_correction_invalid` | `error_correction` is not one of L, M, Q, H. |
+| `InvalidRequest` | `json_malformed` | The request body is not parseable JSON. `details.error` carries the parser's message. |
+| `InvalidRequest` | `request_body_invalid` | The request body could not be read. |
+| `InvalidRequest` | `path_param_invalid` | A path parameter could not be deserialized. |
+| `InvalidRequest` | `start_slot_out_of_range` | `start_slot` exceeds the sheet's slot count. |
+| `InvalidRequest` | `start_slot_not_applicable` | `start_slot` was sent for a non-sheet template; omit it. |
+| `InvalidRequest` | `options_not_supported` | An `option` selection was sent for a template that declares none. |
+| `InvalidRequest` | `batch_empty` | The batch contains no labels. |
+| `InvalidRequest` | `format_unknown` | `format` is not `png` or `pdf`. |
+| `InvalidRequest` | `format_not_applicable` | `format` was sent with `mode=print`; omit it. |
+| `InvalidRequest` | `interpolation_syntax` | An interpolation template has an unterminated `{` or an unmatched `}`. |
+| `InvalidRequest` | `template_id_invalid` | A template id is empty or contains characters other than letters, digits, `-` and `_`. |
+| `InvalidRequest` | `template_id_mismatch` | The template id in the body disagrees with the one in the path. |
+| `InvalidRequest` | `printer_id_invalid` | A printer id is empty or contains disallowed characters. |
+| `InvalidRequest` | `printer_id_mismatch` | The printer id in the body disagrees with the one in the path. |
+| `InvalidRequest` | `variable_key_invalid` | A variable key is empty or contains disallowed characters. |
+| `InvalidRequest` | `setting_value_invalid` | A setting's value failed its type or range rule. |
+| `InvalidRequest` | `datetime_pattern_invalid` | The datetime format pattern is not valid. |
+| `InvalidRequest` | `connector_unknown` | The request names a connector that does not exist. |
+| `InvalidRequest` | `connection_connector_missing` | A stored connection references a connector that is no longer registered. Server configuration, not the request. |
+| `InvalidRequest` | `credential_required` | The connector requires a credential and none was supplied. |
+| `InvalidRequest` | `base_url_invalid` | `base_url` is not a valid URL. |
+| `InvalidRequest` | `csv_header_invalid` | The CSV header row is unparsable, or has empty or duplicate column names. |
+| `InvalidRequest` | `csv_row_invalid` | A CSV data row could not be parsed. |
+| `InvalidRequest` | `csv_empty` | The CSV has a header but no data rows. |
+| `InvalidRequest` | `csv_option_column_unknown` | An `option.*` CSV column names an option the template does not declare. |
+| `InvalidRequest` | `mode_unknown` | `mode` is not `download` or `print`. |
+| `InvalidRequest` | `printer_required` | `mode=print` was requested without a printer. |
+| `InvalidRequest` | `copies_invalid` | `copies` is outside the allowed range. |
+| `InvalidRequest` | `color_mode_unknown` | `color_mode` is not `color` or `bilevel`. |
+| `InvalidRequest` | `resolution_invalid` | `resolution` is not a positive integer, or is out of range. |
+| `InvalidRequest` | `bilevel_requires_png` | `bilevel` was requested for a non-PNG output. |
+| `InvalidRequest` | `username_empty` | The username is empty. |
+| `InvalidRequest` | `password_empty` | The password is empty. |
 
 ## 11. Authentication
 
@@ -958,7 +991,7 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **2026-08-12**: Errors gain a machine-readable `details.reason` slug (§10.1, ADR-0052, #151), so
   the several unrelated causes that share one `code` can be told apart without matching prose. Purely
   additive: `code` values, statuses and messages are unchanged, and `details` stays optional. Covers
-  `TemplateInvalid` and `UnsupportedLayoutItem` so far. Per-label `/batch` failures carry the slug too
+  `TemplateInvalid`, `UnsupportedLayoutItem` and `InvalidRequest` so far. Per-label `/batch` failures carry the slug too
   (§2.2), since a geometry failure is most likely to surface inside a sheet run.
 - **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
   (ADR-0051, #146, #147). Two behavior changes fall out of it: **a `line` endpoint outside the layout

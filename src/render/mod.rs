@@ -310,7 +310,10 @@ pub fn render_sheet_pages(
 
     let start_slot = start_slot as usize;
     if start_slot >= positions.len() && !labels.is_empty() {
-        return Err(AppError::invalid_request("start_slot is out of range"));
+        return Err(AppError::invalid_request(
+            Reason::StartSlotOutOfRange,
+            "start_slot is out of range",
+        ));
     }
 
     let page_width_units = *paper_width;
@@ -463,6 +466,7 @@ fn normalize_option<'a>(
         None => {
             if option.is_some() {
                 Err(AppError::invalid_request(
+                    Reason::OptionsNotSupported,
                     "template does not support options",
                 ))
             } else {

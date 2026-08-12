@@ -1204,6 +1204,7 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "format_unknown");
     }
 
     #[tokio::test]
@@ -1318,6 +1319,33 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
+        // Same code as the unknown-format case above, different reason. That is the whole point.
+        assert_eq!(body["error"]["details"]["reason"], "csv_header_invalid");
+    }
+
+    /// The contract is scoped to four codes (ADR-0052). Nothing else gains a reason, and `details`
+    /// keeps carrying exactly what it carried before.
+    #[tokio::test]
+    async fn unreasoned_codes_have_no_reason() {
+        let app = build_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/does-not-exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "TemplateNotFound");
+        assert_eq!(body["error"]["details"]["template"], "does-not-exist");
+        assert!(
+            body["error"]["details"].get("reason").is_none(),
+            "TemplateNotFound is outside the migrated set and must not gain a reason, got {}",
+            body["error"]["details"]
+        );
     }
 
     #[tokio::test]

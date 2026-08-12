@@ -107,11 +107,14 @@ impl AppError {
 
     /// A JSON body that axum could not parse. Keeps the parser's own text under `details.error`.
     pub fn malformed_json(parser_error: String) -> Self {
-        Self::new(
+        let mut extra = serde_json::Map::new();
+        extra.insert("error".to_string(), Value::from(parser_error));
+        Self::reasoned(
             StatusCode::BAD_REQUEST,
             CODE_INVALID_REQUEST,
+            Reason::JsonMalformed,
             "Malformed JSON body",
-            Some(json!({ "error": parser_error })),
+            Some(extra),
         )
     }
 
@@ -232,8 +235,14 @@ impl AppError {
         )
     }
 
-    pub fn invalid_request(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, CODE_INVALID_REQUEST, message, None)
+    pub fn invalid_request(reason: Reason, message: impl Into<String>) -> Self {
+        Self::reasoned(
+            StatusCode::BAD_REQUEST,
+            CODE_INVALID_REQUEST,
+            reason,
+            message,
+            None,
+        )
     }
 
     pub fn template_invalid(reason: Reason, message: impl Into<String>) -> Self {
@@ -377,15 +386,17 @@ impl From<JsonRejection> for AppError {
             JsonRejection::JsonSyntaxError(_) | JsonRejection::JsonDataError(_) => {
                 AppError::malformed_json(message)
             }
-            JsonRejection::BytesRejection(_) => AppError::invalid_request("Invalid request body"),
-            _ => AppError::invalid_request("Invalid JSON request"),
+            JsonRejection::BytesRejection(_) => {
+                AppError::invalid_request(Reason::RequestBodyInvalid, "Invalid request body")
+            }
+            _ => AppError::invalid_request(Reason::RequestBodyInvalid, "Invalid JSON request"),
         }
     }
 }
 
 impl From<PathRejection> for AppError {
     fn from(_rejection: PathRejection) -> Self {
-        AppError::invalid_request("Invalid path parameter")
+        AppError::invalid_request(Reason::PathParamInvalid, "Invalid path parameter")
     }
 }
 
