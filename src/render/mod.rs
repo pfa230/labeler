@@ -1363,6 +1363,16 @@ mod tests {
         font_size: FontSize,
         text: &str,
     ) -> String {
+        text_source_aligned(weight, size_w, font_size, text, VerticalAlign::Top)
+    }
+
+    fn text_source_aligned(
+        weight: Option<u16>,
+        size_w: Option<f32>,
+        font_size: FontSize,
+        text: &str,
+        vertical: VerticalAlign,
+    ) -> String {
         use std::cell::RefCell;
         let data: HashMap<String, super::JsonValue> = HashMap::new();
         let settings = no_settings();
@@ -1391,7 +1401,10 @@ mod tests {
             font_size,
             font_weight: weight,
             multiline: false,
-            alignment: crate::models::Alignment::default(),
+            alignment: crate::models::Alignment {
+                horizontal: crate::models::HorizontalAlign::Left,
+                vertical,
+            },
         };
         // The auto-width path replays what the measure pre-pass recorded, so that pass has to run
         // first and its results have to be handed to the render context.
@@ -1429,6 +1442,44 @@ mod tests {
     fn font_weight_is_emitted_on_the_fixed_size_path() {
         let src = text_source(Some(700), Some(60.0), FontSize::Fixed(10.0), "Widget");
         assert!(src.contains("weight: 700"), "no weight in source: {src}");
+    }
+
+    /// The emitted pad is `pad_em × size` for the aligned edge — the *placement* constant. Not
+    /// `overflow_em`: the fitter's reservation is twice this and never reaches the source (#124).
+    #[test]
+    fn the_emitted_pad_is_the_aligned_edge_metric() {
+        // 0.2412em at 20pt = 4.82pt, and in Inter the top and bottom pads are the same 494 units —
+        // a coincidence of this font, not a shared constant.
+        let bottom = text_source_aligned(
+            None,
+            Some(60.0),
+            FontSize::Fixed(20.0),
+            "gjpqy",
+            VerticalAlign::Bottom,
+        );
+        assert!(
+            bottom.contains("#pad(bottom: 4.82"),
+            "unexpected source: {bottom}"
+        );
+        let top = text_source_aligned(
+            None,
+            Some(60.0),
+            FontSize::Fixed(20.0),
+            "Édgy",
+            VerticalAlign::Top,
+        );
+        assert!(top.contains("#pad(top: 4.82"), "unexpected source: {top}");
+        let centered = text_source_aligned(
+            None,
+            Some(60.0),
+            FontSize::Fixed(20.0),
+            "Hxy",
+            VerticalAlign::Center,
+        );
+        assert!(
+            !centered.contains("#pad"),
+            "center must not pad: {centered}"
+        );
     }
 
     /// #97 on the auto-length path. Wired separately from the fixed-size path, and a field carried
@@ -2128,7 +2179,7 @@ mod tests {
         // The pad is 0.2412em at 12pt = 2.89pt of an 18mm-tall tape rendered at `height` rows, plus
         // the cap-height gap `test` leaves under the ascender line. Bound it generously above and
         // require it to be non-zero below: zero would mean the pad never reached this path.
-        let px_per_pt = height as f32 / super::helpers::units_to_pt_for_test(18.0, "mm");
+        let px_per_pt = height as f32 / super::helpers::units_to_pt_for_test(20.0, "mm");
         let pad_px = 0.2412 * 12.0 * px_per_pt;
         assert!(
             top_first as f32 >= pad_px * 0.5,

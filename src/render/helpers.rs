@@ -541,6 +541,12 @@ fn pad_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
 /// The pad in points, for callers outside this module: `render/mod.rs` has no `Face` and `instance`
 /// stays private.
 pub(super) fn pad_pt(weight: u16, size: f32, vertical: VerticalAlign) -> Result<f32, AppError> {
+    // Short-circuit before touching the font. Center pads nothing, and loading the measurement face
+    // here would give a centered fixed-size render a new way to fail — it would start depending on
+    // InterVariable being present and carrying the wght/opsz axes to emit source it does not use.
+    if matches!(vertical, VerticalAlign::Center) {
+        return Ok(0.0);
+    }
     let face = instance(weight, size)?;
     Ok(pad_em(&face, vertical) * size)
 }
