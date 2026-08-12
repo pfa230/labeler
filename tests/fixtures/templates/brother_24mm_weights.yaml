@@ -1,0 +1,36 @@
+id: brother_24mm_weights
+name: Brother 24mm Weight Demo
+description: Two stacked text fields, one bold and one at the default weight (#97)
+unit: mm
+dpi: 180
+format:
+  type: single
+  width:
+    min: 20.0
+    max: 120.0
+  height: 18.1
+  media_width: 24.0
+layout:
+  - type: text
+    name: title
+    at: [1.5, 9.6]
+    size: [auto, 7.5]
+    max_w: 117.0
+    font_size:
+      min: 6.0
+      max: 14.0
+    font_weight: 700
+    alignment:
+      horizontal: left
+      vertical: center
+  - type: text
+    name: subtitle
+    at: [1.5, 1.5]
+    size: [auto, 7.0]
+    max_w: 117.0
+    font_size:
+      min: 5.0
+      max: 11.0
+    alignment:
+      horizontal: left
+      vertical: center
