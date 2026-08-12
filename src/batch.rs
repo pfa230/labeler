@@ -144,13 +144,16 @@ fn render_single_batch(
                 .compression_method(zip::CompressionMethod::Deflated);
             for (i, bytes) in artifacts.iter().enumerate() {
                 let name = format!("{:0width$}.{ext}", i + 1, width = width);
-                zip.start_file(name, opts)
-                    .map_err(|e| AppError::render_failed(format!("zip error: {e}")))?;
-                zip.write_all(bytes)
-                    .map_err(|e| AppError::render_failed(format!("zip error: {e}")))?;
+                zip.start_file(name, opts).map_err(|e| {
+                    AppError::render_failed(Reason::ZipWriteFailed, format!("zip error: {e}"))
+                })?;
+                zip.write_all(bytes).map_err(|e| {
+                    AppError::render_failed(Reason::ZipWriteFailed, format!("zip error: {e}"))
+                })?;
             }
-            zip.finish()
-                .map_err(|e| AppError::render_failed(format!("zip error: {e}")))?;
+            zip.finish().map_err(|e| {
+                AppError::render_failed(Reason::ZipWriteFailed, format!("zip error: {e}"))
+            })?;
             Ok(RenderedBatch::Download {
                 bytes: cursor.into_inner(),
                 content_type: "application/zip",
