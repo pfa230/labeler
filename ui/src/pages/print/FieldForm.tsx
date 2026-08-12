@@ -1,5 +1,10 @@
 import { usePrinters } from "../../api/queries";
-import { imageFields, referencedFields } from "../../lib/templateFields";
+import {
+  imageFields,
+  multilineFields,
+  referencedFields,
+  singleLineTextFields,
+} from "../../lib/templateFields";
 import type { TemplateDetail } from "../../api/types";
 
 export type FormValue = {
@@ -37,6 +42,13 @@ export function FieldForm({
 }) {
   const fields = referencedFields(detail.layout, value.option);
   const imgs = new Set(imageFields(detail.layout, value.option));
+  const multiline = new Set(multilineFields(detail.layout, value.option));
+  // Ungated on both sides: `value.data` survives an option switch, so a value typed where the field
+  // is multiline is submitted where it may not be.
+  const singleLineAnywhere = new Set(singleLineTextFields(detail.layout, {}));
+  const truncatedSomewhere = new Set(
+    multilineFields(detail.layout, {}).filter((f) => singleLineAnywhere.has(f)),
+  );
   const { data: printers } = usePrinters();
   const allPrinters = printers ?? [];
 
@@ -54,6 +66,7 @@ export function FieldForm({
       {fields.map((field) => {
         const current = value.data[field] ?? "";
         const invalid = current.length === 0;
+        const noteId = truncatedSomewhere.has(field) ? `${field}-multiline-note` : undefined;
         return (
           <label key={field} className="flex flex-col gap-1">
             <span className="text-sm font-medium">{field}</span>
@@ -76,16 +89,34 @@ export function FieldForm({
                   </span>
                 )}
               </>
+            ) : multiline.has(field) ? (
+              // rows is only an initial height; resize-y stops a drag widening the form column.
+              <textarea
+                aria-label={field}
+                aria-invalid={invalid}
+                aria-describedby={noteId}
+                rows={3}
+                value={current}
+                onChange={(e) => setData(field, e.target.value)}
+                className={`${inputClass} resize-y`}
+                style={inputStyle}
+              />
             ) : (
               <input
                 type="text"
                 aria-label={field}
                 aria-invalid={invalid}
+                aria-describedby={noteId}
                 value={current}
                 onChange={(e) => setData(field, e.target.value)}
                 className={inputClass}
                 style={inputStyle}
               />
+            )}
+            {noteId && (
+              <span id={noteId} className="text-xs" style={{ color: "var(--muted)" }}>
+                Also used on a single-line item, which shows only the first line.
+              </span>
             )}
           </label>
         );
