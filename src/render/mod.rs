@@ -473,6 +473,17 @@ struct RenderEnv<'a> {
     datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
 }
 
+/// The anchor of a box item. `Line` has two endpoints and no box, so it is handled separately.
+fn item_anchor(item: &LayoutItem) -> Option<&Position> {
+    match item {
+        LayoutItem::Text { placement, .. }
+        | LayoutItem::Qr { placement, .. }
+        | LayoutItem::Image { placement, .. }
+        | LayoutItem::Container { placement, .. } => Some(&placement.at),
+        LayoutItem::Line { .. } => None,
+    }
+}
+
 struct RenderContext<'a> {
     frame_width_units: f32,
     frame_height_units: f32,
@@ -536,6 +547,15 @@ impl<'a> RenderContext<'a> {
     ) -> Result<f32, AppError> {
         let mut extent = 0.0f32;
         for item in items {
+            // Clause 1: a right-anchored item cannot define the width it is anchored to. Its inset
+            // is the narrowest label it fits on, and that is all it can say. Skipping the item here
+            // also means it pushes no MeasuredText, which `render_text_item` must mirror exactly.
+            if let Some(at) = item_anchor(item) {
+                if at.x().is_sign_negative() {
+                    extent = extent.max(-at.x());
+                    continue;
+                }
+            }
             let right = match item {
                 LayoutItem::Text {
                     name,
@@ -774,7 +794,7 @@ impl<'a> RenderContext<'a> {
             to_nonbreaking(&text)
         };
 
-        let point = placement.at.point();
+        let point = self.resolve_point(&placement.at)?;
         let left = point.x;
 
         // A blank first/last line carries no ink but still gets a line box, which shoves the visible
@@ -790,7 +810,7 @@ impl<'a> RenderContext<'a> {
 
         // When auto-length is active and this text item has auto width, consume the next measured fit.
         if let Some(al) = self.auto_length() {
-            if placement.size.0[0].is_auto() {
+            if placement.size.0[0].is_auto() && !placement.at.x().is_sign_negative() {
                 let idx = al.cursor.get();
                 let m = al.texts.get(idx).ok_or_else(|| {
                     AppError::render_failed(format!("auto-length cursor overrun at index {idx}"))
@@ -885,7 +905,7 @@ impl<'a> RenderContext<'a> {
     ) -> Result<(), AppError> {
         let (width, height) =
             self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
-        let point = placement.at.point();
+        let point = self.resolve_point(&placement.at)?;
         let left = point.x;
         let bottom = point.y;
         let top = bottom + height;
@@ -934,7 +954,7 @@ impl<'a> RenderContext<'a> {
         };
         let (width, height) =
             self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
-        let point = placement.at.point();
+        let point = self.resolve_point(&placement.at)?;
         let left = point.x;
         let bottom = point.y;
         let top = bottom + height;
@@ -1007,7 +1027,7 @@ impl<'a> RenderContext<'a> {
                 }
             }
         }
-        let point = placement.at.point();
+        let point = self.resolve_point(&placement.at)?;
         let left = point.x;
         let rotation = placement
             .rotate
@@ -3380,13 +3400,57 @@ mod tests {
             super::LengthMode::Fixed,
         );
         let item = LayoutItem::Line {
-            at: Position([0.0, 6.0]),
-            to: Position([-0.0, 6.0]),
+            at: Position([-5.0, 6.0]),
+            to: Position([-3.0, 6.0]),
             thickness: 0.2,
         };
         let mut measured = Vec::new();
         let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
         assert_eq!(extent, 0.0);
+        assert!(measured.is_empty());
+    }
+
+    /// A right-anchored item cannot define the width it is anchored to, but the label still has to
+    /// be at least as wide as the inset or the item has nowhere to sit. That inset is its
+    /// contribution.
+    #[test]
+    fn an_edge_relative_at_x_contributes_its_inset() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let item = LayoutItem::Text {
+            name: None,
+            value: Some("x".to_string()),
+            placement: Placement {
+                at: Position([-20.0, 0.0]),
+                size: Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(6.0),
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        };
+        let mut measured = Vec::new();
+        let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
+        assert_eq!(extent, 20.0);
         assert!(measured.is_empty());
     }
 

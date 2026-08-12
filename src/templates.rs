@@ -354,7 +354,12 @@ fn validate_layout_item(
             font_weight,
             ..
         } => {
-            validate_position(&placement.at)?;
+            validate_placement_position(
+                &placement.at,
+                placement.width_is_frame_dependent(),
+                layout_bounds,
+                is_dynamic_width,
+            )?;
             validate_font_weight(*font_weight)?;
             validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
@@ -365,13 +370,24 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 is_dynamic_width,
             )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
+            validate_bounds(
+                &placement.at,
+                width,
+                height,
+                layout_bounds,
+                is_dynamic_width,
+            )?;
             validate_font_size(font_size)?;
         }
         LayoutItem::Qr {
             placement, params, ..
         } => {
-            validate_position(&placement.at)?;
+            validate_placement_position(
+                &placement.at,
+                placement.width_is_frame_dependent(),
+                layout_bounds,
+                is_dynamic_width,
+            )?;
             validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
@@ -381,7 +397,13 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 false,
             )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
+            validate_bounds(
+                &placement.at,
+                width,
+                height,
+                layout_bounds,
+                is_dynamic_width,
+            )?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
                     if module_size <= 0.0 {
@@ -396,7 +418,12 @@ fn validate_layout_item(
             }
         }
         LayoutItem::Image { placement, .. } => {
-            validate_position(&placement.at)?;
+            validate_placement_position(
+                &placement.at,
+                placement.width_is_frame_dependent(),
+                layout_bounds,
+                is_dynamic_width,
+            )?;
             validate_rotation(&placement.rotate, false)?;
             let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
             let (width, height) = resolve_size(
@@ -406,7 +433,13 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 false,
             )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
+            validate_bounds(
+                &placement.at,
+                width,
+                height,
+                layout_bounds,
+                is_dynamic_width,
+            )?;
         }
         LayoutItem::Line { at, to, thickness } => {
             const LINE_EPSILON: f32 = 1.0e-4;
@@ -459,7 +492,12 @@ fn validate_layout_item(
             padding,
             items,
         } => {
-            validate_position(&placement.at)?;
+            validate_placement_position(
+                &placement.at,
+                placement.width_is_frame_dependent(),
+                layout_bounds,
+                is_dynamic_width,
+            )?;
             validate_rotation(&placement.rotate, true)?;
             let rotation = placement
                 .rotate
@@ -481,7 +519,13 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 true,
             )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
+            validate_bounds(
+                &placement.at,
+                width,
+                height,
+                layout_bounds,
+                is_dynamic_width,
+            )?;
 
             if let Some(frame) = frame {
                 if frame.thickness <= 0.0 {
@@ -552,8 +596,11 @@ fn auto_resolve_bounds(
         return None;
     }
     let bounds = layout_bounds?;
-    let at_x = at.point().x;
-    if at_x == 0.0 {
+    let at_x = at.x();
+    // An edge-relative x with a frame-dependent width is rejected in
+    // `validate_placement_position`, so this never legitimately sees one. Returning `None` rather
+    // than subtracting keeps a negative offset from widening the budget.
+    if at_x <= 0.0 || at_x.is_sign_negative() {
         return None;
     }
     Some(LayoutBounds {
@@ -562,11 +609,31 @@ fn auto_resolve_bounds(
     })
 }
 
-fn validate_position(at: &Position) -> Result<(), String> {
+/// Bounds-check a placement's anchor. A sign-negative component is edge-relative (#146) and
+/// resolves against the frame first. On a dynamic-width single the final width is unknown but
+/// bounded by `max`, so an inset larger than `max` is rejected here and a merely provisional
+/// result is deferred to the render pass.
+fn validate_placement_position(
+    at: &Position,
+    frame_dependent_width: bool,
+    bounds: Option<&LayoutBounds>,
+    is_dynamic_width: bool,
+) -> Result<(), String> {
     const BOUNDS_EPSILON: f32 = 1.0e-4;
-    let point = at.point();
-    if point.x < -BOUNDS_EPSILON || point.y < -BOUNDS_EPSILON {
-        return Err("at must not extend into negative coordinates".to_string());
+    if at.x().is_sign_negative() && frame_dependent_width && is_dynamic_width {
+        return Err(
+            "an edge-relative x cannot be combined with an auto or edge-relative width on a \
+             dynamic-width template: both would depend on the label width"
+                .to_string(),
+        );
+    }
+    let Some(bounds) = bounds else {
+        return Ok(());
+    };
+    if resolve_coord(at.x(), bounds.width) < -BOUNDS_EPSILON
+        || resolve_coord(at.y(), bounds.height) < -BOUNDS_EPSILON
+    {
+        return Err("at resolves outside the frame".to_string());
     }
     Ok(())
 }
@@ -663,15 +730,18 @@ fn validate_bounds(
     width: f32,
     height: f32,
     layout_bounds: Option<&LayoutBounds>,
+    is_dynamic_width: bool,
 ) -> Result<(), String> {
     const BOUNDS_EPSILON: f32 = 1.0e-4;
     let Some(layout_bounds) = layout_bounds else {
         return Ok(());
     };
-    let point = at.point();
-    let max_x = point.x + width;
-    let max_y = point.y + height;
-    if max_x > layout_bounds.width + BOUNDS_EPSILON || max_y > layout_bounds.height + BOUNDS_EPSILON
+    let x = resolve_coord(at.x(), layout_bounds.width);
+    let y = resolve_coord(at.y(), layout_bounds.height);
+    // A provisional x (resolved against `max` on a dynamic-width label) is re-checked at render.
+    let check_x = !(is_dynamic_width && at.x().is_sign_negative());
+    if (check_x && x + width > layout_bounds.width + BOUNDS_EPSILON)
+        || y + height > layout_bounds.height + BOUNDS_EPSILON
     {
         return Err("item must fit within layout bounds".to_string());
     }
@@ -896,6 +966,44 @@ mod tests {
     fn rotation_orthogonal_on_container_ok() {
         let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: -90\n    items: []\n";
         assert!(parse_and_validate(yaml).is_ok());
+    }
+
+    /// A right-anchored box with a known width is legal on an auto-length label: its position is
+    /// deferred, but its size never was.
+    #[test]
+    fn validate_accepts_a_right_anchored_fixed_width_box() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [20.0, 10.0]\n    font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// Position and width would both be chasing the same unknown.
+    #[test]
+    fn validate_rejects_a_right_anchored_auto_width_box_on_a_dynamic_label() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    /// On a fixed frame everything resolves, so the same shape is fine.
+    #[test]
+    fn validate_accepts_a_right_anchored_auto_width_box_on_a_fixed_label() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    max_w: 20.0\n    font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// Negative y is the top edge, so this box sits flush against it.
+    #[test]
+    fn validate_accepts_a_top_anchored_box() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, -4.0]\n    size: [20.0, 4.0]\n    font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// The guard exists to protect the same-sign x_comparable branch: two edge-relative endpoints
+    /// at different insets on a dynamic-width label are a real divider and must validate, not be
+    /// rejected as if the label's final width were unknown to both.
+    #[test]
+    fn validate_accepts_an_edge_relative_line_on_a_dynamic_width_label() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [-30.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     fn temp_dir(label: &str) -> PathBuf {
