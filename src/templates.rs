@@ -7,8 +7,8 @@ use thiserror::Error;
 
 use crate::errors::TemplateError;
 use crate::models::{
-    Dimension, FontSize, Layout, LayoutItem, Options, Position, Size, SizeValue, TemplateDetail,
-    TemplateFormat, TemplateSummary,
+    resolve_coord, Dimension, FontSize, Layout, LayoutItem, Options, Point, Position, Size,
+    SizeValue, TemplateDetail, TemplateFormat, TemplateSummary,
 };
 use crate::parse::parse_template;
 
@@ -413,16 +413,38 @@ fn validate_layout_item(
             if *thickness <= 0.0 {
                 return Err("line thickness must be greater than 0".to_string());
             }
-            validate_position(at)?;
-            validate_position(to)?;
-            let start = at.point();
-            let end = to.point();
-            if (start.x - end.x).abs() < LINE_EPSILON && (start.y - end.y).abs() < LINE_EPSILON {
+            // Endpoints resolve against the frame before any comparison: `-0.0 == 0.0`, so raw
+            // coordinates would reject a full-width divider as zero-length.
+            let (start, end) = match layout_bounds {
+                Some(bounds) => (
+                    Point {
+                        x: resolve_coord(at.x(), bounds.width),
+                        y: resolve_coord(at.y(), bounds.height),
+                    },
+                    Point {
+                        x: resolve_coord(to.x(), bounds.width),
+                        y: resolve_coord(to.y(), bounds.height),
+                    },
+                ),
+                None => (at.point(), to.point()),
+            };
+            // On a dynamic-width single an x resolved from an edge-relative component is
+            // provisional: it was computed against `max`. Compare x only when both endpoints are
+            // comparable, and let the render pass re-check the rest.
+            let x_comparable =
+                !is_dynamic_width || at.x().is_sign_negative() == to.x().is_sign_negative();
+            let same_x = x_comparable && (start.x - end.x).abs() < LINE_EPSILON;
+            let same_y = (start.y - end.y).abs() < LINE_EPSILON;
+            if same_x && same_y {
                 return Err("line start and end must differ".to_string());
             }
             if let Some(bounds) = layout_bounds {
-                // On dynamic-width singles, lines are only bounds-checked in y.
                 for point in [start, end] {
+                    // A resolved x below zero means the inset exceeds `max`, which no smaller
+                    // final width can rescue, so it is rejected here even on a dynamic label.
+                    if point.x < -LINE_EPSILON || point.y < -LINE_EPSILON {
+                        return Err("line must fit within layout bounds".to_string());
+                    }
                     let x_ok = is_dynamic_width || point.x <= bounds.width + LINE_EPSILON;
                     if !x_ok || point.y > bounds.height + LINE_EPSILON {
                         return Err("line must fit within layout bounds".to_string());
@@ -1227,10 +1249,31 @@ layout: []
     }
 
     #[test]
-    fn validate_rejects_negative_line_endpoint() {
-        let template = single_line_template(Position([0.0, 0.0]), Position([-1.0, 0.0]));
-        let err = template.validate().expect_err("expected error");
-        assert!(err.contains("negative coordinates"));
+    fn validate_rejects_a_line_endpoint_inset_beyond_the_frame() {
+        let template = single_line_template(Position([0.0, 1.0]), Position([-40.0, 1.0]));
+        assert!(template.validate().is_err());
+    }
+
+    /// #146's headline case. `-0.0 == 0.0`, so comparing raw endpoints rejects a full-width divider
+    /// as a zero-length line. The check has to run on resolved coordinates.
+    #[test]
+    fn validate_accepts_a_full_width_divider_on_a_dynamic_label() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// Still degenerate after resolution: both endpoints land on the right edge.
+    #[test]
+    fn validate_rejects_a_line_degenerate_after_resolution() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: line\n    at: [-0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    /// An inset larger than the widest the label can ever be never resolves to a valid coordinate.
+    #[test]
+    fn validate_rejects_a_line_inset_larger_than_the_max_width() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-140.0, 6.0]\n    thickness: 0.2\n";
+        assert!(parse_and_validate(yaml).is_err());
     }
 
     #[test]

@@ -4,8 +4,8 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Rotation, Size,
-    SizeValue, TemplateFormat,
+    resolve_coord, Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Point,
+    Position, Rotation, Size, SizeValue, TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
@@ -517,6 +517,15 @@ impl<'a> RenderContext<'a> {
         }
     }
 
+    /// Resolve a template position against this frame, edge-relative components included.
+    /// Task 5 adds the range check here; for now it is pure resolution.
+    fn resolve_point(&self, p: &Position) -> Result<Point, AppError> {
+        Ok(Point {
+            x: resolve_coord(p.x(), self.frame_width_units),
+            y: resolve_coord(p.y(), self.frame_height_units),
+        })
+    }
+
     /// Walk items computing content right-extent and recording auto-width text fits (pre-order).
     /// `budget_w` is the available width: page max at the top frame, inner width inside a container.
     fn measure(
@@ -573,7 +582,12 @@ impl<'a> RenderContext<'a> {
                         .unwrap_or((budget_w - at_x).max(0.0));
                     at_x + w
                 }
-                LayoutItem::Line { at, to, .. } => at.point().x.max(to.point().x),
+                // An edge-relative endpoint is positioned against the very width being measured,
+                // so it cannot contribute to it.
+                LayoutItem::Line { at, to, .. } => [at.x(), to.x()]
+                    .into_iter()
+                    .filter(|x| !x.is_sign_negative())
+                    .fold(0.0f32, f32::max),
                 LayoutItem::Container {
                     placement,
                     option,
@@ -950,8 +964,10 @@ impl<'a> RenderContext<'a> {
         to: &Position,
         thickness: f32,
     ) -> Result<(), AppError> {
-        let (start_x, start_y) = to_page_coords(&at.point(), self.frame_height_units);
-        let (end_x, end_y) = to_page_coords(&to.point(), self.frame_height_units);
+        let start_point = self.resolve_point(at)?;
+        let end_point = self.resolve_point(to)?;
+        let (start_x, start_y) = to_page_coords(&start_point, self.frame_height_units);
+        let (end_x, end_y) = to_page_coords(&end_point, self.frame_height_units);
         let dx = end_x - start_x;
         let dy = end_y - start_y;
         let start_x = format_length(start_x, self.unit)?;
@@ -3338,6 +3354,73 @@ mod tests {
         assert!(
             fixed.contains("width: 25mm"),
             "on a fixed label an auto container fills the frame, got: {fixed}"
+        );
+    }
+
+    /// A line with an edge-relative endpoint cannot define the width it is measured against, and has
+    /// no content of its own to fall back on, so it contributes nothing.
+    #[test]
+    fn an_edge_relative_line_contributes_nothing_to_the_measured_extent() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let item = LayoutItem::Line {
+            at: Position([0.0, 6.0]),
+            to: Position([-0.0, 6.0]),
+            thickness: 0.2,
+        };
+        let mut measured = Vec::new();
+        let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
+        assert_eq!(extent, 0.0);
+        assert!(measured.is_empty());
+    }
+
+    /// The divider spans to the frame's right edge, not back to x=0.
+    #[test]
+    fn an_edge_relative_line_renders_to_the_right_edge() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (40.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let source = ctx
+            .render_items(&[LayoutItem::Line {
+                at: Position([0.0, 6.0]),
+                to: Position([-0.0, 6.0]),
+                thickness: 0.2,
+            }])
+            .expect("render");
+        assert!(
+            source.contains("end: (40mm, 0mm)"),
+            "expected a 40mm-long line, got: {source}"
         );
     }
 }
