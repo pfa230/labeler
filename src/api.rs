@@ -296,9 +296,12 @@ fn template_file_path(dir: &std::path::Path, id: &str) -> Result<PathBuf, AppErr
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(AppError::invalid_request(format!(
-            "template id '{id}' must be non-empty and contain only letters, digits, '-' or '_'"
-        )));
+        return Err(AppError::invalid_request(
+            Reason::TemplateIdInvalid,
+            format!(
+                "template id '{id}' must be non-empty and contain only letters, digits, '-' or '_'"
+            ),
+        ));
     }
     Ok(dir.join(format!("{id}.yaml")))
 }
@@ -401,10 +404,13 @@ pub async fn replace_template(
 ) -> Result<Response, AppError> {
     let template = parse_and_validate(&body)?;
     if template.id != id {
-        return Err(AppError::invalid_request(format!(
-            "template id in body ('{}') must match path id ('{id}')",
-            template.id
-        )));
+        return Err(AppError::invalid_request(
+            Reason::TemplateIdMismatch,
+            format!(
+                "template id in body ('{}') must match path id ('{id}')",
+                template.id
+            ),
+        ));
     }
     // Resolved under the lock, not before it: an in-flight delete would otherwise unlink the file
     // between the resolve and the write, and this handler would recreate the template it removed.
@@ -583,10 +589,13 @@ fn validate_printer(printer: &Printer) -> Result<(), AppError> {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(AppError::invalid_request(format!(
-            "printer id '{}' must be non-empty and contain only letters, digits, '-' or '_'",
-            printer.id
-        )));
+        return Err(AppError::invalid_request(
+            Reason::PrinterIdInvalid,
+            format!(
+                "printer id '{}' must be non-empty and contain only letters, digits, '-' or '_'",
+                printer.id
+            ),
+        ));
     }
     if printer.name.trim().is_empty() {
         return Err(AppError::printer_invalid("printer name must not be empty"));
@@ -690,9 +699,10 @@ pub async fn put_variable(
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
     {
-        return Err(AppError::invalid_request(format!(
-            "variable key '{key}' must be non-empty and contain only letters, digits, '_', '-' or '.'"
-        )));
+        return Err(AppError::invalid_request(
+            Reason::VariableKeyInvalid,
+            format!("variable key '{key}' must be non-empty and contain only letters, digits, '_', '-' or '.'"),
+        ));
     }
     let _guard = state.write_lock.lock().await;
     state.store().set_variable(&key, &body.value).await?;
@@ -772,8 +782,8 @@ pub async fn put_setting(
     if !crate::settings::is_known(&key) {
         return Err(AppError::setting_not_found(&key));
     }
-    let canonical =
-        crate::settings::validate(&key, &body.value).map_err(AppError::invalid_request)?;
+    let canonical = crate::settings::validate(&key, &body.value)
+        .map_err(|err| AppError::invalid_request(Reason::SettingValueInvalid, err))?;
     let _guard = state.write_lock.lock().await;
     state.store().set_setting(&key, &canonical).await?;
     // canonical is the validated integer text; reflect it back as a JSON number
@@ -836,7 +846,8 @@ pub struct DatetimePreviewResponse {
 pub async fn preview_datetime_format(
     Json(req): Json<DatetimePreviewRequest>,
 ) -> Result<Response, AppError> {
-    crate::datetime_fmt::validate_pattern(&req.pattern).map_err(AppError::invalid_request)?;
+    crate::datetime_fmt::validate_pattern(&req.pattern)
+        .map_err(|err| AppError::invalid_request(Reason::DatetimePatternInvalid, err))?;
     let sample = crate::datetime_fmt::format_now(&req.pattern, chrono::Local::now());
     Ok(Json(DatetimePreviewResponse { sample }).into_response())
 }
@@ -859,10 +870,13 @@ pub async fn replace_printer(
     Json(mut printer): Json<Printer>,
 ) -> Result<Response, AppError> {
     if printer.id != id {
-        return Err(AppError::invalid_request(format!(
-            "printer id in body ('{}') must match path id ('{id}')",
-            printer.id
-        )));
+        return Err(AppError::invalid_request(
+            Reason::PrinterIdMismatch,
+            format!(
+                "printer id in body ('{}') must match path id ('{id}')",
+                printer.id
+            ),
+        ));
     }
     validate_printer(&printer)?;
     let _guard = state.write_lock.lock().await;
@@ -1053,13 +1067,20 @@ pub async fn create_connection(
     Json(body): Json<ConnectionInput>,
 ) -> Result<Response, AppError> {
     if state.connectors().get(&body.connector).is_none() {
-        return Err(AppError::invalid_request("unknown connector"));
+        return Err(AppError::invalid_request(
+            Reason::ConnectorUnknown,
+            "unknown connector",
+        ));
     }
     let cred = body.credential.unwrap_or_default();
     if cred.is_empty() {
-        return Err(AppError::invalid_request("credential required"));
+        return Err(AppError::invalid_request(
+            Reason::CredentialRequired,
+            "credential required",
+        ));
     }
-    url::Url::parse(&body.base_url).map_err(|_| AppError::invalid_request("invalid base_url"))?;
+    url::Url::parse(&body.base_url)
+        .map_err(|_| AppError::invalid_request(Reason::BaseUrlInvalid, "invalid base_url"))?;
     let _g = state.write_lock.lock().await;
     let c = state
         .store()
@@ -1104,7 +1125,8 @@ pub async fn update_connection_h(
     Path(id): Path<String>,
     Json(body): Json<ConnectionInput>,
 ) -> Result<Response, AppError> {
-    url::Url::parse(&body.base_url).map_err(|_| AppError::invalid_request("invalid base_url"))?;
+    url::Url::parse(&body.base_url)
+        .map_err(|_| AppError::invalid_request(Reason::BaseUrlInvalid, "invalid base_url"))?;
     let _g = state.write_lock.lock().await;
     let cred = body.credential.filter(|c| !c.is_empty());
     let ok = state
@@ -1153,10 +1175,9 @@ async fn load_conn_and_connector<'a>(
         .get_connection(id)
         .await?
         .ok_or_else(|| AppError::not_found(id))?;
-    let c = state
-        .connectors()
-        .get(&conn.connector)
-        .ok_or_else(|| AppError::invalid_request("unknown connector"))?;
+    let c = state.connectors().get(&conn.connector).ok_or_else(|| {
+        AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
+    })?;
     Ok((conn, c))
 }
 
@@ -1245,21 +1266,28 @@ fn parse_csv_rows(body: &str) -> Result<Vec<ParsedCsvRow>, AppError> {
         .from_reader(body.as_bytes());
     let headers = reader
         .headers()
-        .map_err(|err| AppError::invalid_request(format!("invalid CSV header: {err}")))?
+        .map_err(|err| {
+            AppError::invalid_request(
+                Reason::CsvHeaderInvalid,
+                format!("invalid CSV header: {err}"),
+            )
+        })?
         .clone();
     let mut seen = std::collections::HashSet::new();
     for header in headers.iter() {
         let header = header.trim();
         if header.is_empty() || !seen.insert(header) {
             return Err(AppError::invalid_request(
+                Reason::CsvHeaderInvalid,
                 "CSV header has empty or duplicate column names",
             ));
         }
     }
     let mut rows = Vec::new();
     for record in reader.records() {
-        let record =
-            record.map_err(|err| AppError::invalid_request(format!("invalid CSV row: {err}")))?;
+        let record = record.map_err(|err| {
+            AppError::invalid_request(Reason::CsvRowInvalid, format!("invalid CSV row: {err}"))
+        })?;
         let mut data = std::collections::HashMap::new();
         let mut option = std::collections::BTreeMap::new();
         for (key, val) in headers.iter().zip(record.iter()) {
@@ -1272,7 +1300,10 @@ fn parse_csv_rows(body: &str) -> Result<Vec<ParsedCsvRow>, AppError> {
         rows.push(ParsedCsvRow { data, option });
     }
     if rows.is_empty() {
-        return Err(AppError::invalid_request("CSV has no data rows"));
+        return Err(AppError::invalid_request(
+            Reason::CsvEmpty,
+            "CSV has no data rows",
+        ));
     }
     Ok(rows)
 }
@@ -1296,9 +1327,10 @@ fn parse_batch_mode(mode: &str) -> Result<crate::batch::BatchMode, AppError> {
     match mode {
         "download" => Ok(crate::batch::BatchMode::Download),
         "print" => Ok(crate::batch::BatchMode::Print),
-        other => Err(AppError::invalid_request(format!(
-            "unknown mode '{other}'; use download or print"
-        ))),
+        other => Err(AppError::invalid_request(
+            Reason::ModeUnknown,
+            format!("unknown mode '{other}'; use download or print"),
+        )),
     }
 }
 
@@ -1331,6 +1363,7 @@ async fn run_batch(
     );
     if start_slot > 0 && is_single {
         return Err(AppError::invalid_request(
+            Reason::StartSlotNotApplicable,
             "start_slot applies only to sheet templates",
         ));
     }
@@ -1373,11 +1406,13 @@ async fn run_batch(
         crate::batch::BatchMode::Print => {
             if format.is_some() {
                 return Err(AppError::invalid_request(
+                    Reason::FormatNotApplicable,
                     "format applies only to download; omit it when printing",
                 ));
             }
-            let printer_id = printer
-                .ok_or_else(|| AppError::invalid_request("mode=print requires a printer"))?;
+            let printer_id = printer.ok_or_else(|| {
+                AppError::invalid_request(Reason::PrinterRequired, "mode=print requires a printer")
+            })?;
             let printer = state
                 .store()
                 .get_printer(printer_id)
@@ -1542,9 +1577,10 @@ pub async fn print_label(
 ) -> Result<Response, AppError> {
     let Json(req) = payload.map_err(AppError::from)?;
     if !(1..=MAX_PRINT_COPIES).contains(&req.copies) {
-        return Err(AppError::invalid_request(format!(
-            "copies must be between 1 and {MAX_PRINT_COPIES}"
-        )));
+        return Err(AppError::invalid_request(
+            Reason::CopiesInvalid,
+            format!("copies must be between 1 and {MAX_PRINT_COPIES}"),
+        ));
     }
     let registry = state.templates.load_full();
     let template = registry
@@ -1617,6 +1653,7 @@ pub async fn render_label(
         }
     } else if option_value.is_some() {
         return Err(AppError::invalid_request(
+            Reason::OptionsNotSupported,
             "template does not support options",
         ));
     }
@@ -1625,24 +1662,29 @@ pub async fn render_label(
         None | Some("") | Some("color") => ColorMode::Color,
         Some("bilevel") => ColorMode::BiLevel,
         Some(other) => {
-            return Err(AppError::invalid_request(format!(
-                "unknown color_mode '{other}'; use color or bilevel"
-            )))
+            return Err(AppError::invalid_request(
+                Reason::ColorModeUnknown,
+                format!("unknown color_mode '{other}'; use color or bilevel"),
+            ))
         }
     };
     let resolution_dpi = match query.resolution.as_deref() {
         None | Some("") => None,
         Some(s) => {
             let dpi: u32 = s.parse().map_err(|_| {
-                AppError::invalid_request(format!(
-                    "resolution must be a positive integer, got '{s}'"
-                ))
+                AppError::invalid_request(
+                    Reason::ResolutionInvalid,
+                    format!("resolution must be a positive integer, got '{s}'"),
+                )
             })?;
             if dpi == 0 || dpi > crate::render::MAX_RENDER_DPI {
-                return Err(AppError::invalid_request(format!(
-                    "resolution must be between 1 and {}",
-                    crate::render::MAX_RENDER_DPI
-                )));
+                return Err(AppError::invalid_request(
+                    Reason::ResolutionInvalid,
+                    format!(
+                        "resolution must be between 1 and {}",
+                        crate::render::MAX_RENDER_DPI
+                    ),
+                ));
             }
             Some(dpi)
         }
@@ -1675,6 +1717,7 @@ pub async fn render_label(
         Some("pdf") => {
             if color_mode == ColorMode::BiLevel {
                 return Err(AppError::invalid_request(
+                    Reason::BilevelRequiresPng,
                     "bilevel is only supported for png output",
                 ));
             }
@@ -1684,9 +1727,10 @@ pub async fn render_label(
             )
         }
         Some(other) => {
-            return Err(AppError::invalid_request(format!(
-                "unknown format '{other}'; use png or pdf"
-            )))
+            return Err(AppError::invalid_request(
+                Reason::FormatUnknown,
+                format!("unknown format '{other}'; use png or pdf"),
+            ))
         }
     };
 
@@ -1740,10 +1784,13 @@ pub async fn import_csv(
     for row in &parsed_rows {
         for name in row.option.keys() {
             if !declared.contains_key(name) {
-                return Err(AppError::invalid_request(format!(
-                    "CSV column 'option.{name}' is not a declared option of template '{}'",
-                    template.id
-                )));
+                return Err(AppError::invalid_request(
+                    Reason::CsvOptionColumnUnknown,
+                    format!(
+                        "CSV column 'option.{name}' is not a declared option of template '{}'",
+                        template.id
+                    ),
+                ));
             }
         }
     }
@@ -1872,14 +1919,20 @@ pub struct Credentials {
 /// (an empty password is a footgun; run with LABELER_NO_AUTH instead of an empty-password account).
 fn validate_new_account(username: &str, password: &str) -> Result<(), AppError> {
     if username.trim().is_empty() {
-        return Err(AppError::invalid_request("username must not be empty"));
+        return Err(AppError::invalid_request(
+            Reason::UsernameEmpty,
+            "username must not be empty",
+        ));
     }
     validate_password(password)
 }
 
 fn validate_password(password: &str) -> Result<(), AppError> {
     if password.is_empty() {
-        return Err(AppError::invalid_request("password must not be empty"));
+        return Err(AppError::invalid_request(
+            Reason::PasswordEmpty,
+            "password must not be empty",
+        ));
     }
     Ok(())
 }

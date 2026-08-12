@@ -7,6 +7,7 @@ use std::io::Write as _;
 
 use crate::errors::{AppError, BatchFailure};
 use crate::models::{LabelInput, TemplateFormat};
+use crate::reason::Reason;
 use crate::render::{render_sheet_pages, render_single_label_image, render_single_label_pdf};
 use crate::templates::TemplateDefinition;
 
@@ -56,7 +57,10 @@ pub fn render_batch(
         return Err(AppError::batch_too_large(labels.len(), max_labels));
     }
     if labels.is_empty() {
-        return Err(AppError::invalid_request("batch has no labels"));
+        return Err(AppError::invalid_request(
+            Reason::BatchEmpty,
+            "batch has no labels",
+        ));
     }
 
     match &template.format {
@@ -77,9 +81,10 @@ fn render_single_batch(
         "" | "png" => "png",
         "pdf" => "pdf",
         other => {
-            return Err(AppError::invalid_request(format!(
-                "unknown format '{other}'; use png or pdf"
-            )))
+            return Err(AppError::invalid_request(
+                Reason::FormatUnknown,
+                format!("unknown format '{other}'; use png or pdf"),
+            ))
         }
     };
 
