@@ -207,11 +207,21 @@ impl Rotation {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+/// How a box item's extent is expressed on the wire: `size:` (width and height) xor `to:` (the
+/// opposite corner). An enum rather than two `Option`s so "exactly one" is a type invariant.
+#[derive(Debug, Serialize, ToSchema, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum Extent {
+    Size(Size),
+    To(Position),
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone)]
 pub struct Placement {
     #[serde(default)]
     pub at: Position,
-    pub size: Size,
+    #[serde(flatten)]
+    pub extent: Extent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_w: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,10 +231,32 @@ pub struct Placement {
 }
 
 impl Placement {
+    /// The common case: an `at`/`size` placement with no bounds or rotation.
+    pub fn sized(at: Position, size: Size) -> Self {
+        Self {
+            at,
+            extent: Extent::Size(size),
+            max_w: None,
+            max_h: None,
+            rotate: None,
+        }
+    }
+
+    /// The `Size` when the extent is expressed that way, for the `auto`-aware paths.
+    pub fn size_or_auto(&self) -> Option<&Size> {
+        match &self.extent {
+            Extent::Size(size) => Some(size),
+            Extent::To(_) => None,
+        }
+    }
+
     /// True when the item's width cannot be known until the enclosing frame's width is.
-    /// Task 7 adds the `to:` arm; today only `auto` qualifies.
+    /// Task 7 fills in the `To` arm; here it is conservatively false.
     pub fn width_is_frame_dependent(&self) -> bool {
-        self.size.0[0].is_auto()
+        match &self.extent {
+            Extent::Size(size) => size.0[0].is_auto(),
+            Extent::To(_) => false,
+        }
     }
 }
 
@@ -310,7 +342,7 @@ impl Fit {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutItem {
     Text {
@@ -398,7 +430,7 @@ pub struct Frame {
     pub rounded: bool,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(untagged)]
 pub enum Layout {
     Items(Vec<LayoutItem>),
@@ -517,6 +549,30 @@ mod rotation_tests {
 mod placement_tests {
     use super::{resolve_coord, AutoSize, Placement, Position, Size, SizeValue};
 
+    /// GET /templates/{id} must hand back the shape the author wrote. `rename_all` is load-bearing:
+    /// without it the flattened key is `Size`/`To`.
+    #[test]
+    fn placement_serializes_back_to_the_authored_key() {
+        let sized = Placement::sized(
+            Position([0.0, 0.0]),
+            Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+        );
+        let json = serde_json::to_string(&sized).unwrap();
+        assert!(json.contains("\"size\""), "got {json}");
+        assert!(!json.contains("\"to\""), "got {json}");
+
+        let cornered = Placement {
+            at: Position([0.0, 0.0]),
+            extent: super::Extent::To(Position([10.0, 5.0])),
+            max_w: None,
+            max_h: None,
+            rotate: None,
+        };
+        let json = serde_json::to_string(&cornered).unwrap();
+        assert!(json.contains("\"to\""), "got {json}");
+        assert!(!json.contains("\"size\""), "got {json}");
+    }
+
     /// The edge sentinel is the sign bit, not `< 0.0`: `-0.0 < 0.0` is false, so a `< 0.0` test would
     /// silently read "the far edge" as "the origin". YAML `-0` and `-0.0` both arrive sign-negative.
     #[test]
@@ -530,13 +586,7 @@ mod placement_tests {
     }
 
     fn placement(size: Size) -> Placement {
-        Placement {
-            at: Position([0.0, 0.0]),
-            size,
-            max_w: None,
-            max_h: None,
-            rotate: None,
-        }
+        Placement::sized(Position([0.0, 0.0]), size)
     }
 
     #[test]
