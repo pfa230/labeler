@@ -42,6 +42,7 @@ reasons! {
     EdgeRectInverted => "edge_rect_inverted",
     SizeInvalid => "size_invalid",
     SizeAutoWithoutMax => "size_auto_without_max",
+    SizeAutoNoRoom => "size_auto_no_room",
     MaxSizeInvalid => "max_size_invalid",
     ImageSourceMissing => "image_source_missing",
     ImageFormatUnsupported => "image_format_unsupported",
