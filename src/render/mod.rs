@@ -473,14 +473,19 @@ struct RenderEnv<'a> {
     datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
 }
 
-/// The anchor of a box item. `Line` has two endpoints and no box, so it is handled separately.
+/// The anchor of a leaf box item, for `measure`'s clause 1 (a right-anchored item cannot define
+/// the width it is anchored to, so it is skipped entirely). `Container` is excluded on purpose: a
+/// container's own position can be right-anchored while its *inner frame* is not (its width is
+/// still known, since `validate_placement_position` forbids pairing an edge-relative `at.x` with a
+/// frame-dependent width on a dynamic-width template), so its children must still be measured.
+/// `measure` gives `Container` its own clause-1 branch instead of using this. `Line` has two
+/// endpoints and no box, so it is handled separately too.
 fn item_anchor(item: &LayoutItem) -> Option<&Position> {
     match item {
         LayoutItem::Text { placement, .. }
         | LayoutItem::Qr { placement, .. }
-        | LayoutItem::Image { placement, .. }
-        | LayoutItem::Container { placement, .. } => Some(&placement.at),
-        LayoutItem::Line { .. } => None,
+        | LayoutItem::Image { placement, .. } => Some(&placement.at),
+        LayoutItem::Line { .. } | LayoutItem::Container { .. } => None,
     }
 }
 
@@ -620,6 +625,35 @@ impl<'a> RenderContext<'a> {
                     continue;
                 }
             }
+            // Clause 1, container case: unlike a leaf item, a right-anchored container's *inner
+            // frame* is not itself right-anchored. Its own width is always known here (see
+            // `item_anchor`'s doc comment), so its children's fits depend only on that known
+            // width, not on where the container ends up sitting. They must still be measured, or
+            // `render_container_item` (which recurses into every container unconditionally, with
+            // no clause-1 skip of its own) will consume `MeasuredText` entries this pass never
+            // pushed and fail with an auto-length cursor mismatch.
+            if let LayoutItem::Container {
+                placement,
+                option,
+                padding,
+                items: children,
+                ..
+            } = item
+            {
+                if placement.at.x().is_sign_negative() {
+                    if let Some(opt) = option {
+                        if let Some(sel) = self.selected_option {
+                            if !opt.iter().all(|(n, v)| sel.get(n) == Some(v)) {
+                                continue;
+                            }
+                        }
+                    }
+                    let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
+                    self.measure_container_footprint(placement, at_y, padding, children, out)?;
+                    extent = extent.max(-placement.at.x());
+                    continue;
+                }
+            }
             let right = match item {
                 LayoutItem::Text {
                     name,
@@ -755,34 +789,8 @@ impl<'a> RenderContext<'a> {
                         at_x + padding.left + child_extent + padding.right + inset
                     } else {
                         // A numeric size or a numeric `to`: the footprint is known.
-                        let (explicit_w, explicit_h) = self.resolve_size(
-                            &placement.at,
-                            &placement.extent,
-                            placement.max_w,
-                            placement.max_h,
-                            false,
-                        )?;
-                        let rotation = placement
-                            .rotate
-                            .and_then(Rotation::from_degrees)
-                            .unwrap_or(Rotation::R0);
-                        // Rotated containers are self-contained (§4.2.1): their author-space
-                        // children must not be measured in physical-horizontal terms, so do not
-                        // recurse into them (#98).
-                        if !rotation.is_rotated() {
-                            let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
-                            let inner_h = (explicit_h - padding.top - padding.bottom).max(0.0);
-                            let ctx = RenderContext::new(
-                                (inner_w, inner_h),
-                                self.unit,
-                                self.data,
-                                self.selected_option,
-                                self.env,
-                                self.images,
-                                LengthMode::Fixed,
-                            );
-                            ctx.measure(items, inner_w, out)?;
-                        }
+                        let (explicit_w, _) =
+                            self.measure_container_footprint(placement, at_y, padding, items, out)?;
                         at_x + explicit_w
                     }
                 }
@@ -800,6 +808,66 @@ impl<'a> RenderContext<'a> {
             Extent::Size(size) => size.0[1].value().unwrap_or(self.frame_height_units - at_y),
             Extent::To(to) => resolve_coord(to.y(), self.frame_height_units) - at_y,
         })
+    }
+
+    /// A container's own footprint when its extent is *not* frame-dependent (a numeric `size` or
+    /// a numeric `to`), plus its children measured against the resulting inner frame. Width comes
+    /// from `resolve_size` (a numeric `to` needs its full corner-resolution logic; a numeric
+    /// `size` is read directly, since `resolve_size` would also resolve height and this is the
+    /// one call site that must not: see the height note below). Height comes from
+    /// `measure_box_height`, not `resolve_size`, so an auto height with no `max_h` still falls
+    /// back to the remaining frame height above `at_y` rather than erroring: `size: [40, auto]` is
+    /// a documented container idiom (SPEC §4, "auto size ... falls back to the parent frame") and
+    /// must keep working under measurement.
+    ///
+    /// Shared by the `Container` arm's non-frame-dependent branch and clause 1's container case (a
+    /// right-anchored container whose own width is still known; see `item_anchor`'s doc comment),
+    /// so the two can never compute a container's footprint two different ways.
+    fn measure_container_footprint(
+        &self,
+        placement: &Placement,
+        at_y: f32,
+        padding: &crate::models::Padding,
+        children: &[LayoutItem],
+        out: &mut Vec<MeasuredText>,
+    ) -> Result<(f32, f32), AppError> {
+        let explicit_w = match &placement.extent {
+            Extent::Size(size) => {
+                self.resolve_size_value(&size.0[0], placement.max_w, None, "width")?
+            }
+            Extent::To(_) => {
+                self.resolve_size(
+                    &placement.at,
+                    &placement.extent,
+                    placement.max_w,
+                    placement.max_h,
+                    false,
+                )?
+                .0
+            }
+        };
+        let explicit_h = self.measure_box_height(placement, at_y)?;
+        let rotation = placement
+            .rotate
+            .and_then(Rotation::from_degrees)
+            .unwrap_or(Rotation::R0);
+        // Rotated containers are self-contained (§4.2.1): their author-space children must not be
+        // measured in physical-horizontal terms, so do not recurse into them (#98).
+        if !rotation.is_rotated() {
+            let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
+            let inner_h = (explicit_h - padding.top - padding.bottom).max(0.0);
+            let ctx = RenderContext::new(
+                (inner_w, inner_h),
+                self.unit,
+                self.data,
+                self.selected_option,
+                self.env,
+                self.images,
+                LengthMode::Fixed,
+            );
+            ctx.measure(children, inner_w, out)?;
+        }
+        Ok((explicit_w, explicit_h))
     }
 
     fn render_items(&self, items: &[LayoutItem]) -> Result<String, AppError> {
@@ -2049,6 +2117,112 @@ mod tests {
         assert!(
             (extent - (plain + 2.0)).abs() < 0.2,
             "expected the inset contribution to be the 38mm-budget width plus 2, got {extent} vs {plain}"
+        );
+    }
+
+    /// Review finding (code-reviewer, post-Task-8): clause 1 used to skip a right-anchored
+    /// container's subtree entirely, so a frame-dependent child inside it (here, a `to`-spanned
+    /// text) never got a `MeasuredText` pushed. `render_container_item` has no such skip and
+    /// recurses unconditionally, so `render_text_item` then consumed a cursor entry that was never
+    /// pushed and failed with "auto-length cursor overrun". The container's own width (`size:
+    /// [8, 8]`) is fixed, so `validate_placement_position` allows pairing it with an edge-relative
+    /// `at.x`; clause 1 must still measure the children against that known inner width.
+    #[test]
+    fn a_frame_dependent_child_inside_a_right_anchored_container_does_not_mismatch_the_cursor() {
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(5.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(8.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Container {
+                placement: Placement {
+                    at: Position([-10.0, 0.0]),
+                    extent: Extent::Size(Size([SizeValue::Value(8.0), SizeValue::Value(8.0)])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
+            }]),
+            version: None,
+        };
+        assert_eq!(
+            template.validate(),
+            Ok(()),
+            "a fixed-width container paired with an edge-relative at.x is a legal shape"
+        );
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        render_single_label(&template, &data, None, &no_settings(), &no_datetime()).expect(
+            "a right-anchored container's frame-dependent child must still be measured, not \
+             skipped along with the container",
+        );
+    }
+
+    /// Review finding (code-reviewer, post-Task-8): Step 4 of the task brief routed the container's
+    /// fixed-branch height through `resolve_size(..., allow_auto_fill: false)`, which has no
+    /// fallback for an auto height with no `max_h`. `size: [40, auto]` is a documented container
+    /// idiom (SPEC §4: "auto size resolves to `max_w`/`max_h` if present; for `container` it falls
+    /// back to the parent frame"), accepted by `validate()` and rendered fine by
+    /// `render_container_item` (which passes `allow_auto_fill: true`); only the measure pre-pass had
+    /// been tightened, so every such container on a dynamic-width label started failing measurement
+    /// with "size height is auto but no max_height provided".
+    #[test]
+    fn an_auto_height_fixed_width_container_measures_without_erroring() {
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(30.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Container {
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: Extent::Size(Size([
+                        SizeValue::Value(40.0),
+                        SizeValue::Auto(AutoSize::Auto),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![],
+            }]),
+            version: None,
+        };
+        assert_eq!(
+            template.validate(),
+            Ok(()),
+            "`size: [40, auto]` is a documented container idiom"
+        );
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        render_single_label(&template, &data, None, &no_settings(), &no_datetime()).expect(
+            "an auto height with no max_h must fall back to the remaining frame height during \
+             measurement, not error",
         );
     }
 
