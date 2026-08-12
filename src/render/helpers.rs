@@ -3,7 +3,6 @@ use crate::models::{
     Alignment, Dimension, FontSize, HorizontalAlign, Point, QrParams, VerticalAlign,
 };
 use base64::Engine as _;
-use fontdue::Font;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
 use serde_json::Value as JsonValue;
@@ -208,46 +207,93 @@ pub(super) fn typst_font_options() -> TypstKitFontOptions {
         .include_dirs([dir])
 }
 
-fn inter_font() -> Result<&'static Font, AppError> {
-    static FONT: OnceLock<Font> = OnceLock::new();
-    if let Some(font) = FONT.get() {
-        return Ok(font);
+/// The box a fit has to land inside, in template units. Grouped because the width, the height and
+/// the unit they are expressed in are one fact, and passing them as three parallel floats pushed the
+/// fitting entry points past a sane argument count.
+#[derive(Clone, Copy)]
+pub(super) struct FitBox<'a> {
+    pub width_units: f32,
+    pub height_units: f32,
+    pub unit: &'a str,
+}
+
+const WGHT: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"wght");
+const OPSZ: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"opsz");
+
+/// Parse a face and confirm it carries the axes the fitter varies. Byte-taking and free of the cache
+/// so a test can hand it any font without depending on which font some earlier test loaded first.
+fn load_face(bytes: &[u8]) -> Result<ttf_parser::Face<'_>, AppError> {
+    let face = ttf_parser::Face::parse(bytes, 0)
+        .map_err(|err| AppError::render_failed(format!("failed to parse font: {err}")))?;
+    // `set_variation` reports success for any variable face even when no axis matches the tag, so it
+    // cannot serve as the check. Verify up front: a font without these axes would measure silently
+    // unweighted, which is the bug this measurement path exists to remove (#96).
+    for tag in [WGHT, OPSZ] {
+        if !face
+            .variation_axes()
+            .into_iter()
+            .any(|axis| axis.tag == tag)
+        {
+            return Err(AppError::render_failed(format!(
+                "measurement font lacks the '{tag}' variation axis"
+            )));
+        }
+    }
+    Ok(face)
+}
+
+fn font_bytes() -> Result<&'static [u8], AppError> {
+    static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+    if let Some(bytes) = BYTES.get() {
+        return Ok(bytes);
     }
     let path = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts")
         .join("InterVariable.ttf");
     let bytes = std::fs::read(&path)
         .map_err(|err| AppError::render_failed(format!("failed to read font: {err}")))?;
-    let font = Font::from_bytes(bytes, fontdue::FontSettings::default())
-        .map_err(|err| AppError::render_failed(format!("failed to parse font: {err}")))?;
+    load_face(&bytes)?;
     // A concurrent caller may win the race to populate the cache; either value is valid, so fall
-    // back to the stored font rather than treating the lost race as an error.
-    let _ = FONT.set(font);
-    Ok(FONT.get().expect("font initialized"))
+    // back to the stored bytes rather than treating the lost race as an error.
+    let _ = BYTES.set(bytes);
+    Ok(BYTES.get().expect("font bytes initialized"))
+}
+
+/// The face instanced the way Typst will render it: `wght` from the item's weight, `opsz` from the
+/// font size. Typst sets both automatically (typst-library `text/font/variations.rs`), and measuring
+/// the default instance instead is what made bold text overflow and large text shrink needlessly.
+/// Out-of-range values normalise against the axis, so this clamps as Typst's do.
+fn instance(weight: u16, size_pt: f32) -> Result<ttf_parser::Face<'static>, AppError> {
+    let mut face = load_face(font_bytes()?)?;
+    face.set_variation(WGHT, f32::from(weight));
+    face.set_variation(OPSZ, size_pt);
+    Ok(face)
 }
 
 /// Largest font in [min_size, max_size] (0.5pt steps) at which `text` fits the box, else min_size.
 pub(super) fn largest_fitting_font(
     text: &str,
     multiline: bool,
+    weight: u16,
     min_size: f32,
     max_size: f32,
-    width_units: f32,
-    height_units: f32,
-    unit: &str,
+    fit: FitBox,
 ) -> f32 {
-    let font = match inter_font() {
-        Ok(f) => f,
+    let width_pt = units_to_pt(fit.width_units, fit.unit);
+    let height_pt = units_to_pt(fit.height_units, fit.unit);
+    // Parse once, mutate per candidate: the loop runs up to ~76 times at 0.5pt steps, and
+    // `set_variation` only rewrites normalised coordinates.
+    let mut face = match instance(weight, max_size) {
+        Ok(face) => face,
         Err(_) => return min_size,
     };
-    let width_pt = units_to_pt(width_units, unit);
-    let height_pt = units_to_pt(height_units, unit);
-    let step = 0.5f32;
     let mut size = max_size;
     while size >= min_size - f32::EPSILON {
-        if text_fits(font, text, multiline, size, width_pt, height_pt) {
+        // opsz tracks the size Typst would render this candidate at.
+        face.set_variation(OPSZ, size);
+        if text_fits(&face, text, multiline, size, width_pt, height_pt) {
             return size;
         }
-        size -= step;
+        size -= 0.5;
     }
     min_size
 }
@@ -255,41 +301,33 @@ pub(super) fn largest_fitting_font(
 pub(super) fn fit_text_to_box(
     text: &str,
     multiline: bool,
+    weight: u16,
     min_size: f32,
     max_size: f32,
-    width_units: f32,
-    height_units: f32,
-    unit: &str,
+    fit: FitBox,
 ) -> Result<(f32, String), AppError> {
-    let font = inter_font()?;
-    let fitted = largest_fitting_font(
-        text,
-        multiline,
-        min_size,
-        max_size,
-        width_units,
-        height_units,
-        unit,
-    );
-    let width_pt = units_to_pt(width_units, unit);
-    let height_pt = units_to_pt(height_units, unit);
-    if text_fits(font, text, multiline, fitted, width_pt, height_pt) {
+    let fitted = largest_fitting_font(text, multiline, weight, min_size, max_size, fit);
+    let face = instance(weight, fitted)?;
+    let face = &face;
+    let width_pt = units_to_pt(fit.width_units, fit.unit);
+    let height_pt = units_to_pt(fit.height_units, fit.unit);
+    if text_fits(face, text, multiline, fitted, width_pt, height_pt) {
         if multiline {
-            let lines = wrap_text(font, text, fitted, width_pt);
+            let lines = wrap_text(face, text, fitted, width_pt);
             return Ok((fitted, lines.join("\n")));
         }
         return Ok((fitted, text.to_string()));
     }
     let trimmed = if multiline {
-        trim_multiline(font, text, fitted, width_pt, height_pt)
+        trim_multiline(face, text, fitted, width_pt, height_pt)
     } else {
-        trim_single_line(font, text, fitted, width_pt)
+        trim_single_line(face, text, fitted, width_pt)
     };
     Ok((fitted, trimmed))
 }
 
 fn text_fits(
-    font: &Font,
+    face: &ttf_parser::Face,
     text: &str,
     multiline: bool,
     size: f32,
@@ -297,47 +335,53 @@ fn text_fits(
     height_pt: f32,
 ) -> bool {
     if multiline {
-        let lines = wrap_text(font, text, size, width_pt);
-        let line_height = line_height(font, size);
-        line_height * lines.len() as f32 <= height_pt + 0.01
+        let lines = wrap_text(face, text, size, width_pt);
+        block_height(face, size, lines.len()) <= height_pt + 0.01
     } else {
-        let width = text_width(font, text, size);
-        let line_height = line_height(font, size);
-        width <= width_pt + 0.01 && line_height <= height_pt + 0.01
+        text_width(face, text, size) <= width_pt + 0.01
+            && block_height(face, size, 1) <= height_pt + 0.01
     }
 }
 
-fn trim_single_line(font: &Font, text: &str, size: f32, width_pt: f32) -> String {
+fn trim_single_line(face: &ttf_parser::Face, text: &str, size: f32, width_pt: f32) -> String {
     const ELLIPSIS: &str = "...";
     let mut out = text.to_string();
-    if text_width(font, &out, size) <= width_pt {
+    if text_width(face, &out, size) <= width_pt {
         return out;
     }
-    let ellipsis_width = text_width(font, ELLIPSIS, size);
+    let ellipsis_width = text_width(face, ELLIPSIS, size);
     if ellipsis_width > width_pt {
         return ELLIPSIS.to_string();
     }
-    while !out.is_empty() && text_width(font, &format!("{out}{ELLIPSIS}"), size) > width_pt {
+    while !out.is_empty() && text_width(face, &format!("{out}{ELLIPSIS}"), size) > width_pt {
         out.pop();
     }
     format!("{out}{ELLIPSIS}")
 }
 
-fn trim_multiline(font: &Font, text: &str, size: f32, width_pt: f32, height_pt: f32) -> String {
+fn trim_multiline(
+    face: &ttf_parser::Face,
+    text: &str,
+    size: f32,
+    width_pt: f32,
+    height_pt: f32,
+) -> String {
     const ELLIPSIS: &str = "...";
-    let line_height = line_height(font, size);
-    let max_lines = (height_pt / line_height).floor().max(1.0) as usize;
-    let mut lines = wrap_text(font, text, size, width_pt);
+    // Inverse of block_height: n*cap + (n-1)*leading <= H  =>  n <= (H + leading) / (cap + leading)
+    let max_lines = ((height_pt + leading(size)) / (cap_height(face, size) + leading(size)))
+        .floor()
+        .max(1.0) as usize;
+    let mut lines = wrap_text(face, text, size, width_pt);
     if lines.len() <= max_lines {
         return lines.join("\n");
     }
     lines.truncate(max_lines);
     let last = lines.last_mut().unwrap();
-    let ellipsis_width = text_width(font, ELLIPSIS, size);
+    let ellipsis_width = text_width(face, ELLIPSIS, size);
     if ellipsis_width > width_pt {
         *last = ELLIPSIS.to_string();
     } else {
-        while !last.is_empty() && text_width(font, &format!("{last}{ELLIPSIS}"), size) > width_pt {
+        while !last.is_empty() && text_width(face, &format!("{last}{ELLIPSIS}"), size) > width_pt {
             last.pop();
         }
         *last = format!("{last}{ELLIPSIS}");
@@ -345,9 +389,9 @@ fn trim_multiline(font: &Font, text: &str, size: f32, width_pt: f32, height_pt: 
     lines.join("\n")
 }
 
-fn wrap_text(font: &Font, text: &str, size: f32, width_pt: f32) -> Vec<String> {
+fn wrap_text(face: &ttf_parser::Face, text: &str, size: f32, width_pt: f32) -> Vec<String> {
     let mut lines = Vec::new();
-    let space_width = text_width(font, " ", size);
+    let space_width = text_width(face, " ", size);
     let paragraphs: Vec<&str> = text.split('\n').collect();
     for paragraph in paragraphs {
         if paragraph.is_empty() {
@@ -357,7 +401,7 @@ fn wrap_text(font: &Font, text: &str, size: f32, width_pt: f32) -> Vec<String> {
         let mut current = String::new();
         let mut current_width = 0.0;
         for word in paragraph.split_whitespace() {
-            let word_width = text_width(font, word, size);
+            let word_width = text_width(face, word, size);
             if current.is_empty() {
                 if word_width <= width_pt {
                     current.push_str(word);
@@ -366,7 +410,7 @@ fn wrap_text(font: &Font, text: &str, size: f32, width_pt: f32) -> Vec<String> {
                     let mut chunk = String::new();
                     let mut chunk_width = 0.0;
                     for ch in word.chars() {
-                        let ch_width = text_width(font, &ch.to_string(), size);
+                        let ch_width = text_width(face, &ch.to_string(), size);
                         if !chunk.is_empty() && chunk_width + ch_width > width_pt {
                             lines.push(chunk);
                             chunk = String::new();
@@ -397,7 +441,7 @@ fn wrap_text(font: &Font, text: &str, size: f32, width_pt: f32) -> Vec<String> {
                     let mut chunk = String::new();
                     let mut chunk_width = 0.0;
                     for ch in word.chars() {
-                        let ch_width = text_width(font, &ch.to_string(), size);
+                        let ch_width = text_width(face, &ch.to_string(), size);
                         if !chunk.is_empty() && chunk_width + ch_width > width_pt {
                             lines.push(chunk);
                             chunk = String::new();
@@ -418,16 +462,55 @@ fn wrap_text(font: &Font, text: &str, size: f32, width_pt: f32) -> Vec<String> {
     lines
 }
 
-fn text_width(font: &Font, text: &str, size: f32) -> f32 {
+fn text_width(face: &ttf_parser::Face, text: &str, size: f32) -> f32 {
+    let upem = f32::from(face.units_per_em());
     text.chars()
-        .map(|ch| font.metrics(ch, size).advance_width)
-        .sum()
+        .map(|ch| {
+            // A character Inter lacks measures as .notdef, which is what fontdue did. Typst renders
+            // it from a fallback face, so it is not an error here — only an approximation, as before.
+            // Dropping it instead would measure zero width, and under-measuring is what overflows.
+            let glyph = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+            f32::from(face.glyph_hor_advance(glyph).unwrap_or(0))
+        })
+        .sum::<f32>()
+        / upem
+        * size
 }
 
-fn line_height(font: &Font, size: f32) -> f32 {
-    font.horizontal_line_metrics(size)
-        .map(|metrics| metrics.new_line_size)
-        .unwrap_or(size * 1.2)
+/// Typst's line box runs cap-height to baseline (`text/mod.rs` top/bottom edge defaults).
+fn cap_height(face: &ttf_parser::Face, size: f32) -> f32 {
+    let upem = f32::from(face.units_per_em());
+    let cap = face
+        .capital_height()
+        .filter(|v| *v > 0)
+        .map(f32::from)
+        .unwrap_or_else(|| f32::from(face.ascender()));
+    cap / upem * size
+}
+
+/// Typst's default paragraph leading, 0.65em (`model/par.rs`). Sits *between* lines only.
+fn leading(size: f32) -> f32 {
+    size * 0.65
+}
+
+/// Height of an `n`-line block as Typst stacks it: leading between lines, not after the last one
+/// (typst-layout `collect.rs` pushes it only when `i > 0`). A fused per-line constant — which is what
+/// a "line height" is — overshoots by one leading per block and shrinks text that would have fit.
+fn block_height(face: &ttf_parser::Face, size: f32, lines: usize) -> f32 {
+    let n = lines.max(1) as f32;
+    n * cap_height(face, size) + (n - 1.0) * leading(size)
+}
+
+#[cfg(test)]
+pub(crate) fn block_height_for_test(weight: u16, size: f32, lines: usize) -> f32 {
+    let face = instance(weight, size).expect("face");
+    block_height(&face, size, lines)
+}
+
+#[cfg(test)]
+pub(crate) fn text_width_for_test(weight: u16, size: f32, text: &str) -> f32 {
+    let face = instance(weight, size).expect("face");
+    text_width(&face, text, size)
 }
 
 fn units_to_pt(value: f32, unit: &str) -> f32 {
@@ -463,31 +546,32 @@ pub(super) fn fit_text_auto_length(
     raw_text: &str,
     font_size: &FontSize,
     multiline: bool,
-    budget_w_units: f32,
-    box_h_units: f32,
-    unit: &str,
+    weight: u16,
+    fit: FitBox,
 ) -> Result<MeasuredText, AppError> {
-    let font = inter_font()?;
+    let (budget_w_units, unit) = (fit.width_units, fit.unit);
     let budget_pt = units_to_pt(budget_w_units, unit);
-    let height_pt = units_to_pt(box_h_units, unit);
+    let height_pt = units_to_pt(fit.height_units, unit);
 
     if !multiline {
         let line = to_nonbreaking(raw_text.lines().next().unwrap_or(""));
         let size = match font_size {
             FontSize::Fixed(s) => *s,
             FontSize::Range { min, max } => {
-                largest_fitting_font(&line, false, *min, *max, budget_w_units, box_h_units, unit)
+                largest_fitting_font(&line, false, weight, *min, *max, fit)
             }
         };
-        if text_fits(font, &line, false, size, budget_pt, height_pt) {
-            let w = pt_to_units(text_width(font, &line, size), unit).min(budget_w_units);
+        let face = instance(weight, size)?;
+        let face = &face;
+        if text_fits(face, &line, false, size, budget_pt, height_pt) {
+            let w = pt_to_units(text_width(face, &line, size), unit).min(budget_w_units);
             return Ok(MeasuredText {
                 font: size,
                 lines: vec![line],
                 width: w,
             });
         }
-        let trimmed = trim_single_line(font, &line, size, budget_pt);
+        let trimmed = trim_single_line(face, &line, size, budget_pt);
         return Ok(MeasuredText {
             font: size,
             lines: vec![trimmed],
@@ -498,17 +582,12 @@ pub(super) fn fit_text_auto_length(
     // Multiline: pick the font (shrink to fit the height with wrapping), then produce the final lines.
     let size = match font_size {
         FontSize::Fixed(s) => *s,
-        FontSize::Range { min, max } => largest_fitting_font(
-            raw_text,
-            true,
-            *min,
-            *max,
-            budget_w_units,
-            box_h_units,
-            unit,
-        ),
+        FontSize::Range { min, max } => {
+            largest_fitting_font(raw_text, true, weight, *min, *max, fit)
+        }
     };
-    let (lines, max_w_pt) = wrap_lines_fit(font, raw_text, size, budget_pt, height_pt);
+    let face = instance(weight, size)?;
+    let (lines, max_w_pt) = wrap_lines_fit(&face, raw_text, size, budget_pt, height_pt);
     let width = pt_to_units(max_w_pt, unit).min(budget_w_units);
     Ok(MeasuredText {
         font: size,
@@ -523,25 +602,27 @@ pub(super) fn fit_text_auto_length(
 /// NBSP-treated lines plus the longest-line width in points, measured on the raw (pre-NBSP) lines so
 /// the width never depends on NBSP and space sharing an advance in the measurement font.
 fn wrap_lines_fit(
-    font: &Font,
+    face: &ttf_parser::Face,
     text: &str,
     size: f32,
     width_pt: f32,
     height_pt: f32,
 ) -> (Vec<String>, f32) {
     const ELLIPSIS: &str = "...";
-    let lh = line_height(font, size);
-    let max_lines = (height_pt / lh).floor().max(1.0) as usize;
-    let mut lines = wrap_text(font, text, size, width_pt);
+    // Inverse of block_height, as in trim_multiline: leading sits between lines, not after each.
+    let max_lines = ((height_pt + leading(size)) / (cap_height(face, size) + leading(size)))
+        .floor()
+        .max(1.0) as usize;
+    let mut lines = wrap_text(face, text, size, width_pt);
     if lines.len() > max_lines {
         lines.truncate(max_lines);
         let last = lines.last_mut().unwrap();
-        let ellipsis_width = text_width(font, ELLIPSIS, size);
+        let ellipsis_width = text_width(face, ELLIPSIS, size);
         if ellipsis_width > width_pt {
             *last = ELLIPSIS.to_string();
         } else {
             while !last.is_empty()
-                && text_width(font, &format!("{last}{ELLIPSIS}"), size) > width_pt
+                && text_width(face, &format!("{last}{ELLIPSIS}"), size) > width_pt
             {
                 last.pop();
             }
@@ -550,7 +631,7 @@ fn wrap_lines_fit(
     }
     let max_w_pt = lines
         .iter()
-        .map(|l| text_width(font, l, size))
+        .map(|l| text_width(face, l, size))
         .fold(0.0_f32, f32::max);
     let lines = lines.into_iter().map(|l| to_nonbreaking(&l)).collect();
     (lines, max_w_pt)
@@ -760,24 +841,38 @@ mod tests {
 
 #[cfg(test)]
 mod helpers_tests {
-    use super::{fit_text_auto_length, largest_fitting_font};
+    use super::{fit_text_auto_length, largest_fitting_font, FitBox};
     use crate::models::FontSize;
 
     #[test]
     fn largest_fitting_font_picks_max_then_steps_down() {
         assert_eq!(
-            largest_fitting_font("Hi", false, 6.0, 20.0, 200.0, 50.0, "mm"),
+            largest_fitting_font(
+                "Hi",
+                false,
+                400,
+                6.0,
+                20.0,
+                FitBox {
+                    width_units: 200.0,
+                    height_units: 50.0,
+                    unit: "mm"
+                }
+            ),
             20.0
         );
         assert_eq!(
             largest_fitting_font(
                 "A long label that cannot fit",
                 false,
+                400,
                 6.0,
                 20.0,
-                2.0,
-                3.0,
-                "mm"
+                FitBox {
+                    width_units: 2.0,
+                    height_units: 3.0,
+                    unit: "mm"
+                }
             ),
             6.0
         );
@@ -792,9 +887,12 @@ mod helpers_tests {
                 max: 20.0,
             },
             false,
-            200.0,
-            50.0,
-            "mm",
+            400,
+            FitBox {
+                width_units: 200.0,
+                height_units: 50.0,
+                unit: "mm",
+            },
         )
         .unwrap();
         assert_eq!(m.font, 20.0);
@@ -811,9 +909,12 @@ mod helpers_tests {
                 max: 20.0,
             },
             false,
-            8.0,
-            3.0,
-            "mm",
+            400,
+            FitBox {
+                width_units: 8.0,
+                height_units: 3.0,
+                unit: "mm",
+            },
         )
         .unwrap();
         assert_eq!(m.font, 6.0);
@@ -824,8 +925,18 @@ mod helpers_tests {
 
     #[test]
     fn auto_length_fixed_font_no_shrink() {
-        let m =
-            fit_text_auto_length("Hi", &FontSize::Fixed(12.0), false, 200.0, 50.0, "mm").unwrap();
+        let m = fit_text_auto_length(
+            "Hi",
+            &FontSize::Fixed(12.0),
+            false,
+            400,
+            FitBox {
+                width_units: 200.0,
+                height_units: 50.0,
+                unit: "mm",
+            },
+        )
+        .unwrap();
         assert_eq!(m.font, 12.0);
         assert_eq!(m.lines, vec!["Hi".to_string()]);
     }
@@ -840,9 +951,10 @@ mod helpers_tests {
                 max: 10.0,
             },
             true,
-            20.0, // budget width units (mm)
-            20.0, // box height units (mm): room for several lines
-            "mm",
+            400,
+            FitBox { width_units: 20.0, height_units: // budget width units (mm)
+            20.0, unit: // box height units (mm): room for several lines
+            "mm" },
         )
         .unwrap();
         assert!(m.lines.len() >= 2, "expected wrapping, got {:?}", m.lines);
@@ -864,9 +976,12 @@ mod helpers_tests {
                 max: 10.0,
             },
             true,
-            50.0,
-            20.0,
-            "mm",
+            400,
+            FitBox {
+                width_units: 50.0,
+                height_units: 20.0,
+                unit: "mm",
+            },
         )
         .unwrap();
         assert_eq!(m.lines.len(), 1);
@@ -879,9 +994,10 @@ mod helpers_tests {
             "one two three four five six seven eight nine ten eleven twelve",
             &FontSize::Range { min: 6.0, max: 6.0 }, // fixed-ish via min==max to force overflow
             true,
-            12.0, // narrow
-            6.0,  // short height: few lines
-            "mm",
+            400,
+            FitBox { width_units: 12.0, height_units: // narrow
+            6.0, unit: // short height: few lines
+            "mm" },
         )
         .unwrap();
         assert!(
@@ -902,9 +1018,12 @@ mod helpers_tests {
                 max: 10.0,
             },
             true,
-            50.0,
-            20.0,
-            "mm",
+            400,
+            FitBox {
+                width_units: 50.0,
+                height_units: 20.0,
+                unit: "mm",
+            },
         )
         .unwrap();
         assert_eq!(m.lines, vec![String::new()]);
@@ -980,5 +1099,70 @@ mod interpolate_tests {
     #[test]
     fn unmatched_brace_errors() {
         assert!(interpolate("a{id", &data(), &variables(), &no_datetime()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod measurement_tests {
+    use super::{instance, load_face, text_width};
+
+    #[test]
+    fn heavier_weight_measures_wider() {
+        let regular = instance(400, 14.0).expect("face");
+        let bold = instance(700, 14.0).expect("face");
+        let (r, b) = (
+            text_width(&regular, "Widget A-42", 14.0),
+            text_width(&bold, "Widget A-42", 14.0),
+        );
+        // Measured at 4.0% for this string; assert a floor, not the measurement.
+        assert!(
+            b >= r * 1.02,
+            "bold must measure wider (got {r:.2} vs {b:.2})"
+        );
+    }
+
+    #[test]
+    fn larger_optical_size_measures_narrower() {
+        // Same nominal size in both calls; only the opsz coordinate differs, so this isolates the
+        // axis rather than the scale.
+        let small = instance(400, 14.0).expect("face");
+        let large = instance(400, 32.0).expect("face");
+        let (s, l) = (
+            text_width(&small, "Widget A-42", 14.0),
+            text_width(&large, "Widget A-42", 14.0),
+        );
+        assert!(
+            l < s,
+            "opsz 32 must measure narrower than opsz 14 (got {s:.2} vs {l:.2})"
+        );
+    }
+
+    #[test]
+    fn a_font_without_the_axes_is_rejected() {
+        // A real static face, not corrupt bytes: the check under test is "valid font, no wght/opsz",
+        // and a parse failure would satisfy the assertion for the wrong reason.
+        let bytes = typst_assets::fonts()
+            .find(|bytes| {
+                ttf_parser::Face::parse(bytes, 0)
+                    .map(|face| face.variation_axes().is_empty())
+                    .unwrap_or(false)
+            })
+            .expect("typst-assets must embed at least one static face");
+        let err = load_face(bytes).expect_err("a static font must be rejected");
+        // AppError is not Display; its Debug carries the message.
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("variation axis"),
+            "unexpected error: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_missing_glyph_measures_as_notdef() {
+        let face = instance(400, 14.0).expect("face");
+        // U+10FFFF is unmapped in every font. It must measure .notdef's advance rather than zero:
+        // dropping it would under-measure, and under-measuring is what overflows a clip box.
+        let width = text_width(&face, "\u{10FFFF}", 14.0);
+        assert!(width > 0.0, "a missing glyph measured as zero width");
     }
 }
