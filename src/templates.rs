@@ -376,13 +376,7 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 is_dynamic_width,
             )?;
-            validate_bounds(
-                &placement.at,
-                width,
-                height,
-                layout_bounds,
-                is_dynamic_width,
-            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
             validate_font_size(font_size)?;
         }
         LayoutItem::Qr {
@@ -409,13 +403,7 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 false,
             )?;
-            validate_bounds(
-                &placement.at,
-                width,
-                height,
-                layout_bounds,
-                is_dynamic_width,
-            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
                     if module_size <= 0.0 {
@@ -451,13 +439,7 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 false,
             )?;
-            validate_bounds(
-                &placement.at,
-                width,
-                height,
-                layout_bounds,
-                is_dynamic_width,
-            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
         }
         LayoutItem::Line { at, to, thickness } => {
             const LINE_EPSILON: f32 = 1.0e-4;
@@ -496,8 +478,13 @@ fn validate_layout_item(
                     if point.x < -LINE_EPSILON || point.y < -LINE_EPSILON {
                         return Err("line must fit within layout bounds".to_string());
                     }
-                    let x_ok = is_dynamic_width || point.x <= bounds.width + LINE_EPSILON;
-                    if !x_ok || point.y > bounds.height + LINE_EPSILON {
+                    // The upper x bound binds only on a plain endpoint: an edge-relative one
+                    // resolves to `bounds.width + x` with `x <= 0`, so it can never exceed the
+                    // frame here. A plain endpoint past `max` is a constant no final width can
+                    // rescue, so it is rejected at load even on a dynamic label.
+                    if point.x > bounds.width + LINE_EPSILON
+                        || point.y > bounds.height + LINE_EPSILON
+                    {
                         return Err("line must fit within layout bounds".to_string());
                     }
                 }
@@ -553,13 +540,7 @@ fn validate_layout_item(
                 auto_bounds.as_ref().or(layout_bounds),
                 true,
             )?;
-            validate_bounds(
-                &placement.at,
-                width,
-                height,
-                layout_bounds,
-                is_dynamic_width,
-            )?;
+            validate_bounds(&placement.at, width, height, layout_bounds)?;
 
             if let Some(frame) = frame {
                 if frame.thickness <= 0.0 {
@@ -752,9 +733,11 @@ fn resolve_size(
     let size = match extent {
         Extent::Size(size) => size,
         Extent::To(to) => {
-            // Bounds are absent only where no bounds check follows.
+            // Every caller resolves against a frame (`layout_bounds` is always `Some`, and
+            // container recursion passes its inner box), so this is an internal invariant, not an
+            // authoring error. Erroring beats silently returning a zero extent if that changes.
             let Some(layout_bounds) = layout_bounds else {
-                return Ok((0.0, 0.0));
+                return Err("to cannot be resolved without a frame".to_string());
             };
             return resolve_to_extent(at, to, layout_bounds.width, layout_bounds.height);
         }
@@ -804,12 +787,15 @@ fn resolve_size_value(
     }
 }
 
+/// The x half of this check is frame-independent even when the frame is not: for an edge-relative
+/// `at.x` it reduces to `at.x + width <= 0` once `W` cancels out of `W + at.x + width <= W`, and
+/// `validate_placement_position` guarantees such an item's width is a compile-time constant. So
+/// there is nothing to defer to the render pass on either axis.
 fn validate_bounds(
     at: &Position,
     width: f32,
     height: f32,
     layout_bounds: Option<&LayoutBounds>,
-    is_dynamic_width: bool,
 ) -> Result<(), String> {
     const BOUNDS_EPSILON: f32 = 1.0e-4;
     let Some(layout_bounds) = layout_bounds else {
@@ -817,9 +803,7 @@ fn validate_bounds(
     };
     let x = resolve_coord(at.x(), layout_bounds.width);
     let y = resolve_coord(at.y(), layout_bounds.height);
-    // A provisional x (resolved against `max` on a dynamic-width label) is re-checked at render.
-    let check_x = !(is_dynamic_width && at.x().is_sign_negative());
-    if (check_x && x + width > layout_bounds.width + BOUNDS_EPSILON)
+    if x + width > layout_bounds.width + BOUNDS_EPSILON
         || y + height > layout_bounds.height + BOUNDS_EPSILON
     {
         return Err("item must fit within layout bounds".to_string());
@@ -1109,6 +1093,29 @@ mod tests {
     fn validate_accepts_a_top_anchored_box() {
         let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, -4.0]\n    size: [20.0, 4.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// `x + width <= W` reduces to `at.x + width <= 0` for an edge-relative `at.x`: the frame width
+    /// cancels, so a right-anchored box that overruns the right edge is decidable at load even on a
+    /// dynamic-width label, and every render of it would fail.
+    #[test]
+    fn validate_rejects_a_right_anchored_box_that_overruns_the_right_edge() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-0.0, 2.0]\n    size: [10.0, 6.0]\n    font_size: 6\n";
+        assert_eq!(
+            parse_and_validate(yaml),
+            Err("item must fit within layout bounds".to_string())
+        );
+    }
+
+    /// A plain endpoint past `width.max` can never render at any final width, so it is rejected at
+    /// load rather than deferred to a render that is guaranteed to fail.
+    #[test]
+    fn validate_rejects_a_plain_line_endpoint_past_the_max_width() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 30 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [40.0, 6.0]\n    thickness: 0.2\n";
+        assert_eq!(
+            parse_and_validate(yaml),
+            Err("line must fit within layout bounds".to_string())
+        );
     }
 
     /// The guard exists to protect the same-sign x_comparable branch: two edge-relative endpoints
