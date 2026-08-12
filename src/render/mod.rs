@@ -2028,6 +2028,55 @@ mod tests {
         }
     }
 
+    /// Count bands of inked rows separated by at least one blank row — i.e. how many lines of text
+    /// actually landed on the page.
+    fn ink_bands(png: &[u8]) -> usize {
+        let img = image::load_from_memory(png).expect("decode").to_luma8();
+        let (w, h) = (img.width(), img.height());
+        let mut bands = 0;
+        let mut inside = false;
+        for y in 0..h {
+            let inked = (0..w).any(|x| img.get_pixel(x, y).0[0] < 128);
+            if inked && !inside {
+                bands += 1;
+            }
+            inside = inked;
+        }
+        bands
+    }
+
+    /// #148: the print form now offers a textarea for multiline fields, which is only worth anything
+    /// if a newline in the data becomes a line on the label. The UI tests can prove the value reaches
+    /// the request; only a render proves the rest.
+    #[test]
+    fn a_newline_in_a_multiline_field_renders_as_two_lines() {
+        let two = render_tape(&autolength_tape(
+            "one\ntwo",
+            true,
+            VerticalAlign::Center,
+            12.0,
+        ));
+        assert_eq!(
+            ink_bands(&two),
+            2,
+            "a two-line value must put two lines of ink on the label"
+        );
+
+        // The control case: the same value in a single-line item keeps one line, which is the
+        // truncation the form now warns about.
+        let one = render_tape(&autolength_tape(
+            "one\ntwo",
+            false,
+            VerticalAlign::Center,
+            12.0,
+        ));
+        assert_eq!(
+            ink_bands(&one),
+            1,
+            "a single-line item must still render only its first line"
+        );
+    }
+
     /// First and last image rows carrying ink, plus the image height.
     fn ink_rows(png: &[u8]) -> (u32, u32, u32) {
         let img = image::load_from_memory(png).expect("decode").to_luma8();

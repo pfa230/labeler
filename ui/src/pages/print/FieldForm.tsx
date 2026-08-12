@@ -63,10 +63,13 @@ export function FieldForm({
 
   return (
     <div className="flex flex-col gap-4">
-      {fields.map((field) => {
+      {fields.map((field, i) => {
         const current = value.data[field] ?? "";
         const invalid = current.length === 0;
-        const noteId = truncatedSomewhere.has(field) ? `${field}-multiline-note` : undefined;
+        // Index, not the field name: names only have to be non-empty, and `customer name` would
+        // produce an id with a space — aria-describedby is a whitespace-separated IDREFS list, so it
+        // would point at nothing.
+        const noteId = truncatedSomewhere.has(field) ? `multiline-note-${i}` : undefined;
         return (
           <label key={field} className="flex flex-col gap-1">
             <span className="text-sm font-medium">{field}</span>
@@ -77,6 +80,7 @@ export function FieldForm({
                   accept="image/*"
                   aria-label={field}
                   aria-invalid={invalid}
+                  aria-describedby={noteId}
                   onChange={async (e) => {
                     const file = e.target.files?.[0];
                     if (file) setData(field, await readFileAsDataUrl(file));
