@@ -787,15 +787,24 @@ impl<'a> RenderContext<'a> {
                         out.push(m);
                         at.x + w + inset
                     } else {
-                        // A numeric size or a numeric `to`: the width is known, so this is the
-                        // ordinary fixed-width case and no MeasuredText is recorded.
-                        let (w, _) = self.resolve_size(
-                            &placement.at,
-                            &placement.extent,
-                            placement.max_w,
-                            placement.max_h,
-                            false,
-                        )?;
+                        // Width only: this branch consumes just the width, and resolving the height
+                        // here would let an axis measurement never uses decide whether the template
+                        // renders. `measure_box_height` is the height-only counterpart.
+                        let w = match &placement.extent {
+                            Extent::Size(size) => {
+                                self.resolve_size_value(&size.0[0], placement.max_w, None, "width")?
+                            }
+                            Extent::To(_) => {
+                                self.resolve_size(
+                                    &placement.at,
+                                    &placement.extent,
+                                    placement.max_w,
+                                    placement.max_h,
+                                    false,
+                                )?
+                                .0
+                            }
+                        };
                         at.x + w
                     }
                 }
@@ -942,9 +951,16 @@ impl<'a> RenderContext<'a> {
         out: &mut Vec<MeasuredText>,
     ) -> Result<(f32, f32), AppError> {
         let explicit_w = match &placement.extent {
-            Extent::Size(size) => {
-                self.resolve_size_value(&size.0[0], placement.max_w, None, "width")?
-            }
+            Extent::Size(size) => self.resolve_size_value(
+                &size.0[0],
+                placement.max_w,
+                Some(
+                    (self.frame_width_units
+                        - resolve_coord(placement.at.x(), self.frame_width_units))
+                    .max(0.0),
+                ),
+                "width",
+            )?,
             Extent::To(_) => {
                 self.resolve_size(
                     &placement.at,
@@ -1434,15 +1450,28 @@ impl<'a> RenderContext<'a> {
                 )?
                 .0
             };
-            let height = self
-                .resolve_size(
-                    &placement.at,
-                    &placement.extent,
-                    placement.max_w,
+            let height = match &placement.extent {
+                Extent::Size(size) => self.resolve_size_value(
+                    &size.0[1],
                     placement.max_h,
-                    true,
-                )?
-                .1;
+                    Some(
+                        (self.frame_height_units
+                            - resolve_coord(placement.at.y(), self.frame_height_units))
+                        .max(0.0),
+                    ),
+                    "height",
+                )?,
+                Extent::To(_) => {
+                    self.resolve_size(
+                        &placement.at,
+                        &placement.extent,
+                        placement.max_w,
+                        placement.max_h,
+                        true,
+                    )?
+                    .1
+                }
+            };
             self.check_box_bounds(&point, width, height)?;
             let bottom = point.y;
             let top = bottom + height;
@@ -2190,6 +2219,86 @@ mod tests {
         }
     }
 
+    /// `measure`'s fixed-width text branch consumed only the width but resolved both axes, so an
+    /// `auto` height with no `max_h` errored in the pre-pass even though measurement never wanted
+    /// the height. Nothing about this item's height affects the label's width.
+    #[test]
+    fn measuring_a_fixed_width_text_ignores_its_auto_height() {
+        let item = LayoutItem::Text {
+            name: None,
+            value: Some("hi".to_string()),
+            placement: Placement {
+                at: Position([0.0, 10.0]),
+                extent: crate::models::Extent::Size(Size([
+                    SizeValue::Value(20.0),
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                ])),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(6.0),
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        };
+        let (extent, pushed) = measured_extent_of(item, 100.0);
+        assert_eq!(extent, 20.0, "a fixed-width text contributes its width");
+        assert_eq!(pushed, 0, "and records no MeasuredText");
+    }
+
+    /// Spec §7. `measure_container_footprint` resolved this width with no fallback, so a
+    /// right-anchored auto-width container errored in the pre-pass even though render handles it as
+    /// `frame_width - left`. The child must resolve to the remainder, 60 - 30 = 30, at both passes —
+    /// asserting the parent's 60mm footprint instead would pass against a full-frame fallback.
+    #[test]
+    fn a_nested_right_anchored_auto_container_resolves_to_the_remainder() {
+        fn nested() -> LayoutItem {
+            LayoutItem::Container {
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Value(60.0),
+                        SizeValue::Value(12.0),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![LayoutItem::Container {
+                    placement: Placement {
+                        at: Position([-30.0, 0.0]),
+                        extent: crate::models::Extent::Size(Size([
+                            SizeValue::Auto(crate::models::AutoSize::Auto),
+                            SizeValue::Value(12.0),
+                        ])),
+                        max_w: None,
+                        max_h: None,
+                        rotate: None,
+                    },
+                    option: None,
+                    frame: None,
+                    padding: crate::models::Padding::ZERO,
+                    items: vec![],
+                }],
+            }
+        }
+
+        // Measurement must not error on the child's auto width.
+        let (extent, _) = measured_extent_of(nested(), 100.0);
+        assert_eq!(extent, 60.0, "the fixed-width parent's own footprint");
+
+        // And the child renders at the remainder of the parent's inner box.
+        let source = dynamic_ctx_source(100.0, nested());
+        assert!(
+            source.contains("width: 30mm"),
+            "the child must resolve to 60 - 30 = 30, not the whole frame: {source}"
+        );
+    }
+
     /// The render half of #152. The frame is 100mm wide and the container sits at x=90, so the
     /// remainder is 10mm and the 5mm cap is the binding constraint. Before the fix this branch
     /// ignores `max_w` entirely and emits the 10mm remainder.
@@ -2297,18 +2406,17 @@ mod tests {
         );
     }
 
-    /// A cap below the container's own padding leaves no inner box at all. Before the cap this was
-    /// unreachable (the container always got the whole frame remainder); with it, the inner
-    /// dimensions must clamp at zero rather than going negative.
+    /// A cap below the container's own padding leaves no inner box at all. The inner dimensions
+    /// must clamp at zero rather than going negative, and a zero-width child renders as an empty
+    /// box — the same contract `a_zero_remainder_container_renders_an_empty_box` pins for the
+    /// unnested case.
     ///
-    /// What this test can and cannot assert, because it took four attempts to get right: a
-    /// zero-width inner frame cannot host *any* auto-width child, since `render_container_item`
-    /// computes height via `resolve_size(..).1`, which resolves the width axis first and rejects
-    /// `<= 0`. So the child errors either way and there is no "renders successfully" green to
-    /// reach. What the clamp changes is *which* error: without it the child's edge-relative `at.x`
-    /// resolves against a negative frame and fails in `resolve_point` with a coordinate error;
-    /// with it the frame is zero and the failure is the accurate size error. Asserting the error
-    /// kind is the discriminating assertion available here.
+    /// This test previously asserted which *error* fired, because `render_container_item` resolved
+    /// the width through a helper while asking it only for the height, so a zero remainder tripped
+    /// `resolved <= 0.0` and nothing could render. That coupling was the defect this task removed;
+    /// the error was its artifact, not the intended behavior. Now that the axes resolve
+    /// independently there is a real green to reach, and asserting the emitted geometry is
+    /// stronger than asserting an error message that was an accident of control flow.
     #[test]
     fn a_cap_smaller_than_the_padding_clamps_the_inner_box() {
         let item = LayoutItem::Container {
@@ -2350,37 +2458,14 @@ mod tests {
                 items: vec![],
             }],
         };
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let texts: Vec<super::MeasuredText> = Vec::new();
-        let cursor = std::cell::Cell::new(0usize);
-        let ctx = super::RenderContext::new(
-            (100.0, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Dynamic(super::AutoLength {
-                texts: &texts,
-                cursor: &cursor,
-            }),
-        );
-        let err = ctx
-            .render_items(&[item])
-            .expect_err("a zero-width inner frame cannot host an auto-width child");
+        let source = dynamic_ctx_source(100.0, item);
         assert!(
-            err.message_text().contains("must be greater than 0"),
-            "expected the size error a clamped zero-width frame produces, not the negative \
-             coordinate error an unclamped one produces; got: {}",
-            err.message_text()
+            source.contains("width: 2mm"),
+            "the container still renders at its cap: {source}"
+        );
+        assert!(
+            !source.contains("width: -") && !source.contains("height: -"),
+            "no negative dimension may reach the emitted source: {source}"
         );
     }
 
