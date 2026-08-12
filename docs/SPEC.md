@@ -403,8 +403,9 @@ On a dynamic-width label, `max_w` therefore *caps a content-sized item* rather t
 there already means "shrink to content" (§3.1), and the bound further limits how much content-driven
 width an item may claim, capping both what the measurement pass reserves and what rendering draws. A
 `qr` or `image` is the one exception worth noting: since neither has a natural content size to shrink
-to, its `auto` means "fill what you are given" on every format, so `max_w` on either is what stops it
-from claiming the whole remaining budget. (ADR-0053)
+to, its `auto` requires a `max_w` and resolves to exactly that width on every format; without `max_w`
+it is an error, not a fill. What changed under ADR-0053 is that the pre-render measurement pass now
+reserves the capped width for these two types instead of the whole remaining budget. (ADR-0053)
 
 ### 4.1 Item types
 

@@ -842,9 +842,11 @@ impl<'a> RenderContext<'a> {
         Ok(extent)
     }
 
-    /// A box item's vertical slot during measurement: its explicit height, the box its corners
-    /// describe, or the rest of the frame above `at_y`. `at_y` is the **resolved** bottom edge,
-    /// never the raw value: mixing a resolved `to.y` with a raw `at.y` inflates the slot.
+    /// A box item's vertical slot during measurement: its explicit height (capped by `max_h`, per
+    /// #150/ADR-0053, so the slot this function returns can never exceed what `render_text_item`
+    /// renders into), the box its corners describe, or the rest of the frame above `at_y` when
+    /// neither an explicit height nor `max_h` is set. `at_y` is the **resolved** bottom edge, never
+    /// the raw value: mixing a resolved `to.y` with a raw `at.y` inflates the slot.
     fn measure_box_height(&self, placement: &Placement, at_y: f32) -> Result<f32, AppError> {
         Ok(match &placement.extent {
             // The same call `render_text_item` makes for this slot, so the two cannot disagree
