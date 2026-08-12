@@ -1656,7 +1656,10 @@ impl<'a> RenderContext<'a> {
             }
         };
         let fallback = if allow_auto_fill {
-            Some((self.frame_width_units, self.frame_height_units))
+            Some((
+                (self.frame_width_units - resolve_coord(at.x(), self.frame_width_units)).max(0.0),
+                (self.frame_height_units - resolve_coord(at.y(), self.frame_height_units)).max(0.0),
+            ))
         } else {
             None
         };
