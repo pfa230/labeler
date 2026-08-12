@@ -53,7 +53,7 @@ pub struct BatchFailure {
 }
 
 impl AppError {
-    pub fn new(
+    fn new(
         status: StatusCode,
         code: &'static str,
         message: impl Into<String>,
@@ -69,6 +69,16 @@ impl AppError {
 
     pub fn message_text(&self) -> String {
         self.message.clone()
+    }
+
+    /// A JSON body that axum could not parse. Keeps the parser's own text under `details.error`.
+    pub fn malformed_json(parser_error: String) -> Self {
+        Self::new(
+            StatusCode::BAD_REQUEST,
+            CODE_INVALID_REQUEST,
+            "Malformed JSON body",
+            Some(json!({ "error": parser_error })),
+        )
     }
 
     pub fn batch_invalid(failures: Vec<BatchFailure>) -> Self {
@@ -328,12 +338,9 @@ impl From<JsonRejection> for AppError {
             JsonRejection::MissingJsonContentType(_) => {
                 AppError::unsupported_media_type("Content-Type must be application/json")
             }
-            JsonRejection::JsonSyntaxError(_) | JsonRejection::JsonDataError(_) => AppError::new(
-                StatusCode::BAD_REQUEST,
-                CODE_INVALID_REQUEST,
-                "Malformed JSON body",
-                Some(json!({ "error": message })),
-            ),
+            JsonRejection::JsonSyntaxError(_) | JsonRejection::JsonDataError(_) => {
+                AppError::malformed_json(message)
+            }
             JsonRejection::BytesRejection(_) => AppError::invalid_request("Invalid request body"),
             _ => AppError::invalid_request("Invalid JSON request"),
         }
@@ -353,6 +360,41 @@ impl From<TemplateRegistryError> for AppError {
             TemplateRegistryError::Io { .. } => AppError::render_failed(message),
             _ => AppError::template_invalid(message),
         }
+    }
+}
+
+impl From<crate::connector::ConnectorError> for AppError {
+    fn from(err: crate::connector::ConnectorError) -> Self {
+        use crate::connector::ConnectorError::*;
+        // These codes sit outside the four that carry a `details.reason` (ADR-0052): they describe
+        // upstream transport, not a layout or request fault.
+        let (status, code, message): (StatusCode, &'static str, String) = match err {
+            AuthFailed => (
+                StatusCode::BAD_GATEWAY,
+                "ConnectorAuthFailed",
+                "upstream authentication failed".into(),
+            ),
+            Forbidden => (
+                StatusCode::BAD_GATEWAY,
+                "ConnectorForbidden",
+                "upstream forbidden".into(),
+            ),
+            ConnectionFailed(m) => (StatusCode::BAD_GATEWAY, "ConnectorUnreachable", m),
+            InvalidFilter(m) => (StatusCode::BAD_REQUEST, "InvalidFilter", m),
+            UpstreamSchemaMismatch(m) => (StatusCode::BAD_GATEWAY, "UpstreamSchemaMismatch", m),
+            RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "RateLimited",
+                "upstream rate limited".into(),
+            ),
+            BudgetExceeded => (
+                StatusCode::BAD_REQUEST,
+                "BudgetExceeded",
+                "too many rows requested".into(),
+            ),
+            Upstream(m) => (StatusCode::BAD_GATEWAY, "Upstream", m),
+        };
+        Self::new(status, code, message, None)
     }
 }
 
@@ -432,3 +474,62 @@ impl std::fmt::Display for TemplateError {
 }
 
 impl std::error::Error for TemplateError {}
+
+#[cfg(test)]
+mod tests {
+    use super::AppError;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn connector_errors_keep_their_codes_and_statuses() {
+        use crate::connector::ConnectorError;
+        let cases = [
+            (
+                ConnectorError::AuthFailed,
+                StatusCode::BAD_GATEWAY,
+                "ConnectorAuthFailed",
+            ),
+            (
+                ConnectorError::Forbidden,
+                StatusCode::BAD_GATEWAY,
+                "ConnectorForbidden",
+            ),
+            (
+                ConnectorError::RateLimited,
+                StatusCode::TOO_MANY_REQUESTS,
+                "RateLimited",
+            ),
+            (
+                ConnectorError::BudgetExceeded,
+                StatusCode::BAD_REQUEST,
+                "BudgetExceeded",
+            ),
+            (
+                ConnectorError::InvalidFilter("x".into()),
+                StatusCode::BAD_REQUEST,
+                "InvalidFilter",
+            ),
+            (
+                ConnectorError::ConnectionFailed("x".into()),
+                StatusCode::BAD_GATEWAY,
+                "ConnectorUnreachable",
+            ),
+            (
+                ConnectorError::UpstreamSchemaMismatch("x".into()),
+                StatusCode::BAD_GATEWAY,
+                "UpstreamSchemaMismatch",
+            ),
+            (
+                ConnectorError::Upstream("x".into()),
+                StatusCode::BAD_GATEWAY,
+                "Upstream",
+            ),
+        ];
+        for (err, status, code) in cases {
+            let app_err = AppError::from(err);
+            // `status` is private, but this module is a child of `errors`, so it is visible here.
+            assert_eq!(app_err.status, status, "status for {code}");
+            assert_eq!(app_err.code(), code);
+        }
+    }
+}

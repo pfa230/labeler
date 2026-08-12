@@ -1197,6 +1197,27 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn malformed_json_body_keeps_its_shape() {
+        let app = build_app();
+        let response = app
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label",
+                "{ not json".to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["message"], "Malformed JSON body");
+        assert!(
+            body["error"]["details"]["error"].is_string(),
+            "details.error must still carry the parser message, got {body}"
+        );
+    }
+
+    #[tokio::test]
     async fn render_label_pdf_on_sheet_template_returns_422() {
         let app = build_app();
         let payload = json!({ "template": "avery5163", "data": {} });
