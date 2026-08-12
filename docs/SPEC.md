@@ -395,19 +395,24 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 | `rotate` | number (deg) | — | **Container only.** Orthogonal CCW rotation of the container's inner content; see §4.2. An error on any non-container item. |
 
 `auto` size resolves to `min(max_{w,h}, fallback)` when both are present, to whichever of the two is
-present when only one is, and is an error when neither is. The fallback is, for `container`, the
-parent frame's dimension; on a dynamic-width `single` template (§3.1), `auto` width instead resolves
-to the content width (`label_width - at.x`) derived from the pre-render measurement pass. `max_w` /
-`max_h` bind **only** `auto`: a numeric `size` component is never clamped by them, at any layer. A
-non-`auto` numeric size must be > 0. (`line` does not use `size`; see §4.1.)
+present when only one is, and is an error when neither is. The fallback, for `text` and `container`, is
+the parent frame's dimension **remaining from `at`** on that axis — `frame - resolved_at`, using the
+resolved (not raw) anchor, so an edge-relative `at` (§6) is measured inward from the far edge before the
+subtraction — not the whole frame, which is space the item's own position has already claimed. This
+applies at both the validation and render layers, on every format. On a dynamic-width `single` template
+(§3.1), `auto` width instead resolves to the content width (`label_width - at.x`) derived from the
+pre-render measurement pass. `qr` and `image` have no fallback at all: neither has a natural content
+footprint to shrink to, so their `auto` requires an explicit `max_w` and resolves to exactly that width
+on every format; without `max_w` it is an error, not a fill (ADR-0053). That is now the only asymmetry
+left among item types' `auto` handling (ADR-0054). `max_w` / `max_h` bind **only** `auto`: a numeric
+`size` component is never clamped by them, at any layer. A non-`auto` numeric size must be > 0. (`line`
+does not use `size`; see §4.1.)
 
 On a dynamic-width label, `max_w` therefore *caps a content-sized item* rather than being inert: `auto`
 there already means "shrink to content" (§3.1), and the bound further limits how much content-driven
-width an item may claim, capping both what the measurement pass reserves and what rendering draws. A
-`qr` or `image` is the one exception worth noting: since neither has a natural content size to shrink
-to, its `auto` requires a `max_w` and resolves to exactly that width on every format; without `max_w`
-it is an error, not a fill. What changed under ADR-0053 is that the pre-render measurement pass now
-reserves the capped width for these two types instead of the whole remaining budget. (ADR-0053)
+width an item may claim, capping both what the measurement pass reserves and what rendering draws. What
+changed under ADR-0053 is that the pre-render measurement pass now reserves the capped width for
+`qr`/`image` instead of the whole remaining budget. (ADR-0053)
 
 ### 4.1 Item types
 
@@ -1017,6 +1022,20 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-12**: An `auto` size on `text`/`container` now falls back to the frame remaining **from the
+  item's own anchor** (`frame - resolved_at`), not the whole frame, at both validation and render, on
+  every format (ADR-0054, #155). Previously `text`'s fallback also differed between layers (validation
+  keyed it off the template's dynamic-width-ness, `render_text_item`'s fixed path used none at all), so
+  a `text` with `max_h` above the frame could validate and then 422 at render on every format — #155's
+  own bug. Six loosenings fall out (§4): a nonzero-anchored `auto` axis with no bound now works instead
+  of being rejected on load-time bounds; `text` gains the fallback on fixed labels and sheets on both
+  axes, including a genuinely new capability (an auto-width `text` no longer needs `max_w` there); a
+  fixed-width `text`'s auto height no longer errors in the dynamic-width measure pre-pass; and a
+  container's auto width on a fixed label now narrows by `at.x` instead of resolving to the full frame.
+  `qr`/`image` are unaffected: they keep no fallback by design. `auto_resolve_bounds` and
+  `extent_auto_bounds` are deleted as redundant, superseded by the position-aware fallback built directly
+  into `resolve_size`. Templates with every `auto` item at the origin (`frame - 0 == frame`) render
+  byte-identically; the 13 shipped templates were diffed against `origin/main` to confirm it.
 - **2026-08-12**: Errors gain a machine-readable `details.reason` slug (§10.1, ADR-0052, #151), so
   the several unrelated causes that share one `code` can be told apart without matching prose. Purely
   additive: `code` values, statuses and messages are unchanged, and `details` stays optional. Covers all four
