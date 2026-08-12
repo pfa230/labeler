@@ -969,6 +969,15 @@ mod http_tests {
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "BatchInvalid");
         assert_eq!(body["error"]["details"]["failures"][0]["index"], 1);
+        // MissingField is outside the four codes that carry a reason, so the key is absent rather
+        // than null. That optionality is the contract (ADR-0052, decision 4), not an oversight.
+        assert!(
+            body["error"]["details"]["failures"][0]
+                .get("reason")
+                .is_none(),
+            "an unreasoned code must omit the key entirely, got {}",
+            body["error"]["details"]["failures"][0]
+        );
     }
 
     #[tokio::test]

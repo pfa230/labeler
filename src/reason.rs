@@ -33,6 +33,24 @@ reasons! {
     TemplateParseFailed => "template_parse_failed",
     TemplateValidationFailed => "template_validation_failed",
     TemplateDuplicateId => "template_duplicate_id",
+
+    // UnsupportedLayoutItem
+    CoordOutOfFrame => "coord_out_of_frame",
+    ItemOutOfFrame => "item_out_of_frame",
+    LineEndpointOutOfFrame => "line_endpoint_out_of_frame",
+    LineDegenerate => "line_degenerate",
+    EdgeRectInverted => "edge_rect_inverted",
+    SizeInvalid => "size_invalid",
+    SizeAutoWithoutMax => "size_auto_without_max",
+    MaxSizeInvalid => "max_size_invalid",
+    ImageSourceMissing => "image_source_missing",
+    ImageFormatUnsupported => "image_format_unsupported",
+    ImageDataInvalid => "image_data_invalid",
+    ImageAssetMissing => "image_asset_missing",
+    ImageAssetUnreadable => "image_asset_unreadable",
+    ImageAssetPathEscapes => "image_asset_path_escapes",
+    AssetsDirUnavailable => "assets_dir_unavailable",
+    QrErrorCorrectionInvalid => "qr_error_correction_invalid",
 }
 
 #[cfg(test)]

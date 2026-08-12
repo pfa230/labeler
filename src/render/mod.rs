@@ -7,6 +7,7 @@ use crate::models::{
     resolve_coord, Dimension, Extent, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement,
     Point, Position, Rotation, SizeValue, TemplateFormat,
 };
+use crate::reason::Reason;
 use crate::templates::TemplateDefinition;
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, fit_text_auto_length,
@@ -342,6 +343,7 @@ pub fn render_sheet_pages(
                 failures.push(crate::errors::BatchFailure {
                     index: idx,
                     code: err.code(),
+                    reason: err.reason(),
                     message: err.message_text(),
                 });
                 rendered.push(String::new());
@@ -363,6 +365,7 @@ pub fn render_sheet_pages(
                 failures.push(crate::errors::BatchFailure {
                     index: idx,
                     code: err.code(),
+                    reason: err.reason(),
                     message: err.message_text(),
                 });
                 rendered.push(String::new());
@@ -525,6 +528,7 @@ fn resolve_to_extent(
     let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
     if width < -EPS || height < -EPS {
         return Err(AppError::unsupported_layout_item(
+            Reason::EdgeRectInverted,
             "to must be above and to the right of at",
         ));
     }
@@ -583,13 +587,16 @@ impl<'a> RenderContext<'a> {
         let x = resolve_coord(p.x(), self.frame_width_units);
         let y = resolve_coord(p.y(), self.frame_height_units);
         if x < -EPS || y < -EPS {
-            return Err(AppError::unsupported_layout_item(format!(
-                "a coordinate resolves outside the frame: [{}, {}] against {}x{}",
-                p.x(),
-                p.y(),
-                self.frame_width_units,
-                self.frame_height_units
-            )));
+            return Err(AppError::unsupported_layout_item(
+                Reason::CoordOutOfFrame,
+                format!(
+                    "a coordinate resolves outside the frame: [{}, {}] against {}x{}",
+                    p.x(),
+                    p.y(),
+                    self.frame_width_units,
+                    self.frame_height_units
+                ),
+            ));
         }
         Ok(Point { x, y })
     }
@@ -600,10 +607,13 @@ impl<'a> RenderContext<'a> {
         if point.x + width > self.frame_width_units + EPS
             || point.y + height > self.frame_height_units + EPS
         {
-            return Err(AppError::unsupported_layout_item(format!(
-                "an item resolves outside the frame: {width}x{height} at [{}, {}] in {}x{}",
-                point.x, point.y, self.frame_width_units, self.frame_height_units
-            )));
+            return Err(AppError::unsupported_layout_item(
+                Reason::ItemOutOfFrame,
+                format!(
+                    "an item resolves outside the frame: {width}x{height} at [{}, {}] in {}x{}",
+                    point.x, point.y, self.frame_width_units, self.frame_height_units
+                ),
+            ));
         }
         Ok(())
     }
@@ -615,14 +625,18 @@ impl<'a> RenderContext<'a> {
         const EPS: f32 = 1.0e-4;
         for p in [start, end] {
             if p.x > self.frame_width_units + EPS || p.y > self.frame_height_units + EPS {
-                return Err(AppError::unsupported_layout_item(format!(
-                    "a line endpoint resolves outside the frame: [{}, {}] in {}x{}",
-                    p.x, p.y, self.frame_width_units, self.frame_height_units
-                )));
+                return Err(AppError::unsupported_layout_item(
+                    Reason::LineEndpointOutOfFrame,
+                    format!(
+                        "a line endpoint resolves outside the frame: [{}, {}] in {}x{}",
+                        p.x, p.y, self.frame_width_units, self.frame_height_units
+                    ),
+                ));
             }
         }
         if (start.x - end.x).abs() < EPS && (start.y - end.y).abs() < EPS {
             return Err(AppError::unsupported_layout_item(
+                Reason::LineDegenerate,
                 "line start and end must differ after resolution",
             ));
         }
@@ -1211,6 +1225,7 @@ impl<'a> RenderContext<'a> {
             }
             (None, None) => {
                 return Err(AppError::unsupported_layout_item(
+                    Reason::ImageSourceMissing,
                     "image requires src or name",
                 ))
             }
@@ -1525,22 +1540,25 @@ impl<'a> RenderContext<'a> {
         match value {
             SizeValue::Value(value) => {
                 if *value <= 0.0 {
-                    return Err(AppError::unsupported_layout_item(format!(
-                        "size {label} must be greater than 0"
-                    )));
+                    return Err(AppError::unsupported_layout_item(
+                        Reason::SizeInvalid,
+                        format!("size {label} must be greater than 0"),
+                    ));
                 }
                 Ok(*value)
             }
             SizeValue::Auto(_) => {
                 let resolved = max.or(fallback).ok_or_else(|| {
-                    AppError::unsupported_layout_item(format!(
-                        "size {label} is auto but no max_{label} provided"
-                    ))
+                    AppError::unsupported_layout_item(
+                        Reason::SizeAutoWithoutMax,
+                        format!("size {label} is auto but no max_{label} provided"),
+                    )
                 })?;
                 if resolved <= 0.0 {
-                    return Err(AppError::unsupported_layout_item(format!(
-                        "max_{label} must be greater than 0"
-                    )));
+                    return Err(AppError::unsupported_layout_item(
+                        Reason::MaxSizeInvalid,
+                        format!("max_{label} must be greater than 0"),
+                    ));
                 }
                 Ok(resolved)
             }
@@ -3313,6 +3331,50 @@ mod tests {
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
 
+    /// The motivating case for #151. Two unrelated failures share `UnsupportedLayoutItem`: a bad
+    /// image payload and a geometry violation. Before `details.reason` the only way to tell them
+    /// apart was the prose, so a client could not act on either, and a test asserting one could pass
+    /// against the other. This is the test that would have failed before the change.
+    #[test]
+    fn one_code_two_reasons_for_unrelated_failures() {
+        use std::cell::RefCell;
+
+        let template = image_single_template();
+        let data = HashMap::from([("logo".to_string(), json!("not a data uri"))]);
+        let image_err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a non-data-URI image payload must not render");
+
+        let empty: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (10.0, 12.0),
+            "mm",
+            &empty,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let geometry_err = ctx
+            .render_items(&[LayoutItem::Line {
+                at: Position([0.0, 6.0]),
+                to: Position([30.0, 6.0]),
+                thickness: 0.2,
+            }])
+            .expect_err("a 30mm endpoint on a 10mm frame must not render");
+
+        assert_eq!(image_err.code(), geometry_err.code());
+        assert_eq!(image_err.code(), "UnsupportedLayoutItem");
+        assert_eq!(image_err.reason(), Some("image_data_invalid"));
+        assert_eq!(geometry_err.reason(), Some("line_endpoint_out_of_frame"));
+    }
+
     fn image_single_template_with_src(src: &str) -> TemplateDefinition {
         let mut template = image_single_template();
         template.layout = Layout::Items(vec![LayoutItem::Image {
@@ -4329,8 +4391,11 @@ mod tests {
                 thickness: 0.2,
             }])
             .expect_err("a 30mm endpoint on a 10mm frame must not render");
-        assert!(
-            err.message_text().contains("outside the frame"),
+        // Not `coord_out_of_frame`: this is a Line, so it trips the endpoint check. The prose
+        // assertion this replaces could not tell the two apart, which is the point of #151.
+        assert_eq!(
+            err.reason(),
+            Some("line_endpoint_out_of_frame"),
             "unexpected error: {}",
             err.message_text()
         );
@@ -4354,8 +4419,9 @@ mod tests {
         let data: HashMap<String, super::JsonValue> = HashMap::new();
         let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
             .expect_err("a zero-length line must not render");
-        assert!(
-            err.message_text().contains("must differ"),
+        assert_eq!(
+            err.reason(),
+            Some("line_degenerate"),
             "unexpected error: {}",
             err.message_text()
         );
@@ -4481,8 +4547,9 @@ mod tests {
         assert_eq!(template.validate(), Ok(()), "valid against the 100mm max");
         let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
             .expect_err("a 30mm anchor on a 10mm label leaves no box");
-        assert!(
-            err.message_text().contains("above and to the right"),
+        assert_eq!(
+            err.reason(),
+            Some("edge_rect_inverted"),
             "unexpected error: {}",
             err.message_text()
         );

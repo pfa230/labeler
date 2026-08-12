@@ -2,6 +2,7 @@ use crate::errors::AppError;
 use crate::models::{
     Alignment, Dimension, FontSize, HorizontalAlign, Point, QrParams, VerticalAlign,
 };
+use crate::reason::Reason;
 use base64::Engine as _;
 use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
@@ -167,6 +168,7 @@ pub(super) fn build_qr_svg(payload: &[u8], params: &Option<QrParams>) -> Result<
             "Q" => Ok(EcLevel::Q),
             "H" => Ok(EcLevel::H),
             _ => Err(AppError::unsupported_layout_item(
+                Reason::QrErrorCorrectionInvalid,
                 "qr error_correction must be one of L, M, Q, H",
             )),
         })
@@ -757,9 +759,10 @@ impl ImageFmt {
             "image/png" => Ok(ImageFmt::Png),
             "image/jpeg" | "image/jpg" => Ok(ImageFmt::Jpg),
             "image/svg+xml" => Ok(ImageFmt::Svg),
-            other => Err(AppError::unsupported_layout_item(format!(
-                "unsupported image type '{other}'"
-            ))),
+            other => Err(AppError::unsupported_layout_item(
+                Reason::ImageFormatUnsupported,
+                format!("unsupported image type '{other}'"),
+            )),
         }
     }
 
@@ -769,9 +772,10 @@ impl ImageFmt {
             Some("png") => Ok(ImageFmt::Png),
             Some("jpg") | Some("jpeg") => Ok(ImageFmt::Jpg),
             Some("svg") => Ok(ImageFmt::Svg),
-            _ => Err(AppError::unsupported_layout_item(format!(
-                "unsupported image extension for '{path}'"
-            ))),
+            _ => Err(AppError::unsupported_layout_item(
+                Reason::ImageFormatUnsupported,
+                format!("unsupported image extension for '{path}'"),
+            )),
         }
     }
 }
@@ -781,42 +785,61 @@ pub(super) fn assets_root() -> PathBuf {
 }
 
 pub(super) fn parse_image_data_uri(value: &str) -> Result<(Vec<u8>, ImageFmt), AppError> {
-    let rest = value
-        .strip_prefix("data:")
-        .ok_or_else(|| AppError::unsupported_layout_item("image data must be a base64 data URI"))?;
-    let (meta, payload) = rest
-        .split_once(',')
-        .ok_or_else(|| AppError::unsupported_layout_item("malformed image data URI"))?;
+    let rest = value.strip_prefix("data:").ok_or_else(|| {
+        AppError::unsupported_layout_item(
+            Reason::ImageDataInvalid,
+            "image data must be a base64 data URI",
+        )
+    })?;
+    let (meta, payload) = rest.split_once(',').ok_or_else(|| {
+        AppError::unsupported_layout_item(Reason::ImageDataInvalid, "malformed image data URI")
+    })?;
     let mut params = meta.split(';');
     let mime = params.next().unwrap_or("");
     if !params.any(|p| p.eq_ignore_ascii_case("base64")) {
         return Err(AppError::unsupported_layout_item(
+            Reason::ImageDataInvalid,
             "image data URI must be base64-encoded",
         ));
     }
     let fmt = ImageFmt::from_mime(mime)?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload.trim())
-        .map_err(|_| AppError::unsupported_layout_item("image data is not valid base64"))?;
+        .map_err(|_| {
+            AppError::unsupported_layout_item(
+                Reason::ImageDataInvalid,
+                "image data is not valid base64",
+            )
+        })?;
     Ok((bytes, fmt))
 }
 
 pub(super) fn resolve_image_asset(root: &Path, src: &str) -> Result<(Vec<u8>, ImageFmt), AppError> {
     let fmt = ImageFmt::from_path(src)?;
-    let canon_root = root
-        .canonicalize()
-        .map_err(|_| AppError::unsupported_layout_item("assets directory is not available"))?;
+    let canon_root = root.canonicalize().map_err(|_| {
+        AppError::unsupported_layout_item(
+            Reason::AssetsDirUnavailable,
+            "assets directory is not available",
+        )
+    })?;
     let candidate = canon_root.join(src);
-    let canon = candidate
-        .canonicalize()
-        .map_err(|_| AppError::unsupported_layout_item(format!("image asset not found: {src}")))?;
+    let canon = candidate.canonicalize().map_err(|_| {
+        AppError::unsupported_layout_item(
+            Reason::ImageAssetMissing,
+            format!("image asset not found: {src}"),
+        )
+    })?;
     if !canon.starts_with(&canon_root) {
         return Err(AppError::unsupported_layout_item(
+            Reason::ImageAssetPathEscapes,
             "image asset path escapes the assets directory",
         ));
     }
     let bytes = std::fs::read(&canon).map_err(|_| {
-        AppError::unsupported_layout_item(format!("image asset not readable: {src}"))
+        AppError::unsupported_layout_item(
+            Reason::ImageAssetUnreadable,
+            format!("image asset not readable: {src}"),
+        )
     })?;
     Ok((bytes, fmt))
 }
