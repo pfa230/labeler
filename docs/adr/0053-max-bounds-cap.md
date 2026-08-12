@@ -8,6 +8,13 @@ Accepted. Issues [#152](https://github.com/pfa230/labeler/issues/152) and
 [#150](https://github.com/pfa230/labeler/issues/150). Interacts with the dynamic-width deferral model
 of [ADR-0051](0051-edge-relative-and-corner-placement.md) §7 and decision 12 (below).
 
+**Corrected by [ADR-0054](0054-auto-fallback-position.md)** (§ Correcting ADR-0053): the behavior this
+ADR's own shipped test, `a_cap_smaller_than_the_padding_clamps_the_inner_box`, asserted — that a `max_w`
+cap smaller than a container's own padding left a nested auto-width child with no green to reach, only a
+choice of which error fired — was an artifact of `render_container_item`'s R0 branch resolving height as
+a side effect of resolving width, not an intended behavior. ADR-0054 removes that coupling; the same
+nested child now renders an empty box. Nothing else in this ADR changed.
+
 ## Context
 
 `max_w`/`max_h` are documented in SPEC §4 as the upper bound that resolves an `auto` size. Three

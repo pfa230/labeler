@@ -401,12 +401,23 @@ resolved (not raw) anchor, so an edge-relative `at` (§6) is measured inward fro
 subtraction — not the whole frame, which is space the item's own position has already claimed. This
 applies at both the validation and render layers, on every format. On a dynamic-width `single` template
 (§3.1), `auto` width instead resolves to the content width (`label_width - at.x`) derived from the
-pre-render measurement pass. `qr` and `image` have no fallback at all: neither has a natural content
-footprint to shrink to, so their `auto` requires an explicit `max_w` and resolves to exactly that width
-on every format; without `max_w` it is an error, not a fill (ADR-0053). That is now the only asymmetry
-left among item types' `auto` handling (ADR-0054). `max_w` / `max_h` bind **only** `auto`: a numeric
-`size` component is never clamped by them, at any layer. A non-`auto` numeric size must be > 0. (`line`
-does not use `size`; see §4.1.)
+pre-render measurement pass for `text`, but still to the frame remainder for `container` — the resolution
+basis differs by item type even though both are "the fallback" in prose. `qr` and `image` have no
+fallback at all: neither has a natural content footprint to shrink to, so their `auto` requires an
+explicit `max_w` and resolves to exactly that width on every format; without `max_w` it is an error, not
+a fill (ADR-0053). `auto` handling is not fully uniform across item types (ADR-0054): the `qr`/`image`
+fallback exclusion, the content-width-vs-frame-remainder split above, and the zero-remainder split below
+are three distinct asymmetries, not one. `max_w` / `max_h` bind **only** `auto`: a numeric `size`
+component is never clamped by them, at any layer. A non-`auto` numeric size must be > 0. (`line` does not
+use `size`; see §4.1.)
+
+A fallback (or a `max_*`-capped resolution) of exactly `0` is not automatically an authoring error. On a
+dynamic-width `single` template, a `container`'s own `auto` **width** axis resolving to `0` renders an
+empty (zero-width) box rather than erroring — a legitimate outcome of measurement, not a mistake
+(ADR-0053, ADR-0054 § Correcting ADR-0053). Every other `auto` axis that resolves through the shared
+fallback helper — `text` on either axis, and a `container`'s **height** axis on any format — treats a
+`<= 0` result as an error: `size_auto_no_room` when no `max_*` is the binding value, `max_size_invalid`
+when a `max_*` is (§10.1).
 
 On a dynamic-width label, `max_w` therefore *caps a content-sized item* rather than being inert: `auto`
 there already means "shrink to content" (§3.1), and the bound further limits how much content-driven

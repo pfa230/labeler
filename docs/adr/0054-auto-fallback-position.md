@@ -4,9 +4,10 @@ Date: 2026-08-12
 
 ## Status
 
-Accepted. Issue [#155](https://github.com/pfa230/labeler/issues/155). Corrects one clause of
-[ADR-0053](0053-max-bounds-cap.md) (§ Supersession, below) and reuses its `min(max_*, fallback)` cap
-model unchanged.
+Accepted. Issue [#155](https://github.com/pfa230/labeler/issues/155). Corrects a behavior
+[ADR-0053](0053-max-bounds-cap.md)'s own shipped test asserted — not a clause of its Markdown, which
+contains no such claim (§ Correcting ADR-0053, below) — and reuses ADR-0053's `min(max_*, fallback)`
+cap model unchanged.
 
 ## Context
 
@@ -97,11 +98,22 @@ edge-relative-width-plus-dynamic-frame validation check, because its own parent 
 resolves the same way in the measure pre-pass as it does at render (`frame_width - left`), instead of
 validating and then erroring with `size width is auto but no max_width provided`.
 
-Every other single-axis (`.0`-only) caller is `Extent::To`, where `resolve_size` early-returns from
-corner arithmetic before any fallback is built, so it cannot exhibit this failure mode and was left
-alone.
+Every other single-axis (`.0`-only) caller of `resolve_size` that is left alone is either `Extent::To`
+(where `resolve_size` early-returns from corner arithmetic before any fallback is built, so it cannot
+exhibit this failure mode) or one of two exceptions, both in `render_container_item`, both safe for a
+reason specific to it rather than to the `Extent::To` argument above:
 
-**5. Six behavior changes, all loosenings, and the origin is not exempt.**
+- `render/mod.rs:1447-1455` (the R0 branch's width, when the container is *not* a dynamic-width
+  auto-width one) is `.0`-only but handles `Extent::Size` too. It is safe because the height it
+  discards is recomputed immediately after (lines 1456-1477) through the identical anchor-derived
+  fallback `resolve_size` itself would have built for that axis, so the discarded resolution and the
+  one actually used can never disagree.
+- `render/mod.rs:1551-1568` (the rotated, R90/R180/R270 path) calls `resolve_size` twice, discarding
+  width the first time and height the second. It is safe because rotation validation already forbids
+  `auto` on a rotated container (§4.2), so neither call ever reaches the fallback machinery this ADR
+  changes: both axes are numeric or resolved from a numeric `to`, on every call.
+
+**5. Seven behavior changes, all loosenings, and the origin is not exempt.**
 
 1. `size: [w, auto]` at a nonzero `at.y` with no `max_h` now works on a dynamic-width label, resolving
    to `frame_height - at.y` instead of being rejected by `validate_bounds`.
@@ -120,6 +132,13 @@ alone.
    remainder.
 6. A fixed-width `text`'s `auto` height (no `max_h`) now measures on a dynamic-width label instead of
    erroring in the pre-pass, per decision 4's second instance.
+7. Decision 4's first instance (the R0 branch no longer resolving height as a side effect of width) has
+   its own loosening, orthogonal to the anchor fallback: a nested auto-width child inside a container
+   whose own cap leaves no inner box at all — `a_cap_smaller_than_the_padding_clamps_the_inner_box`'s
+   shape, `max_w` smaller than the parent's own padding — now renders as an empty box instead of failing
+   to render (§ Correcting ADR-0053, below). Unlike items 1-6, this is not a fallback-value change; it
+   is the removal of a control-flow coupling that let a zero-remainder parent's width resolution trip
+   the child's unrelated height resolution.
 
 The tempting shortcut — "an item at the origin is unaffected, since `frame - 0 == frame`" — is **false**.
 The subtraction is a no-op at the origin, but items 2, 4, and 6 above are not about the subtraction:
@@ -140,7 +159,7 @@ the fallback code at all — there is nothing left for the deleted helper to gua
 at `at.x: 20` with `to: [-0.0, h]` on a dynamic-width label resolves against `frame - 20`, not
 `frame - 40`, both before and after the deletion.
 
-## Supersession of ADR-0053
+## Correcting ADR-0053
 
 ADR-0053's implementation carried a test, `a_cap_smaller_than_the_padding_clamps_the_inner_box`,
 asserting that a `max_w` cap smaller than a container's own padding — leaving no inner box at all —
