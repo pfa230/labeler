@@ -2288,6 +2288,134 @@ mod tests {
         );
     }
 
+    /// The cap must be inert when no bound is set. One assertion per site the branch capped, so a
+    /// leak names the site. These pass before and after this branch; they exist to stay green.
+    #[test]
+    fn no_max_w_means_no_cap_anywhere() {
+        // Text: an uncapped auto-width text measures its natural width against the full budget.
+        let long = "a string long enough to have a natural width worth measuring";
+        let (text_extent, _) = measured_extent_of(
+            LayoutItem::Text {
+                name: None,
+                value: Some(long.to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(8.0),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(10.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            },
+            200.0,
+        );
+        assert!(text_extent > 0.0 && text_extent < 200.0);
+
+        // Qr: an uncapped auto-width qr still fills the remaining budget.
+        let (qr_extent, _) = measured_extent_of(
+            LayoutItem::Qr {
+                name: None,
+                value: Some("abc".to_string()),
+                placement: Placement {
+                    at: Position([10.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(20.0),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            },
+            100.0,
+        );
+        assert_eq!(qr_extent, 100.0, "no bound means fill the remaining budget");
+
+        // Container, measurement: the child must be something whose measured width depends on
+        // the inner budget, or the assertion proves nothing. An empty container contributes `at_x`
+        // whatever the budget was, including a budget wrongly capped to zero.
+        let child = LayoutItem::Text {
+            name: None,
+            value: Some(long.to_string()),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: crate::models::Extent::Size(Size([
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::Value(8.0),
+                ])),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        };
+        let (c_extent, _) = measured_extent_of(capped_container(10.0, None, vec![child]), 200.0);
+        assert!(
+            (c_extent - (10.0 + text_extent)).abs() < 0.5,
+            "an uncapped container is sized by its child ({text_extent}mm at x=10), got {c_extent}"
+        );
+
+        // Container, render: uncapped, fills the frame remainder.
+        let source = dynamic_ctx_source(100.0, capped_container(10.0, None, vec![]));
+        assert!(
+            source.contains("width: 90mm"),
+            "an uncapped container fills the frame remainder: {source}"
+        );
+    }
+
+    /// #152. `brother_24mm_weights.yaml` sets `max_w: 117` at `at.x: 1.5` on a `width.max: 120`
+    /// tape, so the budget goes from 118.5 to 117 — a cap that binds by only 1.5mm. With the short
+    /// placeholder data the suite uses, the render must be unchanged: this pins that a cap this
+    /// close to the natural remainder does not perturb a real catalog/fixture template.
+    #[test]
+    fn brother_24mm_weights_render_is_unchanged_by_the_cap() {
+        let registry = crate::templates::load_all_for_tests().0;
+        let capped = registry.get("brother_24mm_weights").expect("template");
+        let TemplateFormat::Single {
+            width: Dimension::Dynamic {
+                max: Some(max_w), ..
+            },
+            ..
+        } = &capped.format
+        else {
+            panic!("expected a dynamic-width single format");
+        };
+        assert_eq!(*max_w, 120.0, "budget math below assumes width.max: 120");
+        let data = placeholder_data(capped);
+        let capped_png = render_thumbnail_png(capped, &data, None, &no_settings(), &no_datetime())
+            .expect("render capped");
+
+        // Same template, `max_w` stripped from both text items: the fallback remainder is
+        // `width.max - at.x` = 118.5mm, so 117mm binds by only 1.5mm. With the short placeholder
+        // text this suite uses, neither budget is the constraint that decides the fitted font
+        // size or width, so the two renders must be pixel-identical.
+        let mut uncapped = capped.clone();
+        let Layout::Items(items) = &mut uncapped.layout;
+        for item in items {
+            if let LayoutItem::Text { placement, .. } = item {
+                placement.max_w = None;
+            }
+        }
+        let uncapped_png =
+            render_thumbnail_png(&uncapped, &data, None, &no_settings(), &no_datetime())
+                .expect("render uncapped");
+
+        assert_eq!(
+            capped_png, uncapped_png,
+            "a 117mm cap on a 118.5mm remainder must not change the render with short placeholder text"
+        );
+    }
+
     fn to_text(at: [f32; 2], to: [f32; 2], value: &str) -> LayoutItem {
         LayoutItem::Text {
             name: None,
@@ -3837,6 +3965,7 @@ mod tests {
             "brother_18mm_qr",
             "brother_24mm",
             "brother_24mm_lines_divider",
+            "brother_24mm_max_w_cap",
             "brother_24mm_multiline",
             "brother_24mm_qr",
             "brother_24mm_weights",
