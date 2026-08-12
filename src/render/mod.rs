@@ -634,14 +634,24 @@ impl<'a> RenderContext<'a> {
                     // Same weight the render pass will use: this pre-pass decides the auto width, so
                     // measuring it unweighted would size the box for text that renders wider.
                     let weight = font_weight.unwrap_or(400);
-                    let at = placement.at.point();
-                    let size = placement.size_or_auto().ok_or_else(|| {
-                        AppError::unsupported_layout_item("to is not supported yet")
-                    })?;
-                    let size_w = &size.0[0];
-                    let box_h = size.0[1].value().unwrap_or(self.frame_height_units - at.y);
-                    if size_w.is_auto() {
-                        let budget = (budget_w - at.x).max(0.0);
+                    // `at.y` may itself be edge-relative (measured from the top), so it must be
+                    // resolved before any height arithmetic. `at.x` is already known to be
+                    // non-negative here: clause 1 skipped the item otherwise.
+                    let at = Point {
+                        x: placement.at.x(),
+                        y: resolve_coord(placement.at.y(), self.frame_height_units),
+                    };
+                    if placement.width_is_frame_dependent() {
+                        // The right margin an edge-relative `to` asks for. Subtracting it from the
+                        // budget keeps this item's contribution (at.x + width + inset) inside
+                        // `budget_w`, so the clamp can never hand back a box narrower than the
+                        // width the text was wrapped at.
+                        let inset = match &placement.extent {
+                            Extent::To(to) if to.x().is_sign_negative() => -to.x(),
+                            _ => 0.0,
+                        };
+                        let budget = (budget_w - at.x - inset).max(0.0);
+                        let box_h = self.measure_box_height(placement, at.y)?;
                         let m = fit_text_auto_length(
                             &text,
                             font_size,
@@ -655,18 +665,45 @@ impl<'a> RenderContext<'a> {
                         )?;
                         let w = m.width;
                         out.push(m);
-                        at.x + w
+                        at.x + w + inset
                     } else {
-                        at.x + size_w.value().unwrap_or(0.0)
+                        // A numeric size or a numeric `to`: the width is known, so this is the
+                        // ordinary fixed-width case and no MeasuredText is recorded.
+                        let (w, _) = self.resolve_size(
+                            &placement.at,
+                            &placement.extent,
+                            placement.max_w,
+                            placement.max_h,
+                            false,
+                        )?;
+                        at.x + w
                     }
                 }
                 LayoutItem::Qr { placement, .. } | LayoutItem::Image { placement, .. } => {
-                    let at_x = placement.at.point().x;
-                    let size = placement.size_or_auto().ok_or_else(|| {
-                        AppError::unsupported_layout_item("to is not supported yet")
-                    })?;
-                    let w = size.0[0].value().unwrap_or((budget_w - at_x).max(0.0));
-                    at_x + w
+                    let at_x = placement.at.x();
+                    match &placement.extent {
+                        // `auto` fills the remaining budget, as today.
+                        Extent::Size(size) => {
+                            at_x + size.0[0].value().unwrap_or((budget_w - at_x).max(0.0))
+                        }
+                        // A numeric `to` is a known width; a frame-dependent one contributes
+                        // nothing, since a qr or image has no measured intrinsic width to offer.
+                        Extent::To(_) => {
+                            if placement.width_is_frame_dependent() {
+                                0.0
+                            } else {
+                                at_x + self
+                                    .resolve_size(
+                                        &placement.at,
+                                        &placement.extent,
+                                        placement.max_w,
+                                        placement.max_h,
+                                        false,
+                                    )?
+                                    .0
+                            }
+                        }
+                    }
                 }
                 // An edge-relative endpoint is positioned against the very width being measured,
                 // so it cannot contribute to it.
@@ -689,17 +726,19 @@ impl<'a> RenderContext<'a> {
                             }
                         }
                     }
-                    let at_x = placement.at.point().x;
-                    let size = placement.size_or_auto().ok_or_else(|| {
-                        AppError::unsupported_layout_item("to is not supported yet")
-                    })?;
-                    let size_w = &size.0[0];
-                    if size_w.is_auto() {
-                        // auto-width container: width determined by children + padding
+                    let at_x = placement.at.x();
+                    let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
+                    if placement.width_is_frame_dependent() {
+                        // Width comes from the children. Any right-edge inset is theirs to pay
+                        // for, exactly as for text, so it comes out of their budget and goes back
+                        // into the contribution.
+                        let inset = match &placement.extent {
+                            Extent::To(to) if to.x().is_sign_negative() => -to.x(),
+                            _ => 0.0,
+                        };
                         let inner_budget =
-                            ((budget_w - at_x) - padding.left - padding.right).max(0.0);
-                        let inner_h = (self.frame_height_units
-                            - placement.at.point().y
+                            ((budget_w - at_x - inset) - padding.left - padding.right).max(0.0);
+                        let inner_h = (self.measure_box_height(placement, at_y)?
                             - padding.top
                             - padding.bottom)
                             .max(0.0);
@@ -713,26 +752,26 @@ impl<'a> RenderContext<'a> {
                             LengthMode::Fixed,
                         );
                         let child_extent = ctx.measure(items, inner_budget, out)?;
-                        at_x + padding.left + child_extent + padding.right
+                        at_x + padding.left + child_extent + padding.right + inset
                     } else {
-                        // fixed-width container: right extent is at.x + explicit width
-                        let explicit_w = size_w.value().unwrap_or(0.0);
+                        // A numeric size or a numeric `to`: the footprint is known.
+                        let (explicit_w, explicit_h) = self.resolve_size(
+                            &placement.at,
+                            &placement.extent,
+                            placement.max_w,
+                            placement.max_h,
+                            false,
+                        )?;
                         let rotation = placement
                             .rotate
                             .and_then(Rotation::from_degrees)
                             .unwrap_or(Rotation::R0);
-                        // Rotated containers are self-contained (explicit size, no auto descendants);
-                        // their author-space children must not be measured in physical-horizontal
-                        // terms, so do not recurse into them (#98).
+                        // Rotated containers are self-contained (§4.2.1): their author-space
+                        // children must not be measured in physical-horizontal terms, so do not
+                        // recurse into them (#98).
                         if !rotation.is_rotated() {
                             let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
-                            let inner_h = {
-                                let size_h = &size.0[1];
-                                let explicit_h = size_h
-                                    .value()
-                                    .unwrap_or(self.frame_height_units - placement.at.point().y);
-                                (explicit_h - padding.top - padding.bottom).max(0.0)
-                            };
+                            let inner_h = (explicit_h - padding.top - padding.bottom).max(0.0);
                             let ctx = RenderContext::new(
                                 (inner_w, inner_h),
                                 self.unit,
@@ -751,6 +790,16 @@ impl<'a> RenderContext<'a> {
             extent = extent.max(right);
         }
         Ok(extent)
+    }
+
+    /// A box item's vertical slot during measurement: its explicit height, the box its corners
+    /// describe, or the rest of the frame above `at_y`. `at_y` is the **resolved** bottom edge,
+    /// never the raw value: mixing a resolved `to.y` with a raw `at.y` inflates the slot.
+    fn measure_box_height(&self, placement: &Placement, at_y: f32) -> Result<f32, AppError> {
+        Ok(match &placement.extent {
+            Extent::Size(size) => size.0[1].value().unwrap_or(self.frame_height_units - at_y),
+            Extent::To(to) => resolve_coord(to.y(), self.frame_height_units) - at_y,
+        })
     }
 
     fn render_items(&self, items: &[LayoutItem]) -> Result<String, AppError> {
@@ -877,27 +926,47 @@ impl<'a> RenderContext<'a> {
             }
         }
 
-        // When auto-length is active and this text item has auto width, consume the next measured fit.
+        // When auto-length is active and this text item's width is frame-dependent (an auto size or
+        // an edge-relative `to`), consume the next measured fit. This must fire for exactly the
+        // items `measure` pushed a `MeasuredText` for; both call `width_is_frame_dependent` on the
+        // same placement so they never disagree.
         if let Some(al) = self.auto_length() {
-            let auto_width_size = placement
-                .size_or_auto()
-                .filter(|size| size.0[0].is_auto() && !placement.at.x().is_sign_negative());
-            if let Some(size) = auto_width_size {
+            if placement.width_is_frame_dependent() && !placement.at.x().is_sign_negative() {
                 let idx = al.cursor.get();
                 let m = al.texts.get(idx).ok_or_else(|| {
                     AppError::render_failed(format!("auto-length cursor overrun at index {idx}"))
                 })?;
                 al.cursor.set(idx + 1);
 
-                // The text's allotted vertical slot (`size` height or the remaining frame height).
-                let slot_h = self.resolve_size_value(
-                    &size.0[1],
-                    placement.max_h,
-                    Some(self.frame_height_units - point.y),
-                    "height",
-                )?;
+                // The text's allotted vertical slot: `size` height (honoring `max_h`) for an auto
+                // width, or the box `to`'s corners describe for an edge-relative `to`.
+                let slot_h = match &placement.extent {
+                    Extent::Size(size) => self.resolve_size_value(
+                        &size.0[1],
+                        placement.max_h,
+                        Some(self.frame_height_units - point.y),
+                        "height",
+                    )?,
+                    Extent::To(_) => self.measure_box_height(placement, point.y)?,
+                };
                 let slot_top = self.frame_height_units - point.y - slot_h;
-                self.check_box_bounds(&point, m.width, slot_h)?;
+                // The box width is the resolved extent for a `to` (so a right-edge inset stays a
+                // visible margin), and the content's fitted width for an auto size, matching what
+                // the measure pass pushed.
+                let box_w = match &placement.extent {
+                    Extent::To(_) => {
+                        self.resolve_size(
+                            &placement.at,
+                            &placement.extent,
+                            placement.max_w,
+                            placement.max_h,
+                            false,
+                        )?
+                        .0
+                    }
+                    Extent::Size(_) => m.width,
+                };
+                self.check_box_bounds(&point, box_w, slot_h)?;
                 let body = trim_blank_edges(&m.lines)
                     .iter()
                     .map(|l| {
@@ -916,7 +985,7 @@ impl<'a> RenderContext<'a> {
                 let inner = format!("#align({})[{body}]", typst_alignment(alignment));
                 let dx = format_length(left, self.unit)?;
                 let dy = format_length(slot_top, self.unit)?;
-                let box_width = format_length(m.width, self.unit)?;
+                let box_width = format_length(box_w, self.unit)?;
                 let box_height = format_length(slot_h, self.unit)?;
                 let content = self.wrap_rotation(inner, placement.rotate);
                 writeln!(
@@ -1750,6 +1819,236 @@ mod tests {
             out_plain.len(),
             1,
             "non-rotated container measures its auto child"
+        );
+    }
+
+    fn measured_extent_of(item: LayoutItem, budget: f32) -> (f32, usize) {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (budget, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let mut measured = Vec::new();
+        let extent = ctx
+            .measure(&[item], budget, &mut measured)
+            .expect("measure");
+        (extent, measured.len())
+    }
+
+    fn to_text(at: [f32; 2], to: [f32; 2], value: &str) -> LayoutItem {
+        LayoutItem::Text {
+            name: None,
+            value: Some(value.to_string()),
+            placement: Placement {
+                at: Position(at),
+                extent: crate::models::Extent::To(Position(to)),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        }
+    }
+
+    /// The whole point of #147: a text box that spans the label still sizes the label to its own
+    /// content, so several full-width centered lines produce a label as wide as the longest one.
+    #[test]
+    fn an_edge_relative_to_text_contributes_its_natural_width() {
+        let (extent, pushed) =
+            measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42"), 80.0);
+        assert!(
+            extent > 0.0 && extent < 80.0,
+            "expected a content-sized extent, got {extent}"
+        );
+        assert_eq!(
+            pushed, 1,
+            "an edge-relative to text is measured like an auto one"
+        );
+    }
+
+    /// A right margin has to be paid for out of the label width, or the text is clipped by its own box.
+    #[test]
+    fn an_inset_to_text_contributes_its_natural_width_plus_the_inset() {
+        let (plain, _) = measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42"), 80.0);
+        let (inset, _) = measured_extent_of(to_text([0.0, 0.0], [-2.0, 8.0], "Widget A-42"), 80.0);
+        assert!(
+            (inset - (plain + 2.0)).abs() < 0.2,
+            "expected {} + 2, got {inset}",
+            plain
+        );
+    }
+
+    /// A numeric `to` is a fixed width: known before the frame is, so it measures like `size:` and is
+    /// rendered by fit_text_to_box, not replayed from a MeasuredText.
+    #[test]
+    fn a_numeric_to_text_measures_as_a_fixed_width() {
+        let (extent, pushed) = measured_extent_of(
+            to_text([0.0, 0.0], [30.0, 8.0], "text far too long for 30mm"),
+            100.0,
+        );
+        assert_eq!(extent, 30.0);
+        assert_eq!(pushed, 0, "a fixed-width item must not push a MeasuredText");
+    }
+
+    /// A slot expressed with edge-relative corners must measure the same as the identical slot
+    /// expressed with plain ones. `at.y: -32` in a 40mm frame is y=8, so the slot is 32mm tall; mixing
+    /// a resolved `to.y` with a raw `at.y` would compute 72mm, and the fitter would choose a font size
+    /// the render-time box cannot fit.
+    #[test]
+    fn an_edge_relative_at_y_is_resolved_before_the_measure_height() {
+        fn wrapped(at: [f32; 2], to: [f32; 2]) -> LayoutItem {
+            LayoutItem::Text {
+                name: None,
+                value: Some("Some words that will wrap across several lines".to_string()),
+                placement: Placement {
+                    at: Position(at),
+                    extent: crate::models::Extent::To(Position(to)),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Range {
+                    min: 6.0,
+                    max: 28.0,
+                },
+                font_weight: None,
+                multiline: true,
+                alignment: crate::models::Alignment::default(),
+            }
+        }
+        // The frame is 40mm tall (see `measured_extent_of`), so these two describe the same 32mm slot.
+        let (edge, _) = measured_extent_of(wrapped([0.0, -32.0], [-0.0, -0.0]), 60.0);
+        let (plain, _) = measured_extent_of(wrapped([0.0, 8.0], [-0.0, 40.0]), 60.0);
+        assert!(
+            (edge - plain).abs() < 0.01,
+            "the same slot measured {edge} with edge-relative corners and {plain} with plain ones"
+        );
+    }
+
+    /// A container spanning to the right edge is measured by its children, like an auto-width one.
+    /// Measuring it at its resolved width instead would peg every such label to its maximum.
+    #[test]
+    fn an_edge_relative_to_container_is_measured_by_its_children() {
+        let (bare, _) = measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42"), 80.0);
+
+        let container = LayoutItem::Container {
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: crate::models::Extent::To(Position([-0.0, 10.0])),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            option: None,
+            frame: None,
+            padding: crate::models::Padding {
+                top: 0.0,
+                right: 1.0,
+                bottom: 0.0,
+                left: 1.0,
+            },
+            items: vec![to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42")],
+        };
+        let (wrapped, pushed) = measured_extent_of(container, 80.0);
+        assert_eq!(pushed, 1, "the child text is still measured exactly once");
+        assert!(
+            wrapped < 80.0,
+            "the container was measured at its resolved width ({wrapped}), not by its children"
+        );
+        // 1mm of padding a side, and the child's budget shrinks by the same 2mm, so allow some slack.
+        assert!(
+            (wrapped - (bare + 2.0)).abs() < 0.5,
+            "expected roughly the child width {bare} plus 2mm of padding, got {wrapped}"
+        );
+    }
+
+    /// A qr spanning to the right edge has no intrinsic width this codebase measures, so it must not
+    /// drag the label out to its maximum. Text alone sizes the label.
+    #[test]
+    fn an_edge_relative_to_qr_contributes_nothing() {
+        let (extent, pushed) = measured_extent_of(
+            LayoutItem::Qr {
+                name: None,
+                value: Some("payload".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 8.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            },
+            80.0,
+        );
+        assert_eq!(extent, 0.0);
+        assert_eq!(pushed, 0);
+    }
+
+    /// Carried over from Task 4's review: no unit test covered an edge-relative `at.x` on a `Qr`
+    /// specifically (only `Text` had one). Clause 1 must skip it the same way regardless of item kind.
+    #[test]
+    fn an_edge_relative_at_x_on_a_qr_contributes_only_its_inset() {
+        let (extent, pushed) = measured_extent_of(
+            LayoutItem::Qr {
+                name: None,
+                value: Some("payload".to_string()),
+                placement: Placement {
+                    at: Position([-5.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Value(10.0),
+                        SizeValue::Value(10.0),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            },
+            80.0,
+        );
+        assert_eq!(
+            extent, 5.0,
+            "an edge-relative at.x contributes only its inset"
+        );
+        assert_eq!(pushed, 0, "a qr never pushes a MeasuredText");
+    }
+
+    /// Measuring against the un-inset budget lets a text whose natural width reaches the budget
+    /// contribute budget + inset. The page clamps back to `max`, and the text is then fitted into a
+    /// box `inset` narrower than the width it was measured at, clipping it. The contribution must
+    /// never exceed the budget it was measured against.
+    #[test]
+    fn an_inset_to_text_never_measures_wider_than_its_own_box() {
+        let long = "a very long string that will not fit in forty millimetres at all";
+        let (extent, pushed) = measured_extent_of(to_text([0.0, 0.0], [-2.0, 8.0], long), 40.0);
+        assert_eq!(pushed, 1);
+        assert!(
+            extent <= 40.0 + 1.0e-3,
+            "an inset item contributed {extent} against a 40mm budget: the inset was not subtracted \
+             from the measure budget, so the label clamps to 40 and the text is clipped by 2mm"
+        );
+        // The measured text itself has to fit the box it will get: budget minus the inset.
+        let (plain, _) = measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], long), 38.0);
+        assert!(
+            (extent - (plain + 2.0)).abs() < 0.2,
+            "expected the inset contribution to be the 38mm-budget width plus 2, got {extent} vs {plain}"
         );
     }
 
