@@ -745,9 +745,16 @@ impl<'a> RenderContext<'a> {
                 LayoutItem::Qr { placement, .. } | LayoutItem::Image { placement, .. } => {
                     let at_x = placement.at.x();
                     match &placement.extent {
-                        // `auto` fills the remaining budget, as today.
+                        // `auto` fills the remaining budget, capped by `max_w`. The render side
+                        // already resolves this through `resolve_size(.., allow_auto_fill: false)`,
+                        // which honors `max_w` exactly, so without the cap here the label was
+                        // sized for a code that renders far narrower.
                         Extent::Size(size) => {
-                            at_x + size.0[0].value().unwrap_or((budget_w - at_x).max(0.0))
+                            at_x + size.0[0].value().unwrap_or(
+                                (budget_w - at_x)
+                                    .min(placement.max_w.unwrap_or(f32::INFINITY))
+                                    .max(0.0),
+                            )
                         }
                         // A numeric `to` is a known width; a frame-dependent one contributes
                         // nothing, since a qr or image has no measured intrinsic width to offer.
@@ -2121,6 +2128,35 @@ mod tests {
         assert!(
             capped <= 20.0 + 1.0e-3,
             "max_w must bind during measurement: measured {capped} against a 20mm cap"
+        );
+    }
+
+    /// A capped qr sizes the label to its cap, not to `width.max`. Rendering already honored `max_w`
+    /// here, so before this fix an auto-length label came out `width.max` long with a small code on
+    /// it. An image item takes the same measure arm, so this covers both.
+    #[test]
+    fn max_w_caps_an_auto_width_qr_during_measurement() {
+        let qr = |max_w: Option<f32>| LayoutItem::Qr {
+            name: None,
+            value: Some("abc".to_string()),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: crate::models::Extent::Size(Size([
+                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::Value(20.0),
+                ])),
+                max_w,
+                max_h: None,
+                rotate: None,
+            },
+            params: None,
+        };
+        let (capped, pushed) = measured_extent_of(qr(Some(30.0)), 100.0);
+        assert_eq!(pushed, 0, "a qr never records a MeasuredText");
+        assert_eq!(
+            capped, 30.0,
+            "a capped qr must contribute its cap, not the whole {}mm budget",
+            100.0
         );
     }
 
