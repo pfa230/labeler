@@ -411,7 +411,9 @@ be > 0. (`line` does not use `size`; see §4.1.)
   key → `MissingField`; bad base64 / unsupported format / asset path problems → `UnsupportedLayoutItem`.
 - **`line`** — `at` (start, default `[0,0]`) and `to` (end), both in frame coordinates, either absolute
   or edge-relative (§6); endpoints must differ **after** resolution. Plus `thickness` (> 0). Lines have
-  no box `size`/`fit`/rotation. Endpoints must lie within the layout bounds.
+  no box `size`/`fit`/rotation. Endpoints must lie within the layout bounds: an out-of-bounds endpoint
+  is an error, not clipped. An absolute endpoint past `width.max` is rejected at load even on a
+  dynamic-width template, since no final width can bring it back inside.
 - **`container`** — a recursive group. Fields: placement (size defaults to `auto`/`auto` = fill parent),
   optional `option` gate (§5), optional `frame` (`thickness` > 0, `rounded` bool), `padding`, and
   `items` (nested layout). Children are positioned relative to the container's padded inner box.
@@ -440,10 +442,11 @@ A `container` may set `rotate` to turn a portrait design onto a landscape slot (
   "above" in reading orientation regardless of angle). The physical `frame` outline is **not**
   rotated.
 - **No `auto` under rotation.** A rotated container must have an extent that resolves at compile time:
-  an explicit `size`, or a `to` whose width is not frame-dependent (both corners plain, or both
-  edge-relative, which cancel). No descendant may use `auto` (author-horizontal maps to
-  physical-vertical, which the dynamic-width measurement model does not handle). The measurement pass
-  does not recurse into a rotated container.
+  an explicit `size`, or a `to`. A `to` is rejected only when its width is frame-dependent (exactly
+  one corner edge-relative) **and** the template is dynamic-width; on a fixed-width template there is
+  no frame whose width varies, so every `to` resolves. No descendant may use `auto` (author-horizontal
+  maps to physical-vertical, which the dynamic-width measurement model does not handle). The
+  measurement pass does not recurse into a rotated container.
 
 ## 5. Options
 
@@ -492,15 +495,23 @@ edge-relative `x` is bounds-checked against `width.max` at load time and re-chec
 edge-relative coordinate never contributes a frame-dependent width to the measured content extent, but
 an item that sizes itself to its content still contributes that content: a text box spanning to the
 right edge is measured at its natural width, so several full-width centered lines size the label to the
-longest of them. An edge-relative `at.x` contributes only its inset, and cannot be combined with an
-`auto` or frame-dependent width on a dynamic-width template.
+longest of them. An edge-relative coordinate contributes its **inset** — the narrowest label it fits
+on — and that rule is the same for a box's `at.x` and for either endpoint of a `line`. A right-anchored
+`at.x` cannot be combined with an `auto` or frame-dependent width on a dynamic-width template.
 
 A `to`-sized `qr` or `image` is the exception: neither item type has an intrinsic content width the
 engine measures (see §4.1), so a frame-dependent `to` on either contributes nothing to the measured
 extent and the item simply stretches to whatever width the label resolves to. On a dynamic-width label
-where no other item sizes the content, that means the width falls back to `width.min` rather than
-erroring. Intrinsic qr/image content sizing is deferred; see
-[#149](https://github.com/pfa230/labeler/issues/149).
+where no other item sizes the content, the width falls back to `width.min`, which is enough for the
+item only when its own `at.x` fits inside that fallback; anchored further right than `width.min` the
+box resolves to a negative width and the render fails with `UnsupportedLayoutItem`. Intrinsic qr/image
+content sizing is deferred; see [#149](https://github.com/pfa230/labeler/issues/149).
+
+A box whose extent resolves to exactly **zero** is not an error at render: an empty data value can
+measure to precisely the item's own `at.x`, collapsing a `to`-spanning box to zero width, and a blank
+optional field is ordinary input rather than an authoring mistake. A **negative** extent is still an
+error, and load-time validation (which resolves against the `width.max` frame) still rejects corners
+that are inverted or degenerate there.
 
 ## 7. Rendering pipeline
 
@@ -898,7 +909,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 ## Changelog
 
 - **2026-08-12**: Edge-relative (sign-negative) coordinates and `to:` opposite-corner placement on box items
-  (ADR-0050, #146, #147).
+  (ADR-0050, #146, #147). Two behavior changes fall out of it: **a `line` endpoint outside the layout
+  bounds is now an error rather than being clipped** (an absolute endpoint past `width.max` is rejected
+  at load, an edge-relative one at render), and a box whose extent resolves to exactly zero renders as
+  an empty box instead of failing, so a blank data field no longer turns a `to`-spanning text into a
+  `422`.
 - **2026-08-12**: Text items accept `font_weight` (100-900 in steps of 100; #97), honored by the
   renderer and by the auto-shrink fitter. Fitting now measures the font instance Typst actually
   renders — the `wght` axis from the item's weight and the `opsz` axis from the font size, both of

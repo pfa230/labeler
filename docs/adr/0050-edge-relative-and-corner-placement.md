@@ -60,6 +60,13 @@ distinguishes *how* an item contributes:
   contributes to the label's content extent. Several full-width centered lines each measure at their
   own text width, so the label sizes to the longest of them, exactly as a fixed-width auto-length
   item would.
+- A `line`'s edge-relative endpoint follows the leaf-item rule: each endpoint contributes `|x|`, so
+  an inset endpoint contributes its inset and a `-0.0` endpoint (the full-width divider) contributes
+  `0`. An earlier draft of this design filtered edge-relative endpoints out of the measurement
+  entirely, which contradicted the "its inset, the narrowest label it fits on" principle above and
+  let the label resolve narrower than the line's own inset: `at: [-20, y], to: [-0.0, y]` beside
+  content-sized text failed with "a coordinate resolves outside the frame" while the equivalent
+  right-anchored box rendered. The line rule now matches the box rule.
 - A container whose own position is edge-relative but whose *inner width* is not (see decision 8) is
   measured through: its children still contribute their content width, and the container itself adds
   only its own inset on top.
@@ -141,6 +148,27 @@ neither item type can size the label to itself, and a `to`-sized one contributes
 content extent rather than its own footprint. This is a new measurement capability, not a placement
 change, so it is out of scope here and filed as a follow-up issue,
 [#149](https://github.com/pfa230/labeler/issues/149).
+
+**12. Defer only what is genuinely undecidable at load; "dynamic-width" is not itself a reason to
+skip a check.** Decision 7 splits validation across load and render, and the first cut of that split
+was too eager: it skipped a check whenever the template was dynamic-width *and* a coordinate was
+edge-relative, without asking whether the frame width actually survived into the inequality. Two did
+not. The box bound `resolve_coord(at.x, W) + width <= W` reduces to `at.x + width <= 0` for an
+edge-relative `at.x` — `W` cancels — and `validate_placement_position` already guarantees such an
+item's width is a compile-time constant, so deferring it let templates load that every render then
+rejected. A `line`'s *plain* endpoint past `width.max` is likewise a constant no final width can
+bring back inside. Both are now rejected at load. What remains deferred is only what depends on the
+resolved width: an edge-relative endpoint's degeneracy against a plain one, and the render-time
+mirror of the bounds checks (SPEC §7).
+
+**13. A zero extent is a render-time outcome; a negative one is an authoring error.** `to`-extent
+resolution rejects `<= 0` at load, where it resolves against the `width.max` frame and a
+non-positive result means the corners are genuinely inverted or degenerate. At render it rejects only
+a *negative* extent. An empty data value measures to nothing, so the label can clamp to exactly the
+item's own `at.x` and a `to`-spanning box collapses to zero width; blank optional fields are ordinary
+in CSV-driven printing, and a zero-width Typst box emits harmlessly, so failing the whole render with
+a `422` would make a legitimate template data-dependent. The `size: [auto, ...]` spelling of the same
+item already rendered an empty box, so this also removes an inconsistency between the two spellings.
 
 ## Consequences
 
