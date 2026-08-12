@@ -415,7 +415,8 @@ A fallback (or a `max_*`-capped resolution) of exactly `0` is not automatically 
 dynamic-width `single` template, a `container`'s own `auto` **width** axis resolving to `0` renders an
 empty (zero-width) box rather than erroring — a legitimate outcome of measurement, not a mistake
 (ADR-0053, ADR-0054 § Correcting ADR-0053). Every other `auto` axis that resolves through the shared
-fallback helper — `text` on either axis, and a `container`'s **height** axis on any format — treats a
+fallback helper — `text` on either axis, a `container`'s **height** axis on any format, and a
+`container`'s **width** axis on any non-dynamic-width format — treats a
 `<= 0` result as an error: `size_auto_no_room` when no `max_*` is the binding value, `max_size_invalid`
 when a `max_*` is (§10.1).
 
