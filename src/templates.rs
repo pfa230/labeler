@@ -362,8 +362,14 @@ fn validate_layout_item(
             )?;
             validate_font_weight(*font_weight)?;
             validate_rotation(&placement.rotate, false)?;
-            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
+            let auto_bounds = extent_auto_bounds(
+                &placement.extent,
+                layout_bounds,
+                &placement.at,
+                is_dynamic_width,
+            );
             let (width, height) = resolve_size(
+                &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
@@ -389,8 +395,14 @@ fn validate_layout_item(
                 is_dynamic_width,
             )?;
             validate_rotation(&placement.rotate, false)?;
-            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
+            let auto_bounds = extent_auto_bounds(
+                &placement.extent,
+                layout_bounds,
+                &placement.at,
+                is_dynamic_width,
+            );
             let (width, height) = resolve_size(
+                &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
@@ -425,8 +437,14 @@ fn validate_layout_item(
                 is_dynamic_width,
             )?;
             validate_rotation(&placement.rotate, false)?;
-            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
+            let auto_bounds = extent_auto_bounds(
+                &placement.extent,
+                layout_bounds,
+                &placement.at,
+                is_dynamic_width,
+            );
             let (width, height) = resolve_size(
+                &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
@@ -504,18 +522,31 @@ fn validate_layout_item(
                 .and_then(crate::models::Rotation::from_degrees)
                 .unwrap_or(crate::models::Rotation::R0);
             if rotation.is_rotated() {
-                if placement
-                    .size_or_auto()
-                    .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto())
-                {
-                    return Err("a rotated container must have an explicit size".to_string());
+                // §4.2.1: the inner author canvas must be a compile-time constant. `auto` stays
+                // banned outright (ADR-0036, unchanged); a `to` is only a problem when its width is
+                // frame-dependent, which on a fixed frame it never is.
+                let unresolvable = match &placement.extent {
+                    Extent::Size(size) => size.0[0].is_auto() || size.0[1].is_auto(),
+                    Extent::To(_) => is_dynamic_width && placement.width_is_frame_dependent(),
+                };
+                if unresolvable {
+                    return Err(
+                        "a rotated container must have an extent that resolves at compile time"
+                            .to_string(),
+                    );
                 }
                 if subtree_uses_auto(items) {
                     return Err("auto size is not allowed inside a rotated container".to_string());
                 }
             }
-            let auto_bounds = auto_resolve_bounds(layout_bounds, &placement.at, is_dynamic_width);
+            let auto_bounds = extent_auto_bounds(
+                &placement.extent,
+                layout_bounds,
+                &placement.at,
+                is_dynamic_width,
+            );
             let (width, height) = resolve_size(
+                &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
@@ -576,12 +607,13 @@ fn validate_layout_item(
                 return Err("container padding leaves no room for content".to_string());
             }
             let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
-            // Children of an auto-width container on a dynamic-width single may also use auto
-            // width; they resolve to the container inner width at render time. Rotated containers
-            // reject auto entirely (above), so child_dynamic is false there.
-            let child_dynamic = is_dynamic_width
-                && !rotation.is_rotated()
-                && placement.size_or_auto().is_some_and(|s| s.0[0].is_auto());
+            // Children of a frame-dependent container on a dynamic-width single may also use auto
+            // width; they resolve to the container inner width at render time. A container sized
+            // to the right edge via `to` is exactly as frame-dependent as an `auto` one. Rotated
+            // containers reject a frame-dependent extent entirely (above), so child_dynamic is
+            // false there.
+            let child_dynamic =
+                is_dynamic_width && !rotation.is_rotated() && placement.width_is_frame_dependent();
             validate_layout_items(items, Some(&container_bounds), options, child_dynamic)?;
         }
     }
@@ -611,6 +643,21 @@ fn auto_resolve_bounds(
         width: (bounds.width - at_x).max(0.0),
         height: bounds.height,
     })
+}
+
+/// `auto_resolve_bounds`'s at.x-narrowed budget exists solely for `SizeValue::Auto`'s "fill to the
+/// frame edge" fallback (`resolve_size_value`); a `to` box already subtracts `at.x` itself inside
+/// `resolve_to_extent`, so applying the narrowed budget there too would double-subtract it.
+fn extent_auto_bounds(
+    extent: &Extent,
+    layout_bounds: Option<&LayoutBounds>,
+    at: &Position,
+    is_dynamic_width: bool,
+) -> Option<LayoutBounds> {
+    match extent {
+        Extent::Size(_) => auto_resolve_bounds(layout_bounds, at, is_dynamic_width),
+        Extent::To(_) => None,
+    }
 }
 
 /// Bounds-check a placement's anchor. A sign-negative component is edge-relative (#146) and
@@ -678,16 +725,39 @@ fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), Str
     Ok(())
 }
 
+/// `size = to - at`, both corners resolved against the frame first. Both components must be
+/// strictly positive: `to` is the top-right corner of a box whose bottom-left is `at`.
+fn resolve_to_extent(
+    at: &Position,
+    to: &Position,
+    frame_w: f32,
+    frame_h: f32,
+) -> Result<(f32, f32), String> {
+    let width = resolve_coord(to.x(), frame_w) - resolve_coord(at.x(), frame_w);
+    let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
+    if width <= 0.0 || height <= 0.0 {
+        return Err("to must be above and to the right of at".to_string());
+    }
+    Ok((width, height))
+}
+
 fn resolve_size(
+    at: &Position,
     extent: &Extent,
     max_w: Option<f32>,
     max_h: Option<f32>,
     layout_bounds: Option<&LayoutBounds>,
     allow_auto_fill: bool,
 ) -> Result<(f32, f32), String> {
-    // Task 7 resolves `to` against the frame; until then it is a parse-time-only shape.
-    let Extent::Size(size) = extent else {
-        return Err("to is not supported yet".to_string());
+    let size = match extent {
+        Extent::Size(size) => size,
+        Extent::To(to) => {
+            // Bounds are absent only where no bounds check follows.
+            let Some(layout_bounds) = layout_bounds else {
+                return Ok((0.0, 0.0));
+            };
+            return resolve_to_extent(at, to, layout_bounds.width, layout_bounds.height);
+        }
     };
     if let Some(max_w) = max_w {
         if max_w <= 0.0 {
@@ -962,6 +1032,41 @@ mod tests {
         // a child 50 wide exceeds the 40-wide author canvas -> error.
         let bad = ok.replace("size: [30,70]", "size: [50,70]");
         assert!(parse_and_validate(&bad).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_a_to_box_spanning_to_the_right_edge() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// `to` must be above and to the right of `at`.
+    #[test]
+    fn validate_rejects_an_inverted_to_box() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [20.0, 0.0]\n    to: [10.0, 12.0]\n    font_size: 6\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    /// §4.2.1: a rotated container's inner canvas has to be known at compile time.
+    #[test]
+    fn validate_rejects_a_rotated_container_with_a_frame_dependent_to() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    /// Both corners edge-relative is a constant 20-unit box, so the canvas is known and it is fine.
+    #[test]
+    fn validate_accepts_a_rotated_container_whose_corners_both_hug_the_edge() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 25, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [-20.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// A container sized to the right edge is frame-dependent, so its children are dynamic too and an
+    /// auto-width child resolves against the container's inner width rather than being rejected.
+    #[test]
+    fn validate_accepts_an_auto_child_inside_a_to_spanned_container() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 20, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [4.0, 0.0]\n    to: [-0.0, 12.0]\n    items:\n      - type: text\n        value: \"x\"\n        at: [2.0, 1.0]\n        size: [auto, 10.0]\n        font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     #[test]

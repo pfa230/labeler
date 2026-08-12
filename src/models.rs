@@ -251,11 +251,13 @@ impl Placement {
     }
 
     /// True when the item's width cannot be known until the enclosing frame's width is.
-    /// Task 7 fills in the `To` arm; here it is conservatively false.
     pub fn width_is_frame_dependent(&self) -> bool {
         match &self.extent {
             Extent::Size(size) => size.0[0].is_auto(),
-            Extent::To(_) => false,
+            // `size = to.x - at.x`. Each edge-relative corner contributes one `frame_width` term,
+            // so two of them cancel and the width is a constant. Only exactly one is
+            // frame-dependent.
+            Extent::To(to) => self.at.x().is_sign_negative() != to.x().is_sign_negative(),
         }
     }
 }
@@ -605,5 +607,37 @@ mod placement_tests {
         let p = Position([-0.0, 5.0]);
         assert!(p.x().is_sign_negative());
         assert!(!p.y().is_sign_negative());
+    }
+
+    /// `size = to.x - at.x`, and each edge-relative corner adds one `frame_width` term, so two cancel.
+    /// Only exactly one edge-relative corner makes the width frame-dependent.
+    #[test]
+    fn to_frame_dependence_is_the_xor_of_the_corners() {
+        fn dep(at: [f32; 2], to: [f32; 2]) -> bool {
+            Placement {
+                at: Position(at),
+                extent: super::Extent::To(Position(to)),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            }
+            .width_is_frame_dependent()
+        }
+        assert!(
+            !dep([0.0, 0.0], [30.0, 5.0]),
+            "two plain corners are a constant width"
+        );
+        assert!(
+            !dep([-20.0, 0.0], [-0.0, 5.0]),
+            "two edge corners cancel: a fixed 20-unit box"
+        );
+        assert!(
+            dep([0.0, 0.0], [-0.0, 5.0]),
+            "spanning to the right edge follows the frame"
+        );
+        assert!(
+            dep([-20.0, 0.0], [90.0, 5.0]),
+            "one edge corner leaves a frame term"
+        );
     }
 }

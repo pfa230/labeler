@@ -484,6 +484,25 @@ fn item_anchor(item: &LayoutItem) -> Option<&Position> {
     }
 }
 
+/// `size = to - at`, both corners resolved against the frame first. Both components must be
+/// strictly positive: `to` is the top-right corner of a box whose bottom-left is `at`. Mirrors
+/// `templates::resolve_to_extent` (kept in sync per this file's compile-time/render-time note).
+fn resolve_to_extent(
+    at: &Position,
+    to: &Position,
+    frame_w: f32,
+    frame_h: f32,
+) -> Result<(f32, f32), AppError> {
+    let width = resolve_coord(to.x(), frame_w) - resolve_coord(at.x(), frame_w);
+    let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
+    if width <= 0.0 || height <= 0.0 {
+        return Err(AppError::unsupported_layout_item(
+            "to must be above and to the right of at",
+        ));
+    }
+    Ok((width, height))
+}
+
 struct RenderContext<'a> {
     frame_width_units: f32,
     frame_height_units: f32,
@@ -911,8 +930,13 @@ impl<'a> RenderContext<'a> {
             }
         }
 
-        let (width, box_height_units) =
-            self.resolve_size(&placement.extent, placement.max_w, placement.max_h, false)?;
+        let (width, box_height_units) = self.resolve_size(
+            &placement.at,
+            &placement.extent,
+            placement.max_w,
+            placement.max_h,
+            false,
+        )?;
         self.check_box_bounds(&point, width, box_height_units)?;
         let bottom = point.y;
         let top = bottom + box_height_units;
@@ -958,8 +982,13 @@ impl<'a> RenderContext<'a> {
         placement: &Placement,
         params: &Option<crate::models::QrParams>,
     ) -> Result<(), AppError> {
-        let (width, height) =
-            self.resolve_size(&placement.extent, placement.max_w, placement.max_h, false)?;
+        let (width, height) = self.resolve_size(
+            &placement.at,
+            &placement.extent,
+            placement.max_w,
+            placement.max_h,
+            false,
+        )?;
         let point = self.resolve_point(&placement.at)?;
         self.check_box_bounds(&point, width, height)?;
         let left = point.x;
@@ -1008,8 +1037,13 @@ impl<'a> RenderContext<'a> {
                 ))
             }
         };
-        let (width, height) =
-            self.resolve_size(&placement.extent, placement.max_w, placement.max_h, false)?;
+        let (width, height) = self.resolve_size(
+            &placement.at,
+            &placement.extent,
+            placement.max_w,
+            placement.max_h,
+            false,
+        )?;
         let point = self.resolve_point(&placement.at)?;
         self.check_box_bounds(&point, width, height)?;
         let left = point.x;
@@ -1102,11 +1136,23 @@ impl<'a> RenderContext<'a> {
             {
                 (self.frame_width_units - left).max(0.0)
             } else {
-                self.resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
-                    .0
+                self.resolve_size(
+                    &placement.at,
+                    &placement.extent,
+                    placement.max_w,
+                    placement.max_h,
+                    true,
+                )?
+                .0
             };
             let height = self
-                .resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
+                .resolve_size(
+                    &placement.at,
+                    &placement.extent,
+                    placement.max_w,
+                    placement.max_h,
+                    true,
+                )?
                 .1;
             self.check_box_bounds(&point, width, height)?;
             let bottom = point.y;
@@ -1176,10 +1222,22 @@ impl<'a> RenderContext<'a> {
 
         // Rotated path (R90/R180/R270). Validation guarantees an explicit size and no auto here.
         let width = self
-            .resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
+            .resolve_size(
+                &placement.at,
+                &placement.extent,
+                placement.max_w,
+                placement.max_h,
+                true,
+            )?
             .0;
         let height = self
-            .resolve_size(&placement.extent, placement.max_w, placement.max_h, true)?
+            .resolve_size(
+                &placement.at,
+                &placement.extent,
+                placement.max_w,
+                placement.max_h,
+                true,
+            )?
             .1;
         self.check_box_bounds(&point, width, height)?;
         let bottom = point.y;
@@ -1255,14 +1313,17 @@ impl<'a> RenderContext<'a> {
 
     fn resolve_size(
         &self,
+        at: &Position,
         extent: &Extent,
         max_w: Option<f32>,
         max_h: Option<f32>,
         allow_auto_fill: bool,
     ) -> Result<(f32, f32), AppError> {
-        // Task 7 resolves `to` against the frame; until then it is a parse-time-only shape.
-        let Extent::Size(size) = extent else {
-            return Err(AppError::unsupported_layout_item("to is not supported yet"));
+        let size = match extent {
+            Extent::Size(size) => size,
+            Extent::To(to) => {
+                return resolve_to_extent(at, to, self.frame_width_units, self.frame_height_units);
+            }
         };
         let fallback = if allow_auto_fill {
             Some((self.frame_width_units, self.frame_height_units))
@@ -3561,6 +3622,50 @@ mod tests {
             err.message_text().contains("must differ"),
             "unexpected error: {}",
             err.message_text()
+        );
+    }
+
+    /// The box spans from x=0 to the frame's right edge, so a centered line centers on the label.
+    #[test]
+    fn a_to_box_renders_at_the_full_frame_width() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (40.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let source = ctx
+            .render_items(&[LayoutItem::Text {
+                name: None,
+                value: Some("x".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 12.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }])
+            .expect("render");
+        assert!(
+            source.contains("width: 40mm"),
+            "expected a full-width box, got: {source}"
         );
     }
 }
