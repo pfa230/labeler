@@ -78,13 +78,6 @@ All routes are under `/api` (the root is reserved for the web UI); unknown `/api
 `/api` routes require authentication (ADR-0017), so export `LABELER_API_TOKEN` (create one in the UI
 under Settings) before running it; the script sends it as `Authorization: Bearer $LABELER_API_TOKEN`.
 
-## Error model
-
-All errors are JSON as `{ "error": { code, message, details } }`. `code` is stable and part of the
-contract, and for some codes `details` carries a stable `reason` naming the specific cause; `message`
-is prose and is not something to match on. [`docs/SPEC.md`](docs/SPEC.md) §10 has the code table and
-§10.1 the reason table.
-
 ## Development
 
 ```bash
