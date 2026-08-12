@@ -1532,11 +1532,18 @@ impl<'a> RenderContext<'a> {
                 Ok(*value)
             }
             SizeValue::Auto(_) => {
-                let resolved = max.or(fallback).ok_or_else(|| {
-                    AppError::unsupported_layout_item(format!(
-                        "size {label} is auto but no max_{label} provided"
-                    ))
-                })?;
+                // `max_*` caps the resolution of `auto`; it does not replace the fallback. A cap
+                // larger than the room available is simply not binding, so the smaller wins.
+                let resolved = match (max, fallback) {
+                    (Some(max), Some(fallback)) => max.min(fallback),
+                    (Some(max), None) => max,
+                    (None, Some(fallback)) => fallback,
+                    (None, None) => {
+                        return Err(AppError::unsupported_layout_item(format!(
+                            "size {label} is auto but no max_{label} provided"
+                        )))
+                    }
+                };
                 if resolved <= 0.0 {
                     return Err(AppError::unsupported_layout_item(format!(
                         "max_{label} must be greater than 0"
@@ -2359,6 +2366,58 @@ mod tests {
         assert!(
             src.contains("clip: true"),
             "R0 container keeps its single clipped box"
+        );
+    }
+
+    /// The render-time copy of the helper must cap identically, or it drifts from validation —
+    /// which is exactly the class of bug #152 is.
+    #[test]
+    fn render_resolve_size_value_caps_rather_than_substituting() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (100.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
+        assert_eq!(
+            ctx.resolve_size_value(&auto, Some(30.0), Some(10.0), "width")
+                .unwrap(),
+            10.0
+        );
+        assert_eq!(
+            ctx.resolve_size_value(&auto, Some(10.0), Some(30.0), "width")
+                .unwrap(),
+            10.0
+        );
+        assert_eq!(
+            ctx.resolve_size_value(&auto, Some(30.0), None, "width")
+                .unwrap(),
+            30.0
+        );
+        assert_eq!(
+            ctx.resolve_size_value(&auto, None, Some(30.0), "width")
+                .unwrap(),
+            30.0
+        );
+        assert!(ctx.resolve_size_value(&auto, None, None, "width").is_err());
+        assert_eq!(
+            ctx.resolve_size_value(&SizeValue::Value(50.0), Some(30.0), Some(30.0), "width")
+                .unwrap(),
+            50.0,
+            "a numeric size is never clamped by the bound"
         );
     }
 
