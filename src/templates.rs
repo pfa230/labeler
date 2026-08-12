@@ -362,18 +362,12 @@ fn validate_layout_item(
             )?;
             validate_font_weight(*font_weight)?;
             validate_rotation(&placement.rotate, false)?;
-            let auto_bounds = extent_auto_bounds(
-                &placement.extent,
-                layout_bounds,
-                &placement.at,
-                is_dynamic_width,
-            );
             let (width, height) = resolve_size(
                 &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
-                auto_bounds.as_ref().or(layout_bounds),
+                layout_bounds,
                 is_dynamic_width,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -389,18 +383,12 @@ fn validate_layout_item(
                 is_dynamic_width,
             )?;
             validate_rotation(&placement.rotate, false)?;
-            let auto_bounds = extent_auto_bounds(
-                &placement.extent,
-                layout_bounds,
-                &placement.at,
-                is_dynamic_width,
-            );
             let (width, height) = resolve_size(
                 &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
-                auto_bounds.as_ref().or(layout_bounds),
+                layout_bounds,
                 false,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -425,18 +413,12 @@ fn validate_layout_item(
                 is_dynamic_width,
             )?;
             validate_rotation(&placement.rotate, false)?;
-            let auto_bounds = extent_auto_bounds(
-                &placement.extent,
-                layout_bounds,
-                &placement.at,
-                is_dynamic_width,
-            );
             let (width, height) = resolve_size(
                 &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
-                auto_bounds.as_ref().or(layout_bounds),
+                layout_bounds,
                 false,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -526,18 +508,12 @@ fn validate_layout_item(
                     return Err("auto size is not allowed inside a rotated container".to_string());
                 }
             }
-            let auto_bounds = extent_auto_bounds(
-                &placement.extent,
-                layout_bounds,
-                &placement.at,
-                is_dynamic_width,
-            );
             let (width, height) = resolve_size(
                 &placement.at,
                 &placement.extent,
                 placement.max_w,
                 placement.max_h,
-                auto_bounds.as_ref().or(layout_bounds),
+                layout_bounds,
                 true,
             )?;
             validate_bounds(&placement.at, width, height, layout_bounds)?;
@@ -599,46 +575,6 @@ fn validate_layout_item(
         }
     }
     Ok(())
-}
-
-/// When `is_dynamic_width` is true, returns adjusted bounds where the width is reduced
-/// by `at.x` so that an `auto` size resolves to the remaining width from the item's x offset.
-/// Returns `None` when the adjustment is not needed (fixed-width or zero offset).
-fn auto_resolve_bounds(
-    layout_bounds: Option<&LayoutBounds>,
-    at: &Position,
-    is_dynamic_width: bool,
-) -> Option<LayoutBounds> {
-    if !is_dynamic_width {
-        return None;
-    }
-    let bounds = layout_bounds?;
-    let at_x = at.x();
-    // An edge-relative x with a frame-dependent width is rejected in
-    // `validate_placement_position`, so this never legitimately sees one. Returning `None` rather
-    // than subtracting keeps a negative offset from widening the budget.
-    if at_x <= 0.0 || at_x.is_sign_negative() {
-        return None;
-    }
-    Some(LayoutBounds {
-        width: (bounds.width - at_x).max(0.0),
-        height: bounds.height,
-    })
-}
-
-/// `auto_resolve_bounds`'s at.x-narrowed budget exists solely for `SizeValue::Auto`'s "fill to the
-/// frame edge" fallback (`resolve_size_value`); a `to` box already subtracts `at.x` itself inside
-/// `resolve_to_extent`, so applying the narrowed budget there too would double-subtract it.
-fn extent_auto_bounds(
-    extent: &Extent,
-    layout_bounds: Option<&LayoutBounds>,
-    at: &Position,
-    is_dynamic_width: bool,
-) -> Option<LayoutBounds> {
-    match extent {
-        Extent::Size(_) => auto_resolve_bounds(layout_bounds, at, is_dynamic_width),
-        Extent::To(_) => None,
-    }
 }
 
 /// Bounds-check a placement's anchor. A sign-negative component is edge-relative (#146) and
@@ -753,7 +689,12 @@ fn resolve_size(
         }
     }
     let fallback = if allow_auto_fill {
-        layout_bounds.map(|bounds| (bounds.width, bounds.height))
+        layout_bounds.map(|bounds| {
+            (
+                (bounds.width - resolve_coord(at.x(), bounds.width)).max(0.0),
+                (bounds.height - resolve_coord(at.y(), bounds.height)).max(0.0),
+            )
+        })
     } else {
         None
     };
@@ -1164,6 +1105,146 @@ mod tests {
         assert_eq!(
             resolve_size_value(&SizeValue::Value(50.0), Some(30.0), Some(30.0), "width"),
             Ok(50.0)
+        );
+    }
+
+    /// The fallback is the space remaining from the item's own anchor, not the whole frame. An
+    /// `auto` height at a nonzero `at.y` used to resolve to the full frame and get rejected on
+    /// bounds, blaming the author for the resolver's arithmetic.
+    #[test]
+    fn an_auto_axis_falls_back_to_the_space_left_from_its_anchor() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// The anchor is resolved before subtracting: an edge-relative `at.y` is measured from the top,
+    /// so `frame - raw_at` would give 45 on a 40mm frame instead of 5.
+    #[test]
+    fn an_edge_relative_anchor_is_resolved_before_the_subtraction() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, -5.0]\n    size: [20.0, auto]\n    items: []\n";
+        // Resolves to 40 - 35 = 5 and fits. A raw-anchor implementation resolves 45 and is rejected.
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// ADR-0053's double-subtraction, which `extent_auto_bounds` was written to prevent. The
+    /// `Extent::To` early return in `resolve_size` is what prevents it now, so test it directly
+    /// rather than trusting the control flow.
+    #[test]
+    fn a_to_extent_is_not_narrowed_twice_by_its_anchor() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [20.0, 0.0]\n    to: [-0.0, 12.0]\n    items: []\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
+    }
+
+    /// The fallback's actual value, not merely that something fits. `frame - resolved_at` on each
+    /// axis, with the anchor resolved first so an edge-relative component measures from the far edge.
+    #[test]
+    fn the_auto_fallback_is_the_remaining_space() {
+        use super::{resolve_size, LayoutBounds};
+        use crate::models::{AutoSize, Extent, Position, Size, SizeValue};
+        let bounds = LayoutBounds {
+            width: 100.0,
+            height: 40.0,
+        };
+        let auto_h = Extent::Size(Size([
+            SizeValue::Value(20.0),
+            SizeValue::Auto(AutoSize::Auto),
+        ]));
+
+        // Plain anchor: 40 - 10 = 30.
+        let (_, h) = resolve_size(
+            &Position([0.0, 10.0]),
+            &auto_h,
+            None,
+            None,
+            Some(&bounds),
+            true,
+        )
+        .expect("resolves");
+        assert_eq!(h, 30.0);
+
+        // Origin: the subtraction is inert, but the fallback still applies.
+        let (_, h) = resolve_size(
+            &Position([0.0, 0.0]),
+            &auto_h,
+            None,
+            None,
+            Some(&bounds),
+            true,
+        )
+        .expect("resolves");
+        assert_eq!(h, 40.0);
+
+        // Edge-relative: at.y -5 resolves to 35, leaving 5. A raw-anchor implementation gives 45.
+        let (_, h) = resolve_size(
+            &Position([0.0, -5.0]),
+            &auto_h,
+            None,
+            None,
+            Some(&bounds),
+            true,
+        )
+        .expect("resolves");
+        assert_eq!(h, 5.0);
+
+        // The cap still binds when it is the smaller of the two: min(6, 30).
+        let (_, h) = resolve_size(
+            &Position([0.0, 10.0]),
+            &auto_h,
+            None,
+            Some(6.0),
+            Some(&bounds),
+            true,
+        )
+        .expect("resolves");
+        assert_eq!(h, 6.0);
+
+        // And #155's shape: min(200, 40) = 40, not 200.
+        let (_, h) = resolve_size(
+            &Position([0.0, 0.0]),
+            &auto_h,
+            None,
+            Some(200.0),
+            Some(&bounds),
+            true,
+        )
+        .expect("resolves");
+        assert_eq!(h, 40.0);
+
+        // Spec §7, the far-edge zero: an anchor exactly on the far edge leaves no room, and the
+        // helper's existing `resolved <= 0.0` rejection is the right outcome here. This is the
+        // helper path only; the dynamic auto-width container's zero remainder is deliberately
+        // allowed elsewhere and is pinned separately by
+        // `a_zero_remainder_container_renders_an_empty_box`.
+        assert!(
+            resolve_size(
+                &Position([0.0, 40.0]),
+                &auto_h,
+                None,
+                None,
+                Some(&bounds),
+                true
+            )
+            .is_err(),
+            "an auto axis with no room left is an authoring error at the helper"
+        );
+
+        // Spec §7, the width axis for a container on a fixed label: 100 - 10 = 90.
+        let auto_w = Extent::Size(Size([
+            SizeValue::Auto(AutoSize::Auto),
+            SizeValue::Value(12.0),
+        ]));
+        let (w, _) = resolve_size(
+            &Position([10.0, 0.0]),
+            &auto_w,
+            None,
+            None,
+            Some(&bounds),
+            true,
+        )
+        .expect("resolves");
+        assert_eq!(
+            w, 90.0,
+            "a container at x=10 fills the remaining width, not the whole frame"
         );
     }
 
