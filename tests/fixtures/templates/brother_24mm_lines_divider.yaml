@@ -1,0 +1,45 @@
+id: brother_24mm_lines_divider
+name: Brother 24mm Continuous Label (two lines with a divider)
+description: >-
+  Continuous tape, 24mm nominal (18.1mm printable at 180 dpi). Two independently centered
+  full-width lines separated by a full-width rule, on an auto-length label. Demonstrates
+  edge-relative coordinates (#146) and opposite-corner placement (#147).
+unit: mm
+dpi: 180
+format:
+  type: single
+  width:
+    min: 12.0
+    max: 120.0
+  height: 18.1
+  media_width: 24
+layout:
+  - type: container
+    at: [0.0, 0.0]
+    size: [auto, 18.1]
+    padding: 1.0
+    items:
+      - type: text
+        name: line1
+        at: [0.0, 8.6]
+        to: [-0.0, 16.1]
+        font_size:
+          min: 8.0
+          max: 20.0
+        alignment:
+          horizontal: center
+          vertical: center
+      - type: line
+        at: [0.0, 8.05]
+        to: [-0.0, 8.05]
+        thickness: 0.2
+      - type: text
+        name: line2
+        at: [0.0, 0.0]
+        to: [-0.0, 7.5]
+        font_size:
+          min: 6.0
+          max: 14.0
+        alignment:
+          horizontal: center
+          vertical: center

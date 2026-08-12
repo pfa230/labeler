@@ -4,8 +4,8 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    Dimension, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement, Position, Rotation, Size,
-    SizeValue, TemplateFormat,
+    resolve_coord, Dimension, Extent, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement,
+    Point, Position, Rotation, SizeValue, TemplateFormat,
 };
 use crate::templates::TemplateDefinition;
 use helpers::{
@@ -137,7 +137,7 @@ fn compile_label_doc(
                 selected_option,
                 env,
                 &images,
-                None,
+                LengthMode::Fixed,
             );
             let content_extent = probe.measure(items, max_w, &mut m)?;
             width_units = content_extent.clamp(min_w, max_w);
@@ -149,13 +149,20 @@ fn compile_label_doc(
         cursor_cell = Cell::new(0usize);
     }
 
-    let auto_length = if measured.is_empty() {
-        None
-    } else {
-        Some(AutoLength {
+    let is_dynamic = matches!(
+        &template.format,
+        TemplateFormat::Single {
+            width: Dimension::Dynamic { .. },
+            ..
+        }
+    );
+    let mode = if is_dynamic {
+        LengthMode::Dynamic(AutoLength {
             texts: &measured,
             cursor: &cursor_cell,
         })
+    } else {
+        LengthMode::Fixed
     };
 
     let mut source = String::new();
@@ -176,11 +183,11 @@ fn compile_label_doc(
         selected_option,
         env,
         &images,
-        auto_length,
+        mode,
     );
     source.push_str(&context.render_items(items)?);
     // Assert we consumed exactly the texts we measured.
-    if cursor_cell.get() != measured.len() && !measured.is_empty() {
+    if cursor_cell.get() != measured.len() {
         return Err(AppError::render_failed(format!(
             "auto-length cursor mismatch: consumed {} of {} measured texts",
             cursor_cell.get(),
@@ -348,7 +355,7 @@ pub fn render_sheet_pages(
             selected_option,
             &env,
             &images,
-            None,
+            LengthMode::Fixed,
         );
         match context.render_items(items) {
             Ok(content) => rendered.push(content),
@@ -463,10 +470,17 @@ fn normalize_option<'a>(
 }
 
 /// State threaded through the render pass for dynamic-width auto-length labels.
-/// Both fields are `None` for fixed-width labels and sheets.
 struct AutoLength<'a> {
     texts: &'a [MeasuredText],
     cursor: &'a Cell<usize>,
+}
+
+/// Whether this frame is on a dynamic-width (auto-length) label. `Dynamic` carries the measured
+/// texts, which may legitimately be empty: a label can be sized by lines or containers alone.
+/// This is a property of the template format and must never be inferred from `texts.is_empty()`.
+enum LengthMode<'a> {
+    Fixed,
+    Dynamic(AutoLength<'a>),
 }
 
 /// Render-time environment: the variables map and the datetime resolver, passed together through
@@ -474,6 +488,47 @@ struct AutoLength<'a> {
 struct RenderEnv<'a> {
     settings: &'a BTreeMap<String, String>,
     datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
+}
+
+/// The anchor of a leaf box item, for `measure`'s clause 1 (a right-anchored item cannot define
+/// the width it is anchored to, so it is skipped entirely). `Container` is excluded on purpose: a
+/// container's own position can be right-anchored while its *inner frame* is not (its width is
+/// still known, since `validate_placement_position` forbids pairing an edge-relative `at.x` with a
+/// frame-dependent width on a dynamic-width template), so its children must still be measured.
+/// `measure` gives `Container` its own clause-1 branch instead of using this. `Line` has two
+/// endpoints and no box, so it is handled separately too.
+fn item_anchor(item: &LayoutItem) -> Option<&Position> {
+    match item {
+        LayoutItem::Text { placement, .. }
+        | LayoutItem::Qr { placement, .. }
+        | LayoutItem::Image { placement, .. } => Some(&placement.at),
+        LayoutItem::Line { .. } | LayoutItem::Container { .. } => None,
+    }
+}
+
+/// `size = to - at`, both corners resolved against the frame first: `to` is the top-right corner of
+/// a box whose bottom-left is `at`. Mirrors `templates::resolve_to_extent` (kept in sync per this
+/// file's compile-time/render-time note) with one deliberate difference: a *zero* extent is legal
+/// here and rejected there. On a dynamic-width label an empty data value can measure to exactly
+/// `at.x`, so the label clamps to it and a `to`-spanning box collapses to zero width. That is an
+/// ordinary outcome of blank input, not an authoring mistake; a *negative* extent still is one, and
+/// the compile-time check (which resolves against the max-width frame) still rejects corners that
+/// are statically inverted or degenerate.
+fn resolve_to_extent(
+    at: &Position,
+    to: &Position,
+    frame_w: f32,
+    frame_h: f32,
+) -> Result<(f32, f32), AppError> {
+    const EPS: f32 = 1.0e-4;
+    let width = resolve_coord(to.x(), frame_w) - resolve_coord(at.x(), frame_w);
+    let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
+    if width < -EPS || height < -EPS {
+        return Err(AppError::unsupported_layout_item(
+            "to must be above and to the right of at",
+        ));
+    }
+    Ok((width.max(0.0), height.max(0.0)))
 }
 
 struct RenderContext<'a> {
@@ -484,7 +539,7 @@ struct RenderContext<'a> {
     selected_option: Option<&'a BTreeMap<String, String>>,
     env: &'a RenderEnv<'a>,
     images: &'a RefCell<ImageCollector>,
-    auto_length: Option<AutoLength<'a>>,
+    mode: LengthMode<'a>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -495,7 +550,7 @@ impl<'a> RenderContext<'a> {
         selected_option: Option<&'a BTreeMap<String, String>>,
         env: &'a RenderEnv<'a>,
         images: &'a RefCell<ImageCollector>,
-        auto_length: Option<AutoLength<'a>>,
+        mode: LengthMode<'a>,
     ) -> Self {
         Self {
             frame_width_units: frame.0,
@@ -505,8 +560,73 @@ impl<'a> RenderContext<'a> {
             selected_option,
             env,
             images,
-            auto_length,
+            mode,
         }
+    }
+
+    fn is_dynamic_width(&self) -> bool {
+        matches!(self.mode, LengthMode::Dynamic(_))
+    }
+
+    fn auto_length(&self) -> Option<&AutoLength<'a>> {
+        match &self.mode {
+            LengthMode::Dynamic(al) => Some(al),
+            LengthMode::Fixed => None,
+        }
+    }
+
+    /// Resolve a template position against this frame, edge-relative components included. Errors if
+    /// either axis resolves below zero: compile time cannot always prove this on a dynamic-width
+    /// label, since an edge-relative inset is only checked against `width.max` at load time.
+    fn resolve_point(&self, p: &Position) -> Result<Point, AppError> {
+        const EPS: f32 = 1.0e-4;
+        let x = resolve_coord(p.x(), self.frame_width_units);
+        let y = resolve_coord(p.y(), self.frame_height_units);
+        if x < -EPS || y < -EPS {
+            return Err(AppError::unsupported_layout_item(format!(
+                "a coordinate resolves outside the frame: [{}, {}] against {}x{}",
+                p.x(),
+                p.y(),
+                self.frame_width_units,
+                self.frame_height_units
+            )));
+        }
+        Ok(Point { x, y })
+    }
+
+    /// Mirrors `templates::validate_bounds` for the cases compile time had to defer.
+    fn check_box_bounds(&self, point: &Point, width: f32, height: f32) -> Result<(), AppError> {
+        const EPS: f32 = 1.0e-4;
+        if point.x + width > self.frame_width_units + EPS
+            || point.y + height > self.frame_height_units + EPS
+        {
+            return Err(AppError::unsupported_layout_item(format!(
+                "an item resolves outside the frame: {width}x{height} at [{}, {}] in {}x{}",
+                point.x, point.y, self.frame_width_units, self.frame_height_units
+            )));
+        }
+        Ok(())
+    }
+
+    /// The line checks compile time had to defer: on a dynamic-width label an edge-relative
+    /// endpoint is resolved against `max`, so neither its upper bound nor its degeneracy against a
+    /// plain endpoint could be decided until the final width was known.
+    fn check_line(&self, start: &Point, end: &Point) -> Result<(), AppError> {
+        const EPS: f32 = 1.0e-4;
+        for p in [start, end] {
+            if p.x > self.frame_width_units + EPS || p.y > self.frame_height_units + EPS {
+                return Err(AppError::unsupported_layout_item(format!(
+                    "a line endpoint resolves outside the frame: [{}, {}] in {}x{}",
+                    p.x, p.y, self.frame_width_units, self.frame_height_units
+                )));
+            }
+        }
+        if (start.x - end.x).abs() < EPS && (start.y - end.y).abs() < EPS {
+            return Err(AppError::unsupported_layout_item(
+                "line start and end must differ after resolution",
+            ));
+        }
+        Ok(())
     }
 
     /// Walk items computing content right-extent and recording auto-width text fits (pre-order).
@@ -519,6 +639,44 @@ impl<'a> RenderContext<'a> {
     ) -> Result<f32, AppError> {
         let mut extent = 0.0f32;
         for item in items {
+            // Clause 1: a right-anchored item cannot define the width it is anchored to. Its inset
+            // is the narrowest label it fits on, and that is all it can say. Skipping the item here
+            // also means it pushes no MeasuredText, which `render_text_item` must mirror exactly.
+            if let Some(at) = item_anchor(item) {
+                if at.x().is_sign_negative() {
+                    extent = extent.max(-at.x());
+                    continue;
+                }
+            }
+            // Clause 1, container case: unlike a leaf item, a right-anchored container's *inner
+            // frame* is not itself right-anchored. Its own width is always known here (see
+            // `item_anchor`'s doc comment), so its children's fits depend only on that known
+            // width, not on where the container ends up sitting. They must still be measured, or
+            // `render_container_item` (which recurses into every container unconditionally, with
+            // no clause-1 skip of its own) will consume `MeasuredText` entries this pass never
+            // pushed and fail with an auto-length cursor mismatch.
+            if let LayoutItem::Container {
+                placement,
+                option,
+                padding,
+                items: children,
+                ..
+            } = item
+            {
+                if placement.at.x().is_sign_negative() {
+                    if let Some(opt) = option {
+                        if let Some(sel) = self.selected_option {
+                            if !opt.iter().all(|(n, v)| sel.get(n) == Some(v)) {
+                                continue;
+                            }
+                        }
+                    }
+                    let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
+                    self.measure_container_footprint(placement, at_y, padding, children, out)?;
+                    extent = extent.max(-placement.at.x());
+                    continue;
+                }
+            }
             let right = match item {
                 LayoutItem::Text {
                     name,
@@ -534,13 +692,24 @@ impl<'a> RenderContext<'a> {
                     // Same weight the render pass will use: this pre-pass decides the auto width, so
                     // measuring it unweighted would size the box for text that renders wider.
                     let weight = font_weight.unwrap_or(400);
-                    let at = placement.at.point();
-                    let size_w = &placement.size.0[0];
-                    let box_h = placement.size.0[1]
-                        .value()
-                        .unwrap_or(self.frame_height_units - at.y);
-                    if size_w.is_auto() {
-                        let budget = (budget_w - at.x).max(0.0);
+                    // `at.y` may itself be edge-relative (measured from the top), so it must be
+                    // resolved before any height arithmetic. `at.x` is already known to be
+                    // non-negative here: clause 1 skipped the item otherwise.
+                    let at = Point {
+                        x: placement.at.x(),
+                        y: resolve_coord(placement.at.y(), self.frame_height_units),
+                    };
+                    if placement.width_is_frame_dependent() {
+                        // The right margin an edge-relative `to` asks for. Subtracting it from the
+                        // budget keeps this item's contribution (at.x + width + inset) inside
+                        // `budget_w`, so the clamp can never hand back a box narrower than the
+                        // width the text was wrapped at.
+                        let inset = match &placement.extent {
+                            Extent::To(to) if to.x().is_sign_negative() => -to.x(),
+                            _ => 0.0,
+                        };
+                        let budget = (budget_w - at.x - inset).max(0.0);
+                        let box_h = self.measure_box_height(placement, at.y)?;
                         let m = fit_text_auto_length(
                             &text,
                             font_size,
@@ -555,19 +724,54 @@ impl<'a> RenderContext<'a> {
                         )?;
                         let w = m.width;
                         out.push(m);
-                        at.x + w
+                        at.x + w + inset
                     } else {
-                        at.x + size_w.value().unwrap_or(0.0)
+                        // A numeric size or a numeric `to`: the width is known, so this is the
+                        // ordinary fixed-width case and no MeasuredText is recorded.
+                        let (w, _) = self.resolve_size(
+                            &placement.at,
+                            &placement.extent,
+                            placement.max_w,
+                            placement.max_h,
+                            false,
+                        )?;
+                        at.x + w
                     }
                 }
                 LayoutItem::Qr { placement, .. } | LayoutItem::Image { placement, .. } => {
-                    let at_x = placement.at.point().x;
-                    let w = placement.size.0[0]
-                        .value()
-                        .unwrap_or((budget_w - at_x).max(0.0));
-                    at_x + w
+                    let at_x = placement.at.x();
+                    match &placement.extent {
+                        // `auto` fills the remaining budget, as today.
+                        Extent::Size(size) => {
+                            at_x + size.0[0].value().unwrap_or((budget_w - at_x).max(0.0))
+                        }
+                        // A numeric `to` is a known width; a frame-dependent one contributes
+                        // nothing, since a qr or image has no measured intrinsic width to offer.
+                        Extent::To(_) => {
+                            if placement.width_is_frame_dependent() {
+                                0.0
+                            } else {
+                                at_x + self
+                                    .resolve_size(
+                                        &placement.at,
+                                        &placement.extent,
+                                        placement.max_w,
+                                        placement.max_h,
+                                        false,
+                                    )?
+                                    .0
+                            }
+                        }
+                    }
                 }
-                LayoutItem::Line { at, to, .. } => at.point().x.max(to.point().x),
+                // An edge-relative endpoint cannot contribute a frame-dependent term (the frame
+                // width is the unknown being solved for), but it does contribute its inset: the
+                // narrowest label the endpoint fits on, exactly as clause 1 does for a
+                // right-anchored box.
+                LayoutItem::Line { at, to, .. } => [at.x(), to.x()]
+                    .into_iter()
+                    .map(|x| if x.is_sign_negative() { -x } else { x })
+                    .fold(0.0f32, f32::max),
                 LayoutItem::Container {
                     placement,
                     option,
@@ -583,14 +787,19 @@ impl<'a> RenderContext<'a> {
                             }
                         }
                     }
-                    let at_x = placement.at.point().x;
-                    let size_w = &placement.size.0[0];
-                    if size_w.is_auto() {
-                        // auto-width container: width determined by children + padding
+                    let at_x = placement.at.x();
+                    let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
+                    if placement.width_is_frame_dependent() {
+                        // Width comes from the children. Any right-edge inset is theirs to pay
+                        // for, exactly as for text, so it comes out of their budget and goes back
+                        // into the contribution.
+                        let inset = match &placement.extent {
+                            Extent::To(to) if to.x().is_sign_negative() => -to.x(),
+                            _ => 0.0,
+                        };
                         let inner_budget =
-                            ((budget_w - at_x) - padding.left - padding.right).max(0.0);
-                        let inner_h = (self.frame_height_units
-                            - placement.at.point().y
+                            ((budget_w - at_x - inset) - padding.left - padding.right).max(0.0);
+                        let inner_h = (self.measure_box_height(placement, at_y)?
                             - padding.top
                             - padding.bottom)
                             .max(0.0);
@@ -601,40 +810,14 @@ impl<'a> RenderContext<'a> {
                             self.selected_option,
                             self.env,
                             self.images,
-                            None,
+                            LengthMode::Fixed,
                         );
                         let child_extent = ctx.measure(items, inner_budget, out)?;
-                        at_x + padding.left + child_extent + padding.right
+                        at_x + padding.left + child_extent + padding.right + inset
                     } else {
-                        // fixed-width container: right extent is at.x + explicit width
-                        let explicit_w = size_w.value().unwrap_or(0.0);
-                        let rotation = placement
-                            .rotate
-                            .and_then(Rotation::from_degrees)
-                            .unwrap_or(Rotation::R0);
-                        // Rotated containers are self-contained (explicit size, no auto descendants);
-                        // their author-space children must not be measured in physical-horizontal
-                        // terms, so do not recurse into them (#98).
-                        if !rotation.is_rotated() {
-                            let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
-                            let inner_h = {
-                                let size_h = &placement.size.0[1];
-                                let explicit_h = size_h
-                                    .value()
-                                    .unwrap_or(self.frame_height_units - placement.at.point().y);
-                                (explicit_h - padding.top - padding.bottom).max(0.0)
-                            };
-                            let ctx = RenderContext::new(
-                                (inner_w, inner_h),
-                                self.unit,
-                                self.data,
-                                self.selected_option,
-                                self.env,
-                                self.images,
-                                None,
-                            );
-                            ctx.measure(items, inner_w, out)?;
-                        }
+                        // A numeric size or a numeric `to`: the footprint is known.
+                        let (explicit_w, _) =
+                            self.measure_container_footprint(placement, at_y, padding, items, out)?;
                         at_x + explicit_w
                     }
                 }
@@ -642,6 +825,76 @@ impl<'a> RenderContext<'a> {
             extent = extent.max(right);
         }
         Ok(extent)
+    }
+
+    /// A box item's vertical slot during measurement: its explicit height, the box its corners
+    /// describe, or the rest of the frame above `at_y`. `at_y` is the **resolved** bottom edge,
+    /// never the raw value: mixing a resolved `to.y` with a raw `at.y` inflates the slot.
+    fn measure_box_height(&self, placement: &Placement, at_y: f32) -> Result<f32, AppError> {
+        Ok(match &placement.extent {
+            Extent::Size(size) => size.0[1].value().unwrap_or(self.frame_height_units - at_y),
+            Extent::To(to) => resolve_coord(to.y(), self.frame_height_units) - at_y,
+        })
+    }
+
+    /// A container's own footprint when its extent is *not* frame-dependent (a numeric `size` or
+    /// a numeric `to`), plus its children measured against the resulting inner frame. Width comes
+    /// from `resolve_size` (a numeric `to` needs its full corner-resolution logic; a numeric
+    /// `size` is read directly, since `resolve_size` would also resolve height and this is the
+    /// one call site that must not: see the height note below). Height comes from
+    /// `measure_box_height`, not `resolve_size`, so an auto height with no `max_h` still falls
+    /// back to the remaining frame height above `at_y` rather than erroring: `size: [40, auto]` is
+    /// a documented container idiom (SPEC §4, "auto size ... falls back to the parent frame") and
+    /// must keep working under measurement.
+    ///
+    /// Shared by the `Container` arm's non-frame-dependent branch and clause 1's container case (a
+    /// right-anchored container whose own width is still known; see `item_anchor`'s doc comment),
+    /// so the two can never compute a container's footprint two different ways.
+    fn measure_container_footprint(
+        &self,
+        placement: &Placement,
+        at_y: f32,
+        padding: &crate::models::Padding,
+        children: &[LayoutItem],
+        out: &mut Vec<MeasuredText>,
+    ) -> Result<(f32, f32), AppError> {
+        let explicit_w = match &placement.extent {
+            Extent::Size(size) => {
+                self.resolve_size_value(&size.0[0], placement.max_w, None, "width")?
+            }
+            Extent::To(_) => {
+                self.resolve_size(
+                    &placement.at,
+                    &placement.extent,
+                    placement.max_w,
+                    placement.max_h,
+                    false,
+                )?
+                .0
+            }
+        };
+        let explicit_h = self.measure_box_height(placement, at_y)?;
+        let rotation = placement
+            .rotate
+            .and_then(Rotation::from_degrees)
+            .unwrap_or(Rotation::R0);
+        // Rotated containers are self-contained (§4.2.1): their author-space children must not be
+        // measured in physical-horizontal terms, so do not recurse into them (#98).
+        if !rotation.is_rotated() {
+            let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
+            let inner_h = (explicit_h - padding.top - padding.bottom).max(0.0);
+            let ctx = RenderContext::new(
+                (inner_w, inner_h),
+                self.unit,
+                self.data,
+                self.selected_option,
+                self.env,
+                self.images,
+                LengthMode::Fixed,
+            );
+            ctx.measure(children, inner_w, out)?;
+        }
+        Ok((explicit_w, explicit_h))
     }
 
     fn render_items(&self, items: &[LayoutItem]) -> Result<String, AppError> {
@@ -754,7 +1007,7 @@ impl<'a> RenderContext<'a> {
             to_nonbreaking(&text)
         };
 
-        let point = placement.at.point();
+        let point = self.resolve_point(&placement.at)?;
         let left = point.x;
 
         // A blank first/last line carries no ink but still gets a line box, which shoves the visible
@@ -768,23 +1021,47 @@ impl<'a> RenderContext<'a> {
             }
         }
 
-        // When auto-length is active and this text item has auto width, consume the next measured fit.
-        if let Some(al) = &self.auto_length {
-            if placement.size.0[0].is_auto() {
+        // When auto-length is active and this text item's width is frame-dependent (an auto size or
+        // an edge-relative `to`), consume the next measured fit. This must fire for exactly the
+        // items `measure` pushed a `MeasuredText` for; both call `width_is_frame_dependent` on the
+        // same placement so they never disagree.
+        if let Some(al) = self.auto_length() {
+            if placement.width_is_frame_dependent() && !placement.at.x().is_sign_negative() {
                 let idx = al.cursor.get();
                 let m = al.texts.get(idx).ok_or_else(|| {
                     AppError::render_failed(format!("auto-length cursor overrun at index {idx}"))
                 })?;
                 al.cursor.set(idx + 1);
 
-                // The text's allotted vertical slot (`size` height or the remaining frame height).
-                let slot_h = self.resolve_size_value(
-                    &placement.size.0[1],
-                    placement.max_h,
-                    Some(self.frame_height_units - point.y),
-                    "height",
-                )?;
+                // The text's allotted vertical slot: `size` height (honoring `max_h`) for an auto
+                // width, or the box `to`'s corners describe for an edge-relative `to`.
+                let slot_h = match &placement.extent {
+                    Extent::Size(size) => self.resolve_size_value(
+                        &size.0[1],
+                        placement.max_h,
+                        Some(self.frame_height_units - point.y),
+                        "height",
+                    )?,
+                    Extent::To(_) => self.measure_box_height(placement, point.y)?,
+                };
                 let slot_top = self.frame_height_units - point.y - slot_h;
+                // The box width is the resolved extent for a `to` (so a right-edge inset stays a
+                // visible margin), and the content's fitted width for an auto size, matching what
+                // the measure pass pushed.
+                let box_w = match &placement.extent {
+                    Extent::To(_) => {
+                        self.resolve_size(
+                            &placement.at,
+                            &placement.extent,
+                            placement.max_w,
+                            placement.max_h,
+                            false,
+                        )?
+                        .0
+                    }
+                    Extent::Size(_) => m.width,
+                };
+                self.check_box_bounds(&point, box_w, slot_h)?;
                 let body = trim_blank_edges(&m.lines)
                     .iter()
                     .map(|l| {
@@ -810,7 +1087,7 @@ impl<'a> RenderContext<'a> {
                 let inner = format!("#align({})[{body}]", typst_alignment(alignment));
                 let dx = format_length(left, self.unit)?;
                 let dy = format_length(slot_top, self.unit)?;
-                let box_width = format_length(m.width, self.unit)?;
+                let box_width = format_length(box_w, self.unit)?;
                 let box_height = format_length(slot_h, self.unit)?;
                 let content = self.wrap_rotation(inner, placement.rotate);
                 writeln!(
@@ -824,8 +1101,14 @@ impl<'a> RenderContext<'a> {
             }
         }
 
-        let (width, box_height_units) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
+        let (width, box_height_units) = self.resolve_size(
+            &placement.at,
+            &placement.extent,
+            placement.max_w,
+            placement.max_h,
+            false,
+        )?;
+        self.check_box_bounds(&point, width, box_height_units)?;
         let bottom = point.y;
         let top = bottom + box_height_units;
         let (size, text) = match font_size {
@@ -877,9 +1160,15 @@ impl<'a> RenderContext<'a> {
         placement: &Placement,
         params: &Option<crate::models::QrParams>,
     ) -> Result<(), AppError> {
-        let (width, height) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
-        let point = placement.at.point();
+        let (width, height) = self.resolve_size(
+            &placement.at,
+            &placement.extent,
+            placement.max_w,
+            placement.max_h,
+            false,
+        )?;
+        let point = self.resolve_point(&placement.at)?;
+        self.check_box_bounds(&point, width, height)?;
         let left = point.x;
         let bottom = point.y;
         let top = bottom + height;
@@ -926,9 +1215,15 @@ impl<'a> RenderContext<'a> {
                 ))
             }
         };
-        let (width, height) =
-            self.resolve_size(&placement.size, placement.max_w, placement.max_h, false)?;
-        let point = placement.at.point();
+        let (width, height) = self.resolve_size(
+            &placement.at,
+            &placement.extent,
+            placement.max_w,
+            placement.max_h,
+            false,
+        )?;
+        let point = self.resolve_point(&placement.at)?;
+        self.check_box_bounds(&point, width, height)?;
         let left = point.x;
         let bottom = point.y;
         let top = bottom + height;
@@ -958,8 +1253,11 @@ impl<'a> RenderContext<'a> {
         to: &Position,
         thickness: f32,
     ) -> Result<(), AppError> {
-        let (start_x, start_y) = to_page_coords(&at.point(), self.frame_height_units);
-        let (end_x, end_y) = to_page_coords(&to.point(), self.frame_height_units);
+        let start_point = self.resolve_point(at)?;
+        let end_point = self.resolve_point(to)?;
+        self.check_line(&start_point, &end_point)?;
+        let (start_x, start_y) = to_page_coords(&start_point, self.frame_height_units);
+        let (end_x, end_y) = to_page_coords(&end_point, self.frame_height_units);
         let dx = end_x - start_x;
         let dy = end_y - start_y;
         let start_x = format_length(start_x, self.unit)?;
@@ -999,7 +1297,7 @@ impl<'a> RenderContext<'a> {
                 }
             }
         }
-        let point = placement.at.point();
+        let point = self.resolve_point(&placement.at)?;
         let left = point.x;
         let rotation = placement
             .rotate
@@ -1011,24 +1309,42 @@ impl<'a> RenderContext<'a> {
             // On a dynamic-width (auto-length) label, an auto-width container must span only
             // the remaining width from its left edge, not the full frame width. This matches the
             // measurement pass which budgets (budget_w - at.x) - padding for the container.
-            let width = if self.auto_length.is_some() && placement.size.0[0].is_auto() {
+            let width = if self.is_dynamic_width()
+                && placement.size_or_auto().is_some_and(|s| s.0[0].is_auto())
+            {
                 (self.frame_width_units - left).max(0.0)
             } else {
-                self.resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
-                    .0
+                self.resolve_size(
+                    &placement.at,
+                    &placement.extent,
+                    placement.max_w,
+                    placement.max_h,
+                    true,
+                )?
+                .0
             };
             let height = self
-                .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+                .resolve_size(
+                    &placement.at,
+                    &placement.extent,
+                    placement.max_w,
+                    placement.max_h,
+                    true,
+                )?
                 .1;
+            self.check_box_bounds(&point, width, height)?;
             let bottom = point.y;
             let top = bottom + height;
 
             let inner_width = width - padding.left - padding.right;
             let inner_height = height - padding.top - padding.bottom;
-            let child_auto_length = self.auto_length.as_ref().map(|al| AutoLength {
-                texts: al.texts,
-                cursor: al.cursor,
-            });
+            let child_mode = match &self.mode {
+                LengthMode::Dynamic(al) => LengthMode::Dynamic(AutoLength {
+                    texts: al.texts,
+                    cursor: al.cursor,
+                }),
+                LengthMode::Fixed => LengthMode::Fixed,
+            };
             let context = RenderContext::new(
                 (inner_width, inner_height),
                 self.unit,
@@ -1036,7 +1352,7 @@ impl<'a> RenderContext<'a> {
                 self.selected_option,
                 self.env,
                 self.images,
-                child_auto_length,
+                child_mode,
             );
             let child_source = context.render_items(items)?;
             let content = if padding == &crate::models::Padding::ZERO {
@@ -1084,11 +1400,24 @@ impl<'a> RenderContext<'a> {
 
         // Rotated path (R90/R180/R270). Validation guarantees an explicit size and no auto here.
         let width = self
-            .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+            .resolve_size(
+                &placement.at,
+                &placement.extent,
+                placement.max_w,
+                placement.max_h,
+                true,
+            )?
             .0;
         let height = self
-            .resolve_size(&placement.size, placement.max_w, placement.max_h, true)?
+            .resolve_size(
+                &placement.at,
+                &placement.extent,
+                placement.max_w,
+                placement.max_h,
+                true,
+            )?
             .1;
+        self.check_box_bounds(&point, width, height)?;
         let bottom = point.y;
         let top = bottom + height;
 
@@ -1106,7 +1435,7 @@ impl<'a> RenderContext<'a> {
         let content_w = canvas_w - padding.left - padding.right;
         let content_h = canvas_h - padding.top - padding.bottom;
 
-        // No auto_length under rotation (validation forbids auto descendants).
+        // No dynamic width under rotation (validation forbids auto descendants).
         let context = RenderContext::new(
             (content_w, content_h),
             self.unit,
@@ -1114,7 +1443,7 @@ impl<'a> RenderContext<'a> {
             self.selected_option,
             self.env,
             self.images,
-            None,
+            LengthMode::Fixed,
         );
         let child_source = context.render_items(items)?;
 
@@ -1162,11 +1491,18 @@ impl<'a> RenderContext<'a> {
 
     fn resolve_size(
         &self,
-        size: &Size,
+        at: &Position,
+        extent: &Extent,
         max_w: Option<f32>,
         max_h: Option<f32>,
         allow_auto_fill: bool,
     ) -> Result<(f32, f32), AppError> {
+        let size = match extent {
+            Extent::Size(size) => size,
+            Extent::To(to) => {
+                return resolve_to_extent(at, to, self.frame_width_units, self.frame_height_units);
+            }
+        };
         let fallback = if allow_auto_fill {
             Some((self.frame_width_units, self.frame_height_units))
         } else {
@@ -1347,8 +1683,8 @@ mod tests {
         SAMPLE_PNG_DATA_URI,
     };
     use crate::models::{
-        Alignment, AutoSize, Dimension, Fit, FontSize, Frame, HorizontalAlign, LabelInput, Layout,
-        LayoutItem, Options, Padding, Placement, Position, SheetPosition, Size, SizeValue,
+        Alignment, AutoSize, Dimension, Extent, Fit, FontSize, Frame, HorizontalAlign, LabelInput,
+        Layout, LayoutItem, Options, Padding, Placement, Position, SheetPosition, Size, SizeValue,
         TemplateFormat, VerticalAlign,
     };
     use crate::templates::TemplateDefinition;
@@ -1385,19 +1721,16 @@ mod tests {
         let item = LayoutItem::Text {
             name: None,
             value: Some(text.to_string()),
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([
                     match size_w {
                         Some(w) => SizeValue::Value(w),
                         None => SizeValue::Auto(crate::models::AutoSize::Auto),
                     },
                     SizeValue::Value(8.0),
                 ]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            ),
             font_size,
             font_weight: weight,
             multiline: false,
@@ -1408,8 +1741,15 @@ mod tests {
         };
         // The auto-width path replays what the measure pre-pass recorded, so that pass has to run
         // first and its results have to be handed to the render context.
-        let measuring =
-            super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let measuring = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
         let mut measured = Vec::new();
         measuring
             .measure(std::slice::from_ref(&item), 80.0, &mut measured)
@@ -1422,7 +1762,7 @@ mod tests {
             None,
             &env,
             &images,
-            Some(super::AutoLength {
+            super::LengthMode::Dynamic(super::AutoLength {
                 texts: &measured,
                 cursor: &cursor,
             }),
@@ -1515,21 +1855,25 @@ mod tests {
                 datetime: &datetime,
             };
             let images = RefCell::new(super::ImageCollector::default());
-            let ctx =
-                super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+            let ctx = super::RenderContext::new(
+                (80.0, 40.0),
+                "mm",
+                &data,
+                None,
+                &env,
+                &images,
+                super::LengthMode::Fixed,
+            );
             let item = LayoutItem::Text {
                 name: None,
                 value: Some("Widget A-42 Storage".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
                         SizeValue::Value(8.0),
                     ]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: weight,
                 multiline: false,
@@ -1581,21 +1925,26 @@ mod tests {
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
 
         let auto_text = LayoutItem::Text {
             name: None,
             value: Some("hello".to_string()),
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
                     SizeValue::Value(10.0),
                 ]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             multiline: false,
@@ -1604,7 +1953,7 @@ mod tests {
         let make_container = |rotate: Option<f32>| LayoutItem::Container {
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
                 max_w: None,
                 max_h: None,
                 rotate,
@@ -1633,6 +1982,342 @@ mod tests {
         );
     }
 
+    fn measured_extent_of(item: LayoutItem, budget: f32) -> (f32, usize) {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (budget, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let mut measured = Vec::new();
+        let extent = ctx
+            .measure(&[item], budget, &mut measured)
+            .expect("measure");
+        (extent, measured.len())
+    }
+
+    fn to_text(at: [f32; 2], to: [f32; 2], value: &str) -> LayoutItem {
+        LayoutItem::Text {
+            name: None,
+            value: Some(value.to_string()),
+            placement: Placement {
+                at: Position(at),
+                extent: crate::models::Extent::To(Position(to)),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        }
+    }
+
+    /// The whole point of #147: a text box that spans the label still sizes the label to its own
+    /// content, so several full-width centered lines produce a label as wide as the longest one.
+    #[test]
+    fn an_edge_relative_to_text_contributes_its_natural_width() {
+        let (extent, pushed) =
+            measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42"), 80.0);
+        assert!(
+            extent > 0.0 && extent < 80.0,
+            "expected a content-sized extent, got {extent}"
+        );
+        assert_eq!(
+            pushed, 1,
+            "an edge-relative to text is measured like an auto one"
+        );
+    }
+
+    /// A right margin has to be paid for out of the label width, or the text is clipped by its own box.
+    #[test]
+    fn an_inset_to_text_contributes_its_natural_width_plus_the_inset() {
+        let (plain, _) = measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42"), 80.0);
+        let (inset, _) = measured_extent_of(to_text([0.0, 0.0], [-2.0, 8.0], "Widget A-42"), 80.0);
+        assert!(
+            (inset - (plain + 2.0)).abs() < 0.2,
+            "expected {} + 2, got {inset}",
+            plain
+        );
+    }
+
+    /// A numeric `to` is a fixed width: known before the frame is, so it measures like `size:` and is
+    /// rendered by fit_text_to_box, not replayed from a MeasuredText.
+    #[test]
+    fn a_numeric_to_text_measures_as_a_fixed_width() {
+        let (extent, pushed) = measured_extent_of(
+            to_text([0.0, 0.0], [30.0, 8.0], "text far too long for 30mm"),
+            100.0,
+        );
+        assert_eq!(extent, 30.0);
+        assert_eq!(pushed, 0, "a fixed-width item must not push a MeasuredText");
+    }
+
+    /// A slot expressed with edge-relative corners must measure the same as the identical slot
+    /// expressed with plain ones. `at.y: -32` in a 40mm frame is y=8, so the slot is 32mm tall; mixing
+    /// a resolved `to.y` with a raw `at.y` would compute 72mm, and the fitter would choose a font size
+    /// the render-time box cannot fit.
+    #[test]
+    fn an_edge_relative_at_y_is_resolved_before_the_measure_height() {
+        fn wrapped(at: [f32; 2], to: [f32; 2]) -> LayoutItem {
+            LayoutItem::Text {
+                name: None,
+                value: Some("Some words that will wrap across several lines".to_string()),
+                placement: Placement {
+                    at: Position(at),
+                    extent: crate::models::Extent::To(Position(to)),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Range {
+                    min: 6.0,
+                    max: 28.0,
+                },
+                font_weight: None,
+                multiline: true,
+                alignment: crate::models::Alignment::default(),
+            }
+        }
+        // The frame is 40mm tall (see `measured_extent_of`), so these two describe the same 32mm slot.
+        let (edge, _) = measured_extent_of(wrapped([0.0, -32.0], [-0.0, -0.0]), 60.0);
+        let (plain, _) = measured_extent_of(wrapped([0.0, 8.0], [-0.0, 40.0]), 60.0);
+        assert!(
+            (edge - plain).abs() < 0.01,
+            "the same slot measured {edge} with edge-relative corners and {plain} with plain ones"
+        );
+    }
+
+    /// A container spanning to the right edge is measured by its children, like an auto-width one.
+    /// Measuring it at its resolved width instead would peg every such label to its maximum.
+    #[test]
+    fn an_edge_relative_to_container_is_measured_by_its_children() {
+        let (bare, _) = measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42"), 80.0);
+
+        let container = LayoutItem::Container {
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: crate::models::Extent::To(Position([-0.0, 10.0])),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            option: None,
+            frame: None,
+            padding: crate::models::Padding {
+                top: 0.0,
+                right: 1.0,
+                bottom: 0.0,
+                left: 1.0,
+            },
+            items: vec![to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42")],
+        };
+        let (wrapped, pushed) = measured_extent_of(container, 80.0);
+        assert_eq!(pushed, 1, "the child text is still measured exactly once");
+        assert!(
+            wrapped < 80.0,
+            "the container was measured at its resolved width ({wrapped}), not by its children"
+        );
+        // 1mm of padding a side, and the child's budget shrinks by the same 2mm, so allow some slack.
+        assert!(
+            (wrapped - (bare + 2.0)).abs() < 0.5,
+            "expected roughly the child width {bare} plus 2mm of padding, got {wrapped}"
+        );
+    }
+
+    /// A qr spanning to the right edge has no intrinsic width this codebase measures, so it must not
+    /// drag the label out to its maximum. Text alone sizes the label.
+    #[test]
+    fn an_edge_relative_to_qr_contributes_nothing() {
+        let (extent, pushed) = measured_extent_of(
+            LayoutItem::Qr {
+                name: None,
+                value: Some("payload".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 8.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            },
+            80.0,
+        );
+        assert_eq!(extent, 0.0);
+        assert_eq!(pushed, 0);
+    }
+
+    /// Carried over from Task 4's review: no unit test covered an edge-relative `at.x` on a `Qr`
+    /// specifically (only `Text` had one). Clause 1 must skip it the same way regardless of item kind.
+    #[test]
+    fn an_edge_relative_at_x_on_a_qr_contributes_only_its_inset() {
+        let (extent, pushed) = measured_extent_of(
+            LayoutItem::Qr {
+                name: None,
+                value: Some("payload".to_string()),
+                placement: Placement {
+                    at: Position([-5.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Value(10.0),
+                        SizeValue::Value(10.0),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            },
+            80.0,
+        );
+        assert_eq!(
+            extent, 5.0,
+            "an edge-relative at.x contributes only its inset"
+        );
+        assert_eq!(pushed, 0, "a qr never pushes a MeasuredText");
+    }
+
+    /// Measuring against the un-inset budget lets a text whose natural width reaches the budget
+    /// contribute budget + inset. The page clamps back to `max`, and the text is then fitted into a
+    /// box `inset` narrower than the width it was measured at, clipping it. The contribution must
+    /// never exceed the budget it was measured against.
+    #[test]
+    fn an_inset_to_text_never_measures_wider_than_its_own_box() {
+        let long = "a very long string that will not fit in forty millimetres at all";
+        let (extent, pushed) = measured_extent_of(to_text([0.0, 0.0], [-2.0, 8.0], long), 40.0);
+        assert_eq!(pushed, 1);
+        assert!(
+            extent <= 40.0 + 1.0e-3,
+            "an inset item contributed {extent} against a 40mm budget: the inset was not subtracted \
+             from the measure budget, so the label clamps to 40 and the text is clipped by 2mm"
+        );
+        // The measured text itself has to fit the box it will get: budget minus the inset.
+        let (plain, _) = measured_extent_of(to_text([0.0, 0.0], [-0.0, 8.0], long), 38.0);
+        assert!(
+            (extent - (plain + 2.0)).abs() < 0.2,
+            "expected the inset contribution to be the 38mm-budget width plus 2, got {extent} vs {plain}"
+        );
+    }
+
+    /// Review finding (code-reviewer, post-Task-8): clause 1 used to skip a right-anchored
+    /// container's subtree entirely, so a frame-dependent child inside it (here, a `to`-spanned
+    /// text) never got a `MeasuredText` pushed. `render_container_item` has no such skip and
+    /// recurses unconditionally, so `render_text_item` then consumed a cursor entry that was never
+    /// pushed and failed with "auto-length cursor overrun". The container's own width (`size:
+    /// [8, 8]`) is fixed, so `validate_placement_position` allows pairing it with an edge-relative
+    /// `at.x`; clause 1 must still measure the children against that known inner width.
+    #[test]
+    fn a_frame_dependent_child_inside_a_right_anchored_container_does_not_mismatch_the_cursor() {
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(5.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(8.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Container {
+                placement: Placement {
+                    at: Position([-10.0, 0.0]),
+                    extent: Extent::Size(Size([SizeValue::Value(8.0), SizeValue::Value(8.0)])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
+            }]),
+            version: None,
+        };
+        assert_eq!(
+            template.validate(),
+            Ok(()),
+            "a fixed-width container paired with an edge-relative at.x is a legal shape"
+        );
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        render_single_label(&template, &data, None, &no_settings(), &no_datetime()).expect(
+            "a right-anchored container's frame-dependent child must still be measured, not \
+             skipped along with the container",
+        );
+    }
+
+    /// Review finding (code-reviewer, post-Task-8): Step 4 of the task brief routed the container's
+    /// fixed-branch height through `resolve_size(..., allow_auto_fill: false)`, which has no
+    /// fallback for an auto height with no `max_h`. `size: [40, auto]` is a documented container
+    /// idiom (SPEC §4: "auto size resolves to `max_w`/`max_h` if present; for `container` it falls
+    /// back to the parent frame"), accepted by `validate()` and rendered fine by
+    /// `render_container_item` (which passes `allow_auto_fill: true`); only the measure pre-pass had
+    /// been tightened, so every such container on a dynamic-width label started failing measurement
+    /// with "size height is auto but no max_height provided".
+    #[test]
+    fn an_auto_height_fixed_width_container_measures_without_erroring() {
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(30.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Container {
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: Extent::Size(Size([
+                        SizeValue::Value(40.0),
+                        SizeValue::Auto(AutoSize::Auto),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![],
+            }]),
+            version: None,
+        };
+        assert_eq!(
+            template.validate(),
+            Ok(()),
+            "`size: [40, auto]` is a documented container idiom"
+        );
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        render_single_label(&template, &data, None, &no_settings(), &no_datetime()).expect(
+            "an auto height with no max_h must fall back to the remaining frame height during \
+             measurement, not error",
+        );
+    }
+
     #[test]
     fn r0_container_source_unchanged() {
         use std::cell::RefCell;
@@ -1644,15 +2329,20 @@ mod tests {
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new((80.0, 40.0), "mm", &data, None, &env, &images, None);
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
         let container = LayoutItem::Container {
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+            ),
             option: None,
             frame: Some(Frame {
                 thickness: 0.3,
@@ -1688,7 +2378,7 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                    extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
                     max_w: None,
                     max_h: None,
                     rotate: Some(rotate),
@@ -1712,13 +2402,10 @@ mod tests {
             vec![LayoutItem::Text {
                 name: None,
                 value: Some("VERTICAL".to_string()),
-                placement: Placement {
-                    at: Position([2.0, 2.0]),
-                    size: Size([SizeValue::Value(30.0), SizeValue::Value(8.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([2.0, 2.0]),
+                    Size([SizeValue::Value(30.0), SizeValue::Value(8.0)]),
+                ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
@@ -1769,13 +2456,10 @@ mod tests {
             vec![LayoutItem::Qr {
                 name: None,
                 value: Some("X".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                ),
                 params: None,
             }],
         );
@@ -1795,13 +2479,10 @@ mod tests {
             vec![LayoutItem::Qr {
                 name: None,
                 value: Some("X".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                ),
                 params: None,
             }]
         };
@@ -1845,7 +2526,7 @@ mod tests {
         let inner = LayoutItem::Container {
             placement: Placement {
                 at: Position([2.0, 2.0]),
-                size: Size([SizeValue::Value(24.0), SizeValue::Value(24.0)]),
+                extent: Extent::Size(Size([SizeValue::Value(24.0), SizeValue::Value(24.0)])),
                 max_w: None,
                 max_h: None,
                 rotate: Some(90.0),
@@ -1856,13 +2537,10 @@ mod tests {
             items: vec![LayoutItem::Text {
                 name: None,
                 value: Some("inner".to_string()),
-                placement: Placement {
-                    at: Position([1.0, 1.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([1.0, 1.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -1872,7 +2550,7 @@ mod tests {
         let outer = LayoutItem::Container {
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
                 max_w: None,
                 max_h: None,
                 rotate: Some(90.0),
@@ -1944,13 +2622,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some(text.to_string()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(HEIGHT_MM)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(HEIGHT_MM)]),
+                ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
                 multiline,
@@ -1982,7 +2657,10 @@ mod tests {
         };
         let Layout::Items(items) = &mut t.layout;
         if let Some(LayoutItem::Text { placement, .. }) = items.first_mut() {
-            placement.size = Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(height_mm)]);
+            placement.extent = Extent::Size(Size([
+                SizeValue::Auto(AutoSize::Auto),
+                SizeValue::Value(height_mm),
+            ]));
         }
         t
     }
@@ -2295,13 +2973,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
@@ -2388,13 +3063,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
@@ -2439,13 +3111,10 @@ mod tests {
                 LayoutItem::Text {
                     name: Some("message".to_string()),
                     value: None,
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                    ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     multiline: false,
@@ -2454,13 +3123,10 @@ mod tests {
                 LayoutItem::Qr {
                     name: Some("code".to_string()),
                     value: None,
-                    placement: Placement {
-                        at: Position([20.0, 0.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([20.0, 0.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                    ),
                     params: None,
                 },
                 LayoutItem::Line {
@@ -2469,13 +3135,10 @@ mod tests {
                     thickness: 0.2,
                 },
                 LayoutItem::Container {
-                    placement: Placement {
-                        at: Position([0.5, 1.5]),
-                        size: Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.5, 1.5]),
+                        Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
+                    ),
                     option: None,
                     frame: Some(Frame {
                         thickness: 0.2,
@@ -2525,13 +3188,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
@@ -2571,13 +3231,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Image {
                 name: Some("logo".to_string()),
                 src: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                ),
                 fit: Fit::Contain,
             }]),
             version: None,
@@ -2636,13 +3293,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Image {
                 name: Some("logo".to_string()),
                 src: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                ),
                 fit: Fit::Contain,
             }]),
             version: None,
@@ -2664,13 +3318,10 @@ mod tests {
         template.layout = Layout::Items(vec![LayoutItem::Image {
             name: None,
             src: Some(src.to_string()),
-            placement: Placement {
-                at: Position([0.0, 0.0]),
-                size: Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            },
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+            ),
             fit: Fit::Contain,
         }]);
         template
@@ -2750,13 +3401,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
@@ -2789,6 +3437,7 @@ mod tests {
             "brother_18mm",
             "brother_18mm_qr",
             "brother_24mm",
+            "brother_24mm_lines_divider",
             "brother_24mm_multiline",
             "brother_24mm_qr",
             "brother_24mm_weights",
@@ -2913,13 +3562,10 @@ mod tests {
                 LayoutItem::Text {
                     name: None,
                     value: Some("Item {id}".to_string()),
-                    placement: Placement {
-                        at: Position([0.0, 10.0]),
-                        size: Size([SizeValue::Value(40.0), SizeValue::Value(8.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 10.0]),
+                        Size([SizeValue::Value(40.0), SizeValue::Value(8.0)]),
+                    ),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
                     multiline: false,
@@ -2928,13 +3574,10 @@ mod tests {
                 LayoutItem::Qr {
                     name: None,
                     value: Some("{vars.qr_base_url}/{id}".to_string()),
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                    ),
                     params: None,
                 },
             ]),
@@ -2969,13 +3612,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("{x}".to_string()),
-                placement: Placement {
-                    at: Position([0.0, 6.0]),
-                    size: Size([SizeValue::Value(60.0), SizeValue::Value(8.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 6.0]),
+                    Size([SizeValue::Value(60.0), SizeValue::Value(8.0)]),
+                ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
@@ -3052,13 +3692,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("hi".into()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -3087,13 +3724,10 @@ mod tests {
                 LayoutItem::Text {
                     name: Some("title".into()),
                     value: None,
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     multiline: false,
@@ -3102,25 +3736,19 @@ mod tests {
                 LayoutItem::Qr {
                     name: None,
                     value: Some("{url} {vars.base} {datetime} {datetime.short_date}".into()),
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                    ),
                     params: None,
                 },
                 LayoutItem::Image {
                     name: Some("logo".into()),
                     src: None,
-                    placement: Placement {
-                        at: Position([0.0, 0.0]),
-                        size: Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
-                        max_w: None,
-                        max_h: None,
-                        rotate: None,
-                    },
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                    ),
                     fit: Fit::default(),
                 },
             ]),
@@ -3167,13 +3795,10 @@ mod tests {
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("{} {real}".into()),
-                placement: Placement {
-                    at: Position([0.0, 0.0]),
-                    size: Size([SizeValue::Value(40.0), SizeValue::Value(20.0)]),
-                    max_w: None,
-                    max_h: None,
-                    rotate: None,
-                },
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::Value(40.0), SizeValue::Value(20.0)]),
+                ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
@@ -3434,6 +4059,476 @@ mod tests {
             bold as f64 >= regular as f64 * 1.10,
             "weight 700 must add ≥10% ink over 400 (got {regular} vs {bold}, ratio {:.3})",
             bold as f64 / regular as f64
+        );
+    }
+
+    /// Dynamic-width mode is a property of the template format, not of whether any text needed
+    /// measuring: a label can be sized by a line or a non-text container alone. An auto-width
+    /// container at x=5 on a 25mm dynamic label must be 20mm wide, not the full 25mm, or it overruns
+    /// the page by exactly its own offset.
+    #[test]
+    fn dynamic_width_mode_is_independent_of_measured_text() {
+        use std::cell::RefCell;
+        // `at_x` differs per mode: the render-time bounds check (Task 5) now rejects a container
+        // that resolves past the frame edge, and the fixed-mode auto-width fallback fills the whole
+        // frame regardless of offset, so it needs `at_x = 0.0` to stay in bounds. Compile-time
+        // `validate_bounds` already forbids the x=5 fixed-mode combination on any real template
+        // (5 + 25 > 25), so this keeps the fixture reachable through the real pipeline.
+        fn container_width(mode: super::LengthMode<'_>, at_x: f32) -> String {
+            let data: HashMap<String, super::JsonValue> = HashMap::new();
+            let settings = no_settings();
+            let datetime = no_datetime();
+            let env = super::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            let images = RefCell::new(super::ImageCollector::default());
+            let ctx =
+                super::RenderContext::new((25.0, 12.0), "mm", &data, None, &env, &images, mode);
+            ctx.render_items(&[LayoutItem::Container {
+                placement: Placement::sized(
+                    Position([at_x, 0.0]),
+                    Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(12.0),
+                    ]),
+                ),
+                option: None,
+                frame: None,
+                padding: crate::models::Padding::ZERO,
+                items: vec![LayoutItem::Line {
+                    at: Position([0.0, 6.0]),
+                    to: Position([20.0, 6.0]),
+                    thickness: 0.2,
+                }],
+            }])
+            .expect("render")
+        }
+
+        let cursor = std::cell::Cell::new(0usize);
+        let empty: Vec<super::MeasuredText> = Vec::new();
+        let dynamic = container_width(
+            super::LengthMode::Dynamic(super::AutoLength {
+                texts: &empty,
+                cursor: &cursor,
+            }),
+            5.0,
+        );
+        assert!(
+            dynamic.contains("width: 20mm"),
+            "a dynamic label with no measured text must still size the container to the remaining \
+             width, got: {dynamic}"
+        );
+
+        let fixed = container_width(super::LengthMode::Fixed, 0.0);
+        assert!(
+            fixed.contains("width: 25mm"),
+            "on a fixed label an auto container fills the frame, got: {fixed}"
+        );
+    }
+
+    /// An edge-relative line endpoint contributes its inset, exactly as a right-anchored box does:
+    /// it cannot define the width it is measured against, but the label still has to be at least as
+    /// wide as the inset or the endpoint has nowhere to sit. Here the wider endpoint is 5mm in.
+    #[test]
+    fn an_edge_relative_line_endpoint_contributes_its_inset() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let item = LayoutItem::Line {
+            at: Position([-5.0, 6.0]),
+            to: Position([-3.0, 6.0]),
+            thickness: 0.2,
+        };
+        let mut measured = Vec::new();
+        let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
+        assert_eq!(extent, 5.0);
+        assert!(measured.is_empty());
+    }
+
+    /// A right-anchored item cannot define the width it is anchored to, but the label still has to
+    /// be at least as wide as the inset or the item has nowhere to sit. That inset is its
+    /// contribution.
+    #[test]
+    fn an_edge_relative_at_x_contributes_its_inset() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let item = LayoutItem::Text {
+            name: None,
+            value: Some("x".to_string()),
+            placement: Placement::sized(
+                Position([-20.0, 0.0]),
+                Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+            ),
+            font_size: FontSize::Fixed(6.0),
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment::default(),
+        };
+        let mut measured = Vec::new();
+        let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
+        assert_eq!(extent, 20.0);
+        assert!(measured.is_empty());
+    }
+
+    /// The divider spans to the frame's right edge, not back to x=0.
+    #[test]
+    fn an_edge_relative_line_renders_to_the_right_edge() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (40.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let source = ctx
+            .render_items(&[LayoutItem::Line {
+                at: Position([0.0, 6.0]),
+                to: Position([-0.0, 6.0]),
+                thickness: 0.2,
+            }])
+            .expect("render");
+        assert!(
+            source.contains("end: (40mm, 0mm)"),
+            "expected a 40mm-long line, got: {source}"
+        );
+    }
+
+    /// Builds a dynamic-width label whose text measures to roughly 10mm, plus one line.
+    fn dynamic_label_with_line(at: Position, to: Position) -> TemplateDefinition {
+        TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(5.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(12.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![
+                LayoutItem::Text {
+                    name: None,
+                    value: Some("hi".to_string()),
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([
+                            SizeValue::Auto(crate::models::AutoSize::Auto),
+                            SizeValue::Value(6.0),
+                        ]),
+                    ),
+                    font_size: FontSize::Fixed(6.0),
+                    font_weight: None,
+                    multiline: false,
+                    alignment: crate::models::Alignment::default(),
+                },
+                LayoutItem::Line {
+                    at,
+                    to,
+                    thickness: 0.2,
+                },
+            ]),
+            version: None,
+        }
+    }
+
+    /// A right-anchored line beside content-sized text: the label must grow to hold the line's own
+    /// inset, the same way it grows to hold a right-anchored box. Before the line rule matched the
+    /// box rule this rendered a `a coordinate resolves outside the frame` error, because the label
+    /// resolved to the ~10mm of text and the 20mm inset then landed left of x=0.
+    #[test]
+    fn a_right_anchored_line_widens_the_label_to_its_inset() {
+        let template = dynamic_label_with_line(Position([-20.0, 8.0]), Position([-0.0, 8.0]));
+        assert_eq!(template.validate(), Ok(()));
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect("a right-anchored line must render beside auto-width text");
+        let width_px = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+        // 20mm at 180dpi is ~142px; the ~10mm of text alone would be about half that.
+        assert!(
+            width_px >= 138,
+            "the label must be at least as wide as the line's 20mm inset, got {width_px}px"
+        );
+    }
+
+    /// The render-time endpoint bound (`check_line`) is the mirror of the load-time one, per SPEC §7's
+    /// compile-time/render-time duplication. Load-time validation now rejects every template that
+    /// could reach it (a plain endpoint past `width.max` is rejected outright, and an edge-relative
+    /// one sizes the label to its own inset), so it is exercised here at the context level.
+    #[test]
+    fn a_line_endpoint_outside_the_frame_errors_at_render() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (10.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let err = ctx
+            .render_items(&[LayoutItem::Line {
+                at: Position([0.0, 6.0]),
+                to: Position([30.0, 6.0]),
+                thickness: 0.2,
+            }])
+            .expect_err("a 30mm endpoint on a 10mm frame must not render");
+        assert!(
+            err.message_text().contains("outside the frame"),
+            "unexpected error: {}",
+            err.message_text()
+        );
+    }
+
+    /// Compile time could not compare these endpoints: one is edge-relative and one is not, and the
+    /// final width was unknown. The content measures well under `min`, so the clamp pins the label to
+    /// exactly 20mm, where the two endpoints coincide and the line is degenerate after all.
+    #[test]
+    fn a_line_that_becomes_degenerate_at_the_final_width_errors_at_render() {
+        let mut template = dynamic_label_with_line(Position([20.0, 8.0]), Position([-0.0, 8.0]));
+        template.format = TemplateFormat::Single {
+            width: Dimension::Dynamic {
+                min: Some(20.0),
+                max: Some(100.0),
+            },
+            height: Dimension::Fixed(12.0),
+            media_width: None,
+        };
+        assert_eq!(template.validate(), Ok(()), "not comparable at load time");
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a zero-length line must not render");
+        assert!(
+            err.message_text().contains("must differ"),
+            "unexpected error: {}",
+            err.message_text()
+        );
+    }
+
+    /// The #146/#147 acceptance template renders, and its width tracks its content. Visual
+    /// correctness was verified by looking at the PNG; this guards the mechanics.
+    #[test]
+    fn the_lines_divider_template_is_content_sized() {
+        let (registry, _dir) = crate::templates::load_all_for_tests();
+        let template = registry
+            .get("brother_24mm_lines_divider")
+            .expect("fixture template is loaded");
+        let render = |l1: &str, l2: &str| {
+            let mut data: HashMap<String, super::JsonValue> = HashMap::new();
+            data.insert("line1".to_string(), json!(l1));
+            data.insert("line2".to_string(), json!(l2));
+            let png = render_single_label(template, &data, None, &no_settings(), &no_datetime())
+                .expect("render");
+            u32::from_be_bytes([png[16], png[17], png[18], png[19]])
+        };
+        let short = render("Bin 7", "Shed");
+        let long = render("Storage Bin A-42", "Workshop / North Wall");
+        assert!(
+            long > short,
+            "an auto-length label must track its content: {long}px vs {short}px"
+        );
+    }
+
+    /// A blank optional field is ordinary in CSV-driven printing. The empty value measures to
+    /// nothing, the label clamps to the item's own `at.x`, and the `to`-spanning box collapses to
+    /// zero width — a legitimate render-time outcome of empty data, not an authoring error, so it
+    /// must render rather than 422. The same shape with a value still renders.
+    #[test]
+    fn an_empty_value_collapses_a_to_spanned_box_instead_of_erroring() {
+        let template = TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(60.0),
+                },
+                height: Dimension::Fixed(12.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Text {
+                name: Some("v".to_string()),
+                value: None,
+                placement: Placement {
+                    at: Position([12.0, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 12.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }]),
+            version: None,
+        };
+        assert_eq!(template.validate(), Ok(()));
+        for value in ["hello", ""] {
+            let mut data: HashMap<String, super::JsonValue> = HashMap::new();
+            data.insert("v".to_string(), json!(value));
+            render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+                .unwrap_or_else(|err| {
+                    panic!("value {value:?} must render, got: {}", err.message_text())
+                });
+        }
+    }
+
+    /// A `to`-sized qr contributes nothing to the measured extent (it has no intrinsic content
+    /// width, ADR-0050 decision 11), so the label falls back to `width.min`. That only leaves room
+    /// for the item when its own `at.x` fits inside the fallback: anchored at x=30 on a 10mm label
+    /// there is no box left to draw, and it errors rather than silently disappearing. Pins the §6
+    /// wording.
+    #[test]
+    fn a_to_sized_qr_anchored_past_the_fallback_width_errors() {
+        let qr_at = |x: f32| TemplateDefinition {
+            id: "t".to_string(),
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Dynamic {
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+                height: Dimension::Fixed(12.0),
+                media_width: None,
+            },
+            options: None,
+            layout: Layout::Items(vec![LayoutItem::Qr {
+                name: None,
+                value: Some("payload".to_string()),
+                placement: Placement {
+                    at: Position([x, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 12.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                params: None,
+            }]),
+            version: None,
+        };
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+
+        let flush_left = qr_at(0.0);
+        assert_eq!(flush_left.validate(), Ok(()));
+        render_single_label(&flush_left, &data, None, &no_settings(), &no_datetime())
+            .expect("from x=0 the fallback width is the whole box");
+
+        let template = qr_at(30.0);
+        assert_eq!(template.validate(), Ok(()), "valid against the 100mm max");
+        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a 30mm anchor on a 10mm label leaves no box");
+        assert!(
+            err.message_text().contains("above and to the right"),
+            "unexpected error: {}",
+            err.message_text()
+        );
+    }
+
+    /// The box spans from x=0 to the frame's right edge, so a centered line centers on the label.
+    #[test]
+    fn a_to_box_renders_at_the_full_frame_width() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new(
+            (40.0, 12.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let source = ctx
+            .render_items(&[LayoutItem::Text {
+                name: None,
+                value: Some("x".to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::To(Position([-0.0, 12.0])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(6.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }])
+            .expect("render");
+        assert!(
+            source.contains("width: 40mm"),
+            "expected a full-width box, got: {source}"
         );
     }
 }
