@@ -94,6 +94,19 @@ impl Default for Point {
     }
 }
 
+/// Resolve a template coordinate against the frame it is placed in. A **sign-negative** value is
+/// measured inward from the frame's far edge: `-0.0` is the edge itself, `-2.0` is 2 units inside
+/// it. The test is the sign bit and not `< 0.0`, because `-0.0 < 0.0` is false and `-0.0` is how a
+/// template spells "the far edge". Total by design: a result below zero is a validation error the
+/// caller raises, not something this function can decide.
+pub fn resolve_coord(v: f32, frame_extent: f32) -> f32 {
+    if v.is_sign_negative() {
+        frame_extent + v
+    } else {
+        v
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(transparent)]
 pub struct Position(pub [f32; 2]);
@@ -110,6 +123,14 @@ impl Position {
             x: self.0[0],
             y: self.0[1],
         }
+    }
+
+    pub fn x(&self) -> f32 {
+        self.0[0]
+    }
+
+    pub fn y(&self) -> f32 {
+        self.0[1]
     }
 }
 
@@ -197,6 +218,14 @@ pub struct Placement {
     pub max_h: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotate: Option<f32>,
+}
+
+impl Placement {
+    /// True when the item's width cannot be known until the enclosing frame's width is.
+    /// Task 7 adds the `to:` arm; today only `auto` qualifies.
+    pub fn width_is_frame_dependent(&self) -> bool {
+        self.size.0[0].is_auto()
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
@@ -481,5 +510,50 @@ mod rotation_tests {
         assert!(!Rotation::R0.swaps_axes() && !Rotation::R180.swaps_axes());
         assert!(Rotation::R90.is_rotated() && Rotation::R180.is_rotated());
         assert!(!Rotation::R0.is_rotated());
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{resolve_coord, AutoSize, Placement, Position, Size, SizeValue};
+
+    /// The edge sentinel is the sign bit, not `< 0.0`: `-0.0 < 0.0` is false, so a `< 0.0` test would
+    /// silently read "the far edge" as "the origin". YAML `-0` and `-0.0` both arrive sign-negative.
+    #[test]
+    fn resolve_coord_reads_the_sign_bit() {
+        assert_eq!(resolve_coord(0.0, 100.0), 0.0);
+        assert_eq!(resolve_coord(20.0, 100.0), 20.0);
+        assert_eq!(resolve_coord(-0.0, 100.0), 100.0);
+        assert_eq!(resolve_coord(-2.0, 100.0), 98.0);
+        // Rejecting an inset larger than the frame is the caller's job; the helper stays total.
+        assert_eq!(resolve_coord(-120.0, 100.0), -20.0);
+    }
+
+    fn placement(size: Size) -> Placement {
+        Placement {
+            at: Position([0.0, 0.0]),
+            size,
+            max_w: None,
+            max_h: None,
+            rotate: None,
+        }
+    }
+
+    #[test]
+    fn auto_width_is_frame_dependent_and_numeric_width_is_not() {
+        let auto = placement(Size([
+            SizeValue::Auto(AutoSize::Auto),
+            SizeValue::Value(8.0),
+        ]));
+        assert!(auto.width_is_frame_dependent());
+        let fixed = placement(Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]));
+        assert!(!fixed.width_is_frame_dependent());
+    }
+
+    #[test]
+    fn position_accessors_preserve_the_sign_bit() {
+        let p = Position([-0.0, 5.0]);
+        assert!(p.x().is_sign_negative());
+        assert!(!p.y().is_sign_negative());
     }
 }
