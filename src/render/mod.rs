@@ -708,7 +708,11 @@ impl<'a> RenderContext<'a> {
                             Extent::To(to) if to.x().is_sign_negative() => -to.x(),
                             _ => 0.0,
                         };
-                        let budget = (budget_w - at.x - inset).max(0.0);
+                        // The cap binds here, not at render: the rendered box for this item is
+                        // exactly `m.width`, so capping the budget is what caps the width.
+                        let budget = (budget_w - at.x - inset)
+                            .min(placement.max_w.unwrap_or(f32::INFINITY))
+                            .max(0.0);
                         let box_h = self.measure_box_height(placement, at.y)?;
                         let m = fit_text_auto_length(
                             &text,
@@ -2080,6 +2084,44 @@ mod tests {
         );
         assert_eq!(extent, 30.0);
         assert_eq!(pushed, 0, "a fixed-width item must not push a MeasuredText");
+    }
+
+    /// A cap on an auto-width text must bind during measurement, since the rendered box is exactly
+    /// what the measure pass recorded.
+    #[test]
+    fn max_w_caps_an_auto_width_text_during_measurement() {
+        let long = "a string far too long to fit inside twenty millimetres of tape";
+        fn text(max_w: Option<f32>, value: &str) -> LayoutItem {
+            LayoutItem::Text {
+                name: None,
+                value: Some(value.to_string()),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: crate::models::Extent::Size(Size([
+                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::Value(8.0),
+                    ])),
+                    max_w,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(10.0),
+                font_weight: None,
+                multiline: false,
+                alignment: crate::models::Alignment::default(),
+            }
+        }
+        let (uncapped, _) = measured_extent_of(text(None, long), 100.0);
+        let (capped, pushed) = measured_extent_of(text(Some(20.0), long), 100.0);
+        assert_eq!(pushed, 1);
+        assert!(
+            uncapped > 20.0,
+            "the fixture must be long enough to exceed the cap, got {uncapped}"
+        );
+        assert!(
+            capped <= 20.0 + 1.0e-3,
+            "max_w must bind during measurement: measured {capped} against a 20mm cap"
+        );
     }
 
     /// A slot expressed with edge-relative corners must measure the same as the identical slot
