@@ -10,6 +10,13 @@ updates:
     ignore:
       - dependency-name: node
         update-types: ["version-update:semver-major"]
+    # One PR for all three base images instead of three. They are rebuilt on unrelated schedules, so
+    # ungrouped they arrive as a burst of near-identical digest bumps. Auto-merged on green CI by
+    # .github/workflows/dependabot-auto-merge.yml.
+    groups:
+      base-images:
+        patterns:
+          - "*"
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

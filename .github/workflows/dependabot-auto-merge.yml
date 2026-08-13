@@ -1,0 +1,38 @@
+name: Dependabot auto-merge
+
+# Base images are pinned by digest (Dockerfile), which is what makes an upstream rebuild visible
+# instead of silent. The cost is a PR per image whenever a tag is rebuilt, several times a month,
+# none of which carries a decision: the tag line is fixed (node:24, rust:1-trixie, debian:trixie-slim),
+# so a docker update here is only ever a digest refresh. Those merge themselves once CI is green.
+#
+# Everything else -- npm, GitHub Actions, and any docker major -- still lands in the review queue.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Gated on the ecosystem rather than the update type: a digest-only refresh does not report a
+      # semver update type, so gating on `version-update:semver-patch` would silently never match.
+      # The major exclusion is belt and braces -- dependabot.yml already blocks the node major, and
+      # the other two tags cannot move majors without a Dockerfile edit.
+      - name: Enable auto-merge for base-image digest bumps
+        if: |
+          steps.metadata.outputs.package-ecosystem == 'docker' &&
+          steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
