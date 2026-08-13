@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS ui
+FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS ui
 WORKDIR /ui
 COPY ui/package*.json ./
 RUN npm ci
