@@ -29,7 +29,7 @@ layout:
     padding: 0.15
     items:
       - type: text
-        name: message
+        value: "{message}"
         at: [0.0, 0.0]
         size: [3.7, 1.7]
         font_size:

@@ -43,8 +43,8 @@ pub struct TemplateSummary {
     pub description: String,
     pub unit: String,
     pub dpi: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Options>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, ParamSpec>,
     pub format: TemplateFormat,
 }
 
@@ -56,11 +56,184 @@ pub struct TemplateDetail {
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Options>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, ParamSpec>,
     pub layout: Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ParamType {
+    String {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        multiline: bool,
+    },
+    Length,
+    Integer,
+    Number,
+    Boolean,
+    Enum {
+        values: Vec<String>,
+    },
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum ParamValue {
+    Integer(i64),
+    Float(f32),
+    Boolean(bool),
+    String(String),
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+pub struct ParamSpec {
+    #[serde(flatten)]
+    pub param_type: ParamType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<ParamValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, ToSchema)]
+#[serde(untagged)]
+pub enum DynamicValue<T> {
+    Literal(T),
+    Ref(String),
+}
+
+impl<T> DynamicValue<T> {
+    pub fn literal(v: T) -> Self {
+        DynamicValue::Literal(v)
+    }
+
+    pub fn param_ref(r: impl Into<String>) -> Self {
+        DynamicValue::Ref(r.into())
+    }
+
+    pub fn as_literal(&self) -> Option<&T> {
+        match self {
+            DynamicValue::Literal(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    pub fn as_ref_name(&self) -> Option<&str> {
+        match self {
+            DynamicValue::Ref(r) => Some(r.as_str()),
+            _ => None,
+        }
+    }
+
+    pub fn is_ref(&self) -> bool {
+        matches!(self, DynamicValue::Ref(_))
+    }
+}
+
+impl<T> From<T> for DynamicValue<T> {
+    fn from(v: T) -> Self {
+        DynamicValue::Literal(v)
+    }
+}
+
+impl<T: Serialize> Serialize for DynamicValue<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            DynamicValue::Literal(v) => v.serialize(serializer),
+            DynamicValue::Ref(r) => serializer.serialize_str(&format!("{{{r}}}")),
+        }
+    }
+}
+
+impl<'de, T> Deserialize<'de> for DynamicValue<T>
+where
+    T: Deserialize<'de> + std::str::FromStr,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct DynamicValueVisitor<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T> serde::de::Visitor<'de> for DynamicValueVisitor<T>
+        where
+            T: Deserialize<'de> + std::str::FromStr,
+        {
+            type Value = DynamicValue<T>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a literal value or a '{param_name}' reference")
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                T::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(DynamicValue::Literal)
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                T::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(DynamicValue::Literal)
+            }
+
+            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                T::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(DynamicValue::Literal)
+            }
+
+            fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                T::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(DynamicValue::Literal)
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let trimmed = v.trim();
+                if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
+                    let inner = trimmed[1..trimmed.len() - 1].trim();
+                    return Ok(DynamicValue::Ref(inner.to_string()));
+                }
+                if let Ok(val) = trimmed.parse::<T>() {
+                    return Ok(DynamicValue::Literal(val));
+                }
+                if let Some(num_str) = trimmed
+                    .strip_suffix("mm")
+                    .or_else(|| trimmed.strip_suffix("in"))
+                {
+                    if let Ok(val) = num_str.trim().parse::<T>() {
+                        return Ok(DynamicValue::Literal(val));
+                    }
+                }
+                T::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(DynamicValue::Literal)
+            }
+        }
+
+        deserializer.deserialize_any(DynamicValueVisitor(std::marker::PhantomData))
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
@@ -82,7 +255,7 @@ impl Options {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
@@ -107,7 +280,7 @@ pub fn resolve_coord(v: f32, frame_extent: f32) -> f32 {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct Position(pub [f32; 2]);
 
@@ -134,33 +307,57 @@ impl Position {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AutoSize {
     Auto,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum SizeValue {
-    Value(f32),
     Auto(AutoSize),
+    Dynamic(DynamicValue<f32>),
 }
 
 impl SizeValue {
     pub fn value(&self) -> Option<f32> {
         match self {
-            SizeValue::Value(value) => Some(*value),
-            SizeValue::Auto(_) => None,
+            SizeValue::Dynamic(DynamicValue::Literal(value)) => Some(*value),
+            _ => None,
         }
     }
 
     pub fn is_auto(&self) -> bool {
         matches!(self, SizeValue::Auto(_))
     }
+
+    pub fn fixed(val: f32) -> Self {
+        SizeValue::Dynamic(DynamicValue::Literal(val))
+    }
+
+    pub fn param_ref(name: impl Into<String>) -> Self {
+        SizeValue::Dynamic(DynamicValue::Ref(name.into()))
+    }
+
+    pub fn auto() -> Self {
+        SizeValue::Auto(AutoSize::Auto)
+    }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+impl From<f32> for SizeValue {
+    fn from(value: f32) -> Self {
+        SizeValue::Dynamic(DynamicValue::Literal(value))
+    }
+}
+
+impl From<DynamicValue<f32>> for SizeValue {
+    fn from(value: DynamicValue<f32>) -> Self {
+        SizeValue::Dynamic(value)
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct Size(pub [SizeValue; 2]);
 
@@ -275,6 +472,36 @@ impl SheetPosition {
     }
 }
 
+#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum DynamicDimension {
+    Dynamic {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min: Option<DynamicValue<f32>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max: Option<DynamicValue<f32>>,
+    },
+    Fixed(DynamicValue<f32>),
+}
+
+impl From<f32> for DynamicDimension {
+    fn from(val: f32) -> Self {
+        DynamicDimension::Fixed(DynamicValue::Literal(val))
+    }
+}
+
+impl From<Dimension> for DynamicDimension {
+    fn from(dim: Dimension) -> Self {
+        match dim {
+            Dimension::Fixed(val) => DynamicDimension::Fixed(DynamicValue::Literal(val)),
+            Dimension::Dynamic { min, max } => DynamicDimension::Dynamic {
+                min: min.map(DynamicValue::Literal),
+                max: max.map(DynamicValue::Literal),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Dimension {
@@ -348,29 +575,27 @@ impl Fit {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutItem {
     Text {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<String>,
+        value: String,
         #[serde(flatten)]
         placement: Placement,
         font_size: FontSize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        font_weight: Option<u16>,
+        font_weight: Option<DynamicValue<u16>>,
         #[serde(default)]
         multiline: bool,
         #[serde(default)]
         alignment: Alignment,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<BTreeMap<String, String>>,
     },
     Qr {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<String>,
+        value: String,
         #[serde(flatten)]
         placement: Placement,
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<QrParams>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<BTreeMap<String, String>>,
     },
     Image {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -381,18 +606,22 @@ pub enum LayoutItem {
         placement: Placement,
         #[serde(default)]
         fit: Fit,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<BTreeMap<String, String>>,
     },
     Line {
         #[serde(default)]
         at: Position,
         to: Position,
         thickness: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<BTreeMap<String, String>>,
     },
     Container {
         #[serde(flatten)]
         placement: Placement,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        option: Option<BTreeMap<String, String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        when: Option<BTreeMap<String, String>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         frame: Option<Frame>,
         #[serde(default)]
@@ -449,8 +678,8 @@ pub enum TemplateFormat {
         positions: Vec<SheetPosition>,
     },
     Single {
-        width: Dimension,
-        height: Dimension,
+        width: DynamicDimension,
+        height: DynamicDimension,
         #[serde(default)]
         media_width: Option<f32>,
     },
@@ -557,7 +786,7 @@ mod placement_tests {
     fn placement_serializes_back_to_the_authored_key() {
         let sized = Placement::sized(
             Position([0.0, 0.0]),
-            Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+            Size([SizeValue::from(10.0), SizeValue::from(5.0)]),
         );
         let json = serde_json::to_string(&sized).unwrap();
         assert!(json.contains("\"size\""), "got {json}");
@@ -595,10 +824,10 @@ mod placement_tests {
     fn auto_width_is_frame_dependent_and_numeric_width_is_not() {
         let auto = placement(Size([
             SizeValue::Auto(AutoSize::Auto),
-            SizeValue::Value(8.0),
+            SizeValue::from(8.0),
         ]));
         assert!(auto.width_is_frame_dependent());
-        let fixed = placement(Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]));
+        let fixed = placement(Size([SizeValue::from(20.0), SizeValue::from(8.0)]));
         assert!(!fixed.width_is_frame_dependent());
     }
 

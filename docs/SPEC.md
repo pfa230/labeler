@@ -432,7 +432,7 @@ changed under ADR-0053 is that the pre-render measurement pass now reserves the 
 
 ### 4.1 Item types
 
-- **`text`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
+- **`text`** — `value` (interpolated template, see §8), plus
   placement, `font_size`, `font_weight` (optional), `multiline` (default `false`),
   `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom; default `top`).
   `font_weight` is a multiple of 100 between 100 and 900; omitting it leaves the font's default
@@ -446,7 +446,7 @@ changed under ADR-0053 is that the pre-render measurement pass now reserves the 
   selected — is flagged there, because that item renders only its first line.
   Single-line text collapses spaces to non-breaking and renders only the first line. On dynamic-width
   `single` templates, `multiline: true` is also supported; see §3.1 for the wrap and sizing rules.
-- **`qr`** — exactly one of `name` (data key) or `value` (interpolated template, see §8), plus
+- **`qr`** — `value` (interpolated template, see §8), plus
   placement, optional `params`:
   `error_correction` (`L`/`M`/`Q`/`H`, default `M`), `module_size`, `quiet_zone`.
   Rendered as an SVG via the `qrcode` crate, embedded as a Typst image.
@@ -467,8 +467,8 @@ changed under ADR-0053 is that the pre-render measurement pass now reserves the 
   `padding` is either a single number (uniform) or `[top, right, bottom, left]`; values must be ≥ 0;
   default `0`.
 
-Layout item `name`s (text/qr, and a data-bound `image`) must be unique and non-empty within a sibling
-list. `value`-based text/qr items are anonymous and are exempt from this check.
+A data-bound `image` item's `name` must be unique and non-empty within a sibling list. `text` and `qr`
+items use `value` expressions and are anonymous.
 
 ### 4.2 Container rotation
 
@@ -575,12 +575,13 @@ Sizing/bounds logic is intentionally duplicated between validation (compile time
 
 ## 8. Data binding
 
-`text` and `qr` items bind in one of two ways (exactly one of `name` / `value`):
+`text` and `qr` items bind their content through string interpolation:
 
-- `name` resolves a single data key against the request `data` map.
 - `value` is an interpolated template string. Tokens are resolved in precedence order, then `{{`
   and `}}` emit literal braces. There are no operators or functions; this is substitution only
-  (ADR-0010). Interpolation applies to text content and QR content.
+  (ADR-0010, standardized in ADR-0055). Interpolation applies to text content and QR content.
+- `image` items bind either a bundled asset via `src` or a multipart upload / data URI via `name`
+  (a single data key resolved against the request `data` map).
 
 **Token types and precedence** (highest to lowest):
 
@@ -713,7 +714,7 @@ the `Reason` enum list exactly the same slugs, in both directions.
 | `RenderFailed` | `png_encode_failed` | Encoding the rendered pixmap to PNG failed. |
 | `RenderFailed` | `pdf_encode_failed` | Encoding the document to PDF failed. |
 | `RenderFailed` | `auto_length_cursor_mismatch` | Internal invariant: the auto-length measurement cursor did not line up with the items rendered. |
-| `RenderFailed` | `item_has_no_source` | Internal invariant: an item reached rendering with neither `name` nor `value`. |
+| `RenderFailed` | `item_has_no_source` | Internal invariant: an item reached rendering with no data source. |
 | `RenderFailed` | `qr_generation_failed` | The QR payload could not be encoded. |
 | `RenderFailed` | `font_read_failed` | The measurement font file could not be read. |
 | `RenderFailed` | `font_parse_failed` | The measurement font could not be parsed. |
@@ -1038,6 +1039,11 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 - **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
+
+- **2026-08-17**: Standardize on `value: "{field}"` string interpolation for all `text` and `qr` layout
+  items, removing legacy `name:` binding on text/qr items (ADR-0055, #163). `image` items continue to
+  support `name:` (multipart upload / data URI lookup) and `src:` (asset file). Migrated all starter
+  catalog templates and test fixtures to `value: "{field}"`.
 
 - **2026-08-12**: Docs only, no behavior change. Added [`AUTHORING.md`](AUTHORING.md), the
   task-oriented template authoring guide (#156): the layout model taught through worked examples from

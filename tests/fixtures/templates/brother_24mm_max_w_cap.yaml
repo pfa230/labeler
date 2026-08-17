@@ -12,12 +12,12 @@ format:
   media_width: 24
 layout:
   - type: qr
-    name: code
+    value: "{code}"
     at: [1.0, 0.0]
     size: [auto, 18.1]
     max_w: 18.1
   - type: text
-    name: message
+    value: "{message}"
     at: [21.1, 0.0]
     size: [auto, 18.1]
     max_w: 30.0

@@ -1,7 +1,11 @@
 use crate::errors::TemplateError;
-use crate::models::{AutoSize, Extent, Layout, LayoutItem, Padding, Placement, Size, SizeValue};
+use crate::models::{
+    AutoSize, DynamicDimension, Extent, Layout, LayoutItem, Padding, ParamSpec, ParamType,
+    ParamValue, Placement, Size, SizeValue, TemplateFormat,
+};
 use crate::raw::{
-    ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, TemplateDefinitionRaw, TextRaw,
+    ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
+    RawTemplateFormat, TemplateDefinitionRaw,
 };
 use crate::templates::TemplateDefinition;
 
@@ -100,29 +104,11 @@ impl TryFrom<ContainerRaw> for LayoutItem {
 
         Ok(LayoutItem::Container {
             placement,
-            option: raw.option,
+            when: raw.when.or(raw.option),
             frame: raw.frame,
             padding,
             items,
         })
-    }
-}
-
-fn require_one_of(
-    kind: &str,
-    name: Option<String>,
-    value: Option<String>,
-) -> Result<(Option<String>, Option<String>), TemplateError> {
-    match (&name, &value) {
-        (Some(_), Some(_)) => Err(TemplateError::Validation {
-            path: kind.to_string(),
-            msg: format!("{kind} must set exactly one of name or value, not both"),
-        }),
-        (None, None) => Err(TemplateError::Validation {
-            path: kind.to_string(),
-            msg: format!("{kind} must set one of name or value"),
-        }),
-        _ => Ok((name, value)),
     }
 }
 
@@ -131,19 +117,10 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
 
     fn try_from(raw: LayoutItemRaw) -> Result<Self, Self::Error> {
         match raw {
-            LayoutItemRaw::Text(TextRaw {
-                name,
-                value,
-                placement,
-                font_size,
-                font_weight,
-                multiline,
-                alignment,
-            }) => {
-                let (name, value) = require_one_of("text", name, value)?;
+            LayoutItemRaw::Text(raw) => {
                 // Also checked in `TemplateDefinition::validate`, which covers items built by any
                 // other route; here so an API caller gets the error with its JSON path.
-                if let Some(weight) = font_weight {
+                if let Some(crate::raw::Dynamic::Literal(weight)) = raw.font_weight {
                     if !(100..=900).contains(&weight) || weight % 100 != 0 {
                         return Err(TemplateError::Validation {
                             path: "text.font_weight".to_string(),
@@ -154,24 +131,21 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     }
                 }
                 Ok(LayoutItem::Text {
-                    name,
-                    value,
-                    placement: placement.into_placement("text", None)?,
-                    font_size,
-                    font_weight,
-                    multiline,
-                    alignment,
+                    value: raw.value,
+                    placement: raw.placement.into_placement("text", None)?,
+                    font_size: raw.font_size,
+                    font_weight: raw.font_weight,
+                    multiline: raw.multiline,
+                    alignment: raw.alignment,
+                    when: raw.when,
                 })
             }
-            LayoutItemRaw::Qr(raw) => {
-                let (name, value) = require_one_of("qr", raw.name, raw.value)?;
-                Ok(LayoutItem::Qr {
-                    name,
-                    value,
-                    placement: raw.placement.into_placement("qr", None)?,
-                    params: raw.params,
-                })
-            }
+            LayoutItemRaw::Qr(raw) => Ok(LayoutItem::Qr {
+                value: raw.value,
+                placement: raw.placement.into_placement("qr", None)?,
+                params: raw.params,
+                when: raw.when,
+            }),
             LayoutItemRaw::Image(raw) => match (&raw.src, &raw.name) {
                 (Some(_), Some(_)) => Err(TemplateError::Validation {
                     path: "image".to_string(),
@@ -186,15 +160,105 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     src: raw.src,
                     placement: raw.placement.into_placement("image", None)?,
                     fit: raw.fit,
+                    when: raw.when,
                 }),
             },
             LayoutItemRaw::Line(raw) => Ok(LayoutItem::Line {
                 at: raw.at,
                 to: raw.to,
                 thickness: raw.thickness,
+                when: raw.when,
             }),
             LayoutItemRaw::Container(raw) => LayoutItem::try_from(raw),
         }
+    }
+}
+
+impl TryFrom<RawDimension> for DynamicDimension {
+    type Error = TemplateError;
+
+    fn try_from(raw: RawDimension) -> Result<Self, Self::Error> {
+        Ok(match raw {
+            RawDimension::Fixed(d) => DynamicDimension::Fixed(d),
+            RawDimension::Dynamic { min, max } => DynamicDimension::Dynamic { min, max },
+        })
+    }
+}
+
+impl TryFrom<RawTemplateFormat> for TemplateFormat {
+    type Error = TemplateError;
+
+    fn try_from(raw: RawTemplateFormat) -> Result<Self, Self::Error> {
+        match raw {
+            RawTemplateFormat::Sheet {
+                paper_width,
+                paper_height,
+                label_width,
+                label_height,
+                positions,
+            } => Ok(TemplateFormat::Sheet {
+                paper_width,
+                paper_height,
+                label_width,
+                label_height,
+                positions,
+            }),
+            RawTemplateFormat::Single {
+                width,
+                height,
+                media_width,
+            } => Ok(TemplateFormat::Single {
+                width: DynamicDimension::try_from(width)?,
+                height: DynamicDimension::try_from(height)?,
+                media_width,
+            }),
+        }
+    }
+}
+
+impl TryFrom<RawParamSpec> for ParamSpec {
+    type Error = TemplateError;
+
+    fn try_from(raw: RawParamSpec) -> Result<Self, Self::Error> {
+        let param_type = match raw.param_type {
+            crate::raw::RawParamType::String => ParamType::String {
+                multiline: raw.multiline.unwrap_or(false),
+            },
+            crate::raw::RawParamType::Length => ParamType::Length,
+            crate::raw::RawParamType::Integer => ParamType::Integer,
+            crate::raw::RawParamType::Number => ParamType::Number,
+            crate::raw::RawParamType::Boolean => ParamType::Boolean,
+            crate::raw::RawParamType::Enum => ParamType::Enum {
+                values: raw.values.unwrap_or_default(),
+            },
+        };
+
+        let default = raw.default.map(|v| match v {
+            serde_yaml_ng::Value::Bool(b) => ParamValue::Boolean(b),
+            serde_yaml_ng::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    if matches!(param_type, ParamType::Integer) {
+                        ParamValue::Integer(i)
+                    } else {
+                        ParamValue::Float(i as f32)
+                    }
+                } else if let Some(f) = n.as_f64() {
+                    ParamValue::Float(f as f32)
+                } else {
+                    ParamValue::String(n.to_string())
+                }
+            }
+            serde_yaml_ng::Value::String(s) => ParamValue::String(s),
+            other => ParamValue::String(format!("{other:?}")),
+        });
+
+        Ok(ParamSpec {
+            param_type,
+            default,
+            min: raw.min,
+            max: raw.max,
+            description: raw.description,
+        })
     }
 }
 
@@ -209,14 +273,36 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
             items.push(node);
         }
 
+        let mut params = std::collections::BTreeMap::new();
+        if let Some(raw_params) = raw.params {
+            for (key, spec_raw) in raw_params {
+                let spec = ParamSpec::try_from(spec_raw)
+                    .map_err(|err| err.with_prefix(&format!("params.{key}")))?;
+                params.insert(key, spec);
+            }
+        }
+        if let Some(raw_options) = raw.options {
+            for (key, values) in raw_options.0 {
+                params.entry(key).or_insert(ParamSpec {
+                    param_type: ParamType::Enum { values },
+                    default: None,
+                    min: None,
+                    max: None,
+                    description: None,
+                });
+            }
+        }
+
+        let format = TemplateFormat::try_from(raw.format)?;
+
         Ok(TemplateDefinition {
             id: raw.id,
             name: raw.name,
             description: raw.description.unwrap_or_default(),
             unit: raw.unit,
             dpi: raw.dpi,
-            format: raw.format,
-            options: raw.options,
+            format,
+            params,
             layout: Layout::Items(items),
             version: raw.version,
         })
@@ -243,23 +329,38 @@ mod tests {
     }
 
     #[test]
-    fn text_with_name_ok() {
+    fn text_with_name_fails_deserialization() {
         assert!(try_build(
             "  - type: text\n    name: id\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n"
         )
-        .is_ok());
+        .is_err());
     }
 
     #[test]
-    fn text_with_both_errors() {
+    fn text_with_both_fails_deserialization() {
         assert!(try_build("  - type: text\n    name: id\n    value: \"{id}\"\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n").is_err());
     }
 
     #[test]
-    fn text_with_neither_errors() {
+    fn text_with_neither_fails_deserialization() {
         assert!(
             try_build("  - type: text\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn qr_with_value_ok() {
+        assert!(
+            try_build("  - type: qr\n    value: \"{id}\"\n    at: [0,0]\n    size: [10,10]\n")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn qr_with_name_fails_deserialization() {
+        assert!(
+            try_build("  - type: qr\n    name: id\n    at: [0,0]\n    size: [10,10]\n").is_err()
         );
     }
 

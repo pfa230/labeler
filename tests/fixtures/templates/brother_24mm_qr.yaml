@@ -12,7 +12,7 @@ format:
   media_width: 24
 layout:
   - type: qr
-    name: code
+    value: "{code}"
     at: [0.0, 0.0]
     size: [18.1, 18.1]
   - type: container
@@ -21,7 +21,7 @@ layout:
     padding: 1.0
     items:
       - type: text
-        name: message
+        value: "{message}"
         at: [0.0, 0.0]
         size: [auto, 16.1]
         font_size:

@@ -13,8 +13,8 @@ const detail = {
   dpi: 300,
   format: { type: "single", width: { min: 10, max: 120 }, height: 24 },
   layout: [
-    { type: "qr", name: "code" },
-    { type: "text", name: "message" },
+    { type: "qr", value: "{code}" },
+    { type: "text", value: "{message}" },
   ],
 };
 

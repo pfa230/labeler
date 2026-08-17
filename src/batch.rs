@@ -203,22 +203,22 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(20.0),
-                height: Dimension::Fixed(10.0),
+                width: Dimension::Fixed(20.0).into(),
+                height: Dimension::Fixed(10.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("message".to_string()),
-                value: None,
+                value: "{message}".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         }

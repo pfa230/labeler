@@ -11,7 +11,7 @@ pub mod middleware;
 pub mod models;
 pub mod openapi;
 pub mod parse;
-mod raw;
+pub mod raw;
 pub mod reason;
 pub mod render;
 pub mod settings;
@@ -1547,7 +1547,7 @@ format:
   height: 10.0
 layout:
   - type: text
-    name: msg
+    value: "{{msg}}"
     at: [0.0, 0.0]
     size: [20.0, 5.0]
     font_size: 10.0
@@ -1593,8 +1593,8 @@ layout:
     }
 
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
-    /// request cannot provoke (`item_has_no_source` in particular is unreachable, since convert.rs
-    /// rejects a text item with neither name nor value at parse time). Deleting the templates
+    /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
+    /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates
     /// directory out from under a built app reaches the write failure without depending on the test
     /// user's uid, which a read-only directory would.
     #[tokio::test]
@@ -3773,6 +3773,8 @@ mod auth_http_tests {
         let body = body_json(res).await;
         assert_eq!(body["job_log_retention_days"]["value"], 90);
         assert_eq!(body["job_log_retention_days"]["is_default"], true);
+        assert_eq!(body["max_label_dimension_mm"]["value"], 1000.0);
+        assert_eq!(body["max_label_dimension_mm"]["is_default"], true);
 
         // PUT an override
         let res = app
@@ -3789,6 +3791,20 @@ mod auth_http_tests {
         assert_eq!(body["value"], 30);
         assert_eq!(body["is_default"], false);
 
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/settings/max_label_dimension_mm",
+                r#"{"value":500.5}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["value"], 500.5);
+        assert_eq!(body["is_default"], false);
+
         // GET now reflects the override
         let res = app
             .clone()
@@ -3798,6 +3814,8 @@ mod auth_http_tests {
         let body = body_json(res).await;
         assert_eq!(body["job_log_retention_days"]["value"], 30);
         assert_eq!(body["job_log_retention_days"]["is_default"], false);
+        assert_eq!(body["max_label_dimension_mm"]["value"], 500.5);
+        assert_eq!(body["max_label_dimension_mm"]["is_default"], false);
 
         // DELETE resets to default and is 204
         let res = app
