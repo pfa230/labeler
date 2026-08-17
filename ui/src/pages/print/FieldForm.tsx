@@ -5,10 +5,11 @@ import {
   referencedFields,
   singleLineTextFields,
 } from "../../lib/templateFields";
-import type { TemplateDetail } from "../../api/types";
+import type { ParamSpec, TemplateDetail } from "../../api/types";
+import { ParamInput } from "../../components/ParamInput";
 
 export type FormValue = {
-  data: Record<string, string>;
+  data: Record<string, any>;
   option: Record<string, string>;
   printer?: string;
   startSlot: number;
@@ -21,15 +22,6 @@ const inputStyle = {
   borderColor: "var(--border)",
   color: "var(--ink)",
 } as const;
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
 
 export function FieldForm({
   detail,
@@ -52,7 +44,7 @@ export function FieldForm({
   const { data: printers } = usePrinters();
   const allPrinters = printers ?? [];
 
-  const setData = (field: string, v: string) =>
+  const setData = (field: string, v: any) =>
     onChange({ ...value, data: { ...value.data, [field]: v } });
   const setOption = (name: string, v: string) =>
     onChange({ ...value, option: { ...value.option, [name]: v } });
@@ -61,72 +53,121 @@ export function FieldForm({
   const clampSlot = (raw: string) =>
     Math.max(0, Math.min(positions - 1, Math.floor(Number(raw) || 0)));
 
+  const declaredParams = detail.params ?? {};
+  const hasDeclaredParams = Object.keys(declaredParams).length > 0;
+
+  // Unhandled fields from layout (for backward compatibility when params is missing or partial)
+  const fallbackFields = fields.filter((f) => !declaredParams[f]);
+  const fallbackOptions = Object.entries(detail.options ?? {}).filter(
+    ([name]) => !declaredParams[name],
+  );
+
   return (
     <div className="flex flex-col gap-4">
-      {fields.map((field, i) => {
-        const current = value.data[field] ?? "";
-        const invalid = current.length === 0;
-        // Index, not the field name: names only have to be non-empty, and `customer name` would
-        // produce an id with a space — aria-describedby is a whitespace-separated IDREFS list, so it
-        // would point at nothing.
-        const noteId = truncatedSomewhere.has(field) ? `multiline-note-${i}` : undefined;
-        return (
-          <label key={field} className="flex flex-col gap-1">
-            <span className="text-sm font-medium">{field}</span>
-            {imgs.has(field) ? (
-              <>
-                <input
-                  type="file"
-                  accept="image/*"
-                  aria-label={field}
-                  aria-invalid={invalid}
-                  aria-describedby={noteId}
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (file) setData(field, await readFileAsDataUrl(file));
-                  }}
-                  className="text-sm"
-                />
-                {current && (
-                  <span className="text-xs" style={{ color: "var(--muted)" }}>
-                    image selected
+      {hasDeclaredParams &&
+        Object.entries(declaredParams).map(([name, spec], i) => {
+          const current = value.data[name];
+          const hasDefault =
+            spec.default !== undefined ||
+            spec.type === "boolean" ||
+            (spec.type === "enum" && (spec.values?.length ?? 0) > 0);
+          const invalid = !hasDefault && (current === undefined || current === "");
+          const noteId = truncatedSomewhere.has(name) ? `multiline-note-${i}` : undefined;
+
+          return (
+            <label key={name} className="flex flex-col gap-1">
+              <div className="flex items-baseline justify-between">
+                <span className="text-sm font-medium">{spec.description || name}</span>
+                {spec.description && spec.description !== name && (
+                  <span className="font-mono text-xs" style={{ color: "var(--muted)" }}>
+                    {name}
                   </span>
                 )}
-              </>
-            ) : multiline.has(field) ? (
-              // rows is only an initial height; resize-y stops a drag widening the form column.
-              <textarea
-                aria-label={field}
-                aria-invalid={invalid}
-                aria-describedby={noteId}
-                rows={3}
+              </div>
+              <ParamInput
+                name={name}
+                spec={spec}
                 value={current}
-                onChange={(e) => setData(field, e.target.value)}
-                className={`${inputClass} resize-y`}
-                style={inputStyle}
+                onChange={(v) => setData(name, v)}
+                isImage={imgs.has(name)}
+                unit={detail.unit}
+                noteId={noteId}
+                invalid={invalid}
               />
-            ) : (
-              <input
-                type="text"
-                aria-label={field}
-                aria-invalid={invalid}
-                aria-describedby={noteId}
-                value={current}
-                onChange={(e) => setData(field, e.target.value)}
-                className={inputClass}
-                style={inputStyle}
-              />
-            )}
-            {noteId && (
-              <span id={noteId} className="text-xs" style={{ color: "var(--muted)" }}>
-                Also used on a single-line item, which shows only the first line.
-              </span>
-            )}
-          </label>
-        );
-      })}
+              {noteId && (
+                <span id={noteId} className="text-xs" style={{ color: "var(--muted)" }}>
+                  Also used on a single-line item, which shows only the first line.
+                </span>
+              )}
+            </label>
+          );
+        })}
 
-      {Object.entries(detail.options ?? {}).map(([name, values]) => (
+      {!hasDeclaredParams &&
+        fallbackFields.map((field, i) => {
+          const current = value.data[field] ?? "";
+          const invalid = current.length === 0;
+          const noteId = truncatedSomewhere.has(field) ? `multiline-note-${i}` : undefined;
+          const spec: ParamSpec = {
+            type: "string",
+            multiline: multiline.has(field),
+          };
+
+          return (
+            <label key={field} className="flex flex-col gap-1">
+              <span className="text-sm font-medium">{field}</span>
+              <ParamInput
+                name={field}
+                spec={spec}
+                value={current}
+                onChange={(v) => setData(field, v)}
+                isImage={imgs.has(field)}
+                unit={detail.unit}
+                noteId={noteId}
+                invalid={invalid}
+              />
+              {noteId && (
+                <span id={noteId} className="text-xs" style={{ color: "var(--muted)" }}>
+                  Also used on a single-line item, which shows only the first line.
+                </span>
+              )}
+            </label>
+          );
+        })}
+
+      {hasDeclaredParams &&
+        fallbackFields.map((field, i) => {
+          const current = value.data[field] ?? "";
+          const invalid = current.length === 0;
+          const noteId = truncatedSomewhere.has(field) ? `multiline-note-fb-${i}` : undefined;
+          const spec: ParamSpec = {
+            type: "string",
+            multiline: multiline.has(field),
+          };
+
+          return (
+            <label key={field} className="flex flex-col gap-1">
+              <span className="text-sm font-medium">{field}</span>
+              <ParamInput
+                name={field}
+                spec={spec}
+                value={current}
+                onChange={(v) => setData(field, v)}
+                isImage={imgs.has(field)}
+                unit={detail.unit}
+                noteId={noteId}
+                invalid={invalid}
+              />
+              {noteId && (
+                <span id={noteId} className="text-xs" style={{ color: "var(--muted)" }}>
+                  Also used on a single-line item, which shows only the first line.
+                </span>
+              )}
+            </label>
+          );
+        })}
+
+      {fallbackOptions.map(([name, values]) => (
         <label key={name} className="flex flex-col gap-1">
           <span className="text-sm font-medium">{name}</span>
           <select

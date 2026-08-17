@@ -102,23 +102,96 @@ pub(super) fn interpolate(
     Ok(out)
 }
 
+pub(super) fn resolve_dynamic_value_f32(
+    dyn_val: &crate::models::DynamicValue<f32>,
+    data: &HashMap<String, JsonValue>,
+) -> Result<f32, AppError> {
+    match dyn_val {
+        crate::models::DynamicValue::Literal(v) => Ok(*v),
+        crate::models::DynamicValue::Ref(name) => {
+            let val = data
+                .get(name)
+                .ok_or_else(|| AppError::missing_field(name))?;
+            match val {
+                JsonValue::Number(n) => n.as_f64().map(|f| f as f32).ok_or_else(|| {
+                    AppError::invalid_request(
+                        Reason::RequestBodyInvalid,
+                        format!("parameter '{name}' is not a valid number"),
+                    )
+                }),
+                JsonValue::String(s) => {
+                    let trimmed = s.trim();
+                    let num_str = trimmed
+                        .strip_suffix("mm")
+                        .or_else(|| trimmed.strip_suffix("in"))
+                        .unwrap_or(trimmed);
+                    num_str.trim().parse::<f32>().map_err(|_| {
+                        AppError::invalid_request(
+                            Reason::RequestBodyInvalid,
+                            format!("parameter '{name}' is not a valid number"),
+                        )
+                    })
+                }
+                _ => Err(AppError::invalid_request(
+                    Reason::RequestBodyInvalid,
+                    format!("parameter '{name}' is not a valid number"),
+                )),
+            }
+        }
+    }
+}
+
+pub(super) fn resolve_dynamic_value_u16(
+    dyn_val: &crate::models::DynamicValue<u16>,
+    data: &HashMap<String, JsonValue>,
+) -> Result<u16, AppError> {
+    match dyn_val {
+        crate::models::DynamicValue::Literal(v) => Ok(*v),
+        crate::models::DynamicValue::Ref(name) => {
+            let val = data
+                .get(name)
+                .ok_or_else(|| AppError::missing_field(name))?;
+            match val {
+                JsonValue::Number(n) => n
+                    .as_u64()
+                    .map(|u| u as u16)
+                    .or_else(|| n.as_f64().map(|f| f.round() as u16))
+                    .ok_or_else(|| {
+                        AppError::invalid_request(
+                            Reason::RequestBodyInvalid,
+                            format!("parameter '{name}' is not a valid integer"),
+                        )
+                    }),
+                JsonValue::String(s) => s.trim().parse::<u16>().map_err(|_| {
+                    AppError::invalid_request(
+                        Reason::RequestBodyInvalid,
+                        format!("parameter '{name}' is not a valid integer"),
+                    )
+                }),
+                _ => Err(AppError::invalid_request(
+                    Reason::RequestBodyInvalid,
+                    format!("parameter '{name}' is not a valid integer"),
+                )),
+            }
+        }
+    }
+}
+
 pub(super) fn resolve_dimension(
     dimension: &crate::models::DynamicDimension,
+    data: &HashMap<String, JsonValue>,
 ) -> Result<f32, AppError> {
     match dimension {
-        crate::models::DynamicDimension::Fixed(crate::models::DynamicValue::Literal(value)) => {
-            Ok(*value)
-        }
-        crate::models::DynamicDimension::Fixed(crate::models::DynamicValue::Ref(_)) => Ok(0.0),
+        crate::models::DynamicDimension::Fixed(dyn_val) => resolve_dynamic_value_f32(dyn_val, data),
         crate::models::DynamicDimension::Dynamic { min, max } => {
-            let max_val = max.as_ref().and_then(|v| match v {
-                crate::models::DynamicValue::Literal(x) => Some(*x),
-                _ => None,
-            });
-            let min_val = min.as_ref().and_then(|v| match v {
-                crate::models::DynamicValue::Literal(x) => Some(*x),
-                _ => None,
-            });
+            let max_val = max
+                .as_ref()
+                .map(|v| resolve_dynamic_value_f32(v, data))
+                .transpose()?;
+            let min_val = min
+                .as_ref()
+                .map(|v| resolve_dynamic_value_f32(v, data))
+                .transpose()?;
             max_val
                 .or(min_val)
                 .ok_or_else(|| AppError::unsupported_format("dynamic dimension missing min/max"))
@@ -1364,5 +1437,87 @@ mod measurement_tests {
         // dropping it would under-measure, and under-measuring is what overflows a clip box.
         let width = text_width(&face, "\u{10FFFF}", 14.0);
         assert!(width > 0.0, "a missing glyph measured as zero width");
+    }
+}
+
+#[cfg(test)]
+mod dynamic_resolution_tests {
+    use super::*;
+    use crate::models::{DynamicDimension, DynamicValue};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn resolve_dynamic_value_f32_literal_and_ref() {
+        let mut data = HashMap::new();
+        data.insert("width".to_string(), json!(50.5));
+        data.insert("width_str".to_string(), json!("60.0mm"));
+        data.insert("width_in".to_string(), json!("2.5in"));
+
+        assert_eq!(
+            resolve_dynamic_value_f32(&DynamicValue::Literal(12.0), &data).unwrap(),
+            12.0
+        );
+        assert_eq!(
+            resolve_dynamic_value_f32(&DynamicValue::Ref("width".to_string()), &data).unwrap(),
+            50.5
+        );
+        assert_eq!(
+            resolve_dynamic_value_f32(&DynamicValue::Ref("width_str".to_string()), &data).unwrap(),
+            60.0
+        );
+        assert_eq!(
+            resolve_dynamic_value_f32(&DynamicValue::Ref("width_in".to_string()), &data).unwrap(),
+            2.5
+        );
+    }
+
+    #[test]
+    fn resolve_dynamic_value_f32_missing_and_invalid() {
+        let mut data = HashMap::new();
+        data.insert("bad".to_string(), json!("not_a_number"));
+
+        let err = resolve_dynamic_value_f32(&DynamicValue::Ref("missing".to_string()), &data)
+            .unwrap_err();
+        assert_eq!(err.code(), "MissingField");
+
+        let err =
+            resolve_dynamic_value_f32(&DynamicValue::Ref("bad".to_string()), &data).unwrap_err();
+        assert_eq!(err.code(), "InvalidRequest");
+    }
+
+    #[test]
+    fn resolve_dynamic_value_u16_literal_and_ref() {
+        let mut data = HashMap::new();
+        data.insert("weight".to_string(), json!(700));
+        data.insert("weight_str".to_string(), json!("600"));
+
+        assert_eq!(
+            resolve_dynamic_value_u16(&DynamicValue::Literal(400), &data).unwrap(),
+            400
+        );
+        assert_eq!(
+            resolve_dynamic_value_u16(&DynamicValue::Ref("weight".to_string()), &data).unwrap(),
+            700
+        );
+        assert_eq!(
+            resolve_dynamic_value_u16(&DynamicValue::Ref("weight_str".to_string()), &data).unwrap(),
+            600
+        );
+    }
+
+    #[test]
+    fn resolve_dimension_fixed_and_dynamic() {
+        let mut data = HashMap::new();
+        data.insert("target_w".to_string(), json!(80.0));
+
+        let fixed = DynamicDimension::Fixed(DynamicValue::Ref("target_w".to_string()));
+        assert_eq!(resolve_dimension(&fixed, &data).unwrap(), 80.0);
+
+        let dynamic = DynamicDimension::Dynamic {
+            min: Some(DynamicValue::Literal(20.0)),
+            max: Some(DynamicValue::Ref("target_w".to_string())),
+        };
+        assert_eq!(resolve_dimension(&dynamic, &data).unwrap(), 80.0);
     }
 }

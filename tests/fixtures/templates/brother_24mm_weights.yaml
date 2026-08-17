@@ -3,6 +3,11 @@ name: Brother 24mm Weight Demo
 description: Two stacked text fields, one bold and one at the default weight (#97)
 unit: mm
 dpi: 180
+params:
+  title:
+    type: string
+  subtitle:
+    type: string
 format:
   type: single
   width:

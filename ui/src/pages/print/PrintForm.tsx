@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { defaultOptions, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
+import { defaultOptions, defaultParamValues, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { usePrinters } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
@@ -20,7 +20,9 @@ const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Mat
 
 export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
   const [value, setValue] = useState<FormValue>(() => ({
-    data: {},
+    data: {
+      ...defaultParamValues(detail.params),
+    },
     option: defaultOptions(detail.options),
     printer: undefined,
     startSlot: 0,
@@ -53,7 +55,21 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const isSheet = detail.format.type === "sheet";
   const reconciledOption = reconcileRowOptions(value.option, detail.options);
   const fields = referencedFields(detail.layout, reconciledOption);
-  const valid = fields.every((f) => (value.data[f] ?? "").length > 0);
+  const hasParams = !!detail.params && Object.keys(detail.params).length > 0;
+  const valid = hasParams
+    ? Object.entries(detail.params!).every(([name, spec]) => {
+        const hasDefault =
+          spec.default !== undefined ||
+          spec.type === "boolean" ||
+          (spec.type === "enum" && (spec.values?.length ?? 0) > 0);
+        if (hasDefault) return true;
+        const current = value.data[name];
+        return current !== undefined && current !== "";
+      }) &&
+      fields
+        .filter((f) => !detail.params?.[f])
+        .every((f) => (value.data[f] ?? "").length > 0)
+    : fields.every((f) => (value.data[f] ?? "").length > 0);
   const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
   const option = hasOptions ? reconciledOption : undefined;
   const startSlot = isSheet ? value.startSlot : undefined;

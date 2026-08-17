@@ -3,6 +3,10 @@ name: Avery 5163 2" x 4" Shipping Label
 description: Ten 2x4 inch labels per US Letter sheet, single text field
 unit: in
 dpi: 300
+params:
+  message:
+    type: string
+    description: "Label message text"
 format:
   type: sheet
   paper_width: 8.5

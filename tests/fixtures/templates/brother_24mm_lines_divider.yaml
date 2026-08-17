@@ -6,6 +6,11 @@ description: >-
   edge-relative coordinates (#146) and opposite-corner placement (#147).
 unit: mm
 dpi: 180
+params:
+  line1:
+    type: string
+  line2:
+    type: string
 format:
   type: single
   width:

@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, Layout, LayoutItem, Options,
-    ParamSpec, ParamType, Point, Position, SizeValue, TemplateDetail, TemplateFormat,
+    ParamSpec, ParamType, Point, Position, Size, SizeValue, TemplateDetail, TemplateFormat,
     TemplateSummary,
 };
 use crate::parse::parse_template;
@@ -172,6 +172,76 @@ pub enum TemplateRegistryError {
 }
 
 impl TemplateDefinition {
+    pub fn validate_params(&self) -> Result<(), String> {
+        for (name, spec) in &self.params {
+            validate_param_name(name)?;
+            validate_param_spec(name, spec)?;
+        }
+        Ok(())
+    }
+
+    pub fn validate_references(&self) -> Result<(), String> {
+        match &self.format {
+            TemplateFormat::Single { width, height, .. } => {
+                for (dim_name, dim) in [("width", width), ("height", height)] {
+                    match dim {
+                        DynamicDimension::Fixed(DynamicValue::Ref(r)) => {
+                            check_param_ref(
+                                &self.params,
+                                r,
+                                &format!("format {dim_name}"),
+                                &["length", "number", "integer"],
+                            )?;
+                        }
+                        DynamicDimension::Dynamic { min, max } => {
+                            if let Some(DynamicValue::Ref(r)) = min {
+                                check_param_ref(
+                                    &self.params,
+                                    r,
+                                    &format!("format {dim_name}.min"),
+                                    &["length", "number", "integer"],
+                                )?;
+                            }
+                            if let Some(DynamicValue::Ref(r)) = max {
+                                check_param_ref(
+                                    &self.params,
+                                    r,
+                                    &format!("format {dim_name}.max"),
+                                    &["length", "number", "integer"],
+                                )?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            TemplateFormat::Sheet { .. } => {}
+        }
+
+        match &self.layout {
+            Layout::Items(items) => {
+                for item in items {
+                    validate_item_references(item, &self.params)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn instantiate_with_defaults(&self) -> TemplateDefinition {
+        TemplateDefinition {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            unit: self.unit.clone(),
+            dpi: self.dpi,
+            format: instantiate_format_defaults(&self.format, &self.params),
+            params: self.params.clone(),
+            layout: instantiate_layout_defaults(&self.layout, &self.params),
+            version: self.version.clone(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.id.trim().is_empty() {
             return Err("id must not be empty".to_string());
@@ -186,6 +256,10 @@ impl TemplateDefinition {
         if self.dpi == 0 {
             return Err("dpi must be greater than 0".to_string());
         }
+
+        self.validate_params()?;
+        self.validate_references()?;
+
         if let Some(options) = &self.options() {
             if options.0.is_empty() {
                 return Err("options must not be empty".to_string());
@@ -202,12 +276,15 @@ impl TemplateDefinition {
                 }
             }
         }
+
+        let instantiated = self.instantiate_with_defaults();
+
         // Require both bounds on a dynamic-width single before computing layout bounds,
         // so the caller gets the correct error rather than an out-of-bounds panic.
         if let TemplateFormat::Single {
             width: DynamicDimension::Dynamic { min, max },
             ..
-        } = &self.format
+        } = &instantiated.format
         {
             if min.is_none() || max.is_none() {
                 return Err(
@@ -217,17 +294,17 @@ impl TemplateDefinition {
             }
         }
 
-        let bounds = layout_bounds(&self.format)?;
+        let bounds = layout_bounds(&instantiated.format)?;
         let is_dynamic_width = matches!(
-            &self.format,
+            &instantiated.format,
             TemplateFormat::Single {
                 width: DynamicDimension::Dynamic { .. },
                 ..
             }
         );
         validate_layout(
-            &self.layout,
-            self.options().as_ref(),
+            &instantiated.layout,
+            instantiated.options().as_ref(),
             bounds.as_ref(),
             is_dynamic_width,
         )?;
@@ -235,14 +312,14 @@ impl TemplateDefinition {
         if let TemplateFormat::Single {
             media_width: Some(mw),
             ..
-        } = &self.format
+        } = &instantiated.format
         {
             if *mw <= 0.0 {
                 return Err("media_width must be greater than 0".to_string());
             }
         }
 
-        match &self.format {
+        match &instantiated.format {
             TemplateFormat::Sheet {
                 paper_width,
                 paper_height,
@@ -282,6 +359,407 @@ impl TemplateDefinition {
         }
 
         Ok(())
+    }
+}
+
+fn validate_param_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("parameter name must not be empty".to_string());
+    }
+    if name == "datetime" || name == "vars" {
+        return Err(format!("parameter name '{name}' is reserved"));
+    }
+    if name.starts_with("datetime.") || name.starts_with("vars.") {
+        return Err(format!("parameter name '{name}' uses a reserved prefix"));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "parameter name '{name}' contains invalid characters; must match ^[a-zA-Z0-9_-]+$"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_param_spec(name: &str, spec: &ParamSpec) -> Result<(), String> {
+    match &spec.param_type {
+        ParamType::Enum { values } => {
+            if values.is_empty() {
+                return Err(format!("parameter '{name}' enum values must not be empty"));
+            }
+            if values.iter().any(|opt| opt.trim().is_empty()) {
+                return Err("options must not contain empty values".to_string());
+            }
+            if let Some(default) = &spec.default {
+                let default_str = match default {
+                    crate::models::ParamValue::String(s) => s.as_str(),
+                    crate::models::ParamValue::Integer(i) => {
+                        let s = i.to_string();
+                        if !values.contains(&s) {
+                            return Err(format!(
+                                "parameter '{name}' default '{i}' is not in enum values"
+                            ));
+                        }
+                        return Ok(());
+                    }
+                    _ => "",
+                };
+                if !values.iter().any(|v| v == default_str) {
+                    return Err(format!(
+                        "parameter '{name}' default '{default_str}' is not in enum values"
+                    ));
+                }
+            }
+        }
+        ParamType::Length | ParamType::Number | ParamType::Integer => {
+            if let (Some(min), Some(max)) = (spec.min, spec.max) {
+                if min > max {
+                    return Err(format!(
+                        "parameter '{name}' min ({min}) must be <= max ({max})"
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn check_param_ref(
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+    name: &str,
+    context: &str,
+    allowed_types: &[&str],
+) -> Result<(), String> {
+    let spec = params
+        .get(name)
+        .ok_or_else(|| format!("undeclared parameter '{name}' referenced in {context}"))?;
+    let matches_type = match &spec.param_type {
+        ParamType::Length => allowed_types.contains(&"length"),
+        ParamType::Number => allowed_types.contains(&"number"),
+        ParamType::Integer => allowed_types.contains(&"integer"),
+        ParamType::String { .. } => allowed_types.contains(&"string"),
+        ParamType::Boolean => allowed_types.contains(&"boolean"),
+        ParamType::Enum { .. } => allowed_types.contains(&"enum"),
+    };
+    if !matches_type {
+        return Err(format!(
+            "parameter '{name}' of type {:?} cannot be used in {context}",
+            spec.param_type
+        ));
+    }
+    Ok(())
+}
+
+fn validate_when_references(
+    when: Option<&std::collections::BTreeMap<String, String>>,
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+) -> Result<(), String> {
+    if let Some(when) = when {
+        for (name, val) in when {
+            let spec = params.get(name).ok_or_else(|| {
+                format!("undeclared parameter '{name}' referenced in when condition")
+            })?;
+            if let ParamType::Enum { values } = &spec.param_type {
+                if !values.iter().any(|v| v == val) {
+                    return Err(format!(
+                        "when condition for '{name}' references '{val}' which is not in enum values"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_item_references(
+    item: &LayoutItem,
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+) -> Result<(), String> {
+    match item {
+        LayoutItem::Text {
+            placement,
+            font_weight,
+            when,
+            ..
+        } => {
+            validate_when_references(when.as_ref(), params)?;
+            if let Some(DynamicValue::Ref(ref_name)) = font_weight {
+                check_param_ref(params, ref_name, "font_weight", &["integer"])?;
+            }
+            if let Extent::Size(size) = &placement.extent {
+                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
+                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
+                        check_param_ref(
+                            params,
+                            ref_name,
+                            &format!("text {axis}"),
+                            &["length", "number", "integer"],
+                        )?;
+                    }
+                }
+            }
+        }
+        LayoutItem::Qr {
+            placement, when, ..
+        } => {
+            validate_when_references(when.as_ref(), params)?;
+            if let Extent::Size(size) = &placement.extent {
+                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
+                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
+                        check_param_ref(
+                            params,
+                            ref_name,
+                            &format!("qr {axis}"),
+                            &["length", "number", "integer"],
+                        )?;
+                    }
+                }
+            }
+        }
+        LayoutItem::Image {
+            placement, when, ..
+        } => {
+            validate_when_references(when.as_ref(), params)?;
+            if let Extent::Size(size) = &placement.extent {
+                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
+                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
+                        check_param_ref(
+                            params,
+                            ref_name,
+                            &format!("image {axis}"),
+                            &["length", "number", "integer"],
+                        )?;
+                    }
+                }
+            }
+        }
+        LayoutItem::Line { when, .. } => {
+            validate_when_references(when.as_ref(), params)?;
+        }
+        LayoutItem::Container {
+            placement,
+            when,
+            items,
+            ..
+        } => {
+            validate_when_references(when.as_ref(), params)?;
+            if let Extent::Size(size) = &placement.extent {
+                for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
+                    if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
+                        check_param_ref(
+                            params,
+                            ref_name,
+                            &format!("container {axis}"),
+                            &["length", "number", "integer"],
+                        )?;
+                    }
+                }
+            }
+            for child in items {
+                validate_item_references(child, params)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_f32_default(params: &std::collections::BTreeMap<String, ParamSpec>, name: &str) -> f32 {
+    if let Some(spec) = params.get(name) {
+        match &spec.default {
+            Some(crate::models::ParamValue::Float(f)) => *f,
+            Some(crate::models::ParamValue::Integer(i)) => *i as f32,
+            Some(crate::models::ParamValue::String(s)) => {
+                s.parse::<f32>().unwrap_or_else(|_| spec.min.unwrap_or(0.0))
+            }
+            _ => spec.min.unwrap_or(0.0),
+        }
+    } else {
+        0.0
+    }
+}
+
+fn resolve_u16_default(params: &std::collections::BTreeMap<String, ParamSpec>, name: &str) -> u16 {
+    if let Some(spec) = params.get(name) {
+        match &spec.default {
+            Some(crate::models::ParamValue::Integer(i)) => *i as u16,
+            Some(crate::models::ParamValue::Float(f)) => *f as u16,
+            _ => 400,
+        }
+    } else {
+        400
+    }
+}
+
+fn instantiate_format_defaults(
+    format: &TemplateFormat,
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+) -> TemplateFormat {
+    match format {
+        TemplateFormat::Single {
+            width,
+            height,
+            media_width,
+        } => {
+            let inst_dim = |dim: &DynamicDimension| -> DynamicDimension {
+                match dim {
+                    DynamicDimension::Fixed(dv) => {
+                        let val = match dv {
+                            DynamicValue::Literal(v) => *v,
+                            DynamicValue::Ref(r) => resolve_f32_default(params, r),
+                        };
+                        DynamicDimension::Fixed(DynamicValue::Literal(val))
+                    }
+                    DynamicDimension::Dynamic { min, max } => {
+                        let inst_dv =
+                            |dv: &Option<DynamicValue<f32>>| -> Option<DynamicValue<f32>> {
+                                dv.as_ref().map(|v| match v {
+                                    DynamicValue::Literal(val) => DynamicValue::Literal(*val),
+                                    DynamicValue::Ref(r) => {
+                                        DynamicValue::Literal(resolve_f32_default(params, r))
+                                    }
+                                })
+                            };
+                        DynamicDimension::Dynamic {
+                            min: inst_dv(min),
+                            max: inst_dv(max),
+                        }
+                    }
+                }
+            };
+            TemplateFormat::Single {
+                width: inst_dim(width),
+                height: inst_dim(height),
+                media_width: *media_width,
+            }
+        }
+        TemplateFormat::Sheet { .. } => format.clone(),
+    }
+}
+
+fn instantiate_layout_defaults(
+    layout: &Layout,
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+) -> Layout {
+    match layout {
+        Layout::Items(items) => Layout::Items(
+            items
+                .iter()
+                .map(|item| instantiate_item_defaults(item, params))
+                .collect(),
+        ),
+    }
+}
+
+fn instantiate_item_defaults(
+    item: &LayoutItem,
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+) -> LayoutItem {
+    let inst_placement = |placement: &crate::models::Placement| -> crate::models::Placement {
+        let extent = match &placement.extent {
+            Extent::Size(Size([w, h])) => {
+                let inst_sv = |sv: &SizeValue| -> SizeValue {
+                    match sv {
+                        SizeValue::Dynamic(DynamicValue::Ref(r)) => SizeValue::Dynamic(
+                            DynamicValue::Literal(resolve_f32_default(params, r)),
+                        ),
+                        _ => sv.clone(),
+                    }
+                };
+                Extent::Size(Size([inst_sv(w), inst_sv(h)]))
+            }
+            Extent::To(pos) => Extent::To(pos.clone()),
+        };
+        crate::models::Placement {
+            at: placement.at.clone(),
+            extent,
+            max_w: placement.max_w,
+            max_h: placement.max_h,
+            rotate: placement.rotate,
+        }
+    };
+
+    match item {
+        LayoutItem::Text {
+            name,
+            value,
+            placement,
+            font_size,
+            font_weight,
+            multiline,
+            alignment,
+            when,
+        } => {
+            let fw = font_weight.as_ref().map(|w| match w {
+                DynamicValue::Literal(v) => DynamicValue::Literal(*v),
+                DynamicValue::Ref(r) => DynamicValue::Literal(resolve_u16_default(params, r)),
+            });
+            LayoutItem::Text {
+                name: name.clone(),
+                value: value.clone(),
+                placement: inst_placement(placement),
+                font_size: font_size.clone(),
+                font_weight: fw,
+                multiline: *multiline,
+                alignment: alignment.clone(),
+                when: when.clone(),
+            }
+        }
+        LayoutItem::Qr {
+            name,
+            value,
+            placement,
+            params: qr_params,
+            when,
+        } => LayoutItem::Qr {
+            name: name.clone(),
+            value: value.clone(),
+            placement: inst_placement(placement),
+            params: qr_params.clone(),
+            when: when.clone(),
+        },
+        LayoutItem::Image {
+            name,
+            src,
+            placement,
+            fit,
+            when,
+        } => LayoutItem::Image {
+            name: name.clone(),
+            src: src.clone(),
+            placement: inst_placement(placement),
+            fit: *fit,
+            when: when.clone(),
+        },
+        LayoutItem::Line {
+            at,
+            to,
+            thickness,
+            when,
+        } => LayoutItem::Line {
+            at: at.clone(),
+            to: to.clone(),
+            thickness: *thickness,
+            when: when.clone(),
+        },
+        LayoutItem::Container {
+            placement,
+            when,
+            frame,
+            padding,
+            items,
+        } => LayoutItem::Container {
+            placement: inst_placement(placement),
+            when: when.clone(),
+            frame: frame.clone(),
+            padding: *padding,
+            items: items
+                .iter()
+                .map(|child| instantiate_item_defaults(child, params))
+                .collect(),
+        },
     }
 }
 
@@ -2104,5 +2582,172 @@ layout:
             },
             _ => panic!("expected single format"),
         }
+    }
+
+    #[test]
+    fn reject_reserved_parameter_names() {
+        let bad_names = [
+            "datetime",
+            "vars",
+            "datetime.iso",
+            "vars.site",
+            "invalid.dot",
+        ];
+        for name in bad_names {
+            let yaml = format!(
+                "id: t\nname: T\nunit: mm\ndpi: 200\nparams:\n  {name}:\n    type: string\nformat:\n  type: single\n  height: 12\n  width: 50\nlayout: []"
+            );
+            let res = parse_and_validate(&yaml);
+            assert!(res.is_err(), "should reject reserved name '{name}'");
+        }
+    }
+
+    #[test]
+    fn reject_referencing_undeclared_parameter() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  declared_param:
+    type: length
+    default: 50
+format:
+  type: single
+  height: 18
+  width:
+    min: 25
+    max: "{undeclared_param}"
+layout: []
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "should reject undeclared parameter reference");
+    }
+
+    #[test]
+    fn reject_type_mismatch_in_layout_parameter_reference() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  string_param:
+    type: string
+format:
+  type: single
+  height: 18
+  width: 50
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+    font_weight: "{string_param}"
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(
+            res.is_err(),
+            "should reject string parameter in font_weight"
+        );
+    }
+
+    #[test]
+    fn validate_bounds_instantiating_parameter_defaults() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  box_w:
+    type: length
+    default: 10
+format:
+  type: single
+  height: 18
+  width: 50
+layout:
+  - type: container
+    at: [0, 0]
+    size: ["{box_w}", 10]
+    items: []
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_ok(), "validates cleanly using default box_w = 10");
+    }
+
+    #[test]
+    fn reject_enum_default_not_in_values() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: diagonal
+format:
+  type: single
+  height: 18
+  width: 50
+layout: []
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "should reject enum default not in values");
+    }
+
+    #[test]
+    fn reject_parameter_min_greater_than_max() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  custom_w:
+    type: length
+    min: 100
+    max: 50
+format:
+  type: single
+  height: 18
+  width: 50
+layout: []
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(res.is_err(), "should reject min > max");
+    }
+
+    #[test]
+    fn reject_default_bounds_overflow() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  box_w:
+    type: length
+    default: 60
+format:
+  type: single
+  height: 18
+  width: 50
+layout:
+  - type: container
+    at: [0, 0]
+    size: ["{box_w}", 10]
+    items: []
+"#;
+        let res = parse_and_validate(yaml);
+        assert!(
+            res.is_err(),
+            "should reject default box_w = 60 exceeding width 50"
+        );
     }
 }

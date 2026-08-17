@@ -3,6 +3,10 @@ name: Brother 9mm Continuous Label (text only)
 description: Continuous tape, 9mm nominal (7.1mm printable at 180 dpi), text only
 unit: mm
 dpi: 180
+params:
+  message:
+    type: string
+    description: "Label message text"
 format:
   type: single
   width:
