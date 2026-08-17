@@ -332,6 +332,255 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn create_connection_with_valid_public_url() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745/","public_url":"https://homebox.example.com/","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let v = json_response(res).await;
+        assert_eq!(v["public_url"], "https://homebox.example.com");
+        assert_eq!(v["base_url"], "http://hb.lan:7745");
+        assert_eq!(v["has_credential"], true);
+
+        // GET /connections/{id} returns the normalized public_url
+        let id = v["id"].as_str().unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/connections/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v["public_url"], "https://homebox.example.com");
+    }
+
+    #[tokio::test]
+    async fn create_connection_normalizes_empty_public_url_to_none() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let v = json_response(res).await;
+        assert_eq!(v["public_url"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn create_connection_rejects_invalid_public_url_scheme_or_query() {
+        let app = build_app();
+        // Scheme ftp
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"ftp://homebox","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+
+        // Query param
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"http://homebox?q=1","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+
+        // Fragment
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"http://homebox#frag","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+    }
+
+    #[tokio::test]
+    async fn update_connection_preserves_omitted_public_url() {
+        let app = build_app();
+        // Create with public_url
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://homebox.example.com","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let v = json_response(res).await;
+        let id = v["id"].as_str().unwrap();
+        assert_eq!(v["public_url"], "https://homebox.example.com");
+
+        // Update omitting public_url preserves existing
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"renamed","base_url":"http://hb.lan:7745"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v["name"], "renamed");
+        assert_eq!(v["public_url"], "https://homebox.example.com");
+    }
+
+    #[tokio::test]
+    async fn update_connection_clears_null_public_url() {
+        let app = build_app();
+        // Create with public_url
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://homebox.example.com","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let v = json_response(res).await;
+        let id = v["id"].as_str().unwrap();
+        assert_eq!(v["public_url"], "https://homebox.example.com");
+
+        // Clear public_url with null
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":null}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v["public_url"], Value::Null);
+
+        // Set to new public_url
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://hb2.example.com"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v["public_url"], "https://hb2.example.com");
+
+        // Clear public_url with empty string ""
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":""}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v["public_url"], Value::Null);
+    }
+
+    #[tokio::test]
     async fn root_path_serves_spa_not_api() {
         // empty ui dir (no index.html): the old root API path is gone; /health is not the API.
         let dir = std::env::temp_dir().join(format!("labeler_ui_empty_{}", uniq()));
