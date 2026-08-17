@@ -54,7 +54,14 @@ async fn main() {
 
     let templates = TemplateRegistry::load_from_dir(&templates_dir)
         .unwrap_or_else(|err| panic!("failed to load templates: {err}"));
-    tracing::info!(count = templates.len(), "templates loaded");
+    tracing::info!(
+        count = templates.len(),
+        broken = templates.broken().len(),
+        "templates loaded"
+    );
+    for b in templates.broken() {
+        tracing::warn!(filename = %b.filename, error = %b.error, "template failed to load; fix it and POST /api/templates/reload");
+    }
 
     // Dev-only: warn if the locally served ui/dist bundle is missing or older than ui/src. Skipped when
     // LABELER_UI_DIR is set (the container sets it). Never fails startup. See #69.

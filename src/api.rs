@@ -130,11 +130,17 @@ impl AppState {
     // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and
     // consistent with the synchronous Typst render path; revisit with spawn_blocking if it ever
     // serves large dirs or remote storage.
-    fn reload(&self) -> Result<usize, TemplateRegistryError> {
+    fn reload(&self) -> Result<(usize, usize), TemplateRegistryError> {
         let registry = TemplateRegistry::load_from_dir(&self.templates_dir)?;
         let count = registry.len();
+        let broken_count = registry.broken().len();
+        if broken_count > 0 {
+            for b in registry.broken() {
+                tracing::warn!(filename = %b.filename, error = %b.error, "template failed to load");
+            }
+        }
         self.templates.store(Arc::new(registry));
-        Ok(count)
+        Ok((count, broken_count))
     }
 }
 
@@ -270,8 +276,17 @@ pub async fn health() -> impl IntoResponse {
     )
 )]
 pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let templates = state.templates.load_full().summaries();
-    Json(TemplateList { templates })
+    let registry = state.templates.load_full();
+    let templates = registry.summaries();
+    let broken = registry
+        .broken()
+        .iter()
+        .map(|b| crate::models::BrokenTemplateSummary {
+            filename: b.filename.clone(),
+            error: b.error.clone(),
+        })
+        .collect();
+    Json(TemplateList { templates, broken })
 }
 
 #[utoipa::path(
@@ -286,8 +301,11 @@ pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResp
 pub async fn reload_templates(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ReloadResponse>, AppError> {
-    let count = state.reload()?;
-    Ok(Json(ReloadResponse { count }))
+    let (count, broken_count) = state.reload()?;
+    Ok(Json(ReloadResponse {
+        count,
+        broken_count,
+    }))
 }
 
 fn template_file_path(dir: &std::path::Path, id: &str) -> Result<PathBuf, AppError> {

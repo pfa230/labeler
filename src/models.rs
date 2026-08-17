@@ -29,11 +29,24 @@ pub struct VariableValue {
 #[derive(Serialize, ToSchema)]
 pub struct ReloadResponse {
     pub count: usize,
+    pub broken_count: usize,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct BrokenTemplateSummary {
+    /// Basename of the YAML file that failed to load (e.g. `foo.yaml`).
+    pub filename: String,
+    /// Human-readable parse or validation error.
+    pub error: String,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct TemplateList {
     pub templates: Vec<TemplateSummary>,
+    /// Files in the templates directory that failed to parse or validate.
+    /// An empty list means all files loaded successfully.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub broken: Vec<BrokenTemplateSummary>,
 }
 
 #[derive(Serialize, ToSchema, Clone)]

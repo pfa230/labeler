@@ -1905,12 +1905,13 @@ layout:
     }
 
     #[tokio::test]
-    async fn reload_invalid_file_keeps_previous_set() {
+    async fn reload_with_broken_file_succeeds_and_quarantines_it() {
         let dir = temp_templates_dir();
         std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
         let app = build_app_in(&dir);
         assert_eq!(template_count(&app).await, 1);
 
+        // Write a bad file alongside the good one.
         std::fs::write(dir.join("bad.yaml"), "id: bad\nunit: nope\n").unwrap();
         let response = app
             .clone()
@@ -1923,9 +1924,22 @@ layout:
             )
             .await
             .expect("request");
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        // The previously-loaded set is still served.
+        // Reload succeeds now: bad files are quarantined, not fatal.
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["broken_count"], 1);
+
+        // The valid template is still served.
         assert_eq!(template_count(&app).await, 1);
+
+        // GET /api/templates lists the valid template and the broken entry.
+        let (_, list) = get_json(&app, "/api/templates").await;
+        assert_eq!(list["templates"].as_array().unwrap().len(), 1);
+        let broken = list["broken"].as_array().unwrap();
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0]["filename"], "bad.yaml");
+        assert!(broken[0]["error"].as_str().unwrap().contains("bad.yaml"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2086,13 +2100,10 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A delete unlinks the file, then reloads — and the reload re-reads the whole directory, so an
-    /// unrelated invalid sibling fails it and leaves the previous set live (the deliberate policy in
-    /// `reload_invalid_file_keeps_previous_set`). The registry then names a file that is gone.
-    /// Retrying the delete once the directory is fixed must converge rather than error forever on
-    /// the missing file.
+    /// A broken sibling no longer blocks a delete reload — the bad file is quarantined.
+    /// After the delete the registry excludes the deleted template and keeps the broken file listed.
     #[tokio::test]
-    async fn delete_converges_after_a_reload_failure_left_the_registry_stale() {
+    async fn delete_with_broken_sibling_succeeds_and_quarantines_broken() {
         let dir = temp_templates_dir();
         std::fs::write(dir.join("s1.yaml"), template_yaml("s1")).unwrap();
         let app = build_app_in(&dir);
@@ -2109,27 +2120,12 @@ layout:
             )
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // Delete now succeeds: broken sibling is quarantined, not fatal.
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert!(
             !dir.join("s1.yaml").exists(),
             "the unlink should have happened"
         );
-        // The reload failed, so the stale set still lists the template it can no longer serve.
-        assert_eq!(template_count(&app).await, 1);
-
-        std::fs::remove_file(dir.join("bad.yaml")).unwrap();
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri("/api/templates/s1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert_eq!(template_count(&app).await, 0);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2348,12 +2344,10 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// `replace_template` writes, then reloads the whole directory — so an unrelated invalid file
-    /// fails the reload after the edit has already landed. The `422` therefore does not mean
-    /// "nothing was saved", and the UI must not assume it does (#141). Retrying once the directory
-    /// is fixed converges.
+    /// PUT writes the file and reloads — with a broken sibling the reload still succeeds (quarantine),
+    /// so the edited template is live immediately.
     #[tokio::test]
-    async fn template_replace_persists_even_when_an_invalid_sibling_fails_the_reload() {
+    async fn template_replace_with_broken_sibling_succeeds_and_live_immediately() {
         let dir = temp_templates_dir();
         std::fs::write(dir.join("p1.yaml"), template_yaml("p1")).unwrap();
         let app = build_app_in(&dir);
@@ -2365,33 +2359,9 @@ layout:
             .oneshot(yaml_post("/api/templates/p1", "PUT", edited.clone()))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        // The write landed even though the request failed…
-        assert_eq!(
-            std::fs::read_to_string(dir.join("p1.yaml")).unwrap(),
-            edited
-        );
-        // …while the registry still serves the pre-edit set.
-        let resp = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/templates/p1")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect("request");
-        let detail = json_response(resp).await;
-        assert_eq!(detail["dpi"], 300);
-
-        std::fs::remove_file(dir.join("bad.yaml")).unwrap();
-        let resp = app
-            .clone()
-            .oneshot(yaml_post("/api/templates/p1", "PUT", edited))
-            .await
-            .expect("request");
+        // Succeeds: broken sibling is quarantined, not fatal.
         assert_eq!(resp.status(), StatusCode::OK);
+        // The edit is live.
         let resp = app
             .clone()
             .oneshot(
@@ -2408,9 +2378,9 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // A valid write persists even if an unrelated invalid file makes the post-write reload fail (422).
+    // A valid write with a broken sibling succeeds; the new template is live and broken is listed.
     #[tokio::test]
-    async fn create_persists_but_reload_reports_invalid_sibling() {
+    async fn create_with_broken_sibling_succeeds_and_quarantines_broken() {
         let dir = temp_templates_dir();
         std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
         let app = build_app_in(&dir);
@@ -2421,8 +2391,10 @@ layout:
             .oneshot(yaml_post("/api/templates", "POST", template_yaml("new1")))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // Succeeds now that broken files are quarantined.
+        assert_eq!(resp.status(), StatusCode::CREATED);
         assert!(dir.join("new1.yaml").exists());
+        assert_eq!(template_count(&app).await, 2);
 
         std::fs::remove_dir_all(&dir).ok();
     }

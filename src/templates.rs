@@ -42,6 +42,15 @@ impl TemplateDefinition {
     }
 }
 
+/// A template file that could not be parsed or failed validation.
+#[derive(Debug, Clone)]
+pub struct BrokenTemplate {
+    /// Basename of the file (e.g. `foo.yaml`).
+    pub filename: String,
+    /// Human-readable description of what went wrong.
+    pub error: String,
+}
+
 #[derive(Debug)]
 pub struct TemplateRegistry {
     templates: HashMap<String, TemplateDefinition>,
@@ -49,6 +58,8 @@ pub struct TemplateRegistry {
     // The file each id was loaded from. A template's filename is only conventionally its id, so the
     // file-backed endpoints (source/PUT/DELETE) cannot reconstruct this from the id alone (#140).
     paths: HashMap<String, PathBuf>,
+    /// Files that failed to parse or validate; excluded from the valid set but not fatal.
+    broken: Vec<BrokenTemplate>,
 }
 
 impl TemplateRegistry {
@@ -57,6 +68,7 @@ impl TemplateRegistry {
         let mut templates = HashMap::new();
         let mut hashes = HashMap::new();
         let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
+        let mut broken: Vec<BrokenTemplate> = Vec::new();
         let entries = std::fs::read_dir(dir).map_err(|source| TemplateRegistryError::Io {
             path: dir.to_path_buf(),
             source,
@@ -76,22 +88,45 @@ impl TemplateRegistry {
                 continue;
             }
 
-            let contents =
-                std::fs::read_to_string(&path).map_err(|source| TemplateRegistryError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
-            let template =
-                parse_template(&contents).map_err(|source| TemplateRegistryError::Parse {
-                    path: path.clone(),
-                    source,
-                })?;
-            template
-                .validate()
-                .map_err(|message| TemplateRegistryError::Validation {
+            let filename = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+
+            let contents = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(source) => {
+                    return Err(TemplateRegistryError::Io {
+                        path: path.clone(),
+                        source,
+                    })
+                }
+            };
+
+            let template = match parse_template(&contents) {
+                Ok(t) => t,
+                Err(source) => {
+                    let error = TemplateRegistryError::Parse {
+                        path: path.clone(),
+                        source,
+                    }
+                    .to_string();
+                    tracing::warn!(%error, "skipping broken template");
+                    broken.push(BrokenTemplate { filename, error });
+                    continue;
+                }
+            };
+
+            if let Err(message) = template.validate() {
+                let error = TemplateRegistryError::Validation {
                     path: path.clone(),
                     message,
-                })?;
+                }
+                .to_string();
+                tracing::warn!(%error, "skipping broken template");
+                broken.push(BrokenTemplate { filename, error });
+                continue;
+            }
 
             if let Some(existing_path) = seen_paths.get(&template.id) {
                 return Err(TemplateRegistryError::DuplicateId {
@@ -113,6 +148,7 @@ impl TemplateRegistry {
             templates,
             hashes,
             paths: seen_paths,
+            broken,
         })
     }
 
@@ -136,6 +172,11 @@ impl TemplateRegistry {
     /// The file this id was loaded from, or `None` if the registry does not hold the id.
     pub fn path(&self, id: &str) -> Option<&FsPath> {
         self.paths.get(id).map(PathBuf::as_path)
+    }
+
+    /// Templates that failed to parse or validate during this load.
+    pub fn broken(&self) -> &[BrokenTemplate] {
+        &self.broken
     }
 
     pub fn summaries(&self) -> Vec<TemplateSummary> {
