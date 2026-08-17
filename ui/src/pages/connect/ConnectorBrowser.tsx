@@ -26,13 +26,51 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   const [resourceId, setResourceId] = useState(schema.resources[0]?.id ?? "");
   const resource = useMemo<ResourceSpec | undefined>(() => schema.resources.find((r) => r.id === resourceId), [schema, resourceId]);
   const [filterDraft, setFilterDraft] = useState<Record<string, string>>({});
-  const [applied, setApplied] = useState<Record<string, string>>({});
+  const [tags, setTags] = useState<string[]>([]);
+  const [pendingTag, setPendingTag] = useState("");
+  const [applied, setApplied] = useState<Record<string, import("../../api/connectors").FilterValue>>({});
   const [parent, setParent] = useState<{ relationship: string; key: string; label: string } | undefined>(undefined);
   const [rows, setRows] = useState<DisplayRow[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const addTag = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    setTags((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+    setPendingTag("");
+  };
+
+  const removeTag = (tagToRemove: string) => {
+    setTags((prev) => prev.filter((t) => t !== tagToRemove));
+  };
+
+  const handleApply = () => {
+    let currentTags = tags;
+    const pendingTrimmed = pendingTag.trim();
+    if (pendingTrimmed) {
+      currentTags = tags.includes(pendingTrimmed) ? tags : [...tags, pendingTrimmed];
+      setTags(currentTags);
+      setPendingTag("");
+    }
+    const next: Record<string, import("../../api/connectors").FilterValue> = {};
+    for (const [k, v] of Object.entries(filterDraft)) {
+      if (v.trim() !== "") next[k] = v.trim();
+    }
+    if (currentTags.length > 0) {
+      next.tag = currentTags;
+    }
+    setApplied(next);
+  };
+
+  const handleClearFilters = () => {
+    setFilterDraft({});
+    setTags([]);
+    setPendingTag("");
+    setApplied({});
+  };
 
   const selectedKeys = useMemo(() => new Set(selected.map(refKey)), [selected]);
   const loadedKeys = useMemo(() => new Set(rows.map((r) => refKey(r.id))), [rows]);
@@ -124,6 +162,8 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
     setResourceId(rel.to);
     setApplied({});
     setFilterDraft({});
+    setTags([]);
+    setPendingTag("");
   };
 
   const th = "px-3 py-2 text-left text-xs font-medium";
@@ -137,7 +177,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
           <button
             key={r.id}
             type="button"
-            onClick={() => { setResourceId(r.id); setParent(undefined); setApplied({}); setFilterDraft({}); }}
+            onClick={() => { setResourceId(r.id); setParent(undefined); setApplied({}); setFilterDraft({}); setTags([]); setPendingTag(""); }}
             className={`${buttonBase} border`}
             style={{ borderColor: "var(--border)", color: r.id === resourceId ? "var(--accent)" : "var(--ink)", background: r.id === resourceId ? "var(--accent-soft)" : "transparent" }}
           >
@@ -153,27 +193,93 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
       </div>
 
       {resource && resource.filters.length > 0 && (
-        <div className="flex flex-wrap items-end gap-2">
-          {resource.filters.map((f) => (
-            <label key={f.key} className="flex flex-col gap-1">
-              <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
-              <input
-                aria-label={f.label}
-                value={filterDraft[f.key] ?? ""}
-                onChange={(e) => setFilterDraft({ ...filterDraft, [f.key]: e.target.value })}
-                className={inputClass}
-                style={inputStyle}
-              />
-            </label>
-          ))}
-          <button
-            type="button"
-            onClick={() => setApplied(Object.fromEntries(Object.entries(filterDraft).filter(([, v]) => v.trim() !== "")))}
-            className={`${buttonBase} border`}
-            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-          >
-            Apply
-          </button>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-end gap-2">
+            {resource.filters.map((f) => {
+              if (f.key === "tag") {
+                return (
+                  <div key={f.key} className="flex flex-col gap-1">
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        aria-label={f.label}
+                        placeholder="Add tag..."
+                        value={pendingTag}
+                        onChange={(e) => setPendingTag(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            addTag(pendingTag);
+                          }
+                        }}
+                        className={inputClass}
+                        style={inputStyle}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => addTag(pendingTag)}
+                        className={`${buttonBase} border`}
+                        style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+                      >
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <label key={f.key} className="flex flex-col gap-1">
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
+                  <input
+                    aria-label={f.label}
+                    value={filterDraft[f.key] ?? ""}
+                    onChange={(e) => setFilterDraft({ ...filterDraft, [f.key]: e.target.value })}
+                    className={inputClass}
+                    style={inputStyle}
+                  />
+                </label>
+              );
+            })}
+            <button
+              type="button"
+              onClick={handleApply}
+              className={`${buttonBase} border`}
+              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+            >
+              Apply
+            </button>
+            {(Object.keys(applied).length > 0 || Object.keys(filterDraft).length > 0 || tags.length > 0 || pendingTag !== "") && (
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className={`${buttonBase} border`}
+                style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+          {tags.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  {tag}
+                  <button
+                    type="button"
+                    aria-label={`Remove tag ${tag}`}
+                    onClick={() => removeTag(tag)}
+                    style={{ color: "var(--muted)" }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

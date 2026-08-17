@@ -32,10 +32,11 @@ export interface RowRef { resource: string; key: string }
 export interface SelectedRow { resource: string; key: string; label: string; breadcrumb?: string; lastSeen: number }
 export type CellValue = string | number; // backend untagged Text|Number
 export interface DisplayRow { id: RowRef; cells: Record<string, CellValue>; url?: string }
+export type FilterValue = string | string[];
 export interface BrowseParent { relationship: string; key: string }
 export interface BrowseRequest {
   resource: string;
-  filters?: Record<string, string>;
+  filters?: Record<string, FilterValue>;
   parent?: BrowseParent;
   cursor?: string;
   page_size?: number;
