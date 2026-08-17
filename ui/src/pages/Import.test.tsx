@@ -13,7 +13,7 @@ const detail = {
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
   options: { color: ["red", "blue"] },
-  layout: [{ type: "text", name: "sku" }],
+  layout: [{ type: "text", value: "{sku}" }],
 };
 const list = { templates: [{ id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format, options: detail.options }] };
 const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null }];

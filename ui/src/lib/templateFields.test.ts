@@ -3,17 +3,17 @@ import { referencedFields, referencedVariables, defaultOptions, imageFields, mul
 import type { LayoutItem, Options } from "../api/types";
 
 const layout: LayoutItem[] = [
-  { type: "text", name: "title" },
+  { type: "text", value: "{title}" },
   { type: "qr", value: "{vars.qr_base_url}/{id}" },
   { type: "image", name: "logo" },
   { type: "text", value: "literal {{not a field}}" },
-  { type: "container", option: { orientation: "horizontal" }, items: [{ type: "text", name: "h_only" }] },
-  { type: "container", option: { orientation: "vertical" }, items: [{ type: "text", name: "v_only" }] },
+  { type: "container", option: { orientation: "horizontal" }, items: [{ type: "text", value: "{h_only}" }] },
+  { type: "container", option: { orientation: "vertical" }, items: [{ type: "text", value: "{v_only}" }] },
 ];
 const options: Options = { orientation: ["horizontal", "vertical"] };
 
 describe("referencedFields", () => {
-  it("collects name + value tokens + image.name, skips literal braces", () => {
+  it("collects value tokens + image.name, skips literal braces", () => {
     const f = referencedFields(layout, { orientation: "horizontal" });
     expect(f).toContain("title");
     expect(f).toContain("id");       // from {id} in the qr value
@@ -37,9 +37,9 @@ describe("imageFields", () => {
 describe("multilineFields / singleLineTextFields", () => {
   it("classifies fields by whether their text item is multiline", () => {
     const layout: LayoutItem[] = [
-      { type: "text", name: "body", multiline: true },
-      { type: "text", name: "title" },
-      { type: "qr", name: "code" },
+      { type: "text", value: "{body}", multiline: true },
+      { type: "text", value: "{title}" },
+      { type: "qr", value: "{code}" },
       { type: "image", name: "logo" },
     ];
     expect(multilineFields(layout, {})).toEqual(["body"]);
@@ -61,7 +61,7 @@ describe("multilineFields / singleLineTextFields", () => {
       {
         type: "container",
         option: { mode: "long" },
-        items: [{ type: "text", name: "body", multiline: true }],
+        items: [{ type: "text", value: "{body}", multiline: true }],
       },
     ];
     expect(multilineFields(layout, { mode: "long" })).toEqual(["body"]);
@@ -75,12 +75,12 @@ describe("multilineFields / singleLineTextFields", () => {
       {
         type: "container",
         option: { mode: "long" },
-        items: [{ type: "text", name: "shared", multiline: true }],
+        items: [{ type: "text", value: "{shared}", multiline: true }],
       },
       {
         type: "container",
         option: { mode: "short" },
-        items: [{ type: "text", name: "shared" }],
+        items: [{ type: "text", value: "{shared}" }],
       },
     ];
     expect(multilineFields(layout, {})).toEqual(["shared"]);

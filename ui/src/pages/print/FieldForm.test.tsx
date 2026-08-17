@@ -12,7 +12,7 @@ const single: TemplateDetail = {
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
   options: { variant: ["a", "b"] },
-  layout: [{ type: "text", name: "message" }],
+  layout: [{ type: "text", value: "{message}" }],
 };
 
 const sheet: TemplateDetail = {
@@ -33,7 +33,7 @@ const sheet: TemplateDetail = {
       [120, 0],
     ],
   },
-  layout: [{ type: "text", name: "message" }],
+  layout: [{ type: "text", value: "{message}" }],
 };
 
 function renderForm(detail: TemplateDetail, value: FormValue, onChange = vi.fn()) {
@@ -100,8 +100,8 @@ describe("FieldForm", () => {
   it("renders a textarea for a multiline field and an input for a plain one", async () => {
     renderForm(
       detailWith([
-        { type: "text", name: "body", multiline: true },
-        { type: "text", name: "title" },
+        { type: "text", value: "{body}", multiline: true },
+        { type: "text", value: "{title}" },
       ]),
       singleValue,
     );
@@ -111,7 +111,7 @@ describe("FieldForm", () => {
 
   it("keeps the newline the user typed", async () => {
     const onChange = renderForm(
-      detailWith([{ type: "text", name: "body", multiline: true }]),
+      detailWith([{ type: "text", value: "{body}", multiline: true }]),
       singleValue,
     );
     fireEvent.change(await screen.findByLabelText("body"), {
@@ -142,8 +142,8 @@ describe("FieldForm", () => {
   // that is the branch where typing under the other option silently truncates.
   it("flags a field that is also used by a single-line item, in either branch", async () => {
     const layout: LayoutItem[] = [
-      { type: "container", option: { mode: "long" }, items: [{ type: "text", name: "shared", multiline: true }] },
-      { type: "container", option: { mode: "short" }, items: [{ type: "text", name: "shared" }] },
+      { type: "container", option: { mode: "long" }, items: [{ type: "text", value: "{shared}", multiline: true }] },
+      { type: "container", option: { mode: "short" }, items: [{ type: "text", value: "{shared}" }] },
     ];
     for (const mode of ["long", "short"]) {
       const { unmount } = renderForm(detailWith(layout, { mode: ["long", "short"] }), {
@@ -164,7 +164,7 @@ describe("FieldForm", () => {
   /// at nothing.
   it("associates the note even when the field name contains a space", async () => {
     const layout: LayoutItem[] = [
-      { type: "text", name: "customer name", multiline: true },
+      { type: "text", value: "{customer name}", multiline: true },
       { type: "text", value: "{customer name}" },
     ];
     renderForm(detailWith(layout), singleValue);
@@ -175,7 +175,7 @@ describe("FieldForm", () => {
   });
 
   it("does not flag a field used only by multiline items", async () => {
-    renderForm(detailWith([{ type: "text", name: "body", multiline: true }]), singleValue);
+    renderForm(detailWith([{ type: "text", value: "{body}", multiline: true }]), singleValue);
     await screen.findByLabelText("body");
     expect(screen.queryByText(/shows only the first line/i)).not.toBeInTheDocument();
   });

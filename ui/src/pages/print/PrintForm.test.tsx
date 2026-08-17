@@ -12,7 +12,7 @@ const tape: TemplateDetail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  layout: [{ type: "text", name: "message" }],
+  layout: [{ type: "text", value: "{message}" }],
 };
 
 const sheet: TemplateDetail = {
@@ -33,7 +33,7 @@ const sheet: TemplateDetail = {
       [120, 0],
     ],
   },
-  layout: [{ type: "text", name: "message" }],
+  layout: [{ type: "text", value: "{message}" }],
 };
 
 const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null }];
