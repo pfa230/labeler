@@ -1593,8 +1593,8 @@ layout:
     }
 
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
-    /// request cannot provoke (`item_has_no_source` in particular is unreachable, since convert.rs
-    /// rejects a text item with neither name nor value at parse time). Deleting the templates
+    /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
+    /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates
     /// directory out from under a built app reaches the write failure without depending on the test
     /// user's uid, which a read-only directory would.
     #[tokio::test]
