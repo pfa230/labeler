@@ -1098,10 +1098,7 @@ fn default_true() -> bool {
 pub(crate) fn validate_and_normalize_url(raw: &str, field_name: &str) -> Result<String, AppError> {
     let trimmed = raw.trim();
     let parsed = url::Url::parse(trimmed).map_err(|_| {
-        AppError::invalid_request(
-            Reason::BaseUrlInvalid,
-            format!("invalid {field_name}"),
-        )
+        AppError::invalid_request(Reason::BaseUrlInvalid, format!("invalid {field_name}"))
     })?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(AppError::invalid_request(
@@ -1186,7 +1183,11 @@ pub async fn create_connection(
             body.enabled,
         )
         .await?;
-    Ok((axum::http::StatusCode::CREATED, Json(ConnectionView::from(&c))).into_response())
+    Ok((
+        axum::http::StatusCode::CREATED,
+        Json(ConnectionView::from(&c)),
+    )
+        .into_response())
 }
 
 #[utoipa::path(
@@ -2490,7 +2491,8 @@ mod tests {
             "https://example.com"
         );
         assert_eq!(
-            validate_and_normalize_url("  https://example.com/sub/path///  ", "public_url").unwrap(),
+            validate_and_normalize_url("  https://example.com/sub/path///  ", "public_url")
+                .unwrap(),
             "https://example.com/sub/path"
         );
         assert_eq!(
@@ -2511,14 +2513,19 @@ mod tests {
         assert_eq!(err.reason(), Some("base_url_invalid"));
 
         // Query parameters
-        let err = validate_and_normalize_url("http://example.com?query=1", "public_url").unwrap_err();
+        let err =
+            validate_and_normalize_url("http://example.com?query=1", "public_url").unwrap_err();
         assert_eq!(err.reason(), Some("base_url_invalid"));
-        assert!(err.message_text().contains("must not contain query parameters or fragments"));
+        assert!(err
+            .message_text()
+            .contains("must not contain query parameters or fragments"));
 
         // Fragments
         let err = validate_and_normalize_url("http://example.com#section", "base_url").unwrap_err();
         assert_eq!(err.reason(), Some("base_url_invalid"));
-        assert!(err.message_text().contains("must not contain query parameters or fragments"));
+        assert!(err
+            .message_text()
+            .contains("must not contain query parameters or fragments"));
 
         // Parse failure
         let err = validate_and_normalize_url("not a url", "base_url").unwrap_err();
@@ -2534,12 +2541,14 @@ mod tests {
         assert_eq!(input.public_url, None);
 
         // Null -> Some(None)
-        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":null}"#;
+        let json =
+            r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":null}"#;
         let input: ConnectionInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.public_url, Some(None));
 
         // Empty string -> Some(Some(""))
-        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":""}"#;
+        let json =
+            r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":""}"#;
         let input: ConnectionInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.public_url, Some(Some(String::new())));
 
@@ -2584,8 +2593,8 @@ mod tests {
             enabled: false,
         };
         let view2 = ConnectionView::from(&conn_no_cred);
-        assert_eq!(view2.has_credential, false);
+        assert!(!view2.has_credential);
         assert_eq!(view2.public_url, None);
-        assert_eq!(view2.enabled, false);
+        assert!(!view2.enabled);
     }
 }
