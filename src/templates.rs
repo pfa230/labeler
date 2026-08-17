@@ -352,11 +352,11 @@ fn validate_layout_items(
 
 fn layout_item_name(item: &LayoutItem) -> Option<&str> {
     match item {
-        LayoutItem::Text { name, .. } => name.as_deref(),
-        LayoutItem::Qr { name, .. } => name.as_deref(),
         LayoutItem::Image { name, .. } => name.as_deref(),
-        LayoutItem::Line { .. } => None,
-        LayoutItem::Container { .. } => None,
+        LayoutItem::Text { .. }
+        | LayoutItem::Qr { .. }
+        | LayoutItem::Line { .. }
+        | LayoutItem::Container { .. } => None,
     }
 }
 
@@ -368,11 +368,15 @@ fn validate_layout_item(
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
+            value,
             placement,
             font_size,
             font_weight,
             ..
         } => {
+            if value.trim().is_empty() {
+                return Err("text value must not be empty".to_string());
+            }
             validate_placement_position(
                 &placement.at,
                 placement.width_is_frame_dependent(),
@@ -398,8 +402,14 @@ fn validate_layout_item(
             validate_font_size(font_size)?;
         }
         LayoutItem::Qr {
-            placement, params, ..
+            value,
+            placement,
+            params,
+            ..
         } => {
+            if value.trim().is_empty() {
+                return Err("qr value must not be empty".to_string());
+            }
             validate_placement_position(
                 &placement.at,
                 placement.width_is_frame_dependent(),

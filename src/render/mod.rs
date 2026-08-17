@@ -748,7 +748,6 @@ impl<'a> RenderContext<'a> {
             }
             let right = match item {
                 LayoutItem::Text {
-                    name,
                     value,
                     placement,
                     font_size,
@@ -757,7 +756,7 @@ impl<'a> RenderContext<'a> {
                     alignment,
                     ..
                 } => {
-                    let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
+                    let text = self.resolve_item_text(value)?;
                     // Same weight the render pass will use: this pre-pass decides the auto width, so
                     // measuring it unweighted would size the box for text that renders wider.
                     let weight = match font_weight {
@@ -1021,7 +1020,6 @@ impl<'a> RenderContext<'a> {
         for item in items {
             match item {
                 LayoutItem::Text {
-                    name,
                     value,
                     placement,
                     font_size,
@@ -1030,7 +1028,7 @@ impl<'a> RenderContext<'a> {
                     alignment,
                     ..
                 } => {
-                    let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
+                    let text = self.resolve_item_text(value)?;
                     let resolved_weight = match font_weight {
                         Some(DynamicValue::Literal(w)) => Some(*w),
                         _ => None,
@@ -1046,14 +1044,12 @@ impl<'a> RenderContext<'a> {
                     )?;
                 }
                 LayoutItem::Qr {
-                    name,
                     value,
                     placement,
                     params,
                     ..
                 } => {
-                    let payload =
-                        self.resolve_item_text("qr", name.as_deref(), value.as_deref())?;
+                    let payload = self.resolve_item_text(value)?;
                     self.render_qr_item(&mut out, payload, placement, params)?;
                 }
                 LayoutItem::Image {
@@ -1085,26 +1081,8 @@ impl<'a> RenderContext<'a> {
         Ok(out)
     }
 
-    fn resolve_item_text(
-        &self,
-        kind: &str,
-        name: Option<&str>,
-        value: Option<&str>,
-    ) -> Result<String, AppError> {
-        match (name, value) {
-            (Some(name), _) => Ok(value_to_string(
-                self.data
-                    .get(name)
-                    .ok_or_else(|| AppError::missing_field(name))?,
-            )),
-            (None, Some(value)) => {
-                interpolate(value, self.data, self.env.settings, self.env.datetime)
-            }
-            (None, None) => Err(AppError::render_failed(
-                Reason::ItemHasNoSource,
-                format!("{kind} item has neither name nor value"),
-            )),
-        }
+    fn resolve_item_text(&self, value: &str) -> Result<String, AppError> {
+        interpolate(value, self.data, self.env.settings, self.env.datetime)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1818,13 +1796,8 @@ fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
 fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Vec<String>) {
     for item in items {
         match item {
-            LayoutItem::Text { name, value, .. } | LayoutItem::Qr { name, value, .. } => {
-                if let Some(n) = name {
-                    text.push(n.clone());
-                }
-                if let Some(v) = value {
-                    collect_data_tokens(v, text);
-                }
+            LayoutItem::Text { value, .. } | LayoutItem::Qr { value, .. } => {
+                collect_data_tokens(value, text);
             }
             LayoutItem::Image { name, src, .. } => {
                 if let Some(n) = name {
