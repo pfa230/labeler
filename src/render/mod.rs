@@ -895,9 +895,14 @@ impl<'a> RenderContext<'a> {
                             LengthMode::Fixed,
                         );
                         let child_extent = ctx.measure(items, inner_budget, out)?;
-                        // Capping only the budget would still let padding push the contribution
-                        // past the cap.
-                        let outer = (padding.left + child_extent + padding.right).min(outer_budget);
+                        // Child measurement is bounded by `inner_budget` (which is
+                        // `(outer_budget - padding.left - padding.right).max(0.0)`), so for any
+                        // template passing validation, `outer` cannot exceed `outer_budget`.
+                        let outer = padding.left + child_extent + padding.right;
+                        debug_assert!(
+                            outer <= outer_budget + 1e-4,
+                            "measured container extent {outer} exceeded outer_budget {outer_budget}"
+                        );
                         at_x + outer + inset
                     } else {
                         // A numeric size or a numeric `to`: the footprint is known.
