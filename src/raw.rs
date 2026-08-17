@@ -2,8 +2,102 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, Fit, FontSize, Frame, Options, Position, QrParams, Size, TemplateFormat,
+    Alignment, DynamicValue, Fit, FontSize, Frame, Position, QrParams, SheetPosition, Size,
 };
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RawParamType {
+    String,
+    Length,
+    Integer,
+    Number,
+    Boolean,
+    Enum,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RawParamSpec {
+    #[serde(rename = "type")]
+    pub param_type: RawParamType,
+    #[serde(default)]
+    pub default: Option<serde_yaml_ng::Value>,
+    #[serde(default)]
+    pub min: Option<f32>,
+    #[serde(default)]
+    pub max: Option<f32>,
+    #[serde(default)]
+    pub multiline: Option<bool>,
+    #[serde(default)]
+    pub values: Option<Vec<String>>,
+    #[serde(default, rename = "enum")]
+    pub choices: Option<Vec<serde_yaml_ng::Value>>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+pub type Dynamic<T> = DynamicValue<T>;
+
+pub(crate) fn deserialize_when_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum WhenScalar {
+        String(String),
+        Bool(bool),
+        Int(i64),
+        Float(f64),
+    }
+
+    impl std::fmt::Display for WhenScalar {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                WhenScalar::String(s) => write!(f, "{s}"),
+                WhenScalar::Bool(b) => write!(f, "{b}"),
+                WhenScalar::Int(i) => write!(f, "{i}"),
+                WhenScalar::Float(v) => write!(f, "{v}"),
+            }
+        }
+    }
+
+    let map = Option::<BTreeMap<String, WhenScalar>>::deserialize(deserializer)?;
+    Ok(map.map(|m| m.into_iter().map(|(k, v)| (k, v.to_string())).collect()))
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum RawDimension {
+    Dynamic {
+        #[serde(default)]
+        min: Option<Dynamic<f32>>,
+        #[serde(default)]
+        max: Option<Dynamic<f32>>,
+    },
+    Fixed(Dynamic<f32>),
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RawTemplateFormat {
+    Sheet {
+        paper_width: f32,
+        paper_height: f32,
+        label_width: f32,
+        label_height: f32,
+        positions: Vec<SheetPosition>,
+    },
+    Single {
+        width: RawDimension,
+        height: RawDimension,
+        #[serde(default)]
+        media_width: Option<f32>,
+    },
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,13 +108,21 @@ pub struct TemplateDefinitionRaw {
     pub description: Option<String>,
     pub unit: String,
     pub dpi: u32,
-    pub format: TemplateFormat,
+    pub format: RawTemplateFormat,
     #[serde(default)]
-    pub options: Option<Options>,
+    pub params: Option<BTreeMap<String, RawParamSpec>>,
+    #[serde(default)]
+    pub options: Option<RawOptions>,
     pub layout: Vec<LayoutItemRaw>,
     #[serde(default)]
     pub version: Option<String>,
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(transparent)]
+pub struct RawOptions(pub BTreeMap<String, Vec<String>>);
+
+pub type RawTemplate = TemplateDefinitionRaw;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -43,11 +145,13 @@ pub struct TextRaw {
     pub placement: PlacementRaw,
     pub font_size: FontSize,
     #[serde(default)]
-    pub font_weight: Option<u16>,
+    pub font_weight: Option<Dynamic<u16>>,
     #[serde(default)]
     pub multiline: bool,
     #[serde(default)]
     pub alignment: Alignment,
+    #[serde(default, deserialize_with = "deserialize_when_map")]
+    pub when: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +165,8 @@ pub struct QrRaw {
     pub placement: PlacementRaw,
     #[serde(default)]
     pub params: Option<QrParams>,
+    #[serde(default, deserialize_with = "deserialize_when_map")]
+    pub when: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +180,8 @@ pub struct ImageRaw {
     pub placement: PlacementRaw,
     #[serde(default)]
     pub fit: Fit,
+    #[serde(default, deserialize_with = "deserialize_when_map")]
+    pub when: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,6 +191,8 @@ pub struct LineRaw {
     pub at: Position,
     pub to: Position,
     pub thickness: f32,
+    #[serde(default, deserialize_with = "deserialize_when_map")]
+    pub when: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +200,9 @@ pub struct LineRaw {
 pub struct ContainerRaw {
     #[serde(flatten)]
     pub placement: PlacementRaw,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_when_map")]
+    pub when: Option<BTreeMap<String, String>>,
+    #[serde(default, deserialize_with = "deserialize_when_map")]
     pub option: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub frame: Option<Frame>,

@@ -4,8 +4,8 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, Dimension, Extent, Fit, FontSize, LabelInput, Layout, LayoutItem, Placement,
-    Point, Position, Rotation, SizeValue, TemplateFormat,
+    resolve_coord, DynamicDimension, DynamicValue, Extent, Fit, FontSize, LabelInput, Layout,
+    LayoutItem, Placement, Point, Position, Rotation, SizeValue, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::TemplateDefinition;
@@ -124,14 +124,26 @@ fn compile_label_doc(
     let cursor_cell: Cell<usize>;
 
     if let TemplateFormat::Single {
-        width: Dimension::Dynamic { min, max },
+        width: DynamicDimension::Dynamic { min, max },
         ..
     } = &template.format
     {
-        let max_w =
-            max.ok_or_else(|| AppError::unsupported_format("dynamic single width requires max"))?;
-        let min_w =
-            min.ok_or_else(|| AppError::unsupported_format("dynamic single width requires min"))?;
+        let max_w = match max {
+            Some(DynamicValue::Literal(w)) => *w,
+            _ => {
+                return Err(AppError::unsupported_format(
+                    "dynamic single width requires max",
+                ))
+            }
+        };
+        let min_w = match min {
+            Some(DynamicValue::Literal(w)) => *w,
+            _ => {
+                return Err(AppError::unsupported_format(
+                    "dynamic single width requires min",
+                ))
+            }
+        };
         let mut m: Vec<MeasuredText> = Vec::new();
         {
             let probe = RenderContext::new(
@@ -156,7 +168,7 @@ fn compile_label_doc(
     let is_dynamic = matches!(
         &template.format,
         TemplateFormat::Single {
-            width: Dimension::Dynamic { .. },
+            width: DynamicDimension::Dynamic { .. },
             ..
         }
     );
@@ -493,7 +505,7 @@ fn normalize_option<'a>(
     template: &TemplateDefinition,
     option: Option<&'a BTreeMap<String, String>>,
 ) -> Result<Option<&'a BTreeMap<String, String>>, AppError> {
-    match &template.options {
+    match template.options() {
         Some(options) => {
             if let Some(selection) = option {
                 if !options.is_valid_selection(selection) {
@@ -714,16 +726,16 @@ impl<'a> RenderContext<'a> {
             // pushed and fail with an auto-length cursor mismatch.
             if let LayoutItem::Container {
                 placement,
-                option,
+                when,
                 padding,
                 items: children,
                 ..
             } = item
             {
                 if placement.at.x().is_sign_negative() {
-                    if let Some(opt) = option {
+                    if let Some(cond) = when {
                         if let Some(sel) = self.selected_option {
-                            if !opt.iter().all(|(n, v)| sel.get(n) == Some(v)) {
+                            if !cond.iter().all(|(n, v)| sel.get(n) == Some(v)) {
                                 continue;
                             }
                         }
@@ -748,7 +760,10 @@ impl<'a> RenderContext<'a> {
                     let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
                     // Same weight the render pass will use: this pre-pass decides the auto width, so
                     // measuring it unweighted would size the box for text that renders wider.
-                    let weight = font_weight.unwrap_or(400);
+                    let weight = match font_weight {
+                        Some(DynamicValue::Literal(w)) => *w,
+                        _ => 400,
+                    };
                     // `at.y` may itself be edge-relative (measured from the top), so it must be
                     // resolved before any height arithmetic. `at.x` is already known to be
                     // non-negative here: clause 1 skipped the item otherwise.
@@ -855,14 +870,14 @@ impl<'a> RenderContext<'a> {
                     .fold(0.0f32, f32::max),
                 LayoutItem::Container {
                     placement,
-                    option,
+                    when,
                     padding,
                     items,
                     ..
                 } => {
-                    if let Some(opt) = option {
+                    if let Some(cond) = when {
                         if let Some(sel) = self.selected_option {
-                            let matches = opt.iter().all(|(n, v)| sel.get(n) == Some(v));
+                            let matches = cond.iter().all(|(n, v)| sel.get(n) == Some(v));
                             if !matches {
                                 continue;
                             }
@@ -1013,14 +1028,19 @@ impl<'a> RenderContext<'a> {
                     font_weight,
                     multiline,
                     alignment,
+                    ..
                 } => {
                     let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
+                    let resolved_weight = match font_weight {
+                        Some(DynamicValue::Literal(w)) => Some(*w),
+                        _ => None,
+                    };
                     self.render_text_item(
                         &mut out,
                         text,
                         placement,
                         font_size,
-                        *font_weight,
+                        resolved_weight,
                         *multiline,
                         alignment,
                     )?;
@@ -1030,6 +1050,7 @@ impl<'a> RenderContext<'a> {
                     value,
                     placement,
                     params,
+                    ..
                 } => {
                     let payload =
                         self.resolve_item_text("qr", name.as_deref(), value.as_deref())?;
@@ -1040,20 +1061,23 @@ impl<'a> RenderContext<'a> {
                     src,
                     placement,
                     fit,
+                    ..
                 } => {
                     self.render_image_item(&mut out, name, src, placement, fit)?;
                 }
-                LayoutItem::Line { at, to, thickness } => {
+                LayoutItem::Line {
+                    at, to, thickness, ..
+                } => {
                     self.render_line_item(&mut out, at, to, *thickness)?;
                 }
                 LayoutItem::Container {
                     placement,
-                    option,
+                    when,
                     frame,
                     padding,
                     items,
                 } => {
-                    self.render_container_item(&mut out, placement, option, frame, padding, items)?;
+                    self.render_container_item(&mut out, placement, when, frame, padding, items)?;
                 }
             }
         }
@@ -1410,14 +1434,14 @@ impl<'a> RenderContext<'a> {
         &self,
         out: &mut String,
         placement: &Placement,
-        option: &Option<BTreeMap<String, String>>,
+        when: &Option<BTreeMap<String, String>>,
         frame: &Option<crate::models::Frame>,
         padding: &crate::models::Padding,
         items: &[LayoutItem],
     ) -> Result<(), AppError> {
-        if let Some(option) = option {
+        if let Some(when) = when {
             if let Some(selected_option) = self.selected_option {
-                let matches = option
+                let matches = when
                     .iter()
                     .all(|(name, value)| selected_option.get(name) == Some(value));
                 if !matches {
@@ -1685,7 +1709,7 @@ impl<'a> RenderContext<'a> {
         label: &str,
     ) -> Result<f32, AppError> {
         match value {
-            SizeValue::Value(value) => {
+            SizeValue::Dynamic(DynamicValue::Literal(value)) => {
                 if *value <= 0.0 {
                     return Err(AppError::unsupported_layout_item(
                         Reason::SizeInvalid,
@@ -1693,6 +1717,10 @@ impl<'a> RenderContext<'a> {
                     ));
                 }
                 Ok(*value)
+            }
+            SizeValue::Dynamic(DynamicValue::Ref(_)) => {
+                // In Task 2, ref fallback
+                Ok(0.0)
             }
             SizeValue::Auto(_) => {
                 // `max_*` caps the resolution of `auto`; it does not replace the fallback. A cap
@@ -1850,7 +1878,7 @@ pub fn placeholder_data(template: &TemplateDefinition) -> HashMap<String, JsonVa
 
 /// First allowed value per declared option, or None when the template declares no options.
 pub fn default_option_selection(template: &TemplateDefinition) -> Option<BTreeMap<String, String>> {
-    let options = template.options.as_ref()?;
+    let options = template.options()?;
     let selection: BTreeMap<String, String> = options
         .allowed()
         .iter()
@@ -1871,9 +1899,9 @@ mod tests {
         SAMPLE_PNG_DATA_URI,
     };
     use crate::models::{
-        Alignment, AutoSize, Dimension, Extent, Fit, FontSize, Frame, HorizontalAlign, LabelInput,
-        Layout, LayoutItem, Options, Padding, Placement, Position, SheetPosition, Size, SizeValue,
-        TemplateFormat, VerticalAlign,
+        Alignment, AutoSize, Dimension, DynamicDimension, DynamicValue, Extent, Fit, FontSize,
+        Frame, HorizontalAlign, LabelInput, Layout, LayoutItem, Padding, ParamSpec, ParamType,
+        Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat, VerticalAlign,
     };
     use crate::templates::TemplateDefinition;
     use serde_json::json;
@@ -1913,19 +1941,20 @@ mod tests {
                 Position([0.0, 0.0]),
                 Size([
                     match size_w {
-                        Some(w) => SizeValue::Value(w),
+                        Some(w) => SizeValue::fixed(w),
                         None => SizeValue::Auto(crate::models::AutoSize::Auto),
                     },
-                    SizeValue::Value(8.0),
+                    SizeValue::fixed(8.0),
                 ]),
             ),
             font_size,
-            font_weight: weight,
+            font_weight: weight.map(Into::into),
             multiline: false,
             alignment: crate::models::Alignment {
                 horizontal: crate::models::HorizontalAlign::Left,
                 vertical,
             },
+            when: None,
         };
         // The auto-width path replays what the measure pre-pass recorded, so that pass has to run
         // first and its results have to be handed to the render context.
@@ -2059,13 +2088,14 @@ mod tests {
                     Position([0.0, 0.0]),
                     Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::Value(8.0),
+                        SizeValue::fixed(8.0),
                     ]),
                 ),
                 font_size: FontSize::Fixed(10.0),
-                font_weight: weight,
+                font_weight: weight.map(Into::into),
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             };
             let mut measured = Vec::new();
             ctx.measure(&[item], 200.0, &mut measured).expect("measure");
@@ -2130,23 +2160,24 @@ mod tests {
                 Position([0.0, 0.0]),
                 Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
-                    SizeValue::Value(10.0),
+                    SizeValue::fixed(10.0),
                 ]),
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             multiline: false,
             alignment: Alignment::default(),
+            when: None,
         };
         let make_container = |rotate: Option<f32>| LayoutItem::Container {
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
+                extent: Extent::Size(Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)])),
                 max_w: None,
                 max_h: None,
                 rotate,
             },
-            option: None,
+            when: None,
             frame: None,
             padding: Padding::ZERO,
             items: vec![auto_text.clone()],
@@ -2232,13 +2263,13 @@ mod tests {
                 at: Position([at_x, 0.0]),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
-                    SizeValue::Value(12.0),
+                    SizeValue::fixed(12.0),
                 ])),
                 max_w,
                 max_h: None,
                 rotate: None,
             },
-            option: None,
+            when: None,
             frame: None,
             padding: crate::models::Padding::ZERO,
             items,
@@ -2256,7 +2287,7 @@ mod tests {
             placement: Placement {
                 at: Position([0.0, 10.0]),
                 extent: crate::models::Extent::Size(Size([
-                    SizeValue::Value(20.0),
+                    SizeValue::fixed(20.0),
                     SizeValue::Auto(crate::models::AutoSize::Auto),
                 ])),
                 max_w: None,
@@ -2267,6 +2298,7 @@ mod tests {
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            when: None,
         };
         let (extent, pushed) = measured_extent_of(item, 100.0);
         assert_eq!(extent, 20.0, "a fixed-width text contributes its width");
@@ -2284,14 +2316,14 @@ mod tests {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Value(60.0),
-                        SizeValue::Value(12.0),
+                        SizeValue::fixed(60.0),
+                        SizeValue::fixed(12.0),
                     ])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
                 },
-                option: None,
+                when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
                 items: vec![LayoutItem::Container {
@@ -2299,13 +2331,13 @@ mod tests {
                         at: Position([-30.0, 0.0]),
                         extent: crate::models::Extent::Size(Size([
                             SizeValue::Auto(crate::models::AutoSize::Auto),
-                            SizeValue::Value(12.0),
+                            SizeValue::fixed(12.0),
                         ])),
                         max_w: None,
                         max_h: None,
                         rotate: None,
                     },
-                    option: None,
+                    when: None,
                     frame: None,
                     padding: crate::models::Padding::ZERO,
                     items: vec![],
@@ -2333,7 +2365,7 @@ mod tests {
         let source = dynamic_ctx_source(100.0, capped_container(90.0, Some(5.0), vec![]));
         assert!(
             source.contains("width: 5mm"),
-            "the container must render at its 5mm cap, not the 10mm frame remainder: {source}"
+            "the container must render at max_w: 5mm, not the 10mm remainder: {source}"
         );
     }
 
@@ -2350,7 +2382,7 @@ mod tests {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
-                    SizeValue::Value(8.0),
+                    SizeValue::fixed(8.0),
                 ])),
                 max_w: None,
                 max_h: None,
@@ -2360,6 +2392,7 @@ mod tests {
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            when: None,
         };
         let (uncapped, _) =
             measured_extent_of(capped_container(10.0, None, vec![child.clone()]), 100.0);
@@ -2410,18 +2443,19 @@ mod tests {
                 width: Dimension::Dynamic {
                     min: Some(10.0),
                     max: Some(60.0),
-                },
-                height: Dimension::Fixed(40.0),
+                }
+                .into(),
+                height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("x".to_string()),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Value(20.0),
+                        SizeValue::fixed(20.0),
                         SizeValue::Auto(crate::models::AutoSize::Auto),
                     ])),
                     max_w: None,
@@ -2432,6 +2466,7 @@ mod tests {
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             }]),
             version: None,
         };
@@ -2471,7 +2506,7 @@ mod tests {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Value(20.0),
+                        SizeValue::fixed(20.0),
                         SizeValue::Auto(crate::models::AutoSize::Auto),
                     ])),
                     max_w: None,
@@ -2482,6 +2517,7 @@ mod tests {
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             }])
             .expect("renders");
         assert!(
@@ -2528,6 +2564,7 @@ mod tests {
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             }])
             .expect("renders")
         }
@@ -2537,7 +2574,7 @@ mod tests {
             (100.0, 40.0),
             [0.0, 10.0],
             Size([
-                SizeValue::Value(20.0),
+                SizeValue::fixed(20.0),
                 SizeValue::Auto(crate::models::AutoSize::Auto),
             ]),
             None,
@@ -2552,7 +2589,7 @@ mod tests {
             (100.0, 40.0),
             [0.0, 10.0],
             Size([
-                SizeValue::Value(20.0),
+                SizeValue::fixed(20.0),
                 SizeValue::Auto(crate::models::AutoSize::Auto),
             ]),
             Some(35.0),
@@ -2568,7 +2605,7 @@ mod tests {
             [5.0, 2.0],
             Size([
                 SizeValue::Auto(crate::models::AutoSize::Auto),
-                SizeValue::Value(8.0),
+                SizeValue::fixed(8.0),
             ]),
             None,
         );
@@ -2633,13 +2670,13 @@ mod tests {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
-                    SizeValue::Value(12.0),
+                    SizeValue::fixed(12.0),
                 ])),
                 max_w: Some(2.0),
                 max_h: None,
                 rotate: None,
             },
-            option: None,
+            when: None,
             frame: None,
             padding: crate::models::Padding {
                 top: 3.0,
@@ -2655,13 +2692,13 @@ mod tests {
                     at: Position([-0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::Value(1.0),
+                        SizeValue::fixed(1.0),
                     ])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
                 },
-                option: None,
+                when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
                 items: vec![],
@@ -2692,7 +2729,7 @@ mod tests {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::Value(8.0),
+                        SizeValue::fixed(8.0),
                     ])),
                     max_w: None,
                     max_h: None,
@@ -2702,6 +2739,7 @@ mod tests {
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             },
             200.0,
         );
@@ -2716,13 +2754,14 @@ mod tests {
                     at: Position([10.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::Value(20.0),
+                        SizeValue::fixed(20.0),
                     ])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
                 },
                 params: None,
+                when: None,
             },
             100.0,
         );
@@ -2738,7 +2777,7 @@ mod tests {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
-                    SizeValue::Value(8.0),
+                    SizeValue::fixed(8.0),
                 ])),
                 max_w: None,
                 max_h: None,
@@ -2748,6 +2787,7 @@ mod tests {
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            when: None,
         };
         let (c_extent, _) = measured_extent_of(capped_container(10.0, None, vec![child]), 200.0);
         assert!(
@@ -2772,9 +2812,11 @@ mod tests {
         let registry = crate::templates::load_all_for_tests().0;
         let capped = registry.get("brother_24mm_weights").expect("template");
         let TemplateFormat::Single {
-            width: Dimension::Dynamic {
-                max: Some(max_w), ..
-            },
+            width:
+                DynamicDimension::Dynamic {
+                    max: Some(DynamicValue::Literal(max_w)),
+                    ..
+                },
             ..
         } = &capped.format
         else {
@@ -2821,6 +2863,7 @@ mod tests {
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            when: None,
         }
     }
 
@@ -2877,7 +2920,7 @@ mod tests {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::Value(8.0),
+                        SizeValue::fixed(8.0),
                     ])),
                     max_w,
                     max_h: None,
@@ -2887,6 +2930,7 @@ mod tests {
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             }
         }
         let (uncapped, _) = measured_extent_of(text(None, long), 100.0);
@@ -2914,13 +2958,14 @@ mod tests {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::Auto(crate::models::AutoSize::Auto),
-                    SizeValue::Value(20.0),
+                    SizeValue::fixed(20.0),
                 ])),
                 max_w,
                 max_h: None,
                 rotate: None,
             },
             params: None,
+            when: None,
         };
         let (capped, pushed) = measured_extent_of(qr(Some(30.0)), 100.0);
         assert_eq!(pushed, 0, "a qr never records a MeasuredText");
@@ -2955,6 +3000,7 @@ mod tests {
                 font_weight: None,
                 multiline: true,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             }
         }
         // The frame is 40mm tall (see `measured_extent_of`), so these two describe the same 32mm slot.
@@ -2980,7 +3026,7 @@ mod tests {
                 max_h: None,
                 rotate: None,
             },
-            option: None,
+            when: None,
             frame: None,
             padding: crate::models::Padding {
                 top: 0.0,
@@ -3019,6 +3065,7 @@ mod tests {
                     rotate: None,
                 },
                 params: None,
+                when: None,
             },
             80.0,
         );
@@ -3037,14 +3084,15 @@ mod tests {
                 placement: Placement {
                     at: Position([-5.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Value(10.0),
-                        SizeValue::Value(10.0),
+                        SizeValue::fixed(10.0),
+                        SizeValue::fixed(10.0),
                     ])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
                 },
                 params: None,
+                when: None,
             },
             80.0,
         );
@@ -3096,20 +3144,21 @@ mod tests {
                 width: Dimension::Dynamic {
                     min: Some(5.0),
                     max: Some(100.0),
-                },
-                height: Dimension::Fixed(8.0),
+                }
+                .into(),
+                height: Dimension::Fixed(8.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([-10.0, 0.0]),
-                    extent: Extent::Size(Size([SizeValue::Value(8.0), SizeValue::Value(8.0)])),
+                    extent: Extent::Size(Size([SizeValue::fixed(8.0), SizeValue::fixed(8.0)])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
                 },
-                option: None,
+                when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
                 items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
@@ -3148,23 +3197,24 @@ mod tests {
                 width: Dimension::Dynamic {
                     min: Some(10.0),
                     max: Some(100.0),
-                },
-                height: Dimension::Fixed(30.0),
+                }
+                .into(),
+                height: Dimension::Fixed(30.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: Extent::Size(Size([
-                        SizeValue::Value(40.0),
+                        SizeValue::fixed(40.0),
                         SizeValue::Auto(AutoSize::Auto),
                     ])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
                 },
-                option: None,
+                when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
                 items: vec![],
@@ -3206,9 +3256,9 @@ mod tests {
         let container = LayoutItem::Container {
             placement: Placement::sized(
                 Position([0.0, 0.0]),
-                Size([SizeValue::Value(80.0), SizeValue::Value(40.0)]),
+                Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)]),
             ),
-            option: None,
+            when: None,
             frame: Some(Frame {
                 thickness: 0.3,
                 rounded: false,
@@ -3272,7 +3322,7 @@ mod tests {
         );
         assert!(ctx.resolve_size_value(&auto, None, None, "width").is_err());
         assert_eq!(
-            ctx.resolve_size_value(&SizeValue::Value(50.0), Some(30.0), Some(30.0), "width")
+            ctx.resolve_size_value(&SizeValue::fixed(50.0), Some(30.0), Some(30.0), "width")
                 .unwrap(),
             50.0,
             "a numeric size is never clamped by the bound"
@@ -3358,20 +3408,20 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(80.0),
-                height: Dimension::Fixed(40.0),
+                width: Dimension::Fixed(80.0).into(),
+                height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
-                    extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
+                    extent: Extent::Size(Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)])),
                     max_w: None,
                     max_h: None,
                     rotate: Some(rotate),
                 },
-                option: None,
+                when: None,
                 frame: Some(Frame {
                     thickness: 0.3,
                     rounded: false,
@@ -3392,12 +3442,13 @@ mod tests {
                 value: Some("VERTICAL".to_string()),
                 placement: Placement::sized(
                     Position([2.0, 2.0]),
-                    Size([SizeValue::Value(30.0), SizeValue::Value(8.0)]),
+                    Size([SizeValue::fixed(30.0), SizeValue::fixed(8.0)]),
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }],
         );
         let data = HashMap::new();
@@ -3446,9 +3497,10 @@ mod tests {
                 value: Some("X".to_string()),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                    Size([SizeValue::fixed(14.0), SizeValue::fixed(14.0)]),
                 ),
                 params: None,
+                when: None,
             }],
         );
         let data = HashMap::new();
@@ -3469,9 +3521,10 @@ mod tests {
                 value: Some("X".to_string()),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(14.0), SizeValue::Value(14.0)]),
+                    Size([SizeValue::fixed(14.0), SizeValue::fixed(14.0)]),
                 ),
                 params: None,
+                when: None,
             }]
         };
         let data = HashMap::new();
@@ -3514,12 +3567,12 @@ mod tests {
         let inner = LayoutItem::Container {
             placement: Placement {
                 at: Position([2.0, 2.0]),
-                extent: Extent::Size(Size([SizeValue::Value(24.0), SizeValue::Value(24.0)])),
+                extent: Extent::Size(Size([SizeValue::fixed(24.0), SizeValue::fixed(24.0)])),
                 max_w: None,
                 max_h: None,
                 rotate: Some(90.0),
             },
-            option: None,
+            when: None,
             frame: None,
             padding: Padding::ZERO,
             items: vec![LayoutItem::Text {
@@ -3527,23 +3580,24 @@ mod tests {
                 value: Some("inner".to_string()),
                 placement: Placement::sized(
                     Position([1.0, 1.0]),
-                    Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }],
         };
         let outer = LayoutItem::Container {
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                extent: Extent::Size(Size([SizeValue::Value(80.0), SizeValue::Value(40.0)])),
+                extent: Extent::Size(Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)])),
                 max_w: None,
                 max_h: None,
                 rotate: Some(90.0),
             },
-            option: None,
+            when: None,
             frame: Some(Frame {
                 thickness: 0.3,
                 rounded: false,
@@ -3563,11 +3617,11 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(80.0),
-                height: Dimension::Fixed(40.0),
+                width: Dimension::Fixed(80.0).into(),
+                height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![outer]),
             version: None,
         };
@@ -3599,20 +3653,20 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
-                width: Dimension::Dynamic {
-                    min: Some(10.0),
-                    max: Some(100.0),
+                width: DynamicDimension::Dynamic {
+                    min: Some(DynamicValue::Literal(10.0)),
+                    max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(HEIGHT_MM),
+                height: Dimension::Fixed(HEIGHT_MM).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some(text.to_string()),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Auto(AutoSize::Auto), SizeValue::Value(HEIGHT_MM)]),
+                    Size([SizeValue::Auto(AutoSize::Auto), SizeValue::fixed(HEIGHT_MM)]),
                 ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
@@ -3621,6 +3675,7 @@ mod tests {
                     horizontal: HorizontalAlign::Center,
                     vertical,
                 },
+                when: None,
             }]),
             version: None,
         }
@@ -3636,18 +3691,18 @@ mod tests {
     ) -> TemplateDefinition {
         let mut t = autolength_tape(text, false, vertical, font_pt);
         t.format = TemplateFormat::Single {
-            width: Dimension::Dynamic {
-                min: Some(10.0),
-                max: Some(200.0),
+            width: DynamicDimension::Dynamic {
+                min: Some(DynamicValue::Literal(10.0)),
+                max: Some(DynamicValue::Literal(200.0)),
             },
-            height: Dimension::Fixed(height_mm),
+            height: Dimension::Fixed(height_mm).into(),
             media_width: None,
         };
         let Layout::Items(items) = &mut t.layout;
         if let Some(LayoutItem::Text { placement, .. }) = items.first_mut() {
             placement.extent = Extent::Size(Size([
                 SizeValue::Auto(AutoSize::Auto),
-                SizeValue::Value(height_mm),
+                SizeValue::fixed(height_mm),
             ]));
         }
         t
@@ -3957,18 +4012,19 @@ mod tests {
                 label_height: 10.0,
                 positions: vec![SheetPosition([0.0, 0.0]), SheetPosition([10.0, 0.0])],
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                    Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         }
@@ -4040,25 +4096,34 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(20.0),
-                height: Dimension::Fixed(10.0),
+                width: Dimension::Fixed(20.0).into(),
+                height: Dimension::Fixed(10.0).into(),
                 media_width: None,
             },
-            options: Some(Options(BTreeMap::from([(
+            params: BTreeMap::from([(
                 "variant".to_string(),
-                vec!["default".to_string()],
-            )]))),
+                ParamSpec {
+                    param_type: ParamType::Enum {
+                        values: vec!["default".to_string()],
+                    },
+                    description: None,
+                    default: None,
+                    min: None,
+                    max: None,
+                },
+            )]),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(5.0)]),
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         };
@@ -4087,47 +4152,58 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(30.0),
-                height: Dimension::Fixed(20.0),
+                width: Dimension::Fixed(30.0).into(),
+                height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            options: Some(Options(BTreeMap::from([(
+            params: BTreeMap::from([(
                 "variant".to_string(),
-                vec!["default".to_string()],
-            )]))),
+                ParamSpec {
+                    param_type: ParamType::Enum {
+                        values: vec!["default".to_string()],
+                    },
+                    description: None,
+                    default: None,
+                    min: None,
+                    max: None,
+                },
+            )]),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: Some("message".to_string()),
                     value: None,
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
-                        Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                        Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
                     ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
+                    when: None,
                 },
                 LayoutItem::Qr {
                     name: Some("code".to_string()),
                     value: None,
                     placement: Placement::sized(
                         Position([20.0, 0.0]),
-                        Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                        Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
                     ),
                     params: None,
+                    when: None,
                 },
                 LayoutItem::Line {
                     at: Position([0.0, 1.0]),
                     to: Position([30.0, 1.0]),
                     thickness: 0.2,
+                    when: None,
                 },
                 LayoutItem::Container {
                     placement: Placement::sized(
                         Position([0.5, 1.5]),
-                        Size([SizeValue::Value(29.0), SizeValue::Value(18.0)]),
+                        Size([SizeValue::fixed(29.0), SizeValue::fixed(18.0)]),
                     ),
-                    option: None,
+                    when: None,
                     frame: Some(Frame {
                         thickness: 0.2,
                         rounded: true,
@@ -4172,18 +4248,19 @@ mod tests {
                 label_height: 5.0,
                 positions: vec![SheetPosition([0.0, 0.0])],
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         };
@@ -4211,19 +4288,20 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(20.0),
-                height: Dimension::Fixed(20.0),
+                width: Dimension::Fixed(20.0).into(),
+                height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Image {
                 name: Some("logo".to_string()),
                 src: None,
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
                 ),
                 fit: Fit::Contain,
+                when: None,
             }]),
             version: None,
         }
@@ -4277,15 +4355,16 @@ mod tests {
                 label_height: 20.0,
                 positions: vec![SheetPosition([0.0, 0.0])],
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Image {
                 name: Some("logo".to_string()),
                 src: None,
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
                 ),
                 fit: Fit::Contain,
+                when: None,
             }]),
             version: None,
         };
@@ -4336,6 +4415,7 @@ mod tests {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
                 thickness: 0.2,
+                when: None,
             }])
             .expect_err("a 30mm endpoint on a 10mm frame must not render");
 
@@ -4352,9 +4432,10 @@ mod tests {
             src: Some(src.to_string()),
             placement: Placement::sized(
                 Position([0.0, 0.0]),
-                Size([SizeValue::Value(20.0), SizeValue::Value(20.0)]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
             ),
             fit: Fit::Contain,
+            when: None,
         }]);
         template
     }
@@ -4425,22 +4506,23 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(20.0),
-                height: Dimension::Fixed(10.0),
+                width: Dimension::Fixed(20.0).into(),
+                height: Dimension::Fixed(10.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("message".to_string()),
                 value: None,
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(20.0), SizeValue::Value(5.0)]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(5.0)]),
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         };
@@ -4586,32 +4668,34 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(40.0),
-                height: Dimension::Fixed(20.0),
+                width: Dimension::Fixed(40.0).into(),
+                height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: None,
                     value: Some("Item {id}".to_string()),
                     placement: Placement::sized(
                         Position([0.0, 10.0]),
-                        Size([SizeValue::Value(40.0), SizeValue::Value(8.0)]),
+                        Size([SizeValue::fixed(40.0), SizeValue::fixed(8.0)]),
                     ),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
+                    when: None,
                 },
                 LayoutItem::Qr {
                     name: None,
                     value: Some("{vars.qr_base_url}/{id}".to_string()),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
-                        Size([SizeValue::Value(10.0), SizeValue::Value(10.0)]),
+                        Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
                     ),
                     params: None,
+                    when: None,
                 },
             ]),
             version: None,
@@ -4637,22 +4721,23 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(60.0),
-                height: Dimension::Fixed(20.0),
+                width: Dimension::Fixed(60.0).into(),
+                height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("{x}".to_string()),
                 placement: Placement::sized(
                     Position([0.0, 6.0]),
-                    Size([SizeValue::Value(60.0), SizeValue::Value(8.0)]),
+                    Size([SizeValue::fixed(60.0), SizeValue::fixed(8.0)]),
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         };
@@ -4721,18 +4806,19 @@ mod tests {
                 label_height: 5.0,
                 positions: vec![SheetPosition([0.0, 0.0])],
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("hi".into()),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                    Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         }
@@ -4748,41 +4834,44 @@ mod tests {
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
-                width: crate::models::Dimension::Fixed(40.0),
-                height: crate::models::Dimension::Fixed(20.0),
+                width: crate::models::Dimension::Fixed(40.0).into(),
+                height: crate::models::Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: Some("title".into()),
                     value: None,
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
-                        Size([SizeValue::Value(10.0), SizeValue::Value(5.0)]),
+                        Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
+                    when: None,
                 },
                 LayoutItem::Qr {
                     name: None,
                     value: Some("{url} {vars.base} {datetime} {datetime.short_date}".into()),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
-                        Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                        Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
                     ),
                     params: None,
+                    when: None,
                 },
                 LayoutItem::Image {
                     name: Some("logo".into()),
                     src: None,
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
-                        Size([SizeValue::Value(5.0), SizeValue::Value(5.0)]),
+                        Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
                     ),
                     fit: Fit::default(),
+                    when: None,
                 },
             ]),
             version: None,
@@ -4820,22 +4909,23 @@ mod tests {
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
-                width: crate::models::Dimension::Fixed(40.0),
-                height: crate::models::Dimension::Fixed(20.0),
+                width: crate::models::Dimension::Fixed(40.0).into(),
+                height: crate::models::Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: None,
                 value: Some("{} {real}".into()),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Value(40.0), SizeValue::Value(20.0)]),
+                    Size([SizeValue::fixed(40.0), SizeValue::fixed(20.0)]),
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                when: None,
             }]),
             version: None,
         };
@@ -4895,7 +4985,7 @@ mod tests {
 
     #[test]
     fn default_option_selection_picks_first_values() {
-        use crate::models::{Dimension, Options};
+        use crate::models::{Dimension, ParamSpec, ParamType};
         let template = TemplateDefinition {
             id: "t".into(),
             name: "t".into(),
@@ -4903,17 +4993,36 @@ mod tests {
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
-                width: Dimension::Fixed(40.0),
-                height: Dimension::Fixed(20.0),
+                width: Dimension::Fixed(40.0).into(),
+                height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            options: Some(Options(BTreeMap::from([
+            params: BTreeMap::from([
                 (
                     "color".to_string(),
-                    vec!["red".to_string(), "blue".to_string()],
+                    ParamSpec {
+                        param_type: ParamType::Enum {
+                            values: vec!["red".to_string(), "blue".to_string()],
+                        },
+                        description: None,
+                        default: None,
+                        min: None,
+                        max: None,
+                    },
                 ),
-                ("size".to_string(), vec!["small".to_string()]),
-            ]))),
+                (
+                    "size".to_string(),
+                    ParamSpec {
+                        param_type: ParamType::Enum {
+                            values: vec!["small".to_string()],
+                        },
+                        description: None,
+                        default: None,
+                        min: None,
+                        max: None,
+                    },
+                ),
+            ]),
             layout: Layout::Items(vec![]),
             version: None,
         };
@@ -4922,7 +5031,7 @@ mod tests {
         assert_eq!(sel.get("size").map(String::as_str), Some("small"));
 
         let no_opts = TemplateDefinition {
-            options: None,
+            params: BTreeMap::new(),
             ..template
         };
         assert!(default_option_selection(&no_opts).is_none());
@@ -4958,7 +5067,7 @@ mod tests {
             // so other option defaults (avery's `outline: yes`) stay in effect.
             let base = default_option_selection(template);
             let selections: Vec<(String, Option<BTreeMap<String, String>>)> = match template
-                .options
+                .options()
                 .as_ref()
                 .and_then(|o| o.allowed().get("orientation").cloned())
             {
@@ -5123,16 +5232,17 @@ mod tests {
                     Position([at_x, 0.0]),
                     Size([
                         SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::Value(12.0),
+                        SizeValue::fixed(12.0),
                     ]),
                 ),
-                option: None,
+                when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
                 items: vec![LayoutItem::Line {
                     at: Position([0.0, 6.0]),
                     to: Position([20.0, 6.0]),
                     thickness: 0.2,
+                    when: None,
                 }],
             }])
             .expect("render")
@@ -5187,6 +5297,7 @@ mod tests {
             at: Position([-5.0, 6.0]),
             to: Position([-3.0, 6.0]),
             thickness: 0.2,
+            when: None,
         };
         let mut measured = Vec::new();
         let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
@@ -5222,12 +5333,13 @@ mod tests {
             value: Some("x".to_string()),
             placement: Placement::sized(
                 Position([-20.0, 0.0]),
-                Size([SizeValue::Value(20.0), SizeValue::Value(8.0)]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            when: None,
         };
         let mut measured = Vec::new();
         let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
@@ -5261,6 +5373,7 @@ mod tests {
                 at: Position([0.0, 6.0]),
                 to: Position([-0.0, 6.0]),
                 thickness: 0.2,
+                when: None,
             }])
             .expect("render");
         assert!(
@@ -5278,14 +5391,14 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
-                width: Dimension::Dynamic {
-                    min: Some(5.0),
-                    max: Some(100.0),
+                width: DynamicDimension::Dynamic {
+                    min: Some(DynamicValue::Literal(5.0)),
+                    max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(12.0),
+                height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     name: None,
@@ -5294,18 +5407,20 @@ mod tests {
                         Position([0.0, 0.0]),
                         Size([
                             SizeValue::Auto(crate::models::AutoSize::Auto),
-                            SizeValue::Value(6.0),
+                            SizeValue::fixed(6.0),
                         ]),
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     multiline: false,
                     alignment: crate::models::Alignment::default(),
+                    when: None,
                 },
                 LayoutItem::Line {
                     at,
                     to,
                     thickness: 0.2,
+                    when: None,
                 },
             ]),
             version: None,
@@ -5360,6 +5475,7 @@ mod tests {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
                 thickness: 0.2,
+                when: None,
             }])
             .expect_err("a 30mm endpoint on a 10mm frame must not render");
         // Not `coord_out_of_frame`: this is a Line, so it trips the endpoint check. The prose
@@ -5379,11 +5495,11 @@ mod tests {
     fn a_line_that_becomes_degenerate_at_the_final_width_errors_at_render() {
         let mut template = dynamic_label_with_line(Position([20.0, 8.0]), Position([-0.0, 8.0]));
         template.format = TemplateFormat::Single {
-            width: Dimension::Dynamic {
-                min: Some(20.0),
-                max: Some(100.0),
+            width: DynamicDimension::Dynamic {
+                min: Some(DynamicValue::Literal(20.0)),
+                max: Some(DynamicValue::Literal(100.0)),
             },
-            height: Dimension::Fixed(12.0),
+            height: Dimension::Fixed(12.0).into(),
             media_width: None,
         };
         assert_eq!(template.validate(), Ok(()), "not comparable at load time");
@@ -5435,14 +5551,14 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
-                width: Dimension::Dynamic {
-                    min: Some(10.0),
-                    max: Some(60.0),
+                width: DynamicDimension::Dynamic {
+                    min: Some(DynamicValue::Literal(10.0)),
+                    max: Some(DynamicValue::Literal(60.0)),
                 },
-                height: Dimension::Fixed(12.0),
+                height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 name: Some("v".to_string()),
                 value: None,
@@ -5457,6 +5573,7 @@ mod tests {
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             }]),
             version: None,
         };
@@ -5485,14 +5602,14 @@ mod tests {
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
-                width: Dimension::Dynamic {
-                    min: Some(10.0),
-                    max: Some(100.0),
+                width: DynamicDimension::Dynamic {
+                    min: Some(DynamicValue::Literal(10.0)),
+                    max: Some(DynamicValue::Literal(100.0)),
                 },
-                height: Dimension::Fixed(12.0),
+                height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            options: None,
+            params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Qr {
                 name: None,
                 value: Some("payload".to_string()),
@@ -5504,6 +5621,7 @@ mod tests {
                     rotate: None,
                 },
                 params: None,
+                when: None,
             }]),
             version: None,
         };
@@ -5562,6 +5680,7 @@ mod tests {
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                when: None,
             }])
             .expect("render");
         assert!(
@@ -5597,7 +5716,7 @@ mod tests {
         let placement = Placement {
             at: Position([0.0, 0.0]),
             extent: crate::models::Extent::Size(Size([
-                SizeValue::Value(20.0),
+                SizeValue::fixed(20.0),
                 SizeValue::Auto(crate::models::AutoSize::Auto),
             ])),
             max_w: None,
@@ -5611,7 +5730,7 @@ mod tests {
         let rendered = ctx
             .resolve_size_value(
                 &Size([
-                    SizeValue::Value(20.0),
+                    SizeValue::fixed(20.0),
                     SizeValue::Auto(crate::models::AutoSize::Auto),
                 ])
                 .0[1],

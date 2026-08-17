@@ -1672,7 +1672,7 @@ pub async fn render_label(
         "render label request"
     );
 
-    if let Some(options) = &template.options {
+    if let Some(options) = &template.options() {
         if let Some(selection) = option_value {
             if !options.is_valid_selection(selection) {
                 return Err(AppError::invalid_option_value(selection, options.allowed()));
@@ -1801,8 +1801,8 @@ pub async fn import_csv(
     let mode = parse_batch_mode(params.mode.as_deref().unwrap_or("download"))?;
     // Declared options for this template (name -> allowed values); the first value is the default.
     let empty = std::collections::BTreeMap::new();
-    let declared: &std::collections::BTreeMap<String, Vec<String>> = template
-        .options
+    let template_options = template.options();
+    let declared: &std::collections::BTreeMap<String, Vec<String>> = template_options
         .as_ref()
         .map(|o| o.allowed())
         .unwrap_or(&empty);

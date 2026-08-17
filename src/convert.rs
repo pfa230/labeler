@@ -1,7 +1,11 @@
 use crate::errors::TemplateError;
-use crate::models::{AutoSize, Extent, Layout, LayoutItem, Padding, Placement, Size, SizeValue};
+use crate::models::{
+    AutoSize, DynamicDimension, Extent, Layout, LayoutItem, Padding, ParamSpec, ParamType,
+    ParamValue, Placement, Size, SizeValue, TemplateFormat,
+};
 use crate::raw::{
-    ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, TemplateDefinitionRaw, TextRaw,
+    ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
+    RawTemplateFormat, TemplateDefinitionRaw, TextRaw,
 };
 use crate::templates::TemplateDefinition;
 
@@ -100,7 +104,7 @@ impl TryFrom<ContainerRaw> for LayoutItem {
 
         Ok(LayoutItem::Container {
             placement,
-            option: raw.option,
+            when: raw.when.or(raw.option),
             frame: raw.frame,
             padding,
             items,
@@ -139,11 +143,12 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 font_weight,
                 multiline,
                 alignment,
+                when,
             }) => {
                 let (name, value) = require_one_of("text", name, value)?;
                 // Also checked in `TemplateDefinition::validate`, which covers items built by any
                 // other route; here so an API caller gets the error with its JSON path.
-                if let Some(weight) = font_weight {
+                if let Some(crate::raw::Dynamic::Literal(weight)) = font_weight {
                     if !(100..=900).contains(&weight) || weight % 100 != 0 {
                         return Err(TemplateError::Validation {
                             path: "text.font_weight".to_string(),
@@ -161,6 +166,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     font_weight,
                     multiline,
                     alignment,
+                    when,
                 })
             }
             LayoutItemRaw::Qr(raw) => {
@@ -170,6 +176,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     value,
                     placement: raw.placement.into_placement("qr", None)?,
                     params: raw.params,
+                    when: raw.when,
                 })
             }
             LayoutItemRaw::Image(raw) => match (&raw.src, &raw.name) {
@@ -186,15 +193,105 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     src: raw.src,
                     placement: raw.placement.into_placement("image", None)?,
                     fit: raw.fit,
+                    when: raw.when,
                 }),
             },
             LayoutItemRaw::Line(raw) => Ok(LayoutItem::Line {
                 at: raw.at,
                 to: raw.to,
                 thickness: raw.thickness,
+                when: raw.when,
             }),
             LayoutItemRaw::Container(raw) => LayoutItem::try_from(raw),
         }
+    }
+}
+
+impl TryFrom<RawDimension> for DynamicDimension {
+    type Error = TemplateError;
+
+    fn try_from(raw: RawDimension) -> Result<Self, Self::Error> {
+        Ok(match raw {
+            RawDimension::Fixed(d) => DynamicDimension::Fixed(d),
+            RawDimension::Dynamic { min, max } => DynamicDimension::Dynamic { min, max },
+        })
+    }
+}
+
+impl TryFrom<RawTemplateFormat> for TemplateFormat {
+    type Error = TemplateError;
+
+    fn try_from(raw: RawTemplateFormat) -> Result<Self, Self::Error> {
+        match raw {
+            RawTemplateFormat::Sheet {
+                paper_width,
+                paper_height,
+                label_width,
+                label_height,
+                positions,
+            } => Ok(TemplateFormat::Sheet {
+                paper_width,
+                paper_height,
+                label_width,
+                label_height,
+                positions,
+            }),
+            RawTemplateFormat::Single {
+                width,
+                height,
+                media_width,
+            } => Ok(TemplateFormat::Single {
+                width: DynamicDimension::try_from(width)?,
+                height: DynamicDimension::try_from(height)?,
+                media_width,
+            }),
+        }
+    }
+}
+
+impl TryFrom<RawParamSpec> for ParamSpec {
+    type Error = TemplateError;
+
+    fn try_from(raw: RawParamSpec) -> Result<Self, Self::Error> {
+        let param_type = match raw.param_type {
+            crate::raw::RawParamType::String => ParamType::String {
+                multiline: raw.multiline.unwrap_or(false),
+            },
+            crate::raw::RawParamType::Length => ParamType::Length,
+            crate::raw::RawParamType::Integer => ParamType::Integer,
+            crate::raw::RawParamType::Number => ParamType::Number,
+            crate::raw::RawParamType::Boolean => ParamType::Boolean,
+            crate::raw::RawParamType::Enum => ParamType::Enum {
+                values: raw.values.unwrap_or_default(),
+            },
+        };
+
+        let default = raw.default.map(|v| match v {
+            serde_yaml_ng::Value::Bool(b) => ParamValue::Boolean(b),
+            serde_yaml_ng::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    if matches!(param_type, ParamType::Integer) {
+                        ParamValue::Integer(i)
+                    } else {
+                        ParamValue::Float(i as f32)
+                    }
+                } else if let Some(f) = n.as_f64() {
+                    ParamValue::Float(f as f32)
+                } else {
+                    ParamValue::String(n.to_string())
+                }
+            }
+            serde_yaml_ng::Value::String(s) => ParamValue::String(s),
+            other => ParamValue::String(format!("{other:?}")),
+        });
+
+        Ok(ParamSpec {
+            param_type,
+            default,
+            min: raw.min,
+            max: raw.max,
+            description: raw.description,
+        })
     }
 }
 
@@ -209,14 +306,36 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
             items.push(node);
         }
 
+        let mut params = std::collections::BTreeMap::new();
+        if let Some(raw_params) = raw.params {
+            for (key, spec_raw) in raw_params {
+                let spec = ParamSpec::try_from(spec_raw)
+                    .map_err(|err| err.with_prefix(&format!("params.{key}")))?;
+                params.insert(key, spec);
+            }
+        }
+        if let Some(raw_options) = raw.options {
+            for (key, values) in raw_options.0 {
+                params.entry(key).or_insert(ParamSpec {
+                    param_type: ParamType::Enum { values },
+                    default: None,
+                    min: None,
+                    max: None,
+                    description: None,
+                });
+            }
+        }
+
+        let format = TemplateFormat::try_from(raw.format)?;
+
         Ok(TemplateDefinition {
             id: raw.id,
             name: raw.name,
             description: raw.description.unwrap_or_default(),
             unit: raw.unit,
             dpi: raw.dpi,
-            format: raw.format,
-            options: raw.options,
+            format,
+            params,
             layout: Layout::Items(items),
             version: raw.version,
         })
