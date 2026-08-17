@@ -94,7 +94,8 @@ pub fn validate(key: &str, value: &serde_json::Value) -> Result<String, String> 
             // key-stable regardless of the incoming JSON's insertion order.
             let normalized: BTreeMap<String, serde_json::Value> =
                 obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-            Ok(serde_json::to_string(&normalized).expect("serializing a validated map"))
+            Ok(serde_json::to_string(&normalized)
+                .map_err(|e| format!("serializing setting value: {e}"))?)
         }
         MAX_LABEL_DIMENSION_MM => {
             let n = value
