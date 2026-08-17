@@ -22,6 +22,20 @@ fn base(conn: &Connection) -> Result<Url, ConnectorError> {
         .map_err(|_| ConnectorError::ConnectionFailed("invalid base_url".into()))
 }
 
+fn external_base_url(conn: &Connection) -> &str {
+    conn.public_url
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&conn.base_url)
+        .trim_end_matches('/')
+}
+
+fn build_entity_url(base: &str, id: &str) -> String {
+    let trimmed_base = base.trim_end_matches('/');
+    let encoded_id = urlencoding::encode(id);
+    format!("{trimmed_base}/entity/{encoded_id}")
+}
+
 struct EffectiveHomeboxFilters {
     q: Option<String>,
     parent: Option<String>,
@@ -245,10 +259,11 @@ impl HomeboxConnector {
                 }
                 ConnectorError::from(e)
             })?;
+        let ext_base = external_base_url(conn);
         let rows: Vec<DisplayRow> = resp
             .items
             .iter()
-            .map(|e| summary_to_row(e, &req.resource, &conn.base_url))
+            .map(|e| summary_to_row(e, &req.resource, ext_base))
             .collect();
         let total = resp.total.unwrap_or(0);
         let has_more = (page as u64) * (page_size as u64) < total;
@@ -283,6 +298,7 @@ impl HomeboxConnector {
             return Err(ConnectorError::BudgetExceeded);
         }
         let b = base(conn)?;
+        let ext_base = external_base_url(conn);
         let mut out = Vec::with_capacity(req.rows.len());
         for r in &req.rows {
             // The key is interpolated into the upstream path; reject anything that could traverse
@@ -300,7 +316,7 @@ impl HomeboxConnector {
                 .await?;
             let mut data = BTreeMap::new();
             for f in &req.fields {
-                data.insert(f.clone(), extract_field(&detail, f, &conn.base_url, &r.key));
+                data.insert(f.clone(), extract_field(&detail, f, ext_base, &r.key));
             }
             out.push(LabelRow {
                 source: r.clone(),
@@ -362,7 +378,7 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
         "description".into(),
         CellValue::Text(e.description.clone().unwrap_or_default()),
     );
-    let entity_url = format!("{}/entity/{}", base_url.trim_end_matches('/'), e.id);
+    let entity_url = build_entity_url(base_url, &e.id);
     if resource == "locations" {
         if let Some(n) = e.item_count {
             cells.insert("itemCount".into(), CellValue::Number(n));
@@ -432,9 +448,7 @@ fn json_name(v: &Option<serde_json::Value>) -> String {
 
 fn extract_field(detail: &serde_json::Value, key: &str, base_url: &str, id: &str) -> String {
     match key {
-        "item_url" | "location_url" => {
-            format!("{}/entity/{}", base_url.trim_end_matches('/'), id)
-        }
+        "item_url" | "location_url" => build_entity_url(base_url, id),
         "location" => json_name(&detail.get("parent").cloned()),
         "entityType" => type_name(&detail.get("entityType").cloned()),
         k if k.starts_with("custom:") => {
@@ -875,5 +889,172 @@ mod tests {
         assert_eq!(row.id.resource, "locations");
         assert!(matches!(row.cells.get("name"), Some(CellValue::Text(s)) if s == "Garage"));
         assert!(matches!(row.cells.get("itemCount"), Some(CellValue::Number(n)) if *n == 7.0));
+    }
+
+    #[tokio::test]
+    async fn browse_uses_public_url_for_row_urls_when_configured() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id":"e1","name":"Drill"}], "total": 1
+            })))
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::with_loopback();
+        let key = crate::connector::cursor::SigningKey::random();
+        let mut c = conn(&server.uri());
+        c.public_url = Some("https://public.homebox.domain/".into());
+        let page = HomeboxConnector
+            .browse(
+                &c,
+                &egress,
+                &key,
+                crate::connector::BrowseRequest {
+                    resource: "entities".into(),
+                    filters: Default::default(),
+                    parent: None,
+                    cursor: None,
+                    page_size: Some(50),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            page.rows[0].url.as_deref(),
+            Some("https://public.homebox.domain/entity/e1")
+        );
+        assert_eq!(
+            page.rows[0].cells.get("item_url").unwrap(),
+            &CellValue::Text("https://public.homebox.domain/entity/e1".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn browse_falls_back_to_base_url_when_public_url_absent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id":"e1","name":"Drill"}], "total": 1
+            })))
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::with_loopback();
+        let key = crate::connector::cursor::SigningKey::random();
+        let c = conn(&server.uri());
+        let page = HomeboxConnector
+            .browse(
+                &c,
+                &egress,
+                &key,
+                crate::connector::BrowseRequest {
+                    resource: "entities".into(),
+                    filters: Default::default(),
+                    parent: None,
+                    cursor: None,
+                    page_size: Some(50),
+                },
+            )
+            .await
+            .unwrap();
+        let expected = format!("{}/entity/e1", server.uri().trim_end_matches('/'));
+        assert_eq!(page.rows[0].url.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            page.rows[0].cells.get("item_url").unwrap(),
+            &CellValue::Text(expected)
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_uses_public_url_for_item_and_location_urls() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"e1","name":"Drill"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/loc1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"loc1","name":"Garage"
+            })))
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::with_loopback();
+        let mut c = conn(&server.uri());
+        c.public_url = Some("https://public.homebox.domain".into());
+
+        let rows = HomeboxConnector
+            .materialize(
+                &c,
+                &egress,
+                crate::connector::MaterializeRequest {
+                    rows: vec![crate::connector::RowRef {
+                        resource: "entities".into(),
+                        key: "e1".into(),
+                    }],
+                    fields: vec!["name".into(), "item_url".into()],
+                    expansion: crate::connector::ExpansionPolicy::AsListed,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].data["item_url"],
+            "https://public.homebox.domain/entity/e1"
+        );
+
+        let loc_rows = HomeboxConnector
+            .materialize(
+                &c,
+                &egress,
+                crate::connector::MaterializeRequest {
+                    rows: vec![crate::connector::RowRef {
+                        resource: "locations".into(),
+                        key: "loc1".into(),
+                    }],
+                    fields: vec!["name".into(), "location_url".into()],
+                    expansion: crate::connector::ExpansionPolicy::AsListed,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(loc_rows.len(), 1);
+        assert_eq!(
+            loc_rows[0].data["location_url"],
+            "https://public.homebox.domain/entity/loc1"
+        );
+    }
+
+    #[test]
+    fn build_entity_url_escapes_entity_id() {
+        assert_eq!(
+            build_entity_url("https://hb.example.com", "item 123"),
+            "https://hb.example.com/entity/item%20123"
+        );
+        assert_eq!(
+            build_entity_url("https://hb.example.com/", "a/b?c#d"),
+            "https://hb.example.com/entity/a%2Fb%3Fc%23d"
+        );
+        assert_eq!(
+            build_entity_url("http://localhost:7745", "simple-id_1"),
+            "http://localhost:7745/entity/simple-id_1"
+        );
+    }
+
+    #[test]
+    fn external_base_url_fallback_and_trimming() {
+        let mut c = conn("http://hb.lan:7745/");
+        assert_eq!(external_base_url(&c), "http://hb.lan:7745");
+
+        c.public_url = Some("  ".into());
+        assert_eq!(external_base_url(&c), "http://hb.lan:7745");
+
+        c.public_url = Some("https://homebox.domain.com/".into());
+        assert_eq!(external_base_url(&c), "https://homebox.domain.com");
     }
 }
