@@ -1,6 +1,7 @@
 mod helpers;
 
 pub const MAX_RENDER_DPI: u32 = 1200;
+const CONTENT_EPSILON: f32 = 1.0e-4;
 
 use crate::errors::AppError;
 use crate::models::{
@@ -1097,6 +1098,16 @@ impl<'a> RenderContext<'a> {
                             - padding.top
                             - padding.bottom)
                             .max(0.0);
+                        let has_active_children =
+                            items.iter().any(|item| self.is_item_active(item));
+                        if has_active_children
+                            && (inner_budget <= CONTENT_EPSILON || inner_h <= CONTENT_EPSILON)
+                        {
+                            return Err(AppError::unsupported_layout_item(
+                                Reason::ContainerPaddingNoRoom,
+                                "container padding leaves no room for content",
+                            ));
+                        }
                         let ctx = RenderContext::new(
                             (inner_budget, inner_h),
                             self.unit,
@@ -1110,7 +1121,7 @@ impl<'a> RenderContext<'a> {
                         // Child measurement is bounded by `inner_budget` (which is
                         // `(outer_budget - padding.left - padding.right).max(0.0)`), so for any
                         // template passing validation, `outer` cannot exceed `outer_budget`.
-                        let outer = padding.left + child_extent + padding.right;
+                        let outer = (padding.left + child_extent + padding.right).min(outer_budget);
                         debug_assert!(
                             outer <= outer_budget + 1e-4,
                             "measured container extent {outer} exceeded outer_budget {outer_budget}"
@@ -1203,6 +1214,13 @@ impl<'a> RenderContext<'a> {
         if !rotation.is_rotated() {
             let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
             let inner_h = (explicit_h - padding.top - padding.bottom).max(0.0);
+            let has_active_children = children.iter().any(|item| self.is_item_active(item));
+            if has_active_children && (inner_w <= CONTENT_EPSILON || inner_h <= CONTENT_EPSILON) {
+                return Err(AppError::unsupported_layout_item(
+                    Reason::ContainerPaddingNoRoom,
+                    "container padding leaves no room for content",
+                ));
+            }
             let ctx = RenderContext::new(
                 (inner_w, inner_h),
                 self.unit,
@@ -1692,6 +1710,15 @@ impl<'a> RenderContext<'a> {
 
             let inner_width = (width - padding.left - padding.right).max(0.0);
             let inner_height = (height - padding.top - padding.bottom).max(0.0);
+            let has_active_children = items.iter().any(|item| self.is_item_active(item));
+            if has_active_children
+                && (inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON)
+            {
+                return Err(AppError::unsupported_layout_item(
+                    Reason::ContainerPaddingNoRoom,
+                    "container padding leaves no room for content",
+                ));
+            }
             let child_mode = match &self.mode {
                 LengthMode::Dynamic(al) => LengthMode::Dynamic(AutoLength {
                     texts: al.texts,
@@ -2814,24 +2841,17 @@ mod tests {
         let data: HashMap<String, super::JsonValue> = HashMap::new();
         let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
             .expect_err("a divider in a zero-width container cannot render");
-        assert!(
-            err.message_text().contains("must differ"),
-            "expected the standard degenerate-line error, got: {}",
+        assert_eq!(
+            err.reason(),
+            Some("container_padding_no_room"),
+            "expected container_padding_no_room, got: {}",
             err.message_text()
         );
     }
 
-    /// A cap below the container's own padding leaves no inner box at all. The inner dimensions
-    /// must clamp at zero rather than going negative, and a zero-width child renders as an empty
-    /// box — the same contract `a_zero_remainder_container_renders_an_empty_box` pins for the
-    /// unnested case.
-    ///
-    /// This test previously asserted which *error* fired, because `render_container_item` resolved
-    /// the width through a helper while asking it only for the height, so a zero remainder tripped
-    /// `resolved <= 0.0` and nothing could render. That coupling was the defect this task removed;
-    /// the error was its artifact, not the intended behavior. Now that the axes resolve
-    /// independently there is a real green to reach, and asserting the emitted geometry is
-    /// stronger than asserting an error message that was an accident of control flow.
+    /// A cap below the container's own padding leaves no inner box at all. When child items are
+    /// inactive, the inner dimensions clamp at zero rather than going negative, emitting no
+    /// negative dimensions.
     #[test]
     fn a_cap_smaller_than_the_padding_clamps_the_inner_box() {
         let item = LayoutItem::Container {
@@ -2853,9 +2873,6 @@ mod tests {
                 bottom: 3.0,
                 left: 3.0,
             },
-            // The child is load-bearing: unclamped inner dimensions are only ever *passed into*
-            // the child context, so an empty container emits nothing and the bug stays invisible.
-            // Its position is edge-relative so it resolves against the inner frame width.
             items: vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([-0.0, 0.0]),
@@ -2867,7 +2884,7 @@ mod tests {
                     max_h: None,
                     rotate: None,
                 },
-                when: None,
+                when: Some(BTreeMap::from([("show".to_string(), "yes".to_string())])),
                 frame: None,
                 padding: crate::models::Padding::ZERO,
                 items: vec![],
@@ -6076,5 +6093,98 @@ layout:
 
         let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
         assert!(matches!(res, Err(err) if err.code() == "UnsupportedLayoutItem"));
+    }
+
+    #[test]
+    fn dynamic_container_padding_overflow_at_runtime_returns_container_padding_no_room() {
+        let yaml = r#"
+id: dynamic_container_padding_overflow
+name: Dynamic Container Padding Overflow
+unit: mm
+dpi: 200
+params:
+  target_width:
+    type: length
+    default: 60
+format:
+  type: single
+  height: 18
+  width:
+    min: 10
+    max: "{target_width}"
+layout:
+  - type: container
+    at: [0, 0]
+    size: [auto, 18]
+    padding: [0, 10, 0, 10]
+    items:
+      - type: text
+        value: "Active text"
+        at: [0, 0]
+        size: [auto, 18]
+        font_size: { min: 8, max: 24 }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        // target_width shrinks to 15mm, but container padding is left 10 + right 10 = 20mm.
+        data.insert("target_width".to_string(), json!(15.0));
+
+        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        assert!(
+            res.is_err(),
+            "expected render to fail due to padding overflow"
+        );
+        let err = res.unwrap_err();
+        assert_eq!(err.code(), "UnsupportedLayoutItem");
+        assert_eq!(err.reason(), Some("container_padding_no_room"));
+        assert_eq!(
+            err.message_text(),
+            "container padding leaves no room for content"
+        );
+    }
+
+    #[test]
+    fn dynamic_container_padding_overflow_with_inactive_when_children_renders_ok() {
+        let yaml = r#"
+id: dynamic_container_inactive_padding
+name: Dynamic Container Inactive Padding
+unit: mm
+dpi: 200
+params:
+  target_width:
+    type: length
+    default: 60
+  show_extra:
+    type: boolean
+    default: false
+format:
+  type: single
+  height: 18
+  width:
+    min: 10
+    max: "{target_width}"
+layout:
+  - type: container
+    at: [0, 0]
+    size: [auto, 18]
+    padding: [0, 10, 0, 10]
+    items:
+      - type: text
+        value: "Conditional text"
+        at: [0, 0]
+        size: [auto, 18]
+        font_size: { min: 8, max: 24 }
+        when: { show_extra: "true" }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("target_width".to_string(), json!(15.0));
+        data.insert("show_extra".to_string(), json!(false));
+
+        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        assert!(
+            res.is_ok(),
+            "inactive child item should not trigger container_padding_no_room"
+        );
     }
 }
