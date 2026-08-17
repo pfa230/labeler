@@ -45,22 +45,32 @@ impl EffectiveHomeboxFilters {
                             continue;
                         }
                         if trimmed.len() > 64 {
-                            return Err(ConnectorError::InvalidFilter("tag filter exceeds max length of 64".into()));
+                            return Err(ConnectorError::InvalidFilter(
+                                "tag filter exceeds max length of 64".into(),
+                            ));
                         }
                         if !tags.contains(&trimmed) {
                             tags.push(trimmed);
                         }
                     }
                     if tags.len() > 16 {
-                        return Err(ConnectorError::InvalidFilter("too many tags, max 16".into()));
+                        return Err(ConnectorError::InvalidFilter(
+                            "too many tags, max 16".into(),
+                        ));
                     }
                 }
-                _ => return Err(ConnectorError::InvalidFilter(format!("unknown filter: {k}"))),
+                _ => {
+                    return Err(ConnectorError::InvalidFilter(format!(
+                        "unknown filter: {k}"
+                    )))
+                }
             }
         }
 
         if parent.is_some() && req.parent.is_some() {
-            return Err(ConnectorError::InvalidFilter("conflicting parent params".into()));
+            return Err(ConnectorError::InvalidFilter(
+                "conflicting parent params".into(),
+            ));
         }
 
         Ok(Self { q, parent, tags })
@@ -75,7 +85,12 @@ impl EffectiveHomeboxFilters {
         if !self.tags.is_empty() {
             let mut sorted = self.tags.clone();
             sorted.sort();
-            m.insert("tags".into(), serde_json::Value::Array(sorted.into_iter().map(serde_json::Value::String).collect()));
+            m.insert(
+                "tags".into(),
+                serde_json::Value::Array(
+                    sorted.into_iter().map(serde_json::Value::String).collect(),
+                ),
+            );
         }
         let json_str = serde_json::to_string(&m).unwrap();
         crate::auth::sha256_hex(&format!("{}|{}|{}", resource, parent_val, json_str))
@@ -447,8 +462,8 @@ fn extract_field(detail: &serde_json::Value, key: &str, base_url: &str, id: &str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::Connection;
     use crate::connector::FilterValue;
+    use crate::store::Connection;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -461,17 +476,24 @@ mod tests {
             cursor: None,
             page_size: None,
         };
-        req.filters.insert("q".into(), FilterValue::Single(" search ".into()));
-        req.filters.insert("tag".into(), FilterValue::Multiple(vec!["  t2  ".into(), "t1".into(), "t1".into()]));
-        
+        req.filters
+            .insert("q".into(), FilterValue::Single(" search ".into()));
+        req.filters.insert(
+            "tag".into(),
+            FilterValue::Multiple(vec!["  t2  ".into(), "t1".into(), "t1".into()]),
+        );
+
         let eff = EffectiveHomeboxFilters::parse(&req).unwrap();
         assert_eq!(eff.q.as_deref(), Some("search"));
         assert_eq!(eff.tags, vec!["t2", "t1"]);
 
         let hash1 = eff.to_hash("entities", None);
-        
+
         // Reverse tag order should yield same hash due to sorting
-        req.filters.insert("tag".into(), FilterValue::Multiple(vec!["t1".into(), "t2".into()]));
+        req.filters.insert(
+            "tag".into(),
+            FilterValue::Multiple(vec!["t1".into(), "t2".into()]),
+        );
         let eff2 = EffectiveHomeboxFilters::parse(&req).unwrap();
         let hash2 = eff2.to_hash("entities", None);
         assert_eq!(hash1, hash2);
@@ -487,8 +509,12 @@ mod tests {
             page_size: None,
         };
         let long_tag = "a".repeat(65);
-        req.filters.insert("tag".into(), FilterValue::Single(long_tag));
-        assert!(matches!(EffectiveHomeboxFilters::parse(&req), Err(ConnectorError::InvalidFilter(_))));
+        req.filters
+            .insert("tag".into(), FilterValue::Single(long_tag));
+        assert!(matches!(
+            EffectiveHomeboxFilters::parse(&req),
+            Err(ConnectorError::InvalidFilter(_))
+        ));
     }
 
     #[test]
@@ -496,12 +522,19 @@ mod tests {
         let mut req = BrowseRequest {
             resource: "entities".into(),
             filters: BTreeMap::new(),
-            parent: Some(crate::connector::BrowseParent { relationship: "r".into(), key: "k1".into() }),
+            parent: Some(crate::connector::BrowseParent {
+                relationship: "r".into(),
+                key: "k1".into(),
+            }),
             cursor: None,
             page_size: None,
         };
-        req.filters.insert("parent".into(), FilterValue::Single("k2".into()));
-        assert!(matches!(EffectiveHomeboxFilters::parse(&req), Err(ConnectorError::InvalidFilter(_))));
+        req.filters
+            .insert("parent".into(), FilterValue::Single("k2".into()));
+        assert!(matches!(
+            EffectiveHomeboxFilters::parse(&req),
+            Err(ConnectorError::InvalidFilter(_))
+        ));
     }
 
     fn conn(base: &str) -> Connection {
@@ -577,7 +610,8 @@ mod tests {
                 ],
                 "total": 1
             })))
-            .mount(&server).await;
+            .mount(&server)
+            .await;
         let egress = crate::egress::Egress::with_loopback();
         let key = crate::connector::cursor::SigningKey::random();
         let c = HomeboxConnector;
@@ -599,17 +633,47 @@ mod tests {
         assert_eq!(page.rows.len(), 1);
         let cells = &page.rows[0].cells;
         assert_eq!(cells.get("name").unwrap(), &CellValue::Text("Drill".into()));
-        assert_eq!(cells.get("description").unwrap(), &CellValue::Text("Cordless power drill".into()));
-        assert_eq!(cells.get("assetId").unwrap(), &CellValue::Text("000-001".into()));
+        assert_eq!(
+            cells.get("description").unwrap(),
+            &CellValue::Text("Cordless power drill".into())
+        );
+        assert_eq!(
+            cells.get("assetId").unwrap(),
+            &CellValue::Text("000-001".into())
+        );
         assert_eq!(cells.get("quantity").unwrap(), &CellValue::Number(2.0));
-        assert_eq!(cells.get("purchasePrice").unwrap(), &CellValue::Number(99.95));
-        assert_eq!(cells.get("manufacturer").unwrap(), &CellValue::Text("DeWalt".into()));
-        assert_eq!(cells.get("modelNumber").unwrap(), &CellValue::Text("DCD771C2".into()));
-        assert_eq!(cells.get("serialNumber").unwrap(), &CellValue::Text("SN12345".into()));
-        assert_eq!(cells.get("location").unwrap(), &CellValue::Text("Garage".into()));
-        assert_eq!(cells.get("item_url").unwrap(), &CellValue::Text(format!("{}/entity/e1", server.uri())));
-        assert_eq!(cells.get("custom:Warranty").unwrap(), &CellValue::Text("2028-01-01".into()));
-        assert_eq!(cells.get("custom:Voltage").unwrap(), &CellValue::Text("20V".into()));
+        assert_eq!(
+            cells.get("purchasePrice").unwrap(),
+            &CellValue::Number(99.95)
+        );
+        assert_eq!(
+            cells.get("manufacturer").unwrap(),
+            &CellValue::Text("DeWalt".into())
+        );
+        assert_eq!(
+            cells.get("modelNumber").unwrap(),
+            &CellValue::Text("DCD771C2".into())
+        );
+        assert_eq!(
+            cells.get("serialNumber").unwrap(),
+            &CellValue::Text("SN12345".into())
+        );
+        assert_eq!(
+            cells.get("location").unwrap(),
+            &CellValue::Text("Garage".into())
+        );
+        assert_eq!(
+            cells.get("item_url").unwrap(),
+            &CellValue::Text(format!("{}/entity/e1", server.uri()))
+        );
+        assert_eq!(
+            cells.get("custom:Warranty").unwrap(),
+            &CellValue::Text("2028-01-01".into())
+        );
+        assert_eq!(
+            cells.get("custom:Voltage").unwrap(),
+            &CellValue::Text("20V".into())
+        );
     }
 
     #[tokio::test]

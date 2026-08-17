@@ -536,7 +536,16 @@ impl std::error::Error for TemplateError {}
 #[cfg(test)]
 mod tests {
     use super::{AppError, BatchFailure};
+    use crate::reason::Reason;
     use axum::http::StatusCode;
+
+    #[test]
+    fn container_padding_no_room_reason_is_registered() {
+        assert_eq!(
+            Reason::ContainerPaddingNoRoom.as_slug(),
+            "container_padding_no_room"
+        );
+    }
 
     /// The SPEC §10.1 table is the published contract; the enum is what the code emits. If they
     /// drift, clients switch on slugs that either no longer exist or were never documented. Checked

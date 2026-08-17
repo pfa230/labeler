@@ -269,7 +269,10 @@ mod tests {
     #[test]
     fn filter_value_as_tokens() {
         assert_eq!(FilterValue::Single("foo".into()).as_tokens(), vec!["foo"]);
-        assert_eq!(FilterValue::Multiple(vec!["foo".into(), "bar".into()]).as_tokens(), vec!["foo", "bar"]);
+        assert_eq!(
+            FilterValue::Multiple(vec!["foo".into(), "bar".into()]).as_tokens(),
+            vec!["foo", "bar"]
+        );
     }
 
     #[test]
@@ -281,6 +284,9 @@ mod tests {
         assert_eq!(single_empty.as_single_trimmed("tag").unwrap(), None);
 
         let multi = FilterValue::Multiple(vec!["foo".into(), "bar".into()]);
-        assert!(matches!(multi.as_single_trimmed("tag"), Err(ConnectorError::InvalidFilter(_))));
+        assert!(matches!(
+            multi.as_single_trimmed("tag"),
+            Err(ConnectorError::InvalidFilter(_))
+        ));
     }
 }
