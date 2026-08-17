@@ -10,6 +10,10 @@ const DEFAULT_RETENTION_DAYS: u32 = 90;
 /// Setting key for the named `{datetime.*}` strftime formats (issue #76).
 pub const DATETIME_FORMATS: &str = "datetime_formats";
 
+/// Setting key for the maximum allowable label dimension in millimeters.
+pub const MAX_LABEL_DIMENSION_MM: &str = "max_label_dimension_mm";
+pub const DEFAULT_MAX_LABEL_DIMENSION_MM: f32 = 1000.0;
+
 /// Seeded default named formats. Overridable; nothing hardcoded in the renderer.
 pub fn default_datetime_formats() -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -50,7 +54,7 @@ impl From<StoreError> for SettingError {
 
 /// Whether `key` is a setting this build knows about.
 pub fn is_known(key: &str) -> bool {
-    key == JOB_LOG_RETENTION_DAYS || key == DATETIME_FORMATS
+    key == JOB_LOG_RETENTION_DAYS || key == DATETIME_FORMATS || key == MAX_LABEL_DIMENSION_MM
 }
 
 /// Validate a JSON value for `key`, returning the canonical text to store, or a client-facing message
@@ -91,6 +95,15 @@ pub fn validate(key: &str, value: &serde_json::Value) -> Result<String, String> 
             let normalized: BTreeMap<String, serde_json::Value> =
                 obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
             Ok(serde_json::to_string(&normalized).expect("serializing a validated map"))
+        }
+        MAX_LABEL_DIMENSION_MM => {
+            let n = value
+                .as_f64()
+                .filter(|n| *n > 0.0 && n.is_finite())
+                .ok_or_else(|| {
+                    format!("'{MAX_LABEL_DIMENSION_MM}' must be a positive finite number")
+                })?;
+            Ok(n.to_string())
         }
         _ => Err(format!("unknown setting '{key}'")),
     }
@@ -136,6 +149,23 @@ pub async fn resolve_datetime_formats(
 ) -> Result<BTreeMap<String, String>, SettingError> {
     let stored = store.get_setting(DATETIME_FORMATS).await?;
     resolve_datetime_formats_from(stored)
+}
+
+/// Pure resolution: in-code default when there is no override, else the parsed override.
+pub fn resolve_max_label_dimension_mm_from(stored: Option<String>) -> Result<f32, SettingError> {
+    match stored {
+        None => Ok(DEFAULT_MAX_LABEL_DIMENSION_MM),
+        Some(s) => s.parse::<f32>().map_err(|_| SettingError::Corrupt {
+            key: MAX_LABEL_DIMENSION_MM.to_string(),
+            value: s,
+        }),
+    }
+}
+
+/// Resolve the effective `max_label_dimension_mm` from the store.
+pub async fn resolve_max_label_dimension_mm(store: &Store) -> Result<f32, SettingError> {
+    let stored = store.get_setting(MAX_LABEL_DIMENSION_MM).await?;
+    resolve_max_label_dimension_mm_from(stored)
 }
 
 /// Resolve the live retention and prune the job log once. `0` is a no-op (handled by `prune_jobs`).
@@ -213,5 +243,38 @@ mod tests {
         let m = resolve_datetime_formats_from(stored).unwrap();
         assert_eq!(m.len(), 1);
         assert_eq!(m.get("only").map(String::as_str), Some("%Y"));
+    }
+
+    #[test]
+    fn resolve_max_label_dimension_defaults_when_absent() {
+        assert_eq!(resolve_max_label_dimension_mm_from(None).unwrap(), 1000.0);
+    }
+
+    #[test]
+    fn resolve_max_label_dimension_uses_override() {
+        assert_eq!(
+            resolve_max_label_dimension_mm_from(Some("500.5".to_string())).unwrap(),
+            500.5
+        );
+    }
+
+    #[test]
+    fn resolve_max_label_dimension_rejects_corrupt() {
+        assert!(resolve_max_label_dimension_mm_from(Some("invalid".to_string())).is_err());
+    }
+
+    #[test]
+    fn validate_max_label_dimension_accepts_positive_number() {
+        assert_eq!(
+            validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!(500.0)).unwrap(),
+            "500"
+        );
+        assert_eq!(
+            validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!(1000)).unwrap(),
+            "1000"
+        );
+        assert!(validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!(0.0)).is_err());
+        assert!(validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!(-10.0)).is_err());
+        assert!(validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!("abc")).is_err());
     }
 }

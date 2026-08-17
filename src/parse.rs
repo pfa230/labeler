@@ -242,4 +242,27 @@ mod tests {
         // `size` is no longer a line field (deny_unknown_fields); `to` is required.
         assert!(parse_nodes(src).is_err());
     }
+
+    #[test]
+    fn parse_nodes_text_rejects_name() {
+        let src = r#"
+- type: text
+  name: message
+  at: [0.0, 0.0]
+  size: [10.0, 5.0]
+  font_size: 6
+"#;
+        assert!(parse_nodes(src).is_err());
+    }
+
+    #[test]
+    fn parse_nodes_qr_rejects_name() {
+        let src = r#"
+- type: qr
+  name: code
+  at: [0.0, 0.0]
+  size: [10.0, 10.0]
+"#;
+        assert!(parse_nodes(src).is_err());
+    }
 }

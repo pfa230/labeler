@@ -772,6 +772,20 @@ pub async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Response
             is_default: dt_is_default,
         },
     );
+    let max_dim_stored = state
+        .store()
+        .get_setting(crate::settings::MAX_LABEL_DIMENSION_MM)
+        .await?;
+    let max_dim_is_default = max_dim_stored.is_none();
+    let max_dim = crate::settings::resolve_max_label_dimension_mm_from(max_dim_stored)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    out.insert(
+        crate::settings::MAX_LABEL_DIMENSION_MM.to_string(),
+        ResolvedSetting {
+            value: serde_json::json!(max_dim),
+            is_default: max_dim_is_default,
+        },
+    );
     Ok(Json(out).into_response())
 }
 
@@ -1658,7 +1672,7 @@ pub async fn render_label(
         "render label request"
     );
 
-    if let Some(options) = &template.options {
+    if let Some(options) = &template.options() {
         if let Some(selection) = option_value {
             if !options.is_valid_selection(selection) {
                 return Err(AppError::invalid_option_value(selection, options.allowed()));
@@ -1787,8 +1801,8 @@ pub async fn import_csv(
     let mode = parse_batch_mode(params.mode.as_deref().unwrap_or("download"))?;
     // Declared options for this template (name -> allowed values); the first value is the default.
     let empty = std::collections::BTreeMap::new();
-    let declared: &std::collections::BTreeMap<String, Vec<String>> = template
-        .options
+    let template_options = template.options();
+    let declared: &std::collections::BTreeMap<String, Vec<String>> = template_options
         .as_ref()
         .map(|o| o.allowed())
         .unwrap_or(&empty);

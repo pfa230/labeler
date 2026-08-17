@@ -17,7 +17,7 @@ const schema = {
 const templateDetail = {
   id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300,
   format: { type: "single" }, options: {},
-  layout: [{ type: "text", name: "name" }],
+  layout: [{ type: "text", value: "{name}" }],
 };
 
 type StubOptions = {

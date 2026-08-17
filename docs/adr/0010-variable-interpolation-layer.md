@@ -1,6 +1,6 @@
 # 10. Variable interpolation layer
 
-**Status:** Accepted
+**Status:** Partially superseded by [0055](0055-standardize-on-value-interpolation.md)
 
 ## Context
 

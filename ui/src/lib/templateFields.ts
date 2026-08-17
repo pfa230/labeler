@@ -38,7 +38,6 @@ export function reconcileRowOptions(current: Record<string, string>, options?: O
   return out;
 }
 
-// A text/qr item carries EXACTLY ONE of name|value (backend invariant). Emit name if present, else value tokens.
 function walk(
   items: LayoutItem[],
   selected: Record<string, string>,
@@ -53,8 +52,7 @@ function walk(
         onData(t);
         if (it.type === "text") onText(t, it.multiline === true); // a qr payload is never multiline
       };
-      if (it.name) emit(it.name);
-      else if (it.value) for (const t of tokens(it.value)) emit(t);
+      if (it.value) for (const t of tokens(it.value)) emit(t);
     } else if (it.type === "image") {
       // a data-bound image is BOTH a referenced data field AND an image field (sample = data URI)
       if (it.name) { onData(it.name); onImage(it.name); }
@@ -68,7 +66,7 @@ function walk(
 // {vars.*}, {datetime} and {datetime.*} resolve server-side; they are never request data fields.
 const isDataField = (t: string) => !t.startsWith("vars.") && t !== "datetime" && !t.startsWith("datetime.");
 
-// Data fields the (option-selected) layout references: text/qr name|value tokens
+// Data fields the (option-selected) layout references: text/qr value tokens
 // (excluding vars.*, datetime, and datetime.*).
 export function referencedFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
   const set = new Set<string>();
