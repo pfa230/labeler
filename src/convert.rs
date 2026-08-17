@@ -5,7 +5,7 @@ use crate::models::{
 };
 use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
-    RawTemplateFormat, TemplateDefinitionRaw, TextRaw,
+    RawTemplateFormat, TemplateDefinitionRaw,
 };
 use crate::templates::TemplateDefinition;
 
@@ -112,43 +112,15 @@ impl TryFrom<ContainerRaw> for LayoutItem {
     }
 }
 
-fn require_one_of(
-    kind: &str,
-    name: Option<String>,
-    value: Option<String>,
-) -> Result<(Option<String>, Option<String>), TemplateError> {
-    match (&name, &value) {
-        (Some(_), Some(_)) => Err(TemplateError::Validation {
-            path: kind.to_string(),
-            msg: format!("{kind} must set exactly one of name or value, not both"),
-        }),
-        (None, None) => Err(TemplateError::Validation {
-            path: kind.to_string(),
-            msg: format!("{kind} must set one of name or value"),
-        }),
-        _ => Ok((name, value)),
-    }
-}
-
 impl TryFrom<LayoutItemRaw> for LayoutItem {
     type Error = TemplateError;
 
     fn try_from(raw: LayoutItemRaw) -> Result<Self, Self::Error> {
         match raw {
-            LayoutItemRaw::Text(TextRaw {
-                name,
-                value,
-                placement,
-                font_size,
-                font_weight,
-                multiline,
-                alignment,
-                when,
-            }) => {
-                let (name, value) = require_one_of("text", name, value)?;
+            LayoutItemRaw::Text(raw) => {
                 // Also checked in `TemplateDefinition::validate`, which covers items built by any
                 // other route; here so an API caller gets the error with its JSON path.
-                if let Some(crate::raw::Dynamic::Literal(weight)) = font_weight {
+                if let Some(crate::raw::Dynamic::Literal(weight)) = raw.font_weight {
                     if !(100..=900).contains(&weight) || weight % 100 != 0 {
                         return Err(TemplateError::Validation {
                             path: "text.font_weight".to_string(),
@@ -159,26 +131,21 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     }
                 }
                 Ok(LayoutItem::Text {
-                    name,
-                    value,
-                    placement: placement.into_placement("text", None)?,
-                    font_size,
-                    font_weight,
-                    multiline,
-                    alignment,
-                    when,
-                })
-            }
-            LayoutItemRaw::Qr(raw) => {
-                let (name, value) = require_one_of("qr", raw.name, raw.value)?;
-                Ok(LayoutItem::Qr {
-                    name,
-                    value,
-                    placement: raw.placement.into_placement("qr", None)?,
-                    params: raw.params,
+                    value: raw.value,
+                    placement: raw.placement.into_placement("text", None)?,
+                    font_size: raw.font_size,
+                    font_weight: raw.font_weight.map(Into::into),
+                    multiline: raw.multiline,
+                    alignment: raw.alignment,
                     when: raw.when,
                 })
             }
+            LayoutItemRaw::Qr(raw) => Ok(LayoutItem::Qr {
+                value: raw.value,
+                placement: raw.placement.into_placement("qr", None)?,
+                params: raw.params,
+                when: raw.when,
+            }),
             LayoutItemRaw::Image(raw) => match (&raw.src, &raw.name) {
                 (Some(_), Some(_)) => Err(TemplateError::Validation {
                     path: "image".to_string(),
@@ -362,23 +329,38 @@ mod tests {
     }
 
     #[test]
-    fn text_with_name_ok() {
+    fn text_with_name_fails_deserialization() {
         assert!(try_build(
             "  - type: text\n    name: id\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n"
         )
-        .is_ok());
+        .is_err());
     }
 
     #[test]
-    fn text_with_both_errors() {
+    fn text_with_both_fails_deserialization() {
         assert!(try_build("  - type: text\n    name: id\n    value: \"{id}\"\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n").is_err());
     }
 
     #[test]
-    fn text_with_neither_errors() {
+    fn text_with_neither_fails_deserialization() {
         assert!(
             try_build("  - type: text\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n")
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn qr_with_value_ok() {
+        assert!(
+            try_build("  - type: qr\n    value: \"{id}\"\n    at: [0,0]\n    size: [10,10]\n")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn qr_with_name_fails_deserialization() {
+        assert!(
+            try_build("  - type: qr\n    name: id\n    at: [0,0]\n    size: [10,10]\n").is_err()
         );
     }
 
