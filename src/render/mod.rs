@@ -570,20 +570,7 @@ pub fn render_sheet_pages(
     let mut rendered: Vec<String> = Vec::with_capacity(labels.len());
     let mut failures: Vec<crate::errors::BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
-        let selected_option = match normalize_option(template, lbl.option.as_ref()) {
-            Ok(opt) => opt,
-            Err(err) => {
-                failures.push(crate::errors::BatchFailure {
-                    index: idx,
-                    code: err.code(),
-                    reason: err.reason(),
-                    message: err.message_text(),
-                });
-                rendered.push(String::new());
-                continue;
-            }
-        };
-        let resolved_data = match resolve_parameters(template, &lbl.data, selected_option) {
+        let resolved_data = match resolve_parameters(template, &lbl.data, None) {
             Ok(data) => data,
             Err(err) => {
                 failures.push(crate::errors::BatchFailure {
@@ -600,7 +587,7 @@ pub fn render_sheet_pages(
             (*label_width, *label_height),
             unit,
             &resolved_data,
-            selected_option,
+            None,
             &env,
             &images,
             LengthMode::Fixed,
@@ -4245,7 +4232,6 @@ mod tests {
     fn sheet_label(msg: &str) -> LabelInput {
         LabelInput {
             data: HashMap::from([("message".to_string(), json!(msg))]),
-            option: None,
         }
     }
 
@@ -4285,7 +4271,6 @@ mod tests {
             sheet_label("a"),
             LabelInput {
                 data: HashMap::new(),
-                option: None,
             },
         ];
         let err = render_sheet_pages(
@@ -4479,7 +4464,6 @@ mod tests {
 
         let labels = vec![LabelInput {
             data: HashMap::from([("message".to_string(), json!("Hello"))]),
-            option: None,
         }];
 
         let pdf = render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime())
@@ -4585,7 +4569,6 @@ mod tests {
                 "logo".to_string(),
                 json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
             )]),
-            option: None,
         }];
         let pdf = render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime())
             .expect("render sheet image");
