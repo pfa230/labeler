@@ -153,7 +153,7 @@ function CsvEditor({
         spec?.default !== undefined ||
         spec?.type === "boolean" ||
         (spec?.type === "enum" && (spec.values?.length ?? 0) > 0);
-      if (!hasDefault && (row.data[f] ?? "").length === 0) field[f] = "required";
+      if (!hasDefault && (row.data[f] !== undefined ? String(row.data[f]) : "").length === 0) field[f] = "required";
     }
     const eff = effectiveOption(row);
     const option: Record<string, string> = {};

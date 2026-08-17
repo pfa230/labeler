@@ -1142,7 +1142,10 @@ mod connection_tests {
         assert!(!c.enabled);
 
         let fetched = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(fetched.public_url.as_deref(), Some("https://homebox.example.com"));
+        assert_eq!(
+            fetched.public_url.as_deref(),
+            Some("https://homebox.example.com")
+        );
         assert!(!fetched.enabled);
 
         // UpdateField::Keep preserves existing public_url
@@ -1159,7 +1162,10 @@ mod connection_tests {
             .unwrap();
         let updated = store.get_connection(&c.id).await.unwrap().unwrap();
         assert_eq!(updated.name, "Home Updated");
-        assert_eq!(updated.public_url.as_deref(), Some("https://homebox.example.com"));
+        assert_eq!(
+            updated.public_url.as_deref(),
+            Some("https://homebox.example.com")
+        );
         assert!(updated.enabled);
 
         // UpdateField::Clear clears public_url to None
@@ -1190,7 +1196,10 @@ mod connection_tests {
             .await
             .unwrap();
         let set_again = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(set_again.public_url.as_deref(), Some("https://new.example.com"));
+        assert_eq!(
+            set_again.public_url.as_deref(),
+            Some("https://new.example.com")
+        );
     }
 }
 
