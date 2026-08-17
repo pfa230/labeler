@@ -575,10 +575,7 @@ impl Fit {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutItem {
     Text {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<String>,
+        value: String,
         #[serde(flatten)]
         placement: Placement,
         font_size: FontSize,
@@ -592,10 +589,7 @@ pub enum LayoutItem {
         when: Option<BTreeMap<String, String>>,
     },
     Qr {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        value: Option<String>,
+        value: String,
         #[serde(flatten)]
         placement: Placement,
         #[serde(skip_serializing_if = "Option::is_none")]
