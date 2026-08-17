@@ -79,11 +79,11 @@ function stubFetch() {
 
 function renderWithProviders(
   ui: React.ReactElement,
-  options?: { template?: typeof detail | Record<string, unknown>; initialPath?: string },
+  options?: { template?: { id: string; [key: string]: unknown }; initialPath?: string },
 ) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const template = options?.template;
-  const initialPath = options?.initialPath ?? (template ? `/print/${(template as any).id}` : "/print");
+  const initialPath = options?.initialPath ?? (template ? `/print/${template.id}` : "/print");
 
   if (template) {
     const currentStub = fetchMock;
@@ -91,7 +91,7 @@ function renderWithProviders(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === "string" ? input : input.toString();
-        if (url.startsWith(`/api/templates/${(template as any).id}`)) {
+        if (url.startsWith(`/api/templates/${template.id}`)) {
           return new Response(JSON.stringify(template), {
             status: 200,
             headers: { "content-type": "application/json" },

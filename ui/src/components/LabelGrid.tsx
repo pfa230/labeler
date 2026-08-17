@@ -32,7 +32,7 @@ function DataEditCell({ row, column, onRowChange, onClose }: RenderEditCellProps
       autoFocus
       aria-label={`edit ${field}`}
       className="w-full bg-transparent px-2"
-      value={row.data[field] ?? ""}
+      value={row.data[field] !== undefined ? String(row.data[field]) : ""}
       onChange={(e) => onRowChange({ ...row, data: { ...row.data, [field]: e.target.value } })}
       onBlur={() => onClose(true)}
     />

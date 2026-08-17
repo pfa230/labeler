@@ -4,7 +4,7 @@ export interface ParamInputProps {
   name: string;
   spec: ParamSpec;
   value: ParamValue | undefined;
-  onChange: (value: any) => void;
+  onChange: (value: ParamValue) => void;
   disabled?: boolean;
   invalid?: boolean;
   isImage?: boolean;

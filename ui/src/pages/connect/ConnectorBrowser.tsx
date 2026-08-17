@@ -41,20 +41,16 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() =>
-    resource ? loadSavedColumnKeys(connectionId, resource.id, resource.columns) : new Set()
-  );
+  const [columnOverrides, setColumnOverrides] = useState<Record<string, Set<string>>>({});
+  const currentResourceKey = resource ? `${connectionId}:${resource.id}` : "";
+  const visibleKeys = useMemo(() => {
+    if (!resource) return new Set<string>();
+    if (columnOverrides[currentResourceKey]) return columnOverrides[currentResourceKey];
+    return loadSavedColumnKeys(connectionId, resource.id, resource.columns);
+  }, [connectionId, resource, currentResourceKey, columnOverrides]);
+
   const [columnsOpen, setColumnsOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (resource) {
-      const keys = loadSavedColumnKeys(connectionId, resource.id, resource.columns);
-      (async () => {
-        setVisibleKeys(keys);
-      })();
-    }
-  }, [connectionId, resource?.id, resource?.columns]);
 
   useEffect(() => {
     if (!columnsOpen) return;
@@ -74,6 +70,12 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
     };
   }, [columnsOpen]);
 
+  const setVisibleKeysForCurrent = (next: Set<string>) => {
+    if (!resource) return;
+    setColumnOverrides((prev) => ({ ...prev, [currentResourceKey]: next }));
+    saveColumnKeys(connectionId, resource.id, next);
+  };
+
   const toggleColumn = (key: string) => {
     if (!resource) return;
     const next = new Set(visibleKeys);
@@ -83,22 +85,19 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
     } else {
       next.add(key);
     }
-    setVisibleKeys(next);
-    saveColumnKeys(connectionId, resource.id, next);
+    setVisibleKeysForCurrent(next);
   };
 
   const showAllColumns = () => {
     if (!resource) return;
     const all = new Set(resource.columns.map((c) => c.key));
-    setVisibleKeys(all);
-    saveColumnKeys(connectionId, resource.id, all);
+    setVisibleKeysForCurrent(all);
   };
 
   const resetDefaultColumns = () => {
     if (!resource) return;
     const defaults = defaultColumnKeys(resource.columns);
-    setVisibleKeys(defaults);
-    saveColumnKeys(connectionId, resource.id, defaults);
+    setVisibleKeysForCurrent(defaults);
   };
 
   const visibleColumns = useMemo(() => {

@@ -1,3 +1,5 @@
+import type { ParamValue } from "../api/types";
+
 // Formalized row model for the reusable label grid. CSV is its first consumer (origin "csv");
 // M7's Homebox mapping fills origin "connector" + source. See the M5 design spec.
 export interface RowSource {
@@ -11,7 +13,7 @@ export interface LabelGridRow {
   id: string; // stable client row id (survives edits/duplication)
   origin: "csv" | "manual" | "connector";
   source?: RowSource; // set by M7; absent for csv/manual
-  data: Record<string, string>; // editable fields
+  data: Record<string, ParamValue>; // editable fields
   option: Record<string, string>; // per-row template options
   copyGroup?: string; // links rows produced by a duplicate
   validation: { field?: Record<string, string>; option?: Record<string, string> };
@@ -30,7 +32,7 @@ export function expandedCount(rowCount: number, copies: number): number {
 }
 
 export interface ResolvedLabel {
-  data: Record<string, string>;
+  data: Record<string, ParamValue>;
   option?: Record<string, string>;
 }
 

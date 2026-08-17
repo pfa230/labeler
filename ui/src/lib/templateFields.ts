@@ -1,4 +1,4 @@
-import type { LayoutItem, Options, ParamSpec } from "../api/types";
+import type { LayoutItem, Options, ParamSpec, ParamValue } from "../api/types";
 
 // Best-effort token parse of an interpolation string (NOT validation): `{field}` / `{vars.key}`,
 // honoring `{{`/`}}` escapes. Unmatched braces are ignored here (the backend rejects them at render time).
@@ -20,8 +20,8 @@ function tokens(s: string): string[] {
   return out;
 }
 
-export function defaultParamValues(params?: Record<string, ParamSpec>): Record<string, any> {
-  const data: Record<string, any> = {};
+export function defaultParamValues(params?: Record<string, ParamSpec>): Record<string, ParamValue> {
+  const data: Record<string, ParamValue> = {};
   if (!params) return data;
   for (const [name, spec] of Object.entries(params)) {
     if (spec.default !== undefined && spec.default !== null) {

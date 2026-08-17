@@ -5,11 +5,11 @@ import {
   referencedFields,
   singleLineTextFields,
 } from "../../lib/templateFields";
-import type { ParamSpec, TemplateDetail } from "../../api/types";
+import type { ParamSpec, ParamValue, TemplateDetail } from "../../api/types";
 import { ParamInput } from "../../components/ParamInput";
 
 export type FormValue = {
-  data: Record<string, any>;
+  data: Record<string, ParamValue>;
   option: Record<string, string>;
   printer?: string;
   startSlot: number;
@@ -44,7 +44,7 @@ export function FieldForm({
   const { data: printers } = usePrinters();
   const allPrinters = printers ?? [];
 
-  const setData = (field: string, v: any) =>
+  const setData = (field: string, v: ParamValue) =>
     onChange({ ...value, data: { ...value.data, [field]: v } });
   const setOption = (name: string, v: string) =>
     onChange({ ...value, option: { ...value.option, [name]: v } });
@@ -105,7 +105,7 @@ export function FieldForm({
 
       {!hasDeclaredParams &&
         fallbackFields.map((field, i) => {
-          const current = value.data[field] ?? "";
+          const current = value.data[field] !== undefined ? String(value.data[field]) : "";
           const invalid = current.length === 0;
           const noteId = truncatedSomewhere.has(field) ? `multiline-note-${i}` : undefined;
           const spec: ParamSpec = {
@@ -137,7 +137,7 @@ export function FieldForm({
 
       {hasDeclaredParams &&
         fallbackFields.map((field, i) => {
-          const current = value.data[field] ?? "";
+          const current = value.data[field] !== undefined ? String(value.data[field]) : "";
           const invalid = current.length === 0;
           const noteId = truncatedSomewhere.has(field) ? `multiline-note-fb-${i}` : undefined;
           const spec: ParamSpec = {

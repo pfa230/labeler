@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import type { ParamValue } from "../api/types";
 
 export interface PreviewInput {
   templateId: string;
   format: "single" | "sheet";   // the template's format type
-  data: Record<string, string>;
+  data: Record<string, ParamValue>;
   option?: Record<string, string>;
   startSlot?: number;
 }
@@ -11,7 +12,7 @@ export interface PreviewInput {
 function hasOpt(o?: Record<string, string>): o is Record<string, string> {
   return !!o && Object.keys(o).length > 0;
 }
-const sortObj = (o?: Record<string, string>) =>
+const sortObj = (o?: Record<string, ParamValue | string>) =>
   o ? Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b))) : null;
 
 export function previewKey(i: PreviewInput): string {

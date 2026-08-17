@@ -68,8 +68,8 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
       }) &&
       fields
         .filter((f) => !detail.params?.[f])
-        .every((f) => (value.data[f] ?? "").length > 0)
-    : fields.every((f) => (value.data[f] ?? "").length > 0);
+        .every((f) => (value.data[f] !== undefined ? String(value.data[f]) : "").length > 0)
+    : fields.every((f) => (value.data[f] !== undefined ? String(value.data[f]) : "").length > 0);
   const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
   const option = hasOptions ? reconciledOption : undefined;
   const startSlot = isSheet ? value.startSlot : undefined;

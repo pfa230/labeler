@@ -151,7 +151,7 @@ function Composer({
         spec?.default !== undefined ||
         spec?.type === "boolean" ||
         (spec?.type === "enum" && (spec.values?.length ?? 0) > 0);
-      if (!hasDefault && (row.data[f] ?? "").length === 0) field[f] = "required";
+      if (!hasDefault && (row.data[f] !== undefined ? String(row.data[f]) : "").length === 0) field[f] = "required";
     }
     return Object.keys(field).length ? { field } : {};
   };
