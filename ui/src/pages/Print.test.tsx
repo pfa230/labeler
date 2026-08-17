@@ -12,7 +12,7 @@ const detail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  layout: [{ type: "text", name: "message" }],
+  layout: [{ type: "text", value: "{message}" }],
 };
 
 const detail2 = {
@@ -22,7 +22,7 @@ const detail2 = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  layout: [{ type: "text", name: "message" }],
+  layout: [{ type: "text", value: "{message}" }],
 };
 
 const list = {

@@ -8,8 +8,8 @@ export type Options = Record<string, string[]>;
 
 // Layout items are tagged by `type`; only the fields the UI reads are typed.
 export type LayoutItem =
-  | { type: "text"; name?: string; value?: string; multiline?: boolean }
-  | { type: "qr"; name?: string; value?: string }
+  | { type: "text"; value: string; multiline?: boolean }
+  | { type: "qr"; value: string }
   | { type: "image"; name?: string; src?: string }
   | { type: "line" }
   | { type: "container"; option?: Record<string, string>; items: LayoutItem[] };
