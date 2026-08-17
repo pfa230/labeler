@@ -99,6 +99,39 @@ pub struct DisplayRow {
     pub url: Option<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, utoipa::ToSchema, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum FilterValue {
+    Single(String),
+    Multiple(Vec<String>),
+}
+
+impl FilterValue {
+    pub fn as_tokens(&self) -> Vec<String> {
+        match self {
+            FilterValue::Single(s) => vec![s.clone()],
+            FilterValue::Multiple(v) => v.clone(),
+        }
+    }
+
+    pub fn as_single_trimmed(&self, key: &str) -> Result<Option<String>, ConnectorError> {
+        match self {
+            FilterValue::Single(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(trimmed.to_string()))
+                }
+            }
+            FilterValue::Multiple(_) => Err(ConnectorError::InvalidFilter(format!(
+                "filter {} cannot have multiple values",
+                key
+            ))),
+        }
+    }
+}
+
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct BrowseParent {
     pub relationship: String,
@@ -109,7 +142,7 @@ pub struct BrowseParent {
 pub struct BrowseRequest {
     pub resource: String,
     #[serde(default)]
-    pub filters: BTreeMap<String, String>,
+    pub filters: BTreeMap<String, FilterValue>,
     #[serde(default)]
     pub parent: Option<BrowseParent>,
     #[serde(default)]
@@ -226,5 +259,28 @@ impl ConnectorRegistry {
             "homebox" => Some(&self.homebox),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filter_value_as_tokens() {
+        assert_eq!(FilterValue::Single("foo".into()).as_tokens(), vec!["foo"]);
+        assert_eq!(FilterValue::Multiple(vec!["foo".into(), "bar".into()]).as_tokens(), vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn filter_value_as_single_trimmed() {
+        let single = FilterValue::Single("  foo  ".into());
+        assert_eq!(single.as_single_trimmed("tag").unwrap(), Some("foo".into()));
+
+        let single_empty = FilterValue::Single("   ".into());
+        assert_eq!(single_empty.as_single_trimmed("tag").unwrap(), None);
+
+        let multi = FilterValue::Multiple(vec!["foo".into(), "bar".into()]);
+        assert!(matches!(multi.as_single_trimmed("tag"), Err(ConnectorError::InvalidFilter(_))));
     }
 }
