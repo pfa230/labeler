@@ -7,6 +7,11 @@ import {
   type ResourceSpec,
   type SelectedRow,
 } from "../../api/connectors";
+import {
+  defaultColumnKeys,
+  loadSavedColumnKeys,
+  saveColumnKeys,
+} from "./connectorColumns";
 
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
@@ -35,6 +40,74 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() =>
+    resource ? loadSavedColumnKeys(connectionId, resource.id, resource.columns) : new Set()
+  );
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (resource) {
+      const keys = loadSavedColumnKeys(connectionId, resource.id, resource.columns);
+      (async () => {
+        setVisibleKeys(keys);
+      })();
+    }
+  }, [connectionId, resource?.id, resource?.columns]);
+
+  useEffect(() => {
+    if (!columnsOpen) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
+        setColumnsOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setColumnsOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [columnsOpen]);
+
+  const toggleColumn = (key: string) => {
+    if (!resource) return;
+    const next = new Set(visibleKeys);
+    if (next.has(key)) {
+      if (next.size <= 1) return;
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    setVisibleKeys(next);
+    saveColumnKeys(connectionId, resource.id, next);
+  };
+
+  const showAllColumns = () => {
+    if (!resource) return;
+    const all = new Set(resource.columns.map((c) => c.key));
+    setVisibleKeys(all);
+    saveColumnKeys(connectionId, resource.id, all);
+  };
+
+  const resetDefaultColumns = () => {
+    if (!resource) return;
+    const defaults = defaultColumnKeys(resource.columns);
+    setVisibleKeys(defaults);
+    saveColumnKeys(connectionId, resource.id, defaults);
+  };
+
+  const visibleColumns = useMemo(() => {
+    if (!resource) return [];
+    const active = resource.columns.filter((c) => visibleKeys.has(c.key));
+    if (active.length > 0) return active;
+    const defaults = defaultColumnKeys(resource.columns);
+    return resource.columns.filter((c) => defaults.has(c.key));
+  }, [resource, visibleKeys]);
 
   const addTag = (raw: string) => {
     const trimmed = raw.trim();
@@ -177,7 +250,14 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
           <button
             key={r.id}
             type="button"
-            onClick={() => { setResourceId(r.id); setParent(undefined); setApplied({}); setFilterDraft({}); setTags([]); setPendingTag(""); }}
+            onClick={() => {
+              setResourceId(r.id);
+              setParent(undefined);
+              setApplied({});
+              setFilterDraft({});
+              setTags([]);
+              setPendingTag("");
+            }}
             className={`${buttonBase} border`}
             style={{ borderColor: "var(--border)", color: r.id === resourceId ? "var(--accent)" : "var(--ink)", background: r.id === resourceId ? "var(--accent-soft)" : "transparent" }}
           >
@@ -192,94 +272,161 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
         )}
       </div>
 
-      {resource && resource.filters.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-end gap-2">
-            {resource.filters.map((f) => {
-              if (f.key === "tag") {
-                return (
-                  <div key={f.key} className="flex flex-col gap-1">
-                    <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
-                    <div className="flex items-center gap-1">
+      {resource && (
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          {resource.filters.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-end gap-2">
+                {resource.filters.map((f) => {
+                  if (f.key === "tag") {
+                    return (
+                      <div key={f.key} className="flex flex-col gap-1">
+                        <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
+                        <div className="flex items-center gap-1">
+                          <input
+                            aria-label={f.label}
+                            placeholder="Add tag..."
+                            value={pendingTag}
+                            onChange={(e) => setPendingTag(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                addTag(pendingTag);
+                              }
+                            }}
+                            className={inputClass}
+                            style={inputStyle}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => addTag(pendingTag)}
+                            className={`${buttonBase} border`}
+                            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+                          >
+                            Add
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <label key={f.key} className="flex flex-col gap-1">
+                      <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
                       <input
                         aria-label={f.label}
-                        placeholder="Add tag..."
-                        value={pendingTag}
-                        onChange={(e) => setPendingTag(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            addTag(pendingTag);
-                          }
-                        }}
+                        value={filterDraft[f.key] ?? ""}
+                        onChange={(e) => setFilterDraft({ ...filterDraft, [f.key]: e.target.value })}
                         className={inputClass}
                         style={inputStyle}
                       />
-                      <button
-                        type="button"
-                        onClick={() => addTag(pendingTag)}
-                        className={`${buttonBase} border`}
-                        style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-                      >
-                        Add
-                      </button>
-                    </div>
-                  </div>
-                );
-              }
-              return (
-                <label key={f.key} className="flex flex-col gap-1">
-                  <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
-                  <input
-                    aria-label={f.label}
-                    value={filterDraft[f.key] ?? ""}
-                    onChange={(e) => setFilterDraft({ ...filterDraft, [f.key]: e.target.value })}
-                    className={inputClass}
-                    style={inputStyle}
-                  />
-                </label>
-              );
-            })}
-            <button
-              type="button"
-              onClick={handleApply}
-              className={`${buttonBase} border`}
-              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-            >
-              Apply
-            </button>
-            {(Object.keys(applied).length > 0 || Object.keys(filterDraft).length > 0 || tags.length > 0 || pendingTag !== "") && (
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className={`${buttonBase} border`}
-                style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-              >
-                Clear filters
-              </button>
-            )}
-          </div>
-          {tags.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
-                  style={{ borderColor: "var(--border)" }}
+                    </label>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={handleApply}
+                  className={`${buttonBase} border`}
+                  style={{ borderColor: "var(--border)", color: "var(--ink)" }}
                 >
-                  {tag}
+                  Apply
+                </button>
+                {(Object.keys(applied).length > 0 || Object.keys(filterDraft).length > 0 || tags.length > 0 || pendingTag !== "") && (
                   <button
                     type="button"
-                    aria-label={`Remove tag ${tag}`}
-                    onClick={() => removeTag(tag)}
-                    style={{ color: "var(--muted)" }}
+                    onClick={handleClearFilters}
+                    className={`${buttonBase} border`}
+                    style={{ borderColor: "var(--border)", color: "var(--ink)" }}
                   >
-                    ×
+                    Clear filters
                   </button>
-                </span>
-              ))}
+                )}
+              </div>
+              {tags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
+                      style={{ borderColor: "var(--border)" }}
+                    >
+                      {tag}
+                      <button
+                        type="button"
+                        aria-label={`Remove tag ${tag}`}
+                        onClick={() => removeTag(tag)}
+                        style={{ color: "var(--muted)" }}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+          ) : <div />}
+
+          <div ref={pickerRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setColumnsOpen((prev) => !prev)}
+              aria-haspopup="true"
+              aria-expanded={columnsOpen}
+              aria-label="Customize visible columns"
+              className={`${buttonBase} border flex items-center gap-1.5`}
+              style={{ borderColor: "var(--border)", color: "var(--ink)", background: "var(--surface)" }}
+            >
+              <span>Columns ({visibleColumns.length}/{resource.columns.length})</span>
+            </button>
+
+            {columnsOpen && (
+              <div
+                className="absolute right-0 top-full mt-1 z-30 min-w-[220px] max-w-[320px] rounded-md border shadow-lg flex flex-col gap-1 p-2"
+                style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+              >
+                <div className="flex items-center justify-between border-b pb-1.5 mb-1" style={{ borderColor: "var(--border)" }}>
+                  <span className="text-xs font-semibold" style={{ color: "var(--muted)" }}>Visible Columns</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={showAllColumns}
+                      className="text-xs underline hover:opacity-80"
+                      style={{ color: "var(--accent)" }}
+                    >
+                      All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetDefaultColumns}
+                      className="text-xs underline hover:opacity-80"
+                      style={{ color: "var(--muted)" }}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-64 overflow-y-auto flex flex-col gap-0.5">
+                  {resource.columns.map((c) => {
+                    const isChecked = visibleKeys.has(c.key);
+                    const isOnly = isChecked && visibleKeys.size === 1;
+                    return (
+                      <label
+                        key={c.key}
+                        className="flex items-center gap-2 px-2 py-1 rounded text-xs cursor-pointer hover:bg-[var(--accent-soft)]"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          disabled={isOnly}
+                          onChange={() => toggleColumn(c.key)}
+                        />
+                        <span className="truncate">{c.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -292,7 +439,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
           <thead>
             <tr>
               <th className={th} style={{ color: "var(--muted)" }}></th>
-              {resource.columns.map((c) => (
+              {visibleColumns.map((c) => (
                 <th key={c.key} className={th} style={{ color: "var(--muted)" }}>{c.label}</th>
               ))}
               {rel && <th className={th} style={{ color: "var(--muted)" }}></th>}
@@ -310,7 +457,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
                     onChange={() => toggle(row)}
                   />
                 </td>
-                {resource.columns.map((c) => (
+                {visibleColumns.map((c) => (
                   <td key={c.key} className={td}>
                     {c.key === "name" && row.url ? (
                       <a href={row.url} target="_blank" rel="noopener" className="underline" style={{ color: "var(--ink)" }}>
