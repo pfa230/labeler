@@ -1908,8 +1908,7 @@ mod tests {
         };
         let images = RefCell::new(super::ImageCollector::default());
         let item = LayoutItem::Text {
-            name: None,
-            value: Some(text.to_string()),
+            value: text.to_string(),
             placement: Placement::sized(
                 Position([0.0, 0.0]),
                 Size([
@@ -2055,8 +2054,7 @@ mod tests {
                 super::LengthMode::Fixed,
             );
             let item = LayoutItem::Text {
-                name: None,
-                value: Some("Widget A-42 Storage".to_string()),
+                value: "Widget A-42 Storage".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([
@@ -2127,8 +2125,7 @@ mod tests {
         );
 
         let auto_text = LayoutItem::Text {
-            name: None,
-            value: Some("hello".to_string()),
+            value: "hello".to_string(),
             placement: Placement::sized(
                 Position([0.0, 0.0]),
                 Size([
@@ -2255,8 +2252,7 @@ mod tests {
     #[test]
     fn measuring_a_fixed_width_text_ignores_its_auto_height() {
         let item = LayoutItem::Text {
-            name: None,
-            value: Some("hi".to_string()),
+            value: "hi".to_string(),
             placement: Placement {
                 at: Position([0.0, 10.0]),
                 extent: crate::models::Extent::Size(Size([
@@ -2349,8 +2345,7 @@ mod tests {
     #[test]
     fn max_w_caps_a_dynamic_container_during_measurement() {
         let child = LayoutItem::Text {
-            name: None,
-            value: Some("a string far wider than any five millimetre cap".to_string()),
+            value: "a string far wider than any five millimetre cap".to_string(),
             placement: Placement {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
@@ -2423,8 +2418,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("x".to_string()),
+                value: "x".to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
@@ -2474,8 +2468,7 @@ mod tests {
         );
         let source = ctx
             .render_items(&[LayoutItem::Text {
-                name: None,
-                value: Some("x".to_string()),
+                value: "x".to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
@@ -2524,8 +2517,7 @@ mod tests {
                 super::LengthMode::Fixed,
             );
             ctx.render_items(&[LayoutItem::Text {
-                name: None,
-                value: Some("x".to_string()),
+                value: "x".to_string(),
                 placement: Placement {
                     at: Position(at),
                     extent: crate::models::Extent::Size(size),
@@ -2696,8 +2688,7 @@ mod tests {
         let long = "a string long enough to have a natural width worth measuring";
         let (text_extent, _) = measured_extent_of(
             LayoutItem::Text {
-                name: None,
-                value: Some(long.to_string()),
+                value: long.to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
@@ -2721,8 +2712,7 @@ mod tests {
         // Qr: an uncapped auto-width qr still fills the remaining budget.
         let (qr_extent, _) = measured_extent_of(
             LayoutItem::Qr {
-                name: None,
-                value: Some("abc".to_string()),
+                value: "abc".to_string(),
                 placement: Placement {
                     at: Position([10.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
@@ -2744,8 +2734,7 @@ mod tests {
         // the inner budget, or the assertion proves nothing. An empty container contributes `at_x`
         // whatever the budget was, including a budget wrongly capped to zero.
         let child = LayoutItem::Text {
-            name: None,
-            value: Some(long.to_string()),
+            value: long.to_string(),
             placement: Placement {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
@@ -2823,8 +2812,7 @@ mod tests {
 
     fn to_text(at: [f32; 2], to: [f32; 2], value: &str) -> LayoutItem {
         LayoutItem::Text {
-            name: None,
-            value: Some(value.to_string()),
+            value: value.to_string(),
             placement: Placement {
                 at: Position(at),
                 extent: crate::models::Extent::To(Position(to)),
@@ -2887,8 +2875,7 @@ mod tests {
         let long = "a string far too long to fit inside twenty millimetres of tape";
         fn text(max_w: Option<f32>, value: &str) -> LayoutItem {
             LayoutItem::Text {
-                name: None,
-                value: Some(value.to_string()),
+                value: value.to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
@@ -2925,8 +2912,7 @@ mod tests {
     #[test]
     fn max_w_caps_an_auto_width_qr_during_measurement() {
         let qr = |max_w: Option<f32>| LayoutItem::Qr {
-            name: None,
-            value: Some("abc".to_string()),
+            value: "abc".to_string(),
             placement: Placement {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
@@ -2957,8 +2943,7 @@ mod tests {
     fn an_edge_relative_at_y_is_resolved_before_the_measure_height() {
         fn wrapped(at: [f32; 2], to: [f32; 2]) -> LayoutItem {
             LayoutItem::Text {
-                name: None,
-                value: Some("Some words that will wrap across several lines".to_string()),
+                value: "Some words that will wrap across several lines".to_string(),
                 placement: Placement {
                     at: Position(at),
                     extent: crate::models::Extent::To(Position(to)),
@@ -3028,8 +3013,7 @@ mod tests {
     fn an_edge_relative_to_qr_contributes_nothing() {
         let (extent, pushed) = measured_extent_of(
             LayoutItem::Qr {
-                name: None,
-                value: Some("payload".to_string()),
+                value: "payload".to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::To(Position([-0.0, 8.0])),
@@ -3052,8 +3036,7 @@ mod tests {
     fn an_edge_relative_at_x_on_a_qr_contributes_only_its_inset() {
         let (extent, pushed) = measured_extent_of(
             LayoutItem::Qr {
-                name: None,
-                value: Some("payload".to_string()),
+                value: "payload".to_string(),
                 placement: Placement {
                     at: Position([-5.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
@@ -3411,8 +3394,7 @@ mod tests {
         let template = rotated_container_template(
             90.0,
             vec![LayoutItem::Text {
-                name: None,
-                value: Some("VERTICAL".to_string()),
+                value: "VERTICAL".to_string(),
                 placement: Placement::sized(
                     Position([2.0, 2.0]),
                     Size([SizeValue::fixed(30.0), SizeValue::fixed(8.0)]),
@@ -3466,8 +3448,7 @@ mod tests {
         let template = rotated_container_template(
             90.0,
             vec![LayoutItem::Qr {
-                name: None,
-                value: Some("X".to_string()),
+                value: "X".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(14.0), SizeValue::fixed(14.0)]),
@@ -3490,8 +3471,7 @@ mod tests {
     fn rotation_ccw_corner_mapping_r180_and_r270() {
         let qr = || {
             vec![LayoutItem::Qr {
-                name: None,
-                value: Some("X".to_string()),
+                value: "X".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(14.0), SizeValue::fixed(14.0)]),
@@ -3549,8 +3529,7 @@ mod tests {
             frame: None,
             padding: Padding::ZERO,
             items: vec![LayoutItem::Text {
-                name: None,
-                value: Some("inner".to_string()),
+                value: "inner".to_string(),
                 placement: Placement::sized(
                     Position([1.0, 1.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
@@ -3635,8 +3614,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some(text.to_string()),
+                value: text.to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::Auto(AutoSize::Auto), SizeValue::fixed(HEIGHT_MM)]),
@@ -3987,8 +3965,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("message".to_string()),
-                value: None,
+                value: "{message}".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
@@ -4086,8 +4063,7 @@ mod tests {
                 },
             )]),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("message".to_string()),
-                value: None,
+                value: "{message}".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(5.0)]),
@@ -4143,8 +4119,7 @@ mod tests {
             )]),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    name: Some("message".to_string()),
-                    value: None,
+                    value: "{message}".to_string(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
@@ -4156,8 +4131,7 @@ mod tests {
                     when: None,
                 },
                 LayoutItem::Qr {
-                    name: Some("code".to_string()),
-                    value: None,
+                    value: "{code}".to_string(),
                     placement: Placement::sized(
                         Position([20.0, 0.0]),
                         Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
@@ -4223,8 +4197,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("message".to_string()),
-                value: None,
+                value: "{message}".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
@@ -4485,8 +4458,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("message".to_string()),
-                value: None,
+                value: "{message}".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(5.0)]),
@@ -4648,8 +4620,7 @@ mod tests {
             params: BTreeMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    name: None,
-                    value: Some("Item {id}".to_string()),
+                    value: "Item {id}".to_string(),
                     placement: Placement::sized(
                         Position([0.0, 10.0]),
                         Size([SizeValue::fixed(40.0), SizeValue::fixed(8.0)]),
@@ -4661,8 +4632,7 @@ mod tests {
                     when: None,
                 },
                 LayoutItem::Qr {
-                    name: None,
-                    value: Some("{vars.qr_base_url}/{id}".to_string()),
+                    value: "{vars.qr_base_url}/{id}".to_string(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
@@ -4700,8 +4670,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("{x}".to_string()),
+                value: "{x}".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 6.0]),
                     Size([SizeValue::fixed(60.0), SizeValue::fixed(8.0)]),
@@ -4781,8 +4750,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("hi".into()),
+                value: "hi".into(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
@@ -4814,8 +4782,7 @@ mod tests {
             params: BTreeMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    name: Some("title".into()),
-                    value: None,
+                    value: "{title}".into(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
@@ -4827,8 +4794,7 @@ mod tests {
                     when: None,
                 },
                 LayoutItem::Qr {
-                    name: None,
-                    value: Some("{url} {vars.base} {datetime} {datetime.short_date}".into()),
+                    value: "{url} {vars.base} {datetime} {datetime.short_date}".into(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
@@ -4888,8 +4854,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("{} {real}".into()),
+                value: "{} {real}".into(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(40.0), SizeValue::fixed(20.0)]),
@@ -5302,8 +5267,7 @@ mod tests {
             super::LengthMode::Fixed,
         );
         let item = LayoutItem::Text {
-            name: None,
-            value: Some("x".to_string()),
+            value: "x".to_string(),
             placement: Placement::sized(
                 Position([-20.0, 0.0]),
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
@@ -5374,8 +5338,7 @@ mod tests {
             params: BTreeMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    name: None,
-                    value: Some("hi".to_string()),
+                    value: "hi".to_string(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
                         Size([
@@ -5533,8 +5496,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("v".to_string()),
-                value: None,
+                value: "{v}".to_string(),
                 placement: Placement {
                     at: Position([12.0, 0.0]),
                     extent: crate::models::Extent::To(Position([-0.0, 12.0])),
@@ -5584,8 +5546,7 @@ mod tests {
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Qr {
-                name: None,
-                value: Some("payload".to_string()),
+                value: "payload".to_string(),
                 placement: Placement {
                     at: Position([x, 0.0]),
                     extent: crate::models::Extent::To(Position([-0.0, 12.0])),
@@ -5640,8 +5601,7 @@ mod tests {
         );
         let source = ctx
             .render_items(&[LayoutItem::Text {
-                name: None,
-                value: Some("x".to_string()),
+                value: "x".to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::To(Position([-0.0, 12.0])),

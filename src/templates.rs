@@ -1486,7 +1486,7 @@ format:
   height: 25.0
 layout:
   - type: text
-    name: message
+    value: "{message}"
     at: [0.0, 0.0]
     size: [10.0, 5.0]
     font_size: 10.0
@@ -1578,8 +1578,7 @@ layout: []
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("value".to_string()),
-                value: None,
+                value: "value".to_string(),
                 placement: crate::models::Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
@@ -1622,30 +1621,24 @@ layout: []
                 },
             )]),
             layout: Layout::Items(vec![
-                LayoutItem::Text {
-                    name: Some("value".to_string()),
-                    value: None,
+                LayoutItem::Image {
+                    name: Some("logo".to_string()),
+                    src: None,
                     placement: crate::models::Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(1.0), SizeValue::fixed(1.0)]),
                     ),
-                    font_size: FontSize::Fixed(10.0),
-                    font_weight: None,
-                    multiline: false,
-                    alignment: Alignment::default(),
+                    fit: crate::models::Fit::Contain,
                     when: None,
                 },
-                LayoutItem::Text {
-                    name: Some("value".to_string()),
-                    value: None,
+                LayoutItem::Image {
+                    name: Some("logo".to_string()),
+                    src: None,
                     placement: crate::models::Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(1.0), SizeValue::fixed(1.0)]),
                     ),
-                    font_size: FontSize::Fixed(10.0),
-                    font_weight: None,
-                    multiline: false,
-                    alignment: Alignment::default(),
+                    fit: crate::models::Fit::Contain,
                     when: None,
                 },
             ]),
@@ -1656,48 +1649,85 @@ layout: []
     }
 
     #[test]
-    fn validate_rejects_duplicate_name_across_item_types() {
+    fn parse_rejects_text_with_name() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 10
+  height: 10
+layout:
+  - type: text
+    name: bad_name
+    at: [0, 0]
+    size: [10, 5]
+    font_size: 8
+"#;
+        assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_text_value() {
         let template = TemplateDefinition {
-            id: "dup2".to_string(),
-            name: "dup2".to_string(),
-            description: "dup2".to_string(),
+            id: "empty_text".to_string(),
+            name: "Empty Text".to_string(),
+            description: "test".to_string(),
             unit: "mm".to_string(),
-            dpi: 300,
+            dpi: 200,
             format: TemplateFormat::Single {
                 width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(20.0).into(),
+                height: Dimension::Fixed(10.0).into(),
                 media_width: None,
             },
             params: BTreeMap::new(),
-            layout: Layout::Items(vec![
-                LayoutItem::Text {
-                    name: Some("value".to_string()),
-                    value: None,
-                    placement: crate::models::Placement::sized(
-                        Position([0.0, 0.0]),
-                        Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
-                    ),
-                    font_size: FontSize::Fixed(10.0),
-                    font_weight: None,
-                    multiline: false,
-                    alignment: Alignment::default(),
-                    when: None,
-                },
-                LayoutItem::Image {
-                    name: Some("value".to_string()),
-                    src: None,
-                    placement: crate::models::Placement::sized(
-                        Position([0.0, 5.0]),
-                        Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
-                    ),
-                    fit: crate::models::Fit::Contain,
-                    when: None,
-                },
-            ]),
+            layout: Layout::Items(vec![LayoutItem::Text {
+                value: "".to_string(),
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
+                ),
+                font_size: FontSize::Fixed(8.0),
+                font_weight: None,
+                multiline: false,
+                alignment: Alignment::default(),
+                when: None,
+            }]),
             version: None,
         };
         let err = template.validate().expect_err("expected error");
-        assert!(err.contains("duplicate layout item name"));
+        assert_eq!(err, "text value must not be empty");
+    }
+
+    #[test]
+    fn validate_rejects_empty_qr_value() {
+        let template = TemplateDefinition {
+            id: "empty_qr".to_string(),
+            name: "Empty Qr".to_string(),
+            description: "test".to_string(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(20.0).into(),
+                height: Dimension::Fixed(10.0).into(),
+                media_width: None,
+            },
+            params: BTreeMap::new(),
+            layout: Layout::Items(vec![LayoutItem::Qr {
+                value: "".to_string(),
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
+                ),
+                params: None,
+                when: None,
+            }]),
+            version: None,
+        };
+        let err = template.validate().expect_err("expected error");
+        assert_eq!(err, "qr value must not be empty");
     }
 
     #[test]
@@ -1803,8 +1833,7 @@ layout: []
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("hello".to_string()),
+                value: "hello".to_string(),
                 placement: crate::models::Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(8.0), SizeValue::fixed(6.0)]),
@@ -1881,8 +1910,7 @@ layout: []
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("hello".to_string()),
+                value: "hello".to_string(),
                 placement: crate::models::Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(8.0), SizeValue::fixed(6.0)]),
@@ -1918,8 +1946,7 @@ layout: []
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("hello".to_string()),
+                value: "hello".to_string(),
                 placement: crate::models::Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(8.0), SizeValue::fixed(6.0)]),
@@ -1952,8 +1979,7 @@ layout: []
             },
             params: BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: None,
-                value: Some("hello".to_string()),
+                value: "hello".to_string(),
                 placement: crate::models::Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(40.0), SizeValue::fixed(6.0)]),
