@@ -134,7 +134,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     value: raw.value,
                     placement: raw.placement.into_placement("text", None)?,
                     font_size: raw.font_size,
-                    font_weight: raw.font_weight.map(Into::into),
+                    font_weight: raw.font_weight,
                     multiline: raw.multiline,
                     alignment: raw.alignment,
                     when: raw.when,

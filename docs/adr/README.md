@@ -20,7 +20,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0007](0007-printer-architecture-and-transport-model.md) | Printer architecture and transport model | Accepted (record shape superseded by [0042](0042-remove-printer-enabled.md)) |
 | [0008](0008-ui-delivery.md) | Web UI delivery | Accepted |
 | [0009](0009-image-source-model.md) | Image source model | Accepted |
-| [0010](0010-variable-interpolation-layer.md) | Variable interpolation layer | Accepted |
+| [0010](0010-variable-interpolation-layer.md) | Variable interpolation layer | Accepted (dual-binding superseded by [0055](0055-standardize-on-value-interpolation.md)) |
 | [0011](0011-unified-batch-endpoint.md) | Unified batch render/print endpoint | Accepted |
 | [0012](0012-job-options.md) | Job options as format-intrinsic batch parameters | Accepted |
 | [0013](0013-render-print-ux.md) | Render & Print UX decisions | Accepted |
@@ -65,6 +65,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0052](0052-error-reason-discriminator.md) | A `details.reason` discriminator for `AppError` | Accepted |
 | [0053](0053-max-bounds-cap.md) | `max_w`/`max_h` cap an `auto` size, not substitute for its fallback | Accepted |
 | [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Accepted |
+| [0055](0055-standardize-on-value-interpolation.md) | Standardize on value interpolation for text and QR items | Accepted |
 
 ## Adding an ADR
 
