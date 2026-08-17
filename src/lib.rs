@@ -1547,7 +1547,7 @@ format:
   height: 10.0
 layout:
   - type: text
-    name: msg
+    value: "{{msg}}"
     at: [0.0, 0.0]
     size: [20.0, 5.0]
     font_size: 10.0

@@ -12,7 +12,7 @@ format:
   media_width: 24.0
 layout:
   - type: text
-    name: title
+    value: "{title}"
     at: [1.5, 9.6]
     size: [auto, 7.5]
     max_w: 117.0
@@ -24,7 +24,7 @@ layout:
       horizontal: left
       vertical: center
   - type: text
-    name: subtitle
+    value: "{subtitle}"
     at: [1.5, 1.5]
     size: [auto, 7.0]
     max_w: 117.0
