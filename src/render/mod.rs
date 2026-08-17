@@ -4,16 +4,16 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, DynamicDimension, DynamicValue, Extent, Fit, FontSize, LabelInput, Layout,
-    LayoutItem, Placement, Point, Position, Rotation, SizeValue, TemplateFormat,
+    resolve_coord, DynamicDimension, Extent, Fit, FontSize, LabelInput, Layout, LayoutItem,
+    Placement, Point, Position, Rotation, SizeValue, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::TemplateDefinition;
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, fit_text_auto_length,
     fit_text_to_box, format_length, interpolate, parse_image_data_uri, resolve_dimension,
-    resolve_image_asset, to_nonbreaking, to_page_coords, typst_alignment, typst_font_options,
-    value_to_string, MeasuredText,
+    resolve_dynamic_value_f32, resolve_dynamic_value_u16, resolve_image_asset, to_nonbreaking,
+    to_page_coords, typst_alignment, typst_font_options, value_to_string, MeasuredText,
 };
 use serde_json::Value as JsonValue;
 use std::cell::{Cell, RefCell};
@@ -21,6 +21,179 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use typst_as_lib::TypstEngine;
 use typst_layout::PagedDocument;
+
+/// Resolve parameters by merging request data, explicit option selections, and template parameter defaults.
+pub fn resolve_parameters(
+    template: &TemplateDefinition,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+) -> Result<HashMap<String, JsonValue>, AppError> {
+    let mut resolved = data.clone();
+
+    if let Some(opt) = option {
+        for (k, v) in opt {
+            if !resolved.contains_key(k) {
+                resolved.insert(k.clone(), JsonValue::String(v.clone()));
+            }
+        }
+    }
+
+    for (name, spec) in &template.params {
+        match resolved.get(name) {
+            Some(val) => match &spec.param_type {
+                crate::models::ParamType::Enum { values } => {
+                    let s = match val {
+                        JsonValue::String(s) => s.clone(),
+                        other => value_to_string(other),
+                    };
+                    if !values.contains(&s) {
+                        let mut selection = BTreeMap::new();
+                        selection.insert(name.clone(), s);
+                        let mut allowed = BTreeMap::new();
+                        allowed.insert(name.clone(), values.clone());
+                        return Err(AppError::invalid_option_value(&selection, &allowed));
+                    }
+                    resolved.insert(name.clone(), JsonValue::String(s));
+                }
+                crate::models::ParamType::Boolean => {
+                    let b = match val {
+                        JsonValue::Bool(b) => *b,
+                        JsonValue::String(s) => {
+                            let trimmed = s.trim();
+                            if trimmed == "true" || trimmed == "1" {
+                                true
+                            } else if trimmed == "false" || trimmed == "0" {
+                                false
+                            } else {
+                                return Err(AppError::invalid_request(
+                                    Reason::RequestBodyInvalid,
+                                    format!("parameter '{name}' is not a valid boolean"),
+                                ));
+                            }
+                        }
+                        JsonValue::Number(n) => {
+                            if n.as_i64() == Some(1) {
+                                true
+                            } else if n.as_i64() == Some(0) {
+                                false
+                            } else {
+                                return Err(AppError::invalid_request(
+                                    Reason::RequestBodyInvalid,
+                                    format!("parameter '{name}' is not a valid boolean"),
+                                ));
+                            }
+                        }
+                        _ => {
+                            return Err(AppError::invalid_request(
+                                Reason::RequestBodyInvalid,
+                                format!("parameter '{name}' is not a valid boolean"),
+                            ));
+                        }
+                    };
+                    resolved.insert(name.clone(), JsonValue::Bool(b));
+                }
+                crate::models::ParamType::Integer => {
+                    let i = match val {
+                        JsonValue::Number(n) => n
+                            .as_i64()
+                            .or_else(|| n.as_f64().map(|f| f.round() as i64))
+                            .ok_or_else(|| {
+                                AppError::invalid_request(
+                                    Reason::RequestBodyInvalid,
+                                    format!("parameter '{name}' is not a valid integer"),
+                                )
+                            })?,
+                        JsonValue::String(s) => s.trim().parse::<i64>().map_err(|_| {
+                            AppError::invalid_request(
+                                Reason::RequestBodyInvalid,
+                                format!("parameter '{name}' is not a valid integer"),
+                            )
+                        })?,
+                        _ => {
+                            return Err(AppError::invalid_request(
+                                Reason::RequestBodyInvalid,
+                                format!("parameter '{name}' is not a valid integer"),
+                            ));
+                        }
+                    };
+                    resolved.insert(name.clone(), serde_json::json!(i));
+                }
+                crate::models::ParamType::Length | crate::models::ParamType::Number => {
+                    let f = match val {
+                        JsonValue::Number(n) => n.as_f64().map(|f| f as f32).ok_or_else(|| {
+                            AppError::invalid_request(
+                                Reason::RequestBodyInvalid,
+                                format!("parameter '{name}' is not a valid number"),
+                            )
+                        })?,
+                        JsonValue::String(s) => {
+                            let trimmed = s.trim();
+                            let num_str = trimmed
+                                .strip_suffix("mm")
+                                .or_else(|| trimmed.strip_suffix("in"))
+                                .unwrap_or(trimmed);
+                            num_str.trim().parse::<f32>().map_err(|_| {
+                                AppError::invalid_request(
+                                    Reason::RequestBodyInvalid,
+                                    format!("parameter '{name}' is not a valid number"),
+                                )
+                            })?
+                        }
+                        _ => {
+                            return Err(AppError::invalid_request(
+                                Reason::RequestBodyInvalid,
+                                format!("parameter '{name}' is not a valid number"),
+                            ));
+                        }
+                    };
+                    resolved.insert(name.clone(), serde_json::json!(f));
+                }
+                crate::models::ParamType::String { .. } => {}
+            },
+            None => {
+                if let Some(default_val) = &spec.default {
+                    let json_val = match default_val {
+                        crate::models::ParamValue::String(s) => JsonValue::String(s.clone()),
+                        crate::models::ParamValue::Float(f) => serde_json::json!(f),
+                        crate::models::ParamValue::Integer(i) => serde_json::json!(i),
+                        crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
+                    };
+                    resolved.insert(name.clone(), json_val);
+                } else {
+                    match &spec.param_type {
+                        crate::models::ParamType::Boolean => {
+                            resolved.insert(name.clone(), JsonValue::Bool(false));
+                        }
+                        crate::models::ParamType::Enum { values } => {
+                            if let Some(first) = values.first() {
+                                resolved.insert(name.clone(), JsonValue::String(first.clone()));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(resolved)
+}
+
+fn check_dimension_limit(
+    val: f32,
+    unit: &str,
+    max_dim_mm: f32,
+    label: &str,
+) -> Result<(), AppError> {
+    let val_mm = if unit == "in" { val * 25.4 } else { val };
+    if !val_mm.is_finite() || val_mm <= 0.0 || val_mm > max_dim_mm {
+        return Err(AppError::unsupported_layout_item(
+            Reason::DimensionExceedsLimit,
+            format!("{label} {val} {unit} exceeds limit of {max_dim_mm} mm"),
+        ));
+    }
+    Ok(())
+}
 
 /// Typst 0.15's `typst_render::render` takes `&RenderOptions` instead of a bare pixels-per-point
 /// scalar; build one carrying the requested scale (bleed off, matching the previous behavior).
@@ -104,20 +277,31 @@ fn compile_label_doc(
 ) -> Result<PagedDocument, AppError> {
     let unit = &template.unit;
     let selected_option = normalize_option(template, option)?;
+    let resolved_data = resolve_parameters(template, data, selected_option)?;
     let items = select_layout_items(template)?;
     let images = RefCell::new(ImageCollector::default());
 
+    let max_dim_mm = crate::settings::resolve_max_label_dimension_mm_from(
+        env.settings
+            .get(crate::settings::MAX_LABEL_DIMENSION_MM)
+            .cloned(),
+    )
+    .unwrap_or(crate::settings::DEFAULT_MAX_LABEL_DIMENSION_MM);
+
     // Resolve initial width/height; Dynamic single may be overridden after measurement.
     let (mut width_units, height_units) = match &template.format {
-        TemplateFormat::Single { width, height, .. } => {
-            (resolve_dimension(width)?, resolve_dimension(height)?)
-        }
+        TemplateFormat::Single { width, height, .. } => (
+            resolve_dimension(width, &resolved_data)?,
+            resolve_dimension(height, &resolved_data)?,
+        ),
         TemplateFormat::Sheet {
             label_width,
             label_height,
             ..
         } => (*label_width, *label_height),
     };
+
+    check_dimension_limit(height_units, unit, max_dim_mm, "height")?;
 
     // For dynamic-width single templates, run a measurement pass and clamp the page width.
     let measured: Vec<MeasuredText>;
@@ -128,28 +312,26 @@ fn compile_label_doc(
         ..
     } = &template.format
     {
-        let max_w = match max {
-            Some(DynamicValue::Literal(w)) => *w,
-            _ => {
-                return Err(AppError::unsupported_format(
-                    "dynamic single width requires max",
-                ))
-            }
-        };
-        let min_w = match min {
-            Some(DynamicValue::Literal(w)) => *w,
-            _ => {
-                return Err(AppError::unsupported_format(
-                    "dynamic single width requires min",
-                ))
-            }
-        };
+        let max_w = max
+            .as_ref()
+            .map(|v| resolve_dynamic_value_f32(v, &resolved_data))
+            .transpose()?
+            .ok_or_else(|| AppError::unsupported_format("dynamic single width requires max"))?;
+        let min_w = min
+            .as_ref()
+            .map(|v| resolve_dynamic_value_f32(v, &resolved_data))
+            .transpose()?
+            .ok_or_else(|| AppError::unsupported_format("dynamic single width requires min"))?;
+
+        check_dimension_limit(min_w, unit, max_dim_mm, "width min")?;
+        check_dimension_limit(max_w, unit, max_dim_mm, "width max")?;
+
         let mut m: Vec<MeasuredText> = Vec::new();
         {
             let probe = RenderContext::new(
                 (max_w, height_units),
                 unit,
-                data,
+                &resolved_data,
                 selected_option,
                 env,
                 &images,
@@ -161,6 +343,7 @@ fn compile_label_doc(
         measured = m;
         cursor_cell = Cell::new(0usize);
     } else {
+        check_dimension_limit(width_units, unit, max_dim_mm, "width")?;
         measured = Vec::new();
         cursor_cell = Cell::new(0usize);
     }
@@ -204,7 +387,7 @@ fn compile_label_doc(
     let context = RenderContext::new(
         (width_units, height_units),
         unit,
-        data,
+        &resolved_data,
         selected_option,
         env,
         &images,
@@ -356,6 +539,18 @@ pub fn render_sheet_pages(
     let unit = &template.unit;
     let items = select_layout_items(template)?;
 
+    let max_dim_mm = crate::settings::resolve_max_label_dimension_mm_from(
+        env.settings
+            .get(crate::settings::MAX_LABEL_DIMENSION_MM)
+            .cloned(),
+    )
+    .unwrap_or(crate::settings::DEFAULT_MAX_LABEL_DIMENSION_MM);
+
+    check_dimension_limit(page_width_units, unit, max_dim_mm, "paper width")?;
+    check_dimension_limit(page_height_units, unit, max_dim_mm, "paper height")?;
+    check_dimension_limit(*label_width, unit, max_dim_mm, "label width")?;
+    check_dimension_limit(*label_height, unit, max_dim_mm, "label height")?;
+
     let slots_per_page = positions.len();
     let mut placements: Vec<(usize, usize)> = Vec::with_capacity(labels.len());
     let mut slot = start_slot;
@@ -388,10 +583,23 @@ pub fn render_sheet_pages(
                 continue;
             }
         };
+        let resolved_data = match resolve_parameters(template, &lbl.data, selected_option) {
+            Ok(data) => data,
+            Err(err) => {
+                failures.push(crate::errors::BatchFailure {
+                    index: idx,
+                    code: err.code(),
+                    reason: err.reason(),
+                    message: err.message_text(),
+                });
+                rendered.push(String::new());
+                continue;
+            }
+        };
         let context = RenderContext::new(
             (*label_width, *label_height),
             unit,
-            &lbl.data,
+            &resolved_data,
             selected_option,
             &env,
             &images,
@@ -627,6 +835,23 @@ impl<'a> RenderContext<'a> {
         matches!(self.mode, LengthMode::Dynamic(_))
     }
 
+    fn is_item_active(&self, item: &LayoutItem) -> bool {
+        if let Some(when) = item.when() {
+            when.iter().all(|(param_name, expected_val)| {
+                if let Some(val) = self.data.get(param_name) {
+                    let val_str = value_to_string(val);
+                    &val_str == expected_val
+                } else if let Some(selected) = self.selected_option {
+                    selected.get(param_name) == Some(expected_val)
+                } else {
+                    false
+                }
+            })
+        } else {
+            true
+        }
+    }
+
     fn auto_length(&self) -> Option<&AutoLength<'a>> {
         match &self.mode {
             LengthMode::Dynamic(al) => Some(al),
@@ -708,6 +933,9 @@ impl<'a> RenderContext<'a> {
     ) -> Result<f32, AppError> {
         let mut extent = 0.0f32;
         for item in items {
+            if !self.is_item_active(item) {
+                continue;
+            }
             // Clause 1: a right-anchored item cannot define the width it is anchored to. Its inset
             // is the narrowest label it fits on, and that is all it can say. Skipping the item here
             // also means it pushes no MeasuredText, which `render_text_item` must mirror exactly.
@@ -726,20 +954,12 @@ impl<'a> RenderContext<'a> {
             // pushed and fail with an auto-length cursor mismatch.
             if let LayoutItem::Container {
                 placement,
-                when,
                 padding,
                 items: children,
                 ..
             } = item
             {
                 if placement.at.x().is_sign_negative() {
-                    if let Some(cond) = when {
-                        if let Some(sel) = self.selected_option {
-                            if !cond.iter().all(|(n, v)| sel.get(n) == Some(v)) {
-                                continue;
-                            }
-                        }
-                    }
                     let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
                     self.measure_container_footprint(placement, at_y, padding, children, out)?;
                     extent = extent.max(-placement.at.x());
@@ -761,8 +981,8 @@ impl<'a> RenderContext<'a> {
                     // Same weight the render pass will use: this pre-pass decides the auto width, so
                     // measuring it unweighted would size the box for text that renders wider.
                     let weight = match font_weight {
-                        Some(DynamicValue::Literal(w)) => *w,
-                        _ => 400,
+                        Some(dyn_val) => resolve_dynamic_value_u16(dyn_val, self.data)?,
+                        None => 400,
                     };
                     // `at.y` may itself be edge-relative (measured from the top), so it must be
                     // resolved before any height arithmetic. `at.x` is already known to be
@@ -870,19 +1090,10 @@ impl<'a> RenderContext<'a> {
                     .fold(0.0f32, f32::max),
                 LayoutItem::Container {
                     placement,
-                    when,
                     padding,
                     items,
                     ..
                 } => {
-                    if let Some(cond) = when {
-                        if let Some(sel) = self.selected_option {
-                            let matches = cond.iter().all(|(n, v)| sel.get(n) == Some(v));
-                            if !matches {
-                                continue;
-                            }
-                        }
-                    }
                     let at_x = placement.at.x();
                     let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
                     if placement.width_is_frame_dependent() {
@@ -1019,6 +1230,9 @@ impl<'a> RenderContext<'a> {
         let mut out = String::new();
 
         for item in items {
+            if !self.is_item_active(item) {
+                continue;
+            }
             match item {
                 LayoutItem::Text {
                     name,
@@ -1032,8 +1246,8 @@ impl<'a> RenderContext<'a> {
                 } => {
                     let text = self.resolve_item_text("text", name.as_deref(), value.as_deref())?;
                     let resolved_weight = match font_weight {
-                        Some(DynamicValue::Literal(w)) => Some(*w),
-                        _ => None,
+                        Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
+                        None => None,
                     };
                     self.render_text_item(
                         &mut out,
@@ -1063,7 +1277,13 @@ impl<'a> RenderContext<'a> {
                     fit,
                     ..
                 } => {
-                    self.render_image_item(&mut out, name, src, placement, fit)?;
+                    self.render_image_item(
+                        &mut out,
+                        name.as_deref(),
+                        src.as_deref(),
+                        placement,
+                        fit,
+                    )?;
                 }
                 LayoutItem::Line {
                     at, to, thickness, ..
@@ -1072,12 +1292,12 @@ impl<'a> RenderContext<'a> {
                 }
                 LayoutItem::Container {
                     placement,
-                    when,
+                    when: _,
                     frame,
                     padding,
                     items,
                 } => {
-                    self.render_container_item(&mut out, placement, when, frame, padding, items)?;
+                    self.render_container_item(&mut out, placement, frame, padding, items)?;
                 }
             }
         }
@@ -1338,13 +1558,17 @@ impl<'a> RenderContext<'a> {
     fn render_image_item(
         &self,
         out: &mut String,
-        name: &Option<String>,
-        src: &Option<String>,
+        name: Option<&str>,
+        src: Option<&str>,
         placement: &Placement,
         fit: &Fit,
     ) -> Result<(), AppError> {
         let (bytes, fmt) = match (src, name) {
-            (Some(src), _) => resolve_image_asset(&assets_root(), src)?,
+            (Some(src), _) => {
+                let resolved_src =
+                    interpolate(src, self.data, self.env.settings, self.env.datetime)?;
+                resolve_image_asset(&assets_root(), &resolved_src)?
+            }
             (_, Some(name)) => {
                 let value = self
                     .data
@@ -1434,21 +1658,10 @@ impl<'a> RenderContext<'a> {
         &self,
         out: &mut String,
         placement: &Placement,
-        when: &Option<BTreeMap<String, String>>,
         frame: &Option<crate::models::Frame>,
         padding: &crate::models::Padding,
         items: &[LayoutItem],
     ) -> Result<(), AppError> {
-        if let Some(when) = when {
-            if let Some(selected_option) = self.selected_option {
-                let matches = when
-                    .iter()
-                    .all(|(name, value)| selected_option.get(name) == Some(value));
-                if !matches {
-                    return Ok(());
-                }
-            }
-        }
         let point = self.resolve_point(&placement.at)?;
         let left = point.x;
         let rotation = placement
@@ -1709,18 +1922,15 @@ impl<'a> RenderContext<'a> {
         label: &str,
     ) -> Result<f32, AppError> {
         match value {
-            SizeValue::Dynamic(DynamicValue::Literal(value)) => {
-                if *value <= 0.0 {
+            SizeValue::Dynamic(dyn_val) => {
+                let resolved = resolve_dynamic_value_f32(dyn_val, self.data)?;
+                if resolved <= 0.0 {
                     return Err(AppError::unsupported_layout_item(
                         Reason::SizeInvalid,
                         format!("size {label} must be greater than 0"),
                     ));
                 }
-                Ok(*value)
-            }
-            SizeValue::Dynamic(DynamicValue::Ref(_)) => {
-                // In Task 2, ref fallback
-                Ok(0.0)
+                Ok(resolved)
             }
             SizeValue::Auto(_) => {
                 // `max_*` caps the resolution of `auto`; it does not replace the fallback. A cap
@@ -1898,11 +2108,13 @@ mod tests {
         render_single_label, render_single_label_pdf, render_thumbnail_png, template_fields,
         SAMPLE_PNG_DATA_URI,
     };
+    use crate::errors::AppError;
     use crate::models::{
         Alignment, AutoSize, Dimension, DynamicDimension, DynamicValue, Extent, Fit, FontSize,
         Frame, HorizontalAlign, LabelInput, Layout, LayoutItem, Padding, ParamSpec, ParamType,
         Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat, VerticalAlign,
     };
+    use crate::reason::Reason;
     use crate::templates::TemplateDefinition;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -5744,5 +5956,204 @@ mod tests {
             "measure resolved {measured} and render resolved {rendered} for the same slot"
         );
         assert_eq!(measured, 6.0, "max_h below the frame remainder must bind");
+    }
+
+    fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
+        let template = crate::parse::parse_template(body).map_err(|err| {
+            AppError::template_invalid(Reason::TemplateParseFailed, err.to_string())
+        })?;
+        template
+            .validate()
+            .map_err(|err| AppError::template_invalid(Reason::TemplateValidationFailed, err))?;
+        Ok(template)
+    }
+
+    fn resolver() -> crate::datetime_fmt::DateTimeResolver<'static> {
+        no_datetime()
+    }
+
+    #[test]
+    fn render_continuous_tape_with_dynamic_target_width() {
+        let yaml = r#"
+id: dynamic_width_test
+name: Dynamic Width
+unit: mm
+dpi: 200
+params:
+  message:
+    type: string
+  target_width:
+    type: length
+    default: 60
+format:
+  type: single
+  height: 18
+  width:
+    min: 25
+    max: "{target_width}"
+layout:
+  - type: text
+    value: "{message}"
+    at: [0, 0]
+    size: [auto, 18]
+    font_size: { min: 8, max: 24 }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert(
+            "message".to_string(),
+            json!("Hello World this is a very long text that will overflow the target width"),
+        );
+        data.insert("target_width".to_string(), json!(90.0));
+
+        let png =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap();
+        let img = image::load_from_memory(&png).unwrap();
+        let expected_px = (90.0_f32 / 25.4 * template.dpi as f32).round() as u32;
+        assert_eq!(img.width(), expected_px);
+    }
+
+    #[test]
+    fn render_with_dynamic_font_weight() {
+        let yaml = r#"
+id: dynamic_weight_test
+name: Dynamic Weight
+unit: mm
+dpi: 200
+params:
+  message:
+    type: string
+  weight:
+    type: integer
+    default: 400
+format:
+  type: single
+  height: 18
+  width: 60
+layout:
+  - type: text
+    value: "{message}"
+    at: [0, 0]
+    size: [60, 18]
+    font_size: 10
+    font_weight: "{weight}"
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("message".to_string(), json!("Bold Text"));
+        data.insert("weight".to_string(), json!(700));
+
+        let png =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap();
+        assert!(!png.is_empty());
+    }
+
+    #[test]
+    fn inactive_when_branch_does_not_require_missing_fields_during_measure_or_render() {
+        let yaml = r#"
+id: when_lazy_test
+name: When Lazy Test
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [h, v]
+    default: h
+  h_text:
+    type: string
+  v_text:
+    type: string
+format:
+  type: single
+  height: 18
+  width:
+    min: 20
+    max: 100
+layout:
+  - type: text
+    value: "{h_text}"
+    at: [0, 0]
+    size: [auto, 18]
+    font_size: { min: 8, max: 24 }
+    when: { orientation: h }
+  - type: text
+    value: "{v_text}"
+    at: [0, 0]
+    size: [auto, 18]
+    font_size: { min: 8, max: 24 }
+    when: { orientation: v }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("orientation".to_string(), json!("h"));
+        data.insert("h_text".to_string(), json!("Horizontal only"));
+        // v_text is omitted; must succeed without MissingField
+
+        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        assert!(
+            res.is_ok(),
+            "should succeed because v_text is in inactive branch"
+        );
+    }
+
+    #[test]
+    fn active_branch_missing_field_returns_422_missing_field() {
+        let yaml = r#"
+id: active_missing_test
+name: Active Missing Test
+unit: mm
+dpi: 200
+params:
+  message:
+    type: string
+format:
+  type: single
+  height: 18
+  width: 60
+layout:
+  - type: text
+    value: "{message}"
+    at: [0, 0]
+    size: [60, 18]
+    font_size: 10
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let data = HashMap::new(); // message omitted
+
+        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        assert!(matches!(res, Err(err) if err.code() == "MissingField"));
+    }
+
+    #[test]
+    fn dimension_exceeding_max_label_dimension_returns_422() {
+        let yaml = r#"
+id: dim_limit_test
+name: Dim Limit Test
+unit: mm
+dpi: 200
+params:
+  target_width:
+    type: length
+    default: 60
+format:
+  type: single
+  height: 18
+  width:
+    min: 25
+    max: "{target_width}"
+layout:
+  - type: text
+    value: "Test"
+    at: [0, 0]
+    size: [auto, 18]
+    font_size: { min: 8, max: 24 }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("target_width".to_string(), json!(1500.0)); // exceeds default 1000mm
+
+        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        assert!(matches!(res, Err(err) if err.code() == "UnsupportedLayoutItem"));
     }
 }

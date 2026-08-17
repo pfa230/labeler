@@ -52,6 +52,7 @@ reasons! {
     ImageAssetPathEscapes => "image_asset_path_escapes",
     AssetsDirUnavailable => "assets_dir_unavailable",
     QrErrorCorrectionInvalid => "qr_error_correction_invalid",
+    DimensionExceedsLimit => "dimension_exceeds_limit",
 
     // InvalidRequest
     JsonMalformed => "json_malformed",
