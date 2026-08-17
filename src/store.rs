@@ -36,12 +36,20 @@ pub struct ApiToken {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateField<T> {
+    Keep,
+    Clear,
+    Set(T),
+}
+
 #[derive(Debug, Clone)]
 pub struct Connection {
     pub id: String,
     pub connector: String,
     pub name: String,
     pub base_url: String,
+    pub public_url: Option<String>,
     pub credential: String,
     pub enabled: bool,
 }
@@ -134,6 +142,7 @@ fn migrations() -> Migrations<'static> {
         );",
         ),
         M::up("ALTER TABLE printers DROP COLUMN enabled;"),
+        M::up("ALTER TABLE connections ADD COLUMN public_url TEXT;"),
     ])
 }
 
@@ -622,28 +631,31 @@ impl Store {
         connector: &str,
         name: &str,
         base_url: &str,
+        public_url: Option<&str>,
         credential: &str,
+        enabled: bool,
     ) -> Result<Connection, StoreError> {
         let id = crate::auth::random_secret();
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
-            "INSERT INTO connections (id, connector, name, base_url, credential) VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![id, connector, name, base_url, credential],
+            "INSERT INTO connections (id, connector, name, base_url, public_url, credential, enabled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![id, connector, name, base_url, public_url, credential, enabled as i64],
         )?;
         Ok(Connection {
             id,
             connector: connector.to_string(),
             name: name.to_string(),
             base_url: base_url.to_string(),
+            public_url: public_url.map(ToString::to_string),
             credential: credential.to_string(),
-            enabled: true,
+            enabled,
         })
     }
 
     pub async fn get_connection(&self, id: &str) -> Result<Option<Connection>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         conn.query_row(
-            "SELECT id, connector, name, base_url, credential, enabled FROM connections WHERE id = ?1",
+            "SELECT id, connector, name, base_url, credential, enabled, public_url FROM connections WHERE id = ?1",
             [id],
             row_to_connection,
         )
@@ -654,7 +666,7 @@ impl Store {
     pub async fn list_connections(&self) -> Result<Vec<Connection>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare(
-            "SELECT id, connector, name, base_url, credential, enabled FROM connections ORDER BY name",
+            "SELECT id, connector, name, base_url, credential, enabled, public_url FROM connections ORDER BY name",
         )?;
         let rows = stmt.query_map([], row_to_connection)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -665,18 +677,36 @@ impl Store {
         id: &str,
         name: &str,
         base_url: &str,
+        public_url: UpdateField<String>,
         credential: Option<&str>,
         enabled: bool,
     ) -> Result<bool, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let n = match credential {
-            Some(cred) => conn.execute(
+        let enabled_int = enabled as i64;
+        let n = match (credential, public_url) {
+            (Some(cred), UpdateField::Keep) => conn.execute(
                 "UPDATE connections SET name = ?1, base_url = ?2, credential = ?3, enabled = ?4 WHERE id = ?5",
-                rusqlite::params![name, base_url, cred, enabled as i64, id],
+                rusqlite::params![name, base_url, cred, enabled_int, id],
             )?,
-            None => conn.execute(
+            (None, UpdateField::Keep) => conn.execute(
                 "UPDATE connections SET name = ?1, base_url = ?2, enabled = ?3 WHERE id = ?4",
-                rusqlite::params![name, base_url, enabled as i64, id],
+                rusqlite::params![name, base_url, enabled_int, id],
+            )?,
+            (Some(cred), UpdateField::Clear) => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, public_url = NULL, credential = ?3, enabled = ?4 WHERE id = ?5",
+                rusqlite::params![name, base_url, cred, enabled_int, id],
+            )?,
+            (None, UpdateField::Clear) => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, public_url = NULL, enabled = ?3 WHERE id = ?4",
+                rusqlite::params![name, base_url, enabled_int, id],
+            )?,
+            (Some(cred), UpdateField::Set(url)) => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, public_url = ?3, credential = ?4, enabled = ?5 WHERE id = ?6",
+                rusqlite::params![name, base_url, url, cred, enabled_int, id],
+            )?,
+            (None, UpdateField::Set(url)) => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, public_url = ?3, enabled = ?4 WHERE id = ?5",
+                rusqlite::params![name, base_url, url, enabled_int, id],
             )?,
         };
         Ok(n > 0)
@@ -696,6 +726,7 @@ fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
         base_url: r.get(3)?,
         credential: r.get(4)?,
         enabled: r.get::<_, i64>(5)? != 0,
+        public_url: r.get(6)?,
     })
 }
 
@@ -970,11 +1001,9 @@ mod migration_tests {
     fn migration_drops_enabled_and_keeps_printers() {
         let mut conn = SqlConnection::open_in_memory().expect("open");
         let migrations = migrations();
-        // Fresh db: user_version is 0, so every migration is pending and the count is the total.
-        // The version just before this change is therefore total - 1.
-        let prior = migrations.pending_migrations(&conn).expect("count") as usize - 1;
+        // Version 9 is before printers.enabled was dropped in migration 10
         migrations
-            .to_version(&mut conn, prior)
+            .to_version(&mut conn, 9)
             .expect("migrate to the version before the drop");
 
         conn.execute(
@@ -1001,6 +1030,35 @@ mod migration_tests {
             "expected a no-such-column error, got: {err}"
         );
     }
+
+    #[test]
+    fn migration_adds_public_url_to_connections() {
+        let mut conn = SqlConnection::open_in_memory().expect("open");
+        let migrations = migrations();
+        // Version 10 is before public_url was added in migration 11
+        migrations
+            .to_version(&mut conn, 10)
+            .expect("migrate to version before public_url");
+
+        conn.execute(
+            "INSERT INTO connections (id, connector, name, base_url, credential, enabled)
+             VALUES ('c1', 'homebox', 'Home', 'http://hb.lan', 'secret', 1)",
+            [],
+        )
+        .expect("seed connection");
+
+        migrations.to_latest(&mut conn).expect("migrate to latest");
+
+        let (name, public_url): (String, Option<String>) = conn
+            .query_row(
+                "SELECT name, public_url FROM connections WHERE id = 'c1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("connection survives with public_url as NULL");
+        assert_eq!(name, "Home");
+        assert_eq!(public_url, None);
+    }
 }
 
 #[cfg(test)]
@@ -1014,24 +1072,48 @@ mod connection_tests {
     async fn connection_crud() {
         let s = store();
         let c = s
-            .create_connection("homebox", "home", "http://hb.lan:7745", "hb_secret")
+            .create_connection(
+                "homebox",
+                "home",
+                "http://hb.lan:7745",
+                None,
+                "hb_secret",
+                true,
+            )
             .await
             .unwrap();
         assert_eq!(c.connector, "homebox");
         assert_eq!(c.credential, "hb_secret");
+        assert_eq!(c.public_url, None);
+        assert!(c.enabled);
         assert!(s.get_connection(&c.id).await.unwrap().is_some());
         assert_eq!(s.list_connections().await.unwrap().len(), 1);
-        // update name + keep credential (None = unchanged)
+        // update name + keep credential (None = unchanged) + keep public_url
         assert!(s
-            .update_connection(&c.id, "renamed", "http://hb.lan:7745", None, true)
+            .update_connection(
+                &c.id,
+                "renamed",
+                "http://hb.lan:7745",
+                UpdateField::Keep,
+                None,
+                true,
+            )
             .await
             .unwrap());
         let g = s.get_connection(&c.id).await.unwrap().unwrap();
         assert_eq!(g.name, "renamed");
         assert_eq!(g.credential, "hb_secret"); // unchanged
-                                               // update credential
+        assert_eq!(g.public_url, None);
+        // update credential
         assert!(s
-            .update_connection(&c.id, "renamed", "http://hb.lan:7745", Some("hb_new"), true)
+            .update_connection(
+                &c.id,
+                "renamed",
+                "http://hb.lan:7745",
+                UpdateField::Keep,
+                Some("hb_new"),
+                true,
+            )
             .await
             .unwrap());
         assert_eq!(
@@ -1040,6 +1122,75 @@ mod connection_tests {
         );
         assert!(s.delete_connection(&c.id).await.unwrap());
         assert!(s.get_connection(&c.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn connection_crud_with_public_url_and_update_fields() {
+        let store = Store::open_in_memory().unwrap();
+        let c = store
+            .create_connection(
+                "homebox",
+                "Home",
+                "http://homebox.lan:7745",
+                Some("https://homebox.example.com"),
+                "token123",
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(c.public_url.as_deref(), Some("https://homebox.example.com"));
+        assert!(!c.enabled);
+
+        let fetched = store.get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(fetched.public_url.as_deref(), Some("https://homebox.example.com"));
+        assert!(!fetched.enabled);
+
+        // UpdateField::Keep preserves existing public_url
+        store
+            .update_connection(
+                &c.id,
+                "Home Updated",
+                "http://homebox.lan:7745",
+                UpdateField::Keep,
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let updated = store.get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(updated.name, "Home Updated");
+        assert_eq!(updated.public_url.as_deref(), Some("https://homebox.example.com"));
+        assert!(updated.enabled);
+
+        // UpdateField::Clear clears public_url to None
+        store
+            .update_connection(
+                &c.id,
+                "Home Updated",
+                "http://homebox.lan:7745",
+                UpdateField::Clear,
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let cleared = store.get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(cleared.public_url, None);
+
+        // UpdateField::Set updates public_url
+        store
+            .update_connection(
+                &c.id,
+                "Home Updated",
+                "http://homebox.lan:7745",
+                UpdateField::Set("https://new.example.com".into()),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+        let set_again = store.get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(set_again.public_url.as_deref(), Some("https://new.example.com"));
     }
 }
 
