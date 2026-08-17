@@ -77,21 +77,48 @@ function stubFetch() {
   });
 }
 
-function renderPage(initialPath = "/print") {
+function renderWithProviders(
+  ui: React.ReactElement,
+  options?: { template?: typeof detail | Record<string, unknown>; initialPath?: string },
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const template = options?.template;
+  const initialPath = options?.initialPath ?? (template ? `/print/${(template as any).id}` : "/print");
+
+  if (template) {
+    const currentStub = fetchMock;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.startsWith(`/api/templates/${(template as any).id}`)) {
+          return new Response(JSON.stringify(template), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return currentStub(input, init);
+      }),
+    );
+  }
+
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
         <MemoryRouter initialEntries={[initialPath]}>
           <Routes>
             <Route path="/" element={<div>labels grid</div>} />
-            <Route path="/print" element={<Print />} />
-            <Route path="/print/:templateId" element={<Print />} />
+            <Route path="/print" element={ui} />
+            <Route path="/print/:templateId" element={ui} />
           </Routes>
         </MemoryRouter>
       </ToastProvider>
     </QueryClientProvider>,
   );
+}
+
+function renderPage(initialPath = "/print") {
+  return renderWithProviders(<Print />, { initialPath });
 }
 
 let fetchMock: ReturnType<typeof stubFetch>;
@@ -108,6 +135,31 @@ describe("Print screen", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("renders dynamic inputs for multiline string, length slider, toggle, and enum", async () => {
+    const templateWithParams = {
+      id: "test_tpl",
+      name: "Test Template",
+      description: "",
+      unit: "mm",
+      dpi: 300,
+      params: {
+        message: { type: "string" as const, multiline: false, description: "Single line" },
+        notes: { type: "string" as const, multiline: true, default: "", description: "Notes" },
+        target_width: { type: "length" as const, default: 80, min: 25, max: 200, description: "Target width" },
+        show_border: { type: "boolean" as const, default: false, description: "Show border" },
+        orientation: { type: "enum" as const, values: ["horizontal", "vertical"], default: "horizontal" },
+      },
+      format: { type: "single" as const, height: 18, width: { min: 25, max: 80 } },
+      layout: [],
+    };
+
+    renderWithProviders(<Print />, { template: templateWithParams });
+    expect(await screen.findByRole("textbox", { name: /notes/i })).toBeInstanceOf(HTMLTextAreaElement);
+    expect(screen.getByRole("slider", { name: /target width/i })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /show border/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /orientation/i })).toBeInTheDocument();
   });
 
   it("redirects /print (no id) to the grid", async () => {
