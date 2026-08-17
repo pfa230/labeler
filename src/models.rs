@@ -637,6 +637,18 @@ pub enum LayoutItem {
     },
 }
 
+impl LayoutItem {
+    pub fn when(&self) -> Option<&BTreeMap<String, String>> {
+        match self {
+            LayoutItem::Text { when, .. }
+            | LayoutItem::Qr { when, .. }
+            | LayoutItem::Image { when, .. }
+            | LayoutItem::Line { when, .. }
+            | LayoutItem::Container { when, .. } => when.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone, Copy, PartialEq, Deserialize)]
 pub struct Padding {
     pub top: f32,

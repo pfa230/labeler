@@ -674,6 +674,7 @@ the `Reason` enum list exactly the same slugs, in both directions.
 | `UnsupportedLayoutItem` | `image_asset_path_escapes` | The asset path resolves outside the assets directory. |
 | `UnsupportedLayoutItem` | `assets_dir_unavailable` | The server's assets directory could not be resolved. |
 | `UnsupportedLayoutItem` | `qr_error_correction_invalid` | `error_correction` is not one of L, M, Q, H. |
+| `UnsupportedLayoutItem` | `dimension_exceeds_limit` | A resolved label dimension exceeds `max_label_dimension_mm` or is non-positive. |
 | `InvalidRequest` | `json_malformed` | The request body is not parseable JSON. `details.error` carries the parser's message. |
 | `InvalidRequest` | `request_body_invalid` | The request body could not be read. |
 | `InvalidRequest` | `path_param_invalid` | A path parameter could not be deserialized. |
