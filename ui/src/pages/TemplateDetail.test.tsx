@@ -135,6 +135,54 @@ describe("Template detail", () => {
     expect(link).toHaveAttribute("href", "/print/brother_24mm_qr");
   });
 
+  it("renders parameter specifications with type, default, bounds, and description", async () => {
+    const templateWithParams = {
+      ...detail,
+      params: {
+        target_width: {
+          type: "length",
+          default: 80,
+          min: 25,
+          max: 200,
+          description: "Target label width in mm",
+        },
+        orientation: {
+          type: "enum",
+          values: ["horizontal", "vertical"],
+          default: "horizontal",
+        },
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/api/templates/brother_24mm_qr")) {
+          return new Response(JSON.stringify(templateWithParams), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
+          return new Response(source, { status: 200, headers: { "content-type": "text/yaml" } });
+        }
+        if (url.endsWith("/api/render/label")) {
+          return new Response(new Blob(["x"]), { status: 200, headers: { "content-type": "image/png" } });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }),
+    );
+
+    renderPage();
+    expect(await screen.findByText("Parameters")).toBeInTheDocument();
+    expect(screen.getByText("target_width")).toBeInTheDocument();
+    expect(screen.getByText("Target label width in mm")).toBeInTheDocument();
+    expect(screen.getByText(/bounds: 25 to 200/)).toBeInTheDocument();
+    expect(screen.getByText("orientation")).toBeInTheDocument();
+    expect(screen.getAllByText("horizontal")).toHaveLength(2);
+    expect(screen.getByText("vertical")).toBeInTheDocument();
+  });
+
   it("reveals the raw YAML source when toggled", async () => {
     renderPage();
     await screen.findByText("Brother 24mm Continuous Label");

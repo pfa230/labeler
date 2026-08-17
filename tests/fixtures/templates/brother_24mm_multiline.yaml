@@ -3,6 +3,9 @@ name: Brother 24mm Continuous Label (multiline)
 description: Continuous tape, 24mm nominal (18.1mm printable at 180 dpi), multiline text with auto-length
 unit: mm
 dpi: 180
+params:
+  message:
+    type: string
 format:
   type: single
   width:

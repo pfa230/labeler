@@ -15,9 +15,10 @@ use crate::{
     models::{
         AutoSize, BatchRequest, BatchRowError, BatchSummary, Dimension, ErrorBody, ErrorResponse,
         Extent, Fit, FontSize, HealthResponse, HorizontalAlign, LabelInput, Layout, LayoutItem,
-        Options, Placement, Point, Position, PrintRequest, QrParams, ReloadResponse,
-        RenderLabelRequest, SheetPosition, Size, SizeValue, TemplateDetail, TemplateFormat,
-        TemplateList, TemplateSummary, VariableValue, VerticalAlign,
+        Options, ParamSpec, ParamType, ParamValue, Placement, Point, Position, PrintRequest,
+        QrParams, ReloadResponse, RenderLabelRequest, SheetPosition, Size, SizeValue,
+        TemplateDetail, TemplateFormat, TemplateList, TemplateSummary, VariableValue,
+        VerticalAlign,
     },
     store::Printer,
 };
@@ -95,6 +96,9 @@ use crate::{
             TemplateFormat,
             TemplateDetail,
             Options,
+            ParamSpec,
+            ParamType,
+            ParamValue,
             LayoutItem,
             Layout,
             Point,

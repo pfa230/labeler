@@ -3,6 +3,10 @@ name: Brother 12mm Continuous Label (text only)
 description: Continuous tape, 12mm nominal (9.9mm printable at 180 dpi), text only
 unit: mm
 dpi: 180
+params:
+  message:
+    type: string
+    description: "Label message text"
 format:
   type: single
   width:

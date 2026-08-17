@@ -1613,10 +1613,8 @@ pub async fn print_label(
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
-    let label = crate::models::LabelInput {
-        data: req.fields,
-        option: req.option,
-    };
+    let label_data = req.data.or(req.fields).unwrap_or_default();
+    let label = crate::models::LabelInput { data: label_data };
     let labels = vec![label; req.copies as usize];
     run_batch(
         &state,
@@ -1662,28 +1660,12 @@ pub async fn render_label(
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
 
-    let option_value = req.label.option.as_ref();
-
     tracing::debug!(
         template = %template.id,
-        option_count = option_value.map(|selection| selection.len()).unwrap_or(0),
         dpi = template.dpi,
         data_keys = req.label.data.len(),
         "render label request"
     );
-
-    if let Some(options) = &template.options() {
-        if let Some(selection) = option_value {
-            if !options.is_valid_selection(selection) {
-                return Err(AppError::invalid_option_value(selection, options.allowed()));
-            }
-        }
-    } else if option_value.is_some() {
-        return Err(AppError::invalid_request(
-            Reason::OptionsNotSupported,
-            "template does not support options",
-        ));
-    }
 
     let color_mode = match query.color_mode.as_deref() {
         None | Some("") | Some("color") => ColorMode::Color,
@@ -1731,14 +1713,7 @@ pub async fn render_label(
     };
     let (bytes, content_type) = match query.format.as_deref() {
         None | Some("") | Some("png") => (
-            render_single_label_image(
-                template,
-                &req.label.data,
-                option_value,
-                &variables,
-                &dt,
-                img_opts,
-            )?,
+            render_single_label_image(template, &req.label.data, None, &variables, &dt, img_opts)?,
             "image/png",
         ),
         Some("pdf") => {
@@ -1749,7 +1724,7 @@ pub async fn render_label(
                 ));
             }
             (
-                render_single_label_pdf(template, &req.label.data, option_value, &variables, &dt)?,
+                render_single_label_pdf(template, &req.label.data, None, &variables, &dt)?,
                 "application/pdf",
             )
         }
@@ -1799,18 +1774,11 @@ pub async fn import_csv(
         .get(&params.template)
         .ok_or_else(|| AppError::template_not_found(params.template.clone()))?;
     let mode = parse_batch_mode(params.mode.as_deref().unwrap_or("download"))?;
-    // Declared options for this template (name -> allowed values); the first value is the default.
-    let empty = std::collections::BTreeMap::new();
-    let template_options = template.options();
-    let declared: &std::collections::BTreeMap<String, Vec<String>> = template_options
-        .as_ref()
-        .map(|o| o.allowed())
-        .unwrap_or(&empty);
     let parsed_rows = parse_csv_rows(&body)?;
     // Per SPEC section E, an unknown option.<name> column is an error, not silently ignored.
     for row in &parsed_rows {
         for name in row.option.keys() {
-            if !declared.contains_key(name) {
+            if !template.params.contains_key(name) {
                 return Err(AppError::invalid_request(
                     Reason::CsvOptionColumnUnknown,
                     format!(
@@ -1823,24 +1791,13 @@ pub async fn import_csv(
     }
     let labels: Vec<crate::models::LabelInput> = parsed_rows
         .into_iter()
-        .map(|row| {
-            let mut option = std::collections::BTreeMap::new();
-            for (name, vals) in declared {
-                let v = row.option.get(name).cloned();
-                let v = match v {
-                    Some(s) if !s.is_empty() => s,
-                    _ => vals.first().cloned().unwrap_or_default(),
-                };
-                option.insert(name.clone(), v);
+        .map(|mut row| {
+            for (name, v) in row.option {
+                if !v.is_empty() {
+                    row.data.insert(name, serde_json::Value::String(v));
+                }
             }
-            crate::models::LabelInput {
-                data: row.data,
-                option: if option.is_empty() {
-                    None
-                } else {
-                    Some(option)
-                },
-            }
+            crate::models::LabelInput { data: row.data }
         })
         .collect();
     run_batch(

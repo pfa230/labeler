@@ -1,6 +1,6 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
-import { reconcileRowOptions, referencedFields } from "../lib/templateFields";
+import { defaultParamValues, reconcileRowOptions, referencedFields } from "../lib/templateFields";
 import {
   MAX_BATCH_LABELS,
   expandedCount,
@@ -103,7 +103,17 @@ function CsvEditor({
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
-  const declaredOptions = detail?.options ?? {};
+  const declaredOptions = useMemo(() => {
+    const opts: Record<string, string[]> = { ...(detail?.options ?? {}) };
+    if (detail?.params) {
+      for (const [name, spec] of Object.entries(detail.params)) {
+        if (spec.type === "enum" && spec.values) {
+          opts[name] = spec.values;
+        }
+      }
+    }
+    return opts;
+  }, [detail]);
   const declaredNames = Object.keys(declaredOptions);
   const optionNames = declaredNames; // every declared option is an always-present per-row column
   const isSingleValued = (name: string) => (declaredOptions[name]?.length ?? 0) <= 1;
@@ -120,18 +130,31 @@ function CsvEditor({
 
   // Fields required for a row depend on THAT row's effective options (a CSV option.<name> column can
   // vary per row and gate different containers), so this is computed per row. With no template, no fields.
-  const requiredForRow = (row: LabelGridRow): string[] => (detail ? referencedFields(detail.layout, effectiveOption(row)) : []);
+  const paramKeys = detail?.params ? Object.keys(detail.params) : [];
+  const requiredForRow = (row: LabelGridRow): string[] =>
+    detail ? [...new Set([...referencedFields(detail.layout, effectiveOption(row)), ...paramKeys])] : [];
   // Grid columns: CSV columns plus any required field (across all row variants) the CSV omits.
   const requiredUnion = new Set<string>();
   for (const row of rows) for (const f of requiredForRow(row)) requiredUnion.add(f);
-  const baseRequired = !detail ? [] : rows.length ? [...requiredUnion] : referencedFields(detail.layout, reconcileRowOptions({}, declaredOptions));
+  const baseRequired = !detail
+    ? []
+    : rows.length
+      ? [...requiredUnion]
+      : [...new Set([...referencedFields(detail.layout, reconcileRowOptions({}, declaredOptions)), ...paramKeys])];
   const displayedFields = [...csvFields, ...baseRequired.filter((f) => !csvFields.includes(f))];
 
   // One validation function, used both for render (viewRows) and as the run() submit guard, so a value
   // committed on blur right before a click cannot be submitted while the button is still showing enabled.
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
     const field: Record<string, string> = {};
-    for (const f of requiredForRow(row)) if ((row.data[f] ?? "").length === 0) field[f] = "required";
+    for (const f of requiredForRow(row)) {
+      const spec = detail?.params?.[f];
+      const hasDefault =
+        spec?.default !== undefined ||
+        spec?.type === "boolean" ||
+        (spec?.type === "enum" && (spec.values?.length ?? 0) > 0);
+      if (!hasDefault && (row.data[f] ?? "").length === 0) field[f] = "required";
+    }
     const eff = effectiveOption(row);
     const option: Record<string, string> = {};
     for (const name of optionNames) {
@@ -162,8 +185,21 @@ function CsvEditor({
 
   // Build the resolved label for the selected row using the same resolution the submit path uses,
   // so the preview matches the actual rendered output.
+  const defaults = defaultParamValues(detail?.params);
   const selRow = rows.find((r) => r.id === resolvedSelectedId);
-  const previewLabel = selRow ? resolveLabels([{ ...selRow, option: effectiveOption(selRow) }], {}, 1)[0] : undefined;
+  const previewLabel = selRow
+    ? resolveLabels(
+        [
+          {
+            ...selRow,
+            data: { ...defaults, ...selRow.data },
+            option: effectiveOption(selRow),
+          },
+        ],
+        {},
+        1,
+      )[0]
+    : undefined;
 
   const preview = useRowPreview({
     templateId: detail?.id ?? "",
@@ -260,7 +296,12 @@ function CsvEditor({
     try {
       // Reconcile each row's options against the current template before submit (ids unchanged), then
       // resolve with no global overlay (per-row options already carry the effective value).
-      const submitRows = rowsRef.current.map((r) => ({ ...r, option: effectiveOption(r) }));
+      const defaults = defaultParamValues(detail.params);
+      const submitRows = rowsRef.current.map((r) => ({
+        ...r,
+        data: { ...defaults, ...r.data },
+        option: effectiveOption(r),
+      }));
       const labels = resolveLabels(submitRows, {}, submittedCopies);
       const r = await submitBatch({
         template: detail.id,

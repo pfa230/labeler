@@ -136,8 +136,7 @@ failures return `422 TemplateInvalid` with a path-aware message; the GUI-owned s
 
 - Renders a single label as a preview or one-off; for multi-label work and printing, use `POST /batch`.
 - `template` must reference a template whose `format.type` is `single`; otherwise `422 UnsupportedFormat`.
-- `data` binds field names referenced by `text`/`qr` layout items.
-- `option` is optional and validated against the template's declared `options`.
+- `data` binds parameter values declared by the template's `params:` (content, layout, styling, and conditional switches).
 - `?format=png|pdf` (default `png`) selects the output: `image/png` (rasterized at the template DPI) or
   `application/pdf` (vector). An unknown value is `400 InvalidRequest`. The output is the raw image/PDF,
   not a ZIP.
@@ -166,8 +165,7 @@ response (download yields a binary, print yields a JSON summary). See [ADR-0011]
   "mode": "download",
   "start_slot": 0,
   "labels": [
-    { "option": { "orientation": "horizontal", "outline": "yes" },
-      "data": { "id": "A1", "url": "https://example.com/A1", "name": "…", "tags": "…", "description": "…" } }
+    { "data": { "orientation": "horizontal", "show_border": "true", "id": "A1", "url": "https://example.com/A1", "name": "…", "tags": "…", "description": "…" } }
   ]
 }
 ```
@@ -180,7 +178,7 @@ response (download yields a binary, print yields a JSON summary). See [ADR-0011]
 - `printer` names a registered printer for `print` mode (unknown printer → `404`).
 
 `start_slot` is the first **job option**: a job-level knob intrinsic to the template's format (distinct
-from per-row `data` and per-row template `options`), passed as an optional `/batch` field and validated
+from per-row `data` parameters), passed as an optional `/batch` field and validated
 against the format. Future job options (skip arbitrary sheet slots, per-job margins, continuous-tape
 cut/gap) follow the same pattern and are catalogued in [ADR-0012](adr/0012-job-options.md); none are
 implemented yet.
@@ -211,19 +209,18 @@ reported, not fatal.
 one job). `failed[].index` is the zero-based label index.
 
 - Batches over 500 labels return `413 BatchTooLarge`.
-- `template` referencing an unknown id → `404`; `option` validated per the template's declared `options`.
+- `template` referencing an unknown id → `404`; parameter values in `data` are validated against the template's declared `params`.
 
 ### 2.3 `POST /print`
 
 An inbound print webhook for integrations (Grocy, scripts, local automation). It prints one label,
-optionally repeated, to a named printer. See [ADR-0031](adr/0031-inbound-print-webhook.md).
+optionally repeated, to a named printer. See [ADR-0031](adr/0031-inbound-print-webhook.md) and [ADR-0055](adr/0055-parameterized-templates.md).
 
 ```json
 {
   "template": "brother_24mm",
   "printer":  "office",
-  "fields":   { "name": "Tomato Soup", "qty": "3" },
-  "option":   { "orientation": "horizontal" },
+  "data":     { "name": "Tomato Soup", "qty": "3", "orientation": "horizontal" },
   "copies":   2
 }
 ```
@@ -232,8 +229,7 @@ optionally repeated, to a named printer. See [ADR-0031](adr/0031-inbound-print-w
 | --- | --- | --- | --- |
 | `template` | string | Yes | Template id; `404` if not found. |
 | `printer` | string | Yes | Printer id; `404` if not found. |
-| `fields` | object | No (defaults to `{}`) | Mapped to the label `data` for field binding. |
-| `option` | object | No | Template variant selection; validated against the template's declared `options`. |
+| `data` (or `fields`) | object | No (defaults to `{}`) | Parameter map passed to the template. `fields` is accepted as a legacy synonym. |
 | `copies` | integer 1..100 | No | Number of label instances to print (default `1`). |
 
 `copies` counts **label instances**, not printer copies. A value of 2 sends two identical labels: two
@@ -295,11 +291,60 @@ fields:
 | `unit` | `"mm"` \| `"in"` | Length unit for all coordinates/sizes in the template. |
 | `dpi` | integer > 0 | Raster resolution for PNG output. |
 | `format` | object | See §3.1. |
-| `options` | map | Optional. See §5. |
+| `params` | map | Optional. Map of parameter name → `ParamSpec`. See §3.0. |
 | `layout` | list | Tree of layout items. See §4. |
 | `version` | string | Optional, free-form. |
 
 Parsing rejects unknown fields (`deny_unknown_fields`). An invalid template aborts server startup.
+
+### 3.0 Parameters (`params:`)
+
+The top-level `params:` block declares all typed inputs to the template—content fields, layout constraints,
+styling parameters, and conditional switches (ADR-0055).
+
+```yaml
+params:
+  message:
+    type: string
+    description: "Main label text"
+    multiline: false
+  notes:
+    type: string
+    multiline: true
+    default: ""
+  target_width:
+    type: length
+    default: 80
+    min: 25
+    max: 300
+    description: "Target length"
+  weight:
+    type: integer
+    default: 400
+    enum: [100, 200, 300, 400, 500, 600, 700, 800, 900]
+  show_border:
+    type: boolean
+    default: false
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: horizontal
+```
+
+**Parameter types and attributes:**
+
+| Type | YAML Attributes | Request Value | Behavior when Omitted from Request | UI Form Control |
+| --- | --- | --- | --- | --- |
+| `string` | `default`, `multiline` (bool), `description` | String scalar | If `default` set: uses `default`. If no `default`: `422 MissingField` when rendered in active layout. | Text input (`multiline: false`) or Textarea (`multiline: true`) |
+| `length` | `default`, `min`, `max`, `description` | Number or dimension string (`80`, `"80mm"`) | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Number input with unit suffix, or Slider (if `min`/`max` provided) |
+| `integer` | `default`, `min`, `max`, `enum` (list), `description` | Integer (`400`) | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Number input / Stepper / Dropdown (if `enum` provided) |
+| `number` | `default`, `min`, `max`, `description` | Float / number (`1.5`) | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Number input with step |
+| `boolean` | `default`, `description` | `true` / `false` | If `default` set: uses `default`. If no `default`: `false`. | Toggle switch / Checkbox |
+| `enum` | `values` (required list), `default`, `description` | String matching `values` | If `default` set: uses `default`. If no `default`: first value in `values`. | Dropdown / Segmented button group |
+
+**Namespace rules and reserved names:**
+- Parameter names must match `^[a-zA-Z0-9_-]+$`.
+- The prefixes `datetime`, `vars`, and any name containing a dot (`.`) are reserved and rejected at template load time (`422 TemplateInvalid`).
 
 ### 3.1 `format`
 
@@ -310,25 +355,26 @@ Tagged by `type`:
 ```yaml
 format:
   type: single
-  width: { min: 10.0, max: 100.0 }   # Dimension
-  height: 12.0                        # Dimension
-  media_width: 24.0                   # optional; nominal tape width in template unit
+  width: { min: 10.0, max: "{target_width}" }   # Dynamic Dimension referencing parameter
+  height: 12.0                                  # Dimension (fixed or "{param}")
+  media_width: 24.0                             # optional; nominal tape width in template unit
 ```
 
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `width` | `Dimension` | Yes | Label width. Fixed number or `{ min, max }` for auto-length. |
-| `height` | `Dimension` | Yes | Label height (fixed). |
+| `width` | `Dimension` | Yes | Label width. Fixed number, parameter reference `"{param}"`, or dynamic object `{ min, max }` for auto-length. |
+| `height` | `Dimension` | Yes | Label height. Fixed number or parameter reference `"{param}"`. |
 | `media_width` | number > 0 | No | Nominal tape/media width in the template `unit`. Declares the physical media this template targets. Used exclusively by the print preflight gate (see the Printing section). Has no effect on rendering geometry. The bundled Brother tape templates set this field (12, 18, or 24 mm). |
 
-A `Dimension` is either a fixed number, or a dynamic object `{ min, max }` (both required when used
-on `format.width` of a `single` template). A `single` template with a dynamic `format.width` is
-**auto-length**: the label width is determined at render time by measuring the content, clamping to
-`[min, max]`, and choosing the largest font that fits the budget (then ellipsis if still over). `auto`
-item width on a dynamic-width label resolves to the content width (`label_width - at.x`). Both `min`
-and `max` must be present; a missing bound is `422 TemplateInvalid`. Sheet templates and fixed-width
-single templates are unaffected. See [ADR-0026](adr/0026-auto-length-dynamic-width.md) and
-[ADR-0030](adr/0030-multiline-auto-length-tape.md).
+A `Dimension` is either a fixed value (a literal number or parameter reference `"{param}"`), or a dynamic
+range object `{ min, max }` (where `min` and `max` are numbers or parameter references). A `single`
+template with a dynamic `format.width` is **auto-length**: the label width is determined at render time
+by measuring the content, clamping to `[min, max]`, and choosing the largest font that fits the budget
+(then ellipsis if still over). `auto` item width on a dynamic-width label resolves to the content width
+(`label_width - at.x`). Both `min` and `max` must be present; a missing bound is `422 TemplateInvalid`.
+At load time, parameter defaults are instantiated to validate default geometry bounds. Sheet templates
+and fixed-width single templates are unaffected. See [ADR-0026](adr/0026-auto-length-dynamic-width.md),
+[ADR-0030](adr/0030-multiline-auto-length-tape.md), and [ADR-0055](adr/0055-parameterized-templates.md).
 
 **Multiline text on dynamic-width singles.** `multiline: true` is supported on auto-length `single`
 templates (ADR-0030). Wrapping uses the item's auto-width budget (`width.max - at.x`, minus container
@@ -393,10 +439,11 @@ are tagged by `type`. All items share a **placement** (flattened into the item):
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `at` | `[x, y]` | `[0, 0]` | Lower-left anchor, in template units; may be edge-relative (see §6). |
-| `size` | `[w, h]` | — | Each entry is a number or `auto`. Mutually exclusive with `to`; exactly one is required (a `container` defaults to `[auto, auto]`). |
+| `size` | `[w, h]` | — | Each entry is a number, `auto`, or parameter reference `"{param}"`. Mutually exclusive with `to`; exactly one is required (a `container` defaults to `[auto, auto]`). |
 | `to` | `[x, y]` | — | Opposite (top-right) corner; `size = to - at` after both corners resolve. Mutually exclusive with `size`. |
 | `max_w` / `max_h` | number | — | Upper bound that **caps** the resolution of `auto` on its axis, in validation, measurement, and rendering, on every format. An error alongside `to`, which has no `auto` axis. |
 | `rotate` | number (deg) | — | **Container only.** Orthogonal CCW rotation of the container's inner content; see §4.2. An error on any non-container item. |
+| `when` | map | — | Optional conditional rendering gate `{ param: value }`. Item renders only if all entries match resolved parameters. Supported on all item types. See §5. |
 
 `auto` size resolves to `min(max_{w,h}, fallback)` when both are present, to whichever of the two is
 present when only one is, and is an error when neither is. The fallback, for `text` and `container`, is
@@ -433,36 +480,35 @@ changed under ADR-0053 is that the pre-render measurement pass now reserves the 
 ### 4.1 Item types
 
 - **`text`** — `value` (interpolated template, see §8), plus
-  placement, `font_size`, `font_weight` (optional), `multiline` (default `false`),
-  `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom; default `top`).
-  `font_weight` is a multiple of 100 between 100 and 900; omitting it leaves the font's default
+  placement, `font_size`, `font_weight` (optional literal or `"{param}"` reference), `multiline` (default `false`),
+  `alignment` (`horizontal`: left/center/right, `vertical`: top/center/bottom; default `top`), and optional `when` gate.
+  `font_weight` is a multiple of 100 between 100 and 900 (or an integer parameter resolving to one); omitting it leaves the font's default
   (400). The bundled Inter is a variable font, so every step in that range is a real weight rather
   than a synthetic one.
   `font_size` is either a fixed number or a range `{ min, max }`. A range auto-shrinks the text to fit
   the box (0.5pt steps) and truncates with an ellipsis if it still overflows.
   `multiline: true` also changes the print form: that item's data fields render as a textarea rather
   than a single-line input, so line breaks can be typed directly (#148). A field also used by a
-  single-line item *anywhere* in the template — including an option branch that is not currently
-  selected — is flagged there, because that item renders only its first line.
+  single-line item *anywhere* in the template is flagged there, because that item renders only its first line.
   Single-line text collapses spaces to non-breaking and renders only the first line. On dynamic-width
   `single` templates, `multiline: true` is also supported; see §3.1 for the wrap and sizing rules.
 - **`qr`** — `value` (interpolated template, see §8), plus
-  placement, optional `params`:
+  placement, optional `when` gate, optional `params`:
   `error_correction` (`L`/`M`/`Q`/`H`, default `M`), `module_size`, `quiet_zone`.
   Rendered as an SVG via the `qrcode` crate, embedded as a Typst image.
 - **`image`** — exactly one of `src` (a path to a bundled asset, resolved under the assets root with a
   traversal guard) or `name` (a data key whose value is a base64 data URI, `data:<mime>;base64,...`),
-  plus placement and optional `fit` (`contain` default, `cover`, `stretch`). Formats: PNG, JPEG, SVG.
+  plus placement, optional `when` gate, and optional `fit` (`contain` default, `cover`, `stretch`). Formats: PNG, JPEG, SVG.
   Bytes are decoded server-side and injected into Typst as a virtual file; there is no server-side URL
   fetching (see ADR-0009). The assets root is `{config}/assets/` (`LABELER_CONFIG_DIR`). Missing data
   key → `MissingField`; bad base64 / unsupported format / asset path problems → `UnsupportedLayoutItem`.
 - **`line`** — `at` (start, default `[0,0]`) and `to` (end), both in frame coordinates, either absolute
-  or edge-relative (§6); endpoints must differ **after** resolution. Plus `thickness` (> 0). Lines have
+  or edge-relative (§6); endpoints must differ **after** resolution. Plus `thickness` (> 0) and optional `when` gate. Lines have
   no box `size`/`fit`/rotation. Endpoints must lie within the layout bounds: an out-of-bounds endpoint
   is an error, not clipped. An absolute endpoint past `width.max` is rejected at load even on a
   dynamic-width template, since no final width can bring it back inside.
 - **`container`** — a recursive group. Fields: placement (size defaults to `auto`/`auto` = fill parent),
-  optional `option` gate (§5), optional `frame` (`thickness` > 0, `rounded` bool), `padding`, and
+  optional `when` gate (§5), optional `frame` (`thickness` > 0, `rounded` bool), `padding`, and
   `items` (nested layout). Children are positioned relative to the container's padded inner box.
   `padding` is either a single number (uniform) or `[top, right, bottom, left]`; values must be ≥ 0;
   default `0`.
@@ -495,22 +541,24 @@ A `container` may set `rotate` to turn a portrait design onto a landscape slot (
   maps to physical-vertical, which the dynamic-width measurement model does not handle). The
   measurement pass does not recurse into a rotated container.
 
-## 5. Options
+## 5. Conditional visibility (`when:`)
 
-A template may declare `options` as a map of option name → list of allowed values:
+Any layout item (`container`, `text`, `qr`, `image`, `line`) may carry a `when:` condition map (ADR-0055):
 
 ```yaml
-options:
-  orientation: [horizontal, vertical]
-  outline: [yes]
+when:
+  orientation: vertical
+  show_border: true
 ```
 
-- A request's `option` selection is validated: each key must exist and its value must be allowed,
-  else `422 InvalidOptionValue`. Supplying `option` to a template without `options` is `400`.
-- A `container` may carry an `option` map. The container (and its subtree) renders only when the
-  request's selection matches all of the container's option entries. This is how one template supports
-  multiple layouts (e.g. horizontal vs. vertical) — see
-  `tests/fixtures/templates/avery5163_asset_tag.yaml`.
+- **Evaluation against resolved parameters.** All conditions in `when:` must match the resolved parameter
+  values for that item to be active. If any condition evaluates to false, the item (and its children, for
+  a container) is excluded from both the measurement pre-pass and rendering.
+- **Lazy missing-field evaluation.** Required parameter validation is evaluated lazily as active items
+  are measured and rendered. If a required parameter without a default is only referenced within an inactive
+  `when:` branch, omitting it from request `data` does NOT produce a `422 MissingField` error.
+- **Enum parameter validation.** If a request supplies a value for an `enum` parameter that is not member of
+  its declared `values` list, the request is rejected with `422 InvalidOptionValue`.
 
 ## 6. Coordinate system
 
@@ -590,9 +638,9 @@ Sizing/bounds logic is intentionally duplicated between validation (compile time
 2. **`{datetime.<name>}`** resolves a named strftime format from the `datetime_formats` app setting
    (e.g. `{datetime.iso_date_time}` with the default `iso_date_time` format yields
    `2026-06-25 14:30`). An unknown `<name>` is `422 MissingField`. The `datetime` namespace is
-   reserved; a data field or variable with the same name is shadowed. See [ADR-0028](adr/0028-datetime-interpolation-token.md).
+   reserved; a parameter or variable with the same name is shadowed. See [ADR-0028](adr/0028-datetime-interpolation-token.md).
 3. **`{vars.<key>}`** resolves from the variables store.
-4. **`{field}`** resolves from the request `data` map.
+4. **`{param_name}`** resolves from the request `data` map, falling back to declared `default`s in `params:` (ADR-0055).
 
 `now` is captured once per render request (a single `Local::now()` call), so every datetime token
 on a multi-label sheet shows the same instant. The server-local timezone (controlled by `TZ`)
@@ -675,6 +723,7 @@ the `Reason` enum list exactly the same slugs, in both directions.
 | `UnsupportedLayoutItem` | `image_asset_path_escapes` | The asset path resolves outside the assets directory. |
 | `UnsupportedLayoutItem` | `assets_dir_unavailable` | The server's assets directory could not be resolved. |
 | `UnsupportedLayoutItem` | `qr_error_correction_invalid` | `error_correction` is not one of L, M, Q, H. |
+| `UnsupportedLayoutItem` | `dimension_exceeds_limit` | A resolved label dimension exceeds `max_label_dimension_mm` or is non-positive. |
 | `InvalidRequest` | `json_malformed` | The request body is not parseable JSON. `details.error` carries the parser's message. |
 | `InvalidRequest` | `request_body_invalid` | The request body could not be read. |
 | `InvalidRequest` | `path_param_invalid` | A path parameter could not be deserialized. |
@@ -1000,24 +1049,25 @@ Known settings:
   write time; an invalid pattern is `400`. Used by `{datetime.<name>}` interpolation (see §8).
   Seeded defaults: `iso_date` (`%Y-%m-%d`), `iso_date_time` (`%Y-%m-%d %H:%M`),
   `short_date` (`%m/%d/%Y`), `long_date` (`%B %-d, %Y`), `time` (`%H:%M`).
+- **`max_label_dimension_mm`** (default `1000.0`). Maximum allowed dimension in millimeters for a dynamic
+  label. Validated as a positive number > 0. Enforced in the render pre-pass against resolved dynamic dimensions
+  (ADR-0055).
 
 ## CSV import
 
 **`POST /import/csv?template=<id>&mode=download|print&printer=<id>&format=png|pdf`** renders one label
-per CSV row. The request body is raw `text/csv`: the header row names the fields, each subsequent row
-supplies one label's `data` (all values are strings). A leading UTF-8 BOM is stripped, and the `csv`
-crate handles quoted fields. A header named `option.<name>` is routed to that row's template **option**
-(not `data`); any declared option the CSV omits defaults to its first allowed value, and a disallowed
-value fails the row (`BatchInvalid` / `InvalidOptionValue`). Output follows the template format via the
+per CSV row. The request body is raw `text/csv`: the header row names the parameter fields, each subsequent row
+supplies one label's `data` values (all values are strings). A leading UTF-8 BOM is stripped, and the `csv`
+crate handles quoted fields. Any declared parameter the CSV omits defaults to its declared `default` value,
+and a disallowed enum value fails the row (`BatchInvalid` / `InvalidOptionValue`). Output follows the template format via the
 shared `/batch` path: single templates yield per-row artifacts, sheet templates compose the rows into
 paginated pages.
 
-The web UI's CSV Import screen (`/import`, ADR-0014, ADR-0022) is a separate client-side path: it parses
+The web UI's CSV Import screen (`/import`, ADR-0014, ADR-0022, ADR-0055) is a separate client-side path: it parses
 and edits the CSV in the browser and posts resolved labels to `POST /api/batch`. A CSV can be loaded
-before any template is chosen (data columns show; option columns and validation activate once a template
-is selected), and the loaded CSV survives switching templates. Every declared option is an always-present
-per-row column defaulting to its first allowed value (a CSV `option.<name>` value wins), with a per-option
-"Apply to all rows" control; single-valued options are read-only. It does not call `/api/import/csv`,
+before any template is chosen (data columns show; parameter columns and validation activate once a template
+is selected), and the loaded CSV survives switching templates. Every declared parameter is available for mapping
+with batch-default fallback controls. It does not call `/api/import/csv`,
 which remains the self-contained automation endpoint.
 
 - **Structural CSV problems** are a whole-request precondition failure with `400` in **both** modes,
@@ -1036,15 +1086,22 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
   templates it dispatches one print job per row (so a continuous-tape printer auto-cuts between labels),
   recording each job, and **continues past** per-row print transport failures. It returns `200` with a
   `BatchSummary` `{ total, succeeded, failed: [{ index, error }], jobs }`. Unknown template/printer → 404.
-- **Out of scope (v1):** multipart upload. (Per-row option selection via `option.<name>` columns is now supported, #32.)
 
 ## Changelog
 
+- **2026-08-17**: Parameterized templates and dynamic layout constraints (ADR-0056, #162). Unified all
+  template inputs under top-level `params:` with first-class types (`string`, `length`, `integer`, `number`,
+  `boolean`, `enum`), default values, range bounds, and multiline/description metadata. Replaced legacy
+  `options` and `container.option` with universal `when:` conditional visibility across all layout items
+  (`text`, `qr`, `image`, `line`, `container`). Format dimensions and layout attributes accept dynamic
+  references `DynamicValue<T>` (`"{param_name}"`). Evaluation of `when:` runs in both measurement and rendering
+  pre-passes with lazy missing-field evaluation for inactive branches. Added `max_label_dimension_mm` application
+  setting (default `1000.0` mm) and enforced limit in render pre-pass. Updated OpenAPI schemas and dynamic
+  form controls on the Print, Import, and Connect screens.
 - **2026-08-17**: Standardize on `value: "{field}"` string interpolation for all `text` and `qr` layout
   items, removing legacy `name:` binding on text/qr items (ADR-0055, #163). `image` items continue to
   support `name:` (multipart upload / data URI lookup) and `src:` (asset file). Migrated all starter
   catalog templates and test fixtures to `value: "{field}"`.
-
 - **2026-08-12**: Docs only, no behavior change. Added [`AUTHORING.md`](AUTHORING.md), the
   task-oriented template authoring guide (#156): the layout model taught through worked examples from
   `catalog/` and `tests/fixtures/templates/`, covering the measure pre-pass, the two meanings of

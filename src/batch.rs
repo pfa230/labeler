@@ -92,17 +92,11 @@ fn render_single_batch(
     let mut failures: Vec<BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
         let res = match ext {
-            "pdf" => render_single_label_pdf(
-                template,
-                &lbl.data,
-                lbl.option.as_ref(),
-                env.settings,
-                env.datetime,
-            ),
+            "pdf" => render_single_label_pdf(template, &lbl.data, None, env.settings, env.datetime),
             _ => render_single_label_image(
                 template,
                 &lbl.data,
-                lbl.option.as_ref(),
+                None,
                 env.settings,
                 env.datetime,
                 env.render_opts,
@@ -227,7 +221,6 @@ mod tests {
     fn lbl(msg: &str) -> LabelInput {
         LabelInput {
             data: HashMap::from([("message".to_string(), json!(msg))]),
-            option: None,
         }
     }
 
@@ -303,7 +296,6 @@ mod tests {
             lbl("a"),
             LabelInput {
                 data: HashMap::new(),
-                option: None,
             },
         ];
         let err = render_batch(

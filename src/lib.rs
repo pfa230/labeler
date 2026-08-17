@@ -2758,6 +2758,85 @@ layout:
         );
     }
 
+    #[tokio::test]
+    async fn api_templates_detail_exposes_params_schema() {
+        let app = build_app();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/brother_18mm")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::OK);
+        let json = json_response(res).await;
+        assert!(json.get("params").is_some());
+    }
+
+    #[tokio::test]
+    async fn api_print_accepts_data_or_fields() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({
+            "template": "brother_18mm",
+            "printer": "ok-printer",
+            "data": {
+                "message": "Printed via data",
+                "target_width": 70
+            }
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_ne!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn api_print_data_precedes_fields() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({
+            "template": "brother_18mm",
+            "printer": "ok-printer",
+            "data": {
+                "message": "From data"
+            },
+            "fields": {
+                "message": "From fields"
+            }
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn openapi_schema_contains_param_types() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let schemas = doc.components.as_ref().unwrap().schemas.clone();
+        assert!(
+            schemas.contains_key("ParamSpec"),
+            "ParamSpec missing in openapi schemas"
+        );
+        assert!(
+            schemas.contains_key("ParamType"),
+            "ParamType missing in openapi schemas"
+        );
+        assert!(
+            schemas.contains_key("ParamValue"),
+            "ParamValue missing in openapi schemas"
+        );
+    }
+
     // Verify the API-wide behavior: oversized bodies on non-/print JSON endpoints also return 413.
     // axum's global DefaultBodyLimit (~2 MiB) triggers the same JsonRejection->PayloadTooLarge path.
     #[tokio::test]

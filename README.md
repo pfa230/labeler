@@ -47,18 +47,18 @@ service from starting.
 (Labels → Browse the catalog), or paste YAML. The catalog lives in this repo under `catalog/`,
 organised by media class and vendor: the Brother continuous-tape set `brother_9mm` / `brother_12mm` /
 `brother_18mm` / `brother_24mm`, and `avery5163`, ten 2x4 inch labels per US Letter sheet. Every one
-takes a single text field named `message`, so an import maps one column and works against any of
+declares a single parameter named `message`, so an import maps one column and works against any of
 them. Your browser downloads the entry and the server validates and stores it — the server itself
 never reaches out, so air-gapped deployments paste YAML instead.
 
 **Writing your own.** [`docs/AUTHORING.md`](docs/AUTHORING.md) walks the layout model through worked
 examples: coordinates, auto-length tape widths, `auto` sizing, edge-relative placement, containers,
-options, and a troubleshooting table.
+parameters and `when:` conditional visibility, and a troubleshooting table.
 
 **On other tape widths.** Copy the closest tape template and change three things: `format.height`
 (the printable height, narrower than the nominal tape), `format.media_width` (the nominal width, used
 for print preflight), and the `font_size` range. Templates demonstrating engine features — QR
-layouts, multiline, sheet options and rotation, variable interpolation — are not in the catalog; they
+layouts, multiline, conditional `when:` branches and rotation, variable interpolation — are not in the catalog; they
 live in `tests/fixtures/templates/` and are worth reading when authoring your own.
 
 ## Endpoints

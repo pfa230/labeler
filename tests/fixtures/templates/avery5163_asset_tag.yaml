@@ -3,12 +3,24 @@ name: Avery 5163 Asset Tag (QR, multi-variant)
 description: Standard shipping labels on US Letter sheets
 unit: in
 dpi: 300
-options:
+params:
+  id:
+    type: string
+  url:
+    type: string
+  name:
+    type: string
+  tags:
+    type: string
+  description:
+    type: string
   orientation:
-    - horizontal
-    - vertical
+    type: enum
+    values: [horizontal, vertical]
+    default: horizontal
   outline:
-    - yes
+    type: enum
+    values: [yes]
 format:
   type: sheet
   paper_width: 8.5
@@ -30,7 +42,7 @@ format:
     - [4.33, 0.5]
 layout:
   - type: container
-    option:
+    when:
       outline: yes
     at: [0.0, 0.0]
     size: [4.0, 2.0]
@@ -41,7 +53,7 @@ layout:
   # Horizontal: 1.5in left column (QR over centered id) + full-height divider +
   # 2.5in right column (name over a 3/4 rule, then tags above description).
   - type: container
-    option:
+    when:
       orientation: horizontal
     at: [0.0, 0.0]
     size: [4.0, 2.0]
@@ -90,7 +102,7 @@ layout:
   # Vertical: a portrait design authored in the swapped [2,4] author canvas, rotated 90 CCW
   # onto the landscape slot (#98). QR top, id, rule, name, rule, tags, description.
   - type: container
-    option:
+    when:
       orientation: vertical
     at: [0.0, 0.0]
     size: [4.0, 2.0]

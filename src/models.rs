@@ -43,7 +43,6 @@ pub struct TemplateSummary {
     pub description: String,
     pub unit: String,
     pub dpi: u32,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, ParamSpec>,
     pub format: TemplateFormat,
 }
@@ -56,7 +55,6 @@ pub struct TemplateDetail {
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, ParamSpec>,
     pub layout: Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -631,6 +629,18 @@ pub enum LayoutItem {
     },
 }
 
+impl LayoutItem {
+    pub fn when(&self) -> Option<&BTreeMap<String, String>> {
+        match self {
+            LayoutItem::Text { when, .. }
+            | LayoutItem::Qr { when, .. }
+            | LayoutItem::Image { when, .. }
+            | LayoutItem::Line { when, .. }
+            | LayoutItem::Container { when, .. } => when.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone, Copy, PartialEq, Deserialize)]
 pub struct Padding {
     pub top: f32,
@@ -722,11 +732,9 @@ pub struct BatchSummary {
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct LabelInput {
     pub data: HashMap<String, Value>,
-    #[serde(default)]
-    pub option: Option<BTreeMap<String, String>>,
 }
 
-fn default_copies() -> u32 {
+fn default_print_copies() -> u32 {
     1
 }
 
@@ -735,10 +743,10 @@ pub struct PrintRequest {
     pub template: String,
     pub printer: String,
     #[serde(default)]
-    pub fields: HashMap<String, Value>,
+    pub data: Option<HashMap<String, serde_json::Value>>,
     #[serde(default)]
-    pub option: Option<BTreeMap<String, String>>,
-    #[serde(default = "default_copies")]
+    pub fields: Option<HashMap<String, serde_json::Value>>,
+    #[serde(default = "default_print_copies")]
     pub copies: u32,
 }
 

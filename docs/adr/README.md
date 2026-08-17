@@ -15,7 +15,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0002](0002-two-stage-template-parsing.md) | Two-stage template parsing | Accepted |
 | [0003](0003-typst-rendering-engine.md) | Typst as the rendering engine | Accepted |
 | [0004](0004-bottom-left-coordinate-system.md) | Bottom-left coordinate system | Accepted |
-| [0005](0005-recursive-containers-with-option-gating.md) | Recursive containers with option gating | Accepted |
+| [0005](0005-recursive-containers-with-option-gating.md) | Recursive containers with option gating | Accepted (option gating superseded by [0055](0055-parameterized-templates.md)) |
 | [0006](0006-template-edit-ownership.md) | Template edit ownership: manual vs GUI | Accepted |
 | [0007](0007-printer-architecture-and-transport-model.md) | Printer architecture and transport model | Accepted (record shape superseded by [0042](0042-remove-printer-enabled.md)) |
 | [0008](0008-ui-delivery.md) | Web UI delivery | Accepted |
@@ -66,6 +66,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0053](0053-max-bounds-cap.md) | `max_w`/`max_h` cap an `auto` size, not substitute for its fallback | Accepted |
 | [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Accepted |
 | [0055](0055-standardize-on-value-interpolation.md) | Standardize on value interpolation for text and QR items | Accepted |
+| [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted |
 
 ## Adding an ADR
 
