@@ -1049,9 +1049,7 @@ fn validate_layout_item(
             let inner_width = canvas_w - padding.left - padding.right;
             let inner_height = canvas_h - padding.top - padding.bottom;
             const CONTENT_EPSILON: f32 = 1.0e-4;
-            if rotation.is_rotated()
-                && (inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON)
-            {
+            if inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON {
                 return Err("container padding leaves no room for content".to_string());
             }
             let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
@@ -1536,7 +1534,48 @@ mod tests {
     fn rotated_container_rejects_nonpositive_content_area() {
         // author canvas is 40 wide x 80 tall; top+bottom padding 120 > 80 -> non-positive Ch.
         let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    padding: [60,0,60,0]\n    items: []\n";
-        assert!(parse_and_validate(yaml).is_err());
+        assert_eq!(
+            parse_and_validate(yaml),
+            Err("container padding leaves no room for content".to_string())
+        );
+    }
+
+    #[test]
+    fn unrotated_container_rejects_excessive_padding() {
+        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    padding: [0,50,0,50]\n    items: []\n";
+        assert_eq!(
+            parse_and_validate(yaml),
+            Err("container padding leaves no room for content".to_string())
+        );
+    }
+
+    /// Issue #154 repro 1: an unrotated container with auto width whose padding exceeds the resolved width.
+    #[test]
+    fn unrotated_container_with_auto_width_and_excessive_padding_rejected() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
+        assert_eq!(
+            parse_and_validate(yaml),
+            Err("container padding leaves no room for content".to_string())
+        );
+    }
+
+    /// Issue #154 repro 2: an unrotated container capped by max_w whose padding exceeds the cap.
+    #[test]
+    fn unrotated_capped_container_with_excessive_padding_rejected() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
+        assert_eq!(
+            parse_and_validate(yaml),
+            Err("container padding leaves no room for content".to_string())
+        );
+    }
+
+    #[test]
+    fn nested_container_padding_overflow_rejected() {
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [80, 40]\n    padding: [5, 5, 5, 5]\n    items:\n      - type: container\n        at: [0, 0]\n        size: [40, 20]\n        padding: [15, 0, 15, 0]\n        items: []\n";
+        assert_eq!(
+            parse_and_validate(yaml),
+            Err("container padding leaves no room for content".to_string())
+        );
     }
 
     #[test]
