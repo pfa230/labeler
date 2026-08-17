@@ -35,3 +35,36 @@ if (typeof window !== "undefined" && !window.matchMedia) {
       dispatchEvent: () => false,
     }) as MediaQueryList;
 }
+
+// Node 22+ defines an experimental global localStorage that evaluates to undefined without flags,
+// breaking jsdom's window.localStorage.
+if (typeof window !== "undefined" && (!window.localStorage || typeof window.localStorage.clear !== "function")) {
+  let store: Record<string, string> = {};
+  const mockStorage: Storage = {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+    get length() {
+      return Object.keys(store).length;
+    },
+    key: (index: number) => Object.keys(store)[index] ?? null,
+  };
+  Object.defineProperty(window, "localStorage", {
+    value: mockStorage,
+    configurable: true,
+    writable: true,
+  });
+  Object.defineProperty(globalThis, "localStorage", {
+    value: mockStorage,
+    configurable: true,
+    writable: true,
+  });
+}
+
