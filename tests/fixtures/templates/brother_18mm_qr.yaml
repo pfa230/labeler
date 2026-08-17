@@ -3,6 +3,11 @@ name: Brother 18mm Continuous Label (QR + text)
 description: Continuous tape, 18mm nominal (15.8mm printable at 180 dpi), QR left + text
 unit: mm
 dpi: 180
+params:
+  code:
+    type: string
+  message:
+    type: string
 format:
   type: single
   width:
@@ -12,7 +17,7 @@ format:
   media_width: 18
 layout:
   - type: qr
-    name: code
+    value: "{code}"
     at: [0.0, 0.0]
     size: [15.8, 15.8]
   - type: container
@@ -21,7 +26,7 @@ layout:
     padding: 1.0
     items:
       - type: text
-        name: message
+        value: "{message}"
         at: [0.0, 0.0]
         size: [auto, 13.8]
         font_size:
