@@ -86,7 +86,8 @@ export type BatchResult =
 export async function printLabel(body: {
   template: string;
   printer: string; // /print's PrintRequest.printer is required (no serde default)
-  fields: Record<string, string>;
+  data?: Record<string, any>;
+  fields?: Record<string, any>;
   option?: Record<string, string>;
   copies: number;
 }): Promise<BatchSummary> {

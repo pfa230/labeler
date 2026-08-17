@@ -3,7 +3,7 @@ import { useConnections, useConnectorSchema, materializeConnection, type Connect
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
-import { referencedFields, defaultOptions } from "../lib/templateFields";
+import { referencedFields, defaultOptions, defaultParamValues } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
 import {
   MAX_BATCH_LABELS, expandedCount, resolveLabels, sourceRowForExpandedIndex,
@@ -99,7 +99,11 @@ function Composer({
 }) {
   const { push } = useToast();
   const connectorKeys = useMemo(() => [...new Set(schema.resources.flatMap((r) => r.columns.map((c) => c.key)))], [schema]);
-  const templateFields = useMemo(() => referencedFields(detail.layout, {}), [detail]);
+  const templateFields = useMemo(() => {
+    const fields = referencedFields(detail.layout, {});
+    const paramKeys = detail.params ? Object.keys(detail.params) : [];
+    return [...new Set([...fields, ...paramKeys])];
+  }, [detail]);
   const [mapping, setMapping] = useState<FieldMapping>(() => defaultMapping(templateFields, connectorKeys));
 
   const [rows, setRows] = useState<LabelGridRow[]>([]);
@@ -114,19 +118,41 @@ function Composer({
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
-  const declaredOptions = detail.options ?? {};
+  const declaredOptions = useMemo(() => {
+    const opts: Record<string, string[]> = { ...(detail.options ?? {}) };
+    if (detail.params) {
+      for (const [name, spec] of Object.entries(detail.params)) {
+        if (spec.type === "enum" && spec.values) {
+          opts[name] = spec.values;
+        }
+      }
+    }
+    return opts;
+  }, [detail]);
   const declaredNames = Object.keys(declaredOptions);
   const isSheet = detail.format.type === "sheet";
   const positions = detail.format.type === "sheet" ? detail.format.positions.length : 0;
 
-  const requiredForRow = (row: LabelGridRow): string[] => referencedFields(detail.layout, { ...manualOptions, ...row.option });
+  const paramKeys = detail.params ? Object.keys(detail.params) : [];
+  const requiredForRow = (row: LabelGridRow): string[] => [
+    ...new Set([...referencedFields(detail.layout, { ...manualOptions, ...row.option }), ...paramKeys]),
+  ];
   const requiredUnion = new Set<string>();
   for (const row of rows) for (const f of requiredForRow(row)) requiredUnion.add(f);
-  const displayedFields = rows.length ? [...requiredUnion] : referencedFields(detail.layout, manualOptions);
+  const displayedFields = rows.length
+    ? [...requiredUnion]
+    : [...new Set([...referencedFields(detail.layout, manualOptions), ...paramKeys])];
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
     const field: Record<string, string> = {};
-    for (const f of requiredForRow(row)) if ((row.data[f] ?? "").length === 0) field[f] = "required";
+    for (const f of requiredForRow(row)) {
+      const spec = detail.params?.[f];
+      const hasDefault =
+        spec?.default !== undefined ||
+        spec?.type === "boolean" ||
+        (spec?.type === "enum" && (spec.values?.length ?? 0) > 0);
+      if (!hasDefault && (row.data[f] ?? "").length === 0) field[f] = "required";
+    }
     return Object.keys(field).length ? { field } : {};
   };
   const rowInvalid = (row: LabelGridRow): boolean => !!validateRow(row).field;
@@ -140,8 +166,12 @@ function Composer({
 
   // Build the resolved label for the selected row using the same resolution the submit path uses.
   // Connect uses a global manualOptions overlay (not per-row effectiveOption like Import).
+  const defaults = defaultParamValues(detail.params);
   const selRow = rows.find((r) => r.id === resolvedSelectedId);
-  const previewLabel = selRow ? resolveLabels([selRow], manualOptions, 1)[0] : undefined;
+  const previewRow = selRow
+    ? { ...selRow, data: { ...defaults, ...selRow.data } }
+    : undefined;
+  const previewLabel = previewRow ? resolveLabels([previewRow], manualOptions, 1)[0] : undefined;
 
   const preview = useRowPreview({
     templateId: detail.id,
@@ -186,7 +216,11 @@ function Composer({
     const submittedCopies = copies;
     const idForExpandedIndex = (index: number): string | undefined => submittedIds[sourceRowForExpandedIndex(index, submittedCopies)];
     try {
-      const labels = resolveLabels(rowsRef.current, manualOptions, submittedCopies);
+      const rowsWithDefaults = rowsRef.current.map((r) => ({
+        ...r,
+        data: { ...defaults, ...r.data },
+      }));
+      const labels = resolveLabels(rowsWithDefaults, manualOptions, submittedCopies);
       const r = await submitBatch({
         template: detail.id, labels, mode,
         ...(mode === "print" ? { printer } : {}),

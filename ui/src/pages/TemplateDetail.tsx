@@ -286,6 +286,59 @@ export function TemplateDetail() {
         </dl>
       </section>
 
+      {detail.params && Object.keys(detail.params).length > 0 && (
+        <section className="flex flex-col gap-2">
+          <h2 className="text-lg font-semibold">Parameters</h2>
+          <div className="flex flex-col gap-2">
+            {Object.entries(detail.params).map(([name, spec]) => (
+              <div
+                key={name}
+                className="flex flex-col gap-1 rounded-md border p-3 text-sm"
+                style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-medium">{name}</span>
+                    <span
+                      className="rounded-full px-2 py-0.5 text-xs font-medium"
+                      style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                    >
+                      {spec.type}
+                      {spec.multiline ? " (multiline)" : ""}
+                    </span>
+                  </div>
+                  {spec.default !== undefined && (
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>
+                      default: <code className="font-mono">{String(spec.default)}</code>
+                    </span>
+                  )}
+                </div>
+                {spec.description && (
+                  <p className="text-xs" style={{ color: "var(--muted)" }}>
+                    {spec.description}
+                  </p>
+                )}
+                {(spec.min !== undefined || spec.max !== undefined) && (
+                  <div className="text-xs" style={{ color: "var(--muted)" }}>
+                    bounds: {spec.min ?? "-∞"} to {spec.max ?? "+∞"}
+                  </div>
+                )}
+                {spec.values && spec.values.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>
+                      allowed values:
+                    </span>
+                    {spec.values.map((v) => (
+                      <Chip key={v}>{v}</Chip>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {detail.options && Object.keys(detail.options).length > 0 && (
         <section className="flex flex-col gap-2">
           <h2 className="text-lg font-semibold">Options</h2>

@@ -6,18 +6,55 @@ export type TemplateFormat =
 
 export type Options = Record<string, string[]>;
 
+export type ParamType =
+  | "string"
+  | "length"
+  | "integer"
+  | "number"
+  | "boolean"
+  | "enum";
+
+export type ParamValue = string | number | boolean;
+
+export interface ParamSpec {
+  type: ParamType;
+  multiline?: boolean;
+  values?: string[];
+  default?: ParamValue;
+  min?: number;
+  max?: number;
+  description?: string;
+}
+
 // Layout items are tagged by `type`; only the fields the UI reads are typed.
 export type LayoutItem =
-  | { type: "text"; name?: string; value?: string; multiline?: boolean }
-  | { type: "qr"; name?: string; value?: string }
-  | { type: "image"; name?: string; src?: string }
-  | { type: "line" }
-  | { type: "container"; option?: Record<string, string>; items: LayoutItem[] };
+  | { type: "text"; name?: string; value?: string; multiline?: boolean; when?: Record<string, string> }
+  | { type: "qr"; name?: string; value?: string; when?: Record<string, string> }
+  | { type: "image"; name?: string; src?: string; when?: Record<string, string> }
+  | { type: "line"; when?: Record<string, string> }
+  | { type: "container"; option?: Record<string, string>; when?: Record<string, string>; items: LayoutItem[] };
 
-export interface TemplateSummary { id: string; name: string; description: string; unit: string; dpi: number; format: TemplateFormat; options?: Options }
+export interface TemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  unit: string;
+  dpi: number;
+  format: TemplateFormat;
+  params?: Record<string, ParamSpec>;
+  options?: Options;
+}
 export interface TemplateDetail {
-  id: string; name: string; description: string; unit: string; dpi: number;
-  format: TemplateFormat; options?: Options; layout: LayoutItem[]; version?: string;
+  id: string;
+  name: string;
+  description: string;
+  unit: string;
+  dpi: number;
+  format: TemplateFormat;
+  params?: Record<string, ParamSpec>;
+  options?: Options;
+  layout: LayoutItem[];
+  version?: string;
 }
 export interface BatchSummary { total: number; succeeded: number; failed: { index: number; error: string }[]; jobs: number }
 export interface Printer { id: string; name: string; kind: string; config: unknown; is_default?: boolean }
