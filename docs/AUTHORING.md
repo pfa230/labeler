@@ -72,8 +72,8 @@ id: my_label          # unique across the templates directory
 name: My Label        # shown in the UI
 unit: mm              # mm | in — every coordinate and size below is in this unit
 dpi: 180              # raster resolution for PNG output
+params: { ... }       # typed inputs, defaults, bounds, and UI hints (see §9)
 format: { ... }       # the physical shape of the label (below)
-options: { ... }      # optional; see §9
 layout: [ ... ]       # the tree of items to draw
 ```
 
@@ -125,8 +125,13 @@ at startup rather than at print time (§10).
 
 ```yaml
 id: avery5163
+name: Avery 5163 2" x 4" Shipping Label
 unit: in
 dpi: 300
+params:
+  message:
+    type: string
+    description: "Label message text"
 format:
   type: sheet
   paper_width: 8.5
@@ -141,7 +146,7 @@ layout:
     padding: 0.15
     items:
       - type: text
-        name: message
+        value: "{message}"
         at: [0.0, 0.0]
         size: [3.7, 1.7]
         font_size: { min: 10.0, max: 48.0 }
@@ -175,13 +180,21 @@ write page coordinates.
 ellipsized. A bare number (`font_size: 12.0`) is fixed and will clip rather than shrink.
 
 For a fixed-size label with a QR, `tests/fixtures/templates/avery5163_asset_tag.yaml` is the canonical
-example; it is covered in §9 because it also demonstrates containers, options, and rotation.
+example; it is covered in §9 because it also demonstrates containers, parameters, conditional visibility, and rotation.
 
 ## 4. Auto-length tape labels: how the width is decided
 
 `catalog/tape/brother/brother_24mm.yaml`:
 
 ```yaml
+id: brother_24mm
+name: Brother 24mm Continuous Label (text only)
+unit: mm
+dpi: 180
+params:
+  message:
+    type: string
+    description: "Label message text"
 format:
   type: single
   width: { min: 10.0, max: 120.0 }
@@ -194,7 +207,7 @@ layout:
     padding: 1.0
     items:
       - type: text
-        name: message
+        value: "{message}"
         at: [0.0, 0.0]
         size: [auto, 16.1]
         font_size: { min: 10.0, max: 32.0 }
@@ -274,10 +287,13 @@ the whole frame and an item anchored anywhere but the origin overflowed.
 the tape cut to fit:
 
 ```yaml
+params:
+  message:
+    type: string
 format: { type: single, width: { min: 10.0, max: 120.0 }, height: 18.1 }
 layout:
   - type: text
-    name: message
+    value: "{message}"
     size: [auto, 16.1]      # -> exactly as wide as the string needs
 ```
 
@@ -301,7 +317,7 @@ a QR to fill a space, say how big:
 
 ```yaml
 - type: qr
-  name: code
+  value: "{code}"
   at: [0.0, 0.0]
   size: [auto, 18.1]
   max_w: 18.1          # required; `auto` here means "18.1", not "as much as is left"
@@ -323,15 +339,20 @@ the width (§5), and what it caps is how much of the tape's budget the item rese
 `tests/fixtures/templates/brother_24mm_max_w_cap.yaml`:
 
 ```yaml
+params:
+  code:
+    type: string
+  message:
+    type: string
 format: { type: single, width: { min: 10.0, max: 150.0 }, height: 18.1 }
 layout:
   - type: qr
-    name: code
+    value: "{code}"
     at: [1.0, 0.0]
     size: [auto, 18.1]
     max_w: 18.1
   - type: text
-    name: message
+    value: "{message}"
     at: [21.1, 0.0]
     size: [auto, 18.1]
     max_w: 30.0
@@ -371,6 +392,11 @@ The motivating case is anything that should span the full width of a label whose
 know. `tests/fixtures/templates/brother_24mm_lines_divider.yaml`:
 
 ```yaml
+params:
+  line1:
+    type: string
+  line2:
+    type: string
 layout:
   - type: container
     at: [0.0, 0.0]
@@ -378,7 +404,7 @@ layout:
     padding: 1.0
     items:
       - type: text
-        name: line1
+        value: "{line1}"
         at: [0.0, 8.6]
         to: [-0.0, 16.1]        # spans to the right edge of the padded inner box
         font_size: { min: 8.0, max: 20.0 }
@@ -388,7 +414,7 @@ layout:
         to: [-0.0, 8.05]        # full-width rule
         thickness: 0.2
       - type: text
-        name: line2
+        value: "{line2}"
         at: [0.0, 0.0]
         to: [-0.0, 7.5]
         font_size: { min: 6.0, max: 14.0 }
@@ -427,7 +453,7 @@ Rules:
 - `line` uses `at` and `to` as its two endpoints, not as a box; it has no `size`, `fit`, or rotation.
   The endpoints must differ after resolution.
 
-## 9. Containers: nesting, padding, frames, options, rotation
+## 9. Containers: nesting, padding, frames, conditional visibility, rotation
 
 A `container` groups items and establishes a new coordinate frame. Its children are positioned
 relative to its **padded inner box**, so `at: [0, 0]` inside a container with `padding: 1.0` is 1 unit
@@ -445,37 +471,43 @@ against that inner box too.
   items: [ ... ]
 ```
 
-### Option gating
+### Conditional visibility (`when:`) and parameters
 
-Declare the options a template supports, then gate containers on them. This is how one template serves
-several layouts.
+Declare the parameters a template supports in `params:`, then gate containers (or any layout items)
+using `when:` conditions. This is how one template serves several layouts or optional elements (ADR-0055).
 
 ```yaml
-options:
-  orientation: [horizontal, vertical]
-  outline: [yes]
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: horizontal
+  outline:
+    type: enum
+    values: [yes]
 ```
 
-When a request supplies a selection, a container carrying an `option` map renders only if that
-selection matches every entry in it. `tests/fixtures/templates/avery5163_asset_tag.yaml` uses three
-top-level containers: an
-outline-only one that draws a border, a `horizontal` one, and a `vertical` one.
+When a request arrives, each item carrying a `when:` map renders only if all conditions match the
+resolved parameter values. `tests/fixtures/templates/avery5163_asset_tag.yaml` uses three top-level
+containers: an outline-only one that draws a border, a `horizontal` one, and a `vertical` one:
 
 ```yaml
 layout:
   - type: container
-    option: { outline: yes }
+    when:
+      outline: yes
     at: [0.0, 0.0]
     size: [4.0, 2.0]
     frame: { thickness: 0.02, rounded: false }
     items: []
   - type: container
-    option: { orientation: horizontal }
+    when:
+      orientation: horizontal
     at: [0.0, 0.0]
     size: [4.0, 2.0]
     items:
       - type: qr
-        name: url
+        value: "{url}"
         at: [0.1, 0.45]
         size: [1.3, 1.3]
         params: { quiet_zone: 0.0 }
@@ -486,13 +518,12 @@ layout:
       # ... id under the QR, name/tags/description in the right column
 ```
 
-An unmatched gate removes the whole subtree — it is not rendered, and it is not measured either. Only
-the branch actually selected requires its data fields, so an unselected branch's `name`s may be absent
-from the request.
+An unmatched gate removes the whole subtree — it is not rendered, and it is not measured either.
+Missing-field validation is lazy: only the active branch requires its parameter fields, so an inactive
+branch's `{tokens}` may be absent from the request without causing a `422 MissingField`.
 
-**A request that supplies no `option` at all matches nothing, so nothing is filtered and *every* gated
-branch renders — on top of each other.** Omitting the selection is not "give me the default"; there is
-no default. Always send an `option` for a template that declares one.
+If an optional parameter is omitted from the request, it automatically resolves to its declared `default`
+(or `false` for booleans, or the first allowed value for enums).
 
 ### Rotation
 
@@ -502,13 +533,14 @@ the same information authored in a 2×4 portrait canvas and rotated onto the 4×
 
 ```yaml
   - type: container
-    option: { orientation: vertical }
+    when:
+      orientation: vertical
     at: [0.0, 0.0]
     size: [4.0, 2.0]
     rotate: 90
     items:
       - type: qr
-        name: url
+        value: "{url}"
         at: [0.2, 2.3]        # authored in the swapped [2, 4] canvas
         size: [1.6, 1.6]
       # ...
@@ -533,7 +565,7 @@ What to know:
 Templates are validated when the server loads them, and one invalid template stops startup. So a
 `422` from a template that loaded fine looks like a contradiction. It is not.
 
-The split is about **geometry**. Data-driven failures — a missing `name`, an undecodable image, an
+The split is about **geometry**. Data-driven failures — a missing `{token}`, an undecodable image, an
 interpolation token that resolves to nothing — are per-request on every format, because the data
 arrives with the request. What differs between formats is when the *layout* can be checked.
 
@@ -563,9 +595,9 @@ or, on an auto-length label, it produced a width the layout cannot live in. Eith
 
 Four error codes carry a stable `details.reason` slug naming the specific cause; match on the slug,
 never on the message text ([SPEC §10.1](SPEC.md#101-detailsreason)). Everything else is identified by
-`code` alone. Every row below is a slug except `MissingField`, which is a code and carries no slug.
+`code` alone. Every row below is a slug except `MissingField` and `InvalidOptionValue`, which are codes and carry no slug.
 
-| Reason | What actually happened | Usual fix |
+| Reason / Code | What actually happened | Usual fix |
 | --- | --- | --- |
 | `size_auto_without_max` | `auto` on an axis with no way to resolve it — almost always a `qr` or `image`, which have no content fallback. | Add `max_w` (or `max_h`), or write a number. |
 | `size_auto_no_room` | `auto` resolved through the anchor fallback and got `<= 0`: the item's own `at` consumed the whole frame on that axis. | Move the anchor left/down, or give the item an explicit size. |
@@ -575,7 +607,9 @@ never on the message text ([SPEC §10.1](SPEC.md#101-detailsreason)). Everything
 | `coord_out_of_frame` / `item_out_of_frame` | A resolved coordinate or box falls outside the frame. On an auto-length label this can be per-request; see §10. | Remember children resolve against the container's **padded inner** box, not its outer size. |
 | `line_endpoint_out_of_frame` | A line endpoint resolved outside the frame. Endpoints are errors, not clipped. | Same as above; check the container frame you are actually in. |
 | `line_degenerate` | Start and end resolved to the same point. | Two edge-relative endpoints on one axis (`-0.0` and `-0.0`) collapse; vary one. |
-| `MissingField` (422) | A `name` or `{token}` has no value in the request `data`. | Check the key spelling. A gated branch demands its fields only when it renders — which, if you sent no `option` at all, means every branch does (§9). |
+| `dimension_exceeds_limit` | A resolved label dimension exceeds the `max_label_dimension_mm` application setting (default 1000mm) or is `<= 0`. | Check requested dimension parameters or update the setting. |
+| `MissingField` (422) | A `{token}` has no value in the request `data` and no declared `default` in `params:`. | Check parameter spelling. An inactive `when:` branch never demands its unreferenced parameters (§9). |
+| `InvalidOptionValue` (422) | An `enum` parameter was supplied with a value not in its declared `values`. | Check allowed enum values declared in the template's `params:`. |
 | `template_validation_failed` (at startup) | Structural validation. The message carries the JSON path to the offending item. | Read the path; it names the exact item. |
 | `auto_length_cursor_mismatch` (500) | Internal invariant: the measure and render passes disagreed about which items they visited. | Not an authoring error — file an issue with the template and data. |
 
