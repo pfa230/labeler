@@ -3,6 +3,11 @@ name: Homebox QR Asset Label
 description: Asset label whose QR links a configured base URL to an item id (variables interpolation demo)
 unit: mm
 dpi: 300
+params:
+  id:
+    type: string
+  message:
+    type: string
 format:
   type: single
   width:
