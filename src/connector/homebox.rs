@@ -241,10 +241,20 @@ struct EntitySummary {
     asset_id: Option<String>,
     #[serde(default)]
     quantity: Option<f64>,
+    #[serde(default, rename = "purchasePrice")]
+    purchase_price: Option<f64>,
+    #[serde(default)]
+    manufacturer: Option<String>,
+    #[serde(default, rename = "modelNumber")]
+    model_number: Option<String>,
+    #[serde(default, rename = "serialNumber")]
+    serial_number: Option<String>,
     #[serde(default, rename = "itemCount")]
     item_count: Option<f64>,
     #[serde(default)]
     parent: Option<serde_json::Value>,
+    #[serde(default)]
+    fields: Option<Vec<serde_json::Value>>,
 }
 
 fn field(key: &str, label: &str, ty: FieldType, tier: Tier) -> FieldSpec {
@@ -266,10 +276,12 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
         "description".into(),
         CellValue::Text(e.description.clone().unwrap_or_default()),
     );
+    let entity_url = format!("{}/entity/{}", base_url.trim_end_matches('/'), e.id);
     if resource == "locations" {
         if let Some(n) = e.item_count {
             cells.insert("itemCount".into(), CellValue::Number(n));
         }
+        cells.insert("location_url".into(), CellValue::Text(entity_url.clone()));
     } else {
         cells.insert(
             "assetId".into(),
@@ -278,7 +290,34 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
         if let Some(q) = e.quantity {
             cells.insert("quantity".into(), CellValue::Number(q));
         }
+        if let Some(p) = e.purchase_price {
+            cells.insert("purchasePrice".into(), CellValue::Number(p));
+        }
         cells.insert("location".into(), CellValue::Text(json_name(&e.parent)));
+        if let Some(ref m) = e.manufacturer {
+            cells.insert("manufacturer".into(), CellValue::Text(m.clone()));
+        }
+        if let Some(ref m) = e.model_number {
+            cells.insert("modelNumber".into(), CellValue::Text(m.clone()));
+        }
+        if let Some(ref s) = e.serial_number {
+            cells.insert("serialNumber".into(), CellValue::Text(s.clone()));
+        }
+        cells.insert("item_url".into(), CellValue::Text(entity_url.clone()));
+
+        if let Some(ref fields) = e.fields {
+            for f in fields {
+                if let Some(name) = f.get("name").and_then(|n| n.as_str()) {
+                    let val = f
+                        .get("textValue")
+                        .or_else(|| f.get("value"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    cells.insert(format!("custom:{name}"), CellValue::Text(val));
+                }
+            }
+        }
     }
     DisplayRow {
         id: RowRef {
@@ -286,11 +325,7 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
             key: e.id.clone(),
         },
         cells,
-        url: Some(format!(
-            "{}/entity/{}",
-            base_url.trim_end_matches('/'),
-            e.id
-        )),
+        url: Some(entity_url),
     }
 }
 
@@ -401,6 +436,67 @@ mod tests {
             .unwrap();
         assert_eq!(page.rows.len(), 2);
         assert_eq!(page.rows[0].id.key, "e1");
+    }
+
+    #[tokio::test]
+    async fn browse_populates_all_schema_columns_including_custom_fields() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {
+                        "id": "e1",
+                        "name": "Drill",
+                        "description": "Cordless power drill",
+                        "assetId": "000-001",
+                        "quantity": 2,
+                        "purchasePrice": 99.95,
+                        "manufacturer": "DeWalt",
+                        "modelNumber": "DCD771C2",
+                        "serialNumber": "SN12345",
+                        "parent": {"id": "loc1", "name": "Garage"},
+                        "fields": [
+                            {"name": "Warranty", "textValue": "2028-01-01"},
+                            {"name": "Voltage", "value": "20V"}
+                        ]
+                    }
+                ],
+                "total": 1
+            })))
+            .mount(&server).await;
+        let egress = crate::egress::Egress::with_loopback();
+        let key = crate::connector::cursor::SigningKey::random();
+        let c = HomeboxConnector;
+        let page = c
+            .browse(
+                &conn(&server.uri()),
+                &egress,
+                &key,
+                crate::connector::BrowseRequest {
+                    resource: "entities".into(),
+                    filters: Default::default(),
+                    parent: None,
+                    cursor: None,
+                    page_size: Some(50),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.rows.len(), 1);
+        let cells = &page.rows[0].cells;
+        assert_eq!(cells.get("name").unwrap(), &CellValue::Text("Drill".into()));
+        assert_eq!(cells.get("description").unwrap(), &CellValue::Text("Cordless power drill".into()));
+        assert_eq!(cells.get("assetId").unwrap(), &CellValue::Text("000-001".into()));
+        assert_eq!(cells.get("quantity").unwrap(), &CellValue::Number(2.0));
+        assert_eq!(cells.get("purchasePrice").unwrap(), &CellValue::Number(99.95));
+        assert_eq!(cells.get("manufacturer").unwrap(), &CellValue::Text("DeWalt".into()));
+        assert_eq!(cells.get("modelNumber").unwrap(), &CellValue::Text("DCD771C2".into()));
+        assert_eq!(cells.get("serialNumber").unwrap(), &CellValue::Text("SN12345".into()));
+        assert_eq!(cells.get("location").unwrap(), &CellValue::Text("Garage".into()));
+        assert_eq!(cells.get("item_url").unwrap(), &CellValue::Text(format!("{}/entity/e1", server.uri())));
+        assert_eq!(cells.get("custom:Warranty").unwrap(), &CellValue::Text("2028-01-01".into()));
+        assert_eq!(cells.get("custom:Voltage").unwrap(), &CellValue::Text("20V".into()));
     }
 
     #[tokio::test]

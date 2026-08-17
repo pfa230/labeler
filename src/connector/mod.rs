@@ -84,7 +84,7 @@ pub struct RowRef {
     pub key: String,
 }
 
-#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
+#[derive(serde::Serialize, utoipa::ToSchema, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum CellValue {
     Text(String),

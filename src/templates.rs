@@ -683,7 +683,6 @@ fn instantiate_item_defaults(
 
     match item {
         LayoutItem::Text {
-            name,
             value,
             placement,
             font_size,
@@ -697,7 +696,6 @@ fn instantiate_item_defaults(
                 DynamicValue::Ref(r) => DynamicValue::Literal(resolve_u16_default(params, r)),
             });
             LayoutItem::Text {
-                name: name.clone(),
                 value: value.clone(),
                 placement: inst_placement(placement),
                 font_size: font_size.clone(),
@@ -708,13 +706,11 @@ fn instantiate_item_defaults(
             }
         }
         LayoutItem::Qr {
-            name,
             value,
             placement,
             params: qr_params,
             when,
         } => LayoutItem::Qr {
-            name: name.clone(),
             value: value.clone(),
             placement: inst_placement(placement),
             params: qr_params.clone(),
