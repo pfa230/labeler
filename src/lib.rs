@@ -11,7 +11,7 @@ pub mod middleware;
 pub mod models;
 pub mod openapi;
 pub mod parse;
-mod raw;
+pub mod raw;
 pub mod reason;
 pub mod render;
 pub mod settings;

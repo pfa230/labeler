@@ -1,7 +1,5 @@
 use crate::errors::AppError;
-use crate::models::{
-    Alignment, Dimension, FontSize, HorizontalAlign, Point, QrParams, VerticalAlign,
-};
+use crate::models::{Alignment, FontSize, HorizontalAlign, Point, QrParams, VerticalAlign};
 use crate::reason::Reason;
 use base64::Engine as _;
 use qrcode::render::svg;
@@ -104,12 +102,27 @@ pub(super) fn interpolate(
     Ok(out)
 }
 
-pub(super) fn resolve_dimension(dimension: &Dimension) -> Result<f32, AppError> {
+pub(super) fn resolve_dimension(
+    dimension: &crate::models::DynamicDimension,
+) -> Result<f32, AppError> {
     match dimension {
-        Dimension::Fixed(value) => Ok(*value),
-        Dimension::Dynamic { min, max } => max
-            .or(*min)
-            .ok_or_else(|| AppError::unsupported_format("dynamic dimension missing min/max")),
+        crate::models::DynamicDimension::Fixed(crate::models::DynamicValue::Literal(value)) => {
+            Ok(*value)
+        }
+        crate::models::DynamicDimension::Fixed(crate::models::DynamicValue::Ref(_)) => Ok(0.0),
+        crate::models::DynamicDimension::Dynamic { min, max } => {
+            let max_val = max.as_ref().and_then(|v| match v {
+                crate::models::DynamicValue::Literal(x) => Some(*x),
+                _ => None,
+            });
+            let min_val = min.as_ref().and_then(|v| match v {
+                crate::models::DynamicValue::Literal(x) => Some(*x),
+                _ => None,
+            });
+            max_val
+                .or(min_val)
+                .ok_or_else(|| AppError::unsupported_format("dynamic dimension missing min/max"))
+        }
     }
 }
 
