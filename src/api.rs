@@ -772,6 +772,20 @@ pub async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Response
             is_default: dt_is_default,
         },
     );
+    let max_dim_stored = state
+        .store()
+        .get_setting(crate::settings::MAX_LABEL_DIMENSION_MM)
+        .await?;
+    let max_dim_is_default = max_dim_stored.is_none();
+    let max_dim = crate::settings::resolve_max_label_dimension_mm_from(max_dim_stored)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    out.insert(
+        crate::settings::MAX_LABEL_DIMENSION_MM.to_string(),
+        ResolvedSetting {
+            value: serde_json::json!(max_dim),
+            is_default: max_dim_is_default,
+        },
+    );
     Ok(Json(out).into_response())
 }
 
