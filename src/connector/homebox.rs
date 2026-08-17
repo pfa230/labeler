@@ -543,6 +543,7 @@ mod tests {
             connector: "homebox".into(),
             name: "h".into(),
             base_url: base.into(),
+            public_url: None,
             credential: "hb_key".into(),
             enabled: true,
         }

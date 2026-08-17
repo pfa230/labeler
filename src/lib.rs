@@ -2461,7 +2461,7 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", &hb.uri(), "hb_key")
+            .create_connection("homebox", "h", &hb.uri(), None, "hb_key", true)
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));
@@ -2495,7 +2495,7 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", &hb.uri(), "hb_key")
+            .create_connection("homebox", "h", &hb.uri(), None, "hb_key", true)
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));
@@ -2534,7 +2534,7 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", &hb.uri(), "hb_key")
+            .create_connection("homebox", "h", &hb.uri(), None, "hb_key", true)
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));
@@ -2562,7 +2562,7 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", "http://hb.lan:7745", "hb_key")
+            .create_connection("homebox", "h", "http://hb.lan:7745", None, "hb_key", true)
             .await
             .unwrap();
         let router = app(state.clone()); // NO with_auth
@@ -2603,7 +2603,7 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", "http://hb.lan:7745", "hb_key")
+            .create_connection("homebox", "h", "http://hb.lan:7745", None, "hb_key", true)
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));

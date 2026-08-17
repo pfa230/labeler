@@ -1111,7 +1111,14 @@ pub async fn create_connection(
     let _g = state.write_lock.lock().await;
     let c = state
         .store()
-        .create_connection(&body.connector, &body.name, &body.base_url, &cred)
+        .create_connection(
+            &body.connector,
+            &body.name,
+            &body.base_url,
+            None,
+            &cred,
+            body.enabled,
+        )
         .await?;
     Ok((axum::http::StatusCode::CREATED, Json(connection_view(&c))).into_response())
 }
@@ -1162,6 +1169,7 @@ pub async fn update_connection_h(
             &id,
             &body.name,
             &body.base_url,
+            crate::store::UpdateField::Keep,
             cred.as_deref(),
             body.enabled,
         )
