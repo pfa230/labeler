@@ -28,32 +28,37 @@ async fn run_healthcheck() -> i32 {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    // `labeler healthcheck` is the container HEALTHCHECK command; handle it before anything else.
-    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
-        std::process::exit(run_healthcheck().await);
-    }
+/// Fatal startup error: log and exit 1 without an unwinding panic or backtrace.
+macro_rules! fatal {
+    ($($arg:tt)*) => {{
+        tracing::error!($($arg)*);
+        std::process::exit(1);
+    }};
+}
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("labeler=info,tower_http=info")),
-        )
-        .init();
-
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = labeler::resolve_dir(std::env::var_os("LABELER_CONFIG_DIR"), "/config");
     let templates_dir = config_dir.join("templates");
-    std::fs::create_dir_all(&templates_dir).expect("failed to create templates dir");
+
+    if let Err(err) = std::fs::create_dir_all(&templates_dir) {
+        fatal!(path = %templates_dir.display(), %err, "failed to create templates dir");
+    }
     // assets dir must exist: render::helpers::resolve_image_asset canonicalizes {config}/assets and
     // fails if it is missing (the entrypoint covers Docker, but local/non-entrypoint runs need this).
-    std::fs::create_dir_all(config_dir.join("assets")).expect("failed to create assets dir");
+    let assets_dir = config_dir.join("assets");
+    if let Err(err) = std::fs::create_dir_all(&assets_dir) {
+        fatal!(path = %assets_dir.display(), %err, "failed to create assets dir");
+    }
 
-    let store = Store::open(&config_dir.join("labeler.db"))
-        .unwrap_or_else(|err| panic!("failed to open store: {err}"));
+    let store = match Store::open(&config_dir.join("labeler.db")) {
+        Ok(s) => s,
+        Err(err) => fatal!(%err, "failed to open store"),
+    };
 
-    let templates = TemplateRegistry::load_from_dir(&templates_dir)
-        .unwrap_or_else(|err| panic!("failed to load templates: {err}"));
+    let templates = match TemplateRegistry::load_from_dir(&templates_dir) {
+        Ok(t) => t,
+        Err(err) => fatal!(%err, "failed to load templates"),
+    };
     tracing::info!(
         count = templates.len(),
         broken = templates.broken().len(),
@@ -88,11 +93,13 @@ async fn main() {
         std::env::var("LABELER_INIT_PASSWORD"),
     ) {
         if store.count_users().await.unwrap_or(0) == 0 && !u.is_empty() && !p.is_empty() {
-            let hash = labeler::auth::hash_password(&p).expect("hash init password");
-            store
-                .create_user(&u, &hash)
-                .await
-                .expect("create init user");
+            let hash = match labeler::auth::hash_password(&p) {
+                Ok(h) => h,
+                Err(err) => fatal!(%err, "failed to hash init password"),
+            };
+            if let Err(err) = store.create_user(&u, &hash).await {
+                fatal!(user = %u, %err, "failed to create init user");
+            }
             tracing::info!(user = %u, "bootstrapped initial user from env");
         }
     }
@@ -121,16 +128,42 @@ async fn main() {
         });
     }
 
-    let app = app(state);
+    let server_app = app(state);
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
-    let addr: SocketAddr = format!("0.0.0.0:{}", port).parse().expect("invalid PORT");
+    let addr: SocketAddr = match format!("0.0.0.0:{port}").parse() {
+        Ok(a) => a,
+        Err(err) => fatal!(port, %err, "invalid PORT value"),
+    };
 
     tracing::info!(%addr, "labeler service listening");
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind listener");
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(err) => fatal!(%addr, %err, "failed to bind listener"),
+    };
 
-    axum::serve(listener, app).await.expect("server error");
+    if let Err(err) = axum::serve(listener, server_app).await {
+        fatal!(%err, "server error");
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    // `labeler healthcheck` is the container HEALTHCHECK command; handle it before anything else.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        std::process::exit(run_healthcheck().await);
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("labeler=info,tower_http=info")),
+        )
+        .init();
+
+    // run() only returns Ok(()); all error paths call fatal!() which logs and exits.
+    let _ = run().await;
 }
