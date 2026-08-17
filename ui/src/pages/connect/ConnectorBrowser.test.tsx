@@ -85,4 +85,65 @@ describe("ConnectorBrowser", () => {
       expect(JSON.parse((last[1]!.body) as string).filters).toEqual({ q: "drill" });
     });
   });
+
+  it("manages tag chips, auto-commits pending input, and sends tag array on Apply", async () => {
+    const schemaWithTags: ConnectorSchema = {
+      version: "homebox-1",
+      resources: [
+        {
+          id: "entities",
+          label: "Items",
+          view: "table",
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap" }],
+          filters: [
+            { key: "q", label: "Search", ty: "search" },
+            { key: "tag", label: "Tags", ty: "label_id" },
+          ],
+        },
+      ],
+      relationships: [],
+    };
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+      json({ rows: [], next_cursor: null, has_more: false, count: 0 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ConnectorBrowser connectionId="c1" schema={schemaWithTags} selected={[]} onSelectedChange={vi.fn()} />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const tagInput = screen.getByLabelText("Tags");
+    // Add first tag via Add button
+    fireEvent.change(tagInput, { target: { value: "tools" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText("tools")).toBeInTheDocument();
+    expect(tagInput).toHaveValue("");
+
+    // Add second tag via Enter key
+    fireEvent.change(tagInput, { target: { value: "cables" } });
+    fireEvent.keyDown(tagInput, { key: "Enter" });
+    expect(screen.getByText("cables")).toBeInTheDocument();
+    expect(tagInput).toHaveValue("");
+
+    // Add third tag by leaving it in pending input and clicking Apply (auto-commit)
+    fireEvent.change(tagInput, { target: { value: "audio" } });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    await waitFor(() => {
+      const last = fetchMock.mock.calls.at(-1)!;
+      expect(JSON.parse((last[1]!.body) as string).filters).toEqual({
+        tag: ["tools", "cables", "audio"],
+      });
+    });
+
+    // Remove one tag
+    fireEvent.click(screen.getByRole("button", { name: "Remove tag cables" }));
+    expect(screen.queryByText("cables")).not.toBeInTheDocument();
+
+    // Clear filters
+    fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
+    await waitFor(() => {
+      const last = fetchMock.mock.calls.at(-1)!;
+      expect(JSON.parse((last[1]!.body) as string).filters).toBeUndefined();
+    });
+    expect(screen.queryByText("tools")).not.toBeInTheDocument();
+  });
 });
