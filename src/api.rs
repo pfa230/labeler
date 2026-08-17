@@ -1046,38 +1046,94 @@ pub async fn probe_printer(Json(req): Json<ProbeRequest>) -> Result<Json<ProbeRe
     }))
 }
 
+#[derive(serde::Serialize, utoipa::ToSchema, Debug, PartialEq)]
+pub struct ConnectionView {
+    pub id: String,
+    pub connector: String,
+    pub name: String,
+    pub base_url: String,
+    pub public_url: Option<String>,
+    pub enabled: bool,
+    pub has_credential: bool,
+}
+
+impl From<&crate::store::Connection> for ConnectionView {
+    fn from(c: &crate::store::Connection) -> Self {
+        Self {
+            id: c.id.clone(),
+            connector: c.connector.clone(),
+            name: c.name.clone(),
+            base_url: c.base_url.clone(),
+            public_url: c.public_url.clone(),
+            enabled: c.enabled,
+            has_credential: !c.credential.is_empty(),
+        }
+    }
+}
+
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct ConnectionInput {
     pub connector: String,
     pub name: String,
     pub base_url: String,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    #[schema(value_type = Option<String>)]
+    pub public_url: Option<Option<String>>,
     pub credential: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+fn deserialize_optional_field<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 fn default_true() -> bool {
     true
 }
 
-fn connection_view(c: &crate::store::Connection) -> serde_json::Value {
-    serde_json::json!({
-        "id": c.id, "connector": c.connector, "name": c.name,
-        "base_url": c.base_url, "enabled": c.enabled,
-        "has_credential": !c.credential.is_empty()
-    })
+pub(crate) fn validate_and_normalize_url(raw: &str, field_name: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    let parsed = url::Url::parse(trimmed).map_err(|_| {
+        AppError::invalid_request(
+            Reason::BaseUrlInvalid,
+            format!("invalid {field_name}"),
+        )
+    })?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(AppError::invalid_request(
+            Reason::BaseUrlInvalid,
+            format!("{field_name} must use http or https scheme"),
+        ));
+    }
+    if parsed.host().is_none() {
+        return Err(AppError::invalid_request(
+            Reason::BaseUrlInvalid,
+            format!("{field_name} must include a host"),
+        ));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err(AppError::invalid_request(
+            Reason::BaseUrlInvalid,
+            format!("{field_name} must not contain query parameters or fragments"),
+        ));
+    }
+    Ok(trimmed.trim_end_matches('/').to_string())
 }
 
 #[utoipa::path(
     get,
     path = "/connections",
     responses(
-        (status = 200, description = "List connections (credential redacted; only has_credential exposed)", body = Object)
+        (status = 200, description = "List connections (credential redacted; only has_credential exposed)", body = [ConnectionView])
     )
 )]
 pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
     let cs = state.store().list_connections().await?;
-    Ok(Json(cs.iter().map(connection_view).collect::<Vec<_>>()).into_response())
+    Ok(Json(cs.iter().map(ConnectionView::from).collect::<Vec<_>>()).into_response())
 }
 
 #[utoipa::path(
@@ -1085,7 +1141,7 @@ pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Resp
     path = "/connections",
     request_body = ConnectionInput,
     responses(
-        (status = 201, description = "Connection created (credential redacted in response)", body = Object),
+        (status = 201, description = "Connection created (credential redacted in response)", body = ConnectionView),
         (status = 400, description = "Invalid request", body = ErrorResponse)
     )
 )]
@@ -1106,21 +1162,31 @@ pub async fn create_connection(
             "credential required",
         ));
     }
-    url::Url::parse(&body.base_url)
-        .map_err(|_| AppError::invalid_request(Reason::BaseUrlInvalid, "invalid base_url"))?;
+    let base_url = validate_and_normalize_url(&body.base_url, "base_url")?;
+    let pub_url = match &body.public_url {
+        Some(Some(raw)) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(validate_and_normalize_url(trimmed, "public_url")?)
+            }
+        }
+        _ => None,
+    };
     let _g = state.write_lock.lock().await;
     let c = state
         .store()
         .create_connection(
             &body.connector,
             &body.name,
-            &body.base_url,
-            None,
+            &base_url,
+            pub_url.as_deref(),
             &cred,
             body.enabled,
         )
         .await?;
-    Ok((axum::http::StatusCode::CREATED, Json(connection_view(&c))).into_response())
+    Ok((axum::http::StatusCode::CREATED, Json(ConnectionView::from(&c))).into_response())
 }
 
 #[utoipa::path(
@@ -1128,7 +1194,7 @@ pub async fn create_connection(
     path = "/connections/{id}",
     params(("id" = String, Path, description = "Connection ID")),
     responses(
-        (status = 200, description = "Connection (credential redacted)", body = Object),
+        (status = 200, description = "Connection (credential redacted)", body = ConnectionView),
         (status = 404, description = "Connection not found", body = ErrorResponse)
     )
 )]
@@ -1141,7 +1207,7 @@ pub async fn get_connection_h(
         .get_connection(&id)
         .await?
         .ok_or_else(|| AppError::not_found(&id))?;
-    Ok(Json(connection_view(&c)).into_response())
+    Ok(Json(ConnectionView::from(&c)).into_response())
 }
 
 #[utoipa::path(
@@ -1150,7 +1216,8 @@ pub async fn get_connection_h(
     params(("id" = String, Path, description = "Connection ID")),
     request_body = ConnectionInput,
     responses(
-        (status = 200, description = "Connection updated (credential redacted)", body = Object),
+        (status = 200, description = "Connection updated (credential redacted)", body = ConnectionView),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Connection not found", body = ErrorResponse)
     )
 )]
@@ -1159,8 +1226,19 @@ pub async fn update_connection_h(
     Path(id): Path<String>,
     Json(body): Json<ConnectionInput>,
 ) -> Result<Response, AppError> {
-    url::Url::parse(&body.base_url)
-        .map_err(|_| AppError::invalid_request(Reason::BaseUrlInvalid, "invalid base_url"))?;
+    let base_url = validate_and_normalize_url(&body.base_url, "base_url")?;
+    let public_url = match &body.public_url {
+        None => crate::store::UpdateField::Keep,
+        Some(None) => crate::store::UpdateField::Clear,
+        Some(Some(raw)) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                crate::store::UpdateField::Clear
+            } else {
+                crate::store::UpdateField::Set(validate_and_normalize_url(trimmed, "public_url")?)
+            }
+        }
+    };
     let _g = state.write_lock.lock().await;
     let cred = body.credential.filter(|c| !c.is_empty());
     let ok = state
@@ -1168,8 +1246,8 @@ pub async fn update_connection_h(
         .update_connection(
             &id,
             &body.name,
-            &body.base_url,
-            crate::store::UpdateField::Keep,
+            &base_url,
+            public_url,
             cred.as_deref(),
             body.enabled,
         )
@@ -1178,7 +1256,7 @@ pub async fn update_connection_h(
         return Err(AppError::not_found(&id));
     }
     let c = state.store().get_connection(&id).await?.unwrap();
-    Ok(Json(connection_view(&c)).into_response())
+    Ok(Json(ConnectionView::from(&c)).into_response())
 }
 
 #[utoipa::path(
@@ -2394,5 +2472,120 @@ impl FromRequestParts<Arc<AppState>> for HttpsHint {
             &parts.uri,
             state.trust_proxy(),
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_and_normalize_url_accepts_valid_urls() {
+        assert_eq!(
+            validate_and_normalize_url("http://example.com", "base_url").unwrap(),
+            "http://example.com"
+        );
+        assert_eq!(
+            validate_and_normalize_url("https://example.com/", "base_url").unwrap(),
+            "https://example.com"
+        );
+        assert_eq!(
+            validate_and_normalize_url("  https://example.com/sub/path///  ", "public_url").unwrap(),
+            "https://example.com/sub/path"
+        );
+        assert_eq!(
+            validate_and_normalize_url("http://hb.lan:7745", "base_url").unwrap(),
+            "http://hb.lan:7745"
+        );
+    }
+
+    #[test]
+    fn validate_and_normalize_url_rejects_invalid_urls() {
+        // Bad scheme
+        let err = validate_and_normalize_url("ftp://example.com", "public_url").unwrap_err();
+        assert_eq!(err.reason(), Some("base_url_invalid"));
+        assert!(err.message_text().contains("must use http or https scheme"));
+
+        // Missing host
+        let err = validate_and_normalize_url("http://", "base_url").unwrap_err();
+        assert_eq!(err.reason(), Some("base_url_invalid"));
+
+        // Query parameters
+        let err = validate_and_normalize_url("http://example.com?query=1", "public_url").unwrap_err();
+        assert_eq!(err.reason(), Some("base_url_invalid"));
+        assert!(err.message_text().contains("must not contain query parameters or fragments"));
+
+        // Fragments
+        let err = validate_and_normalize_url("http://example.com#section", "base_url").unwrap_err();
+        assert_eq!(err.reason(), Some("base_url_invalid"));
+        assert!(err.message_text().contains("must not contain query parameters or fragments"));
+
+        // Parse failure
+        let err = validate_and_normalize_url("not a url", "base_url").unwrap_err();
+        assert_eq!(err.reason(), Some("base_url_invalid"));
+        assert_eq!(err.message_text(), "invalid base_url");
+    }
+
+    #[test]
+    fn connection_input_deserialization_public_url_tri_state() {
+        // Omitted -> None
+        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan"}"#;
+        let input: ConnectionInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.public_url, None);
+
+        // Null -> Some(None)
+        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":null}"#;
+        let input: ConnectionInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.public_url, Some(None));
+
+        // Empty string -> Some(Some(""))
+        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":""}"#;
+        let input: ConnectionInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.public_url, Some(Some(String::new())));
+
+        // String value -> Some(Some("https://example.com"))
+        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":"https://example.com"}"#;
+        let input: ConnectionInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.public_url, Some(Some("https://example.com".into())));
+    }
+
+    #[test]
+    fn connection_view_from_connection() {
+        let conn = crate::store::Connection {
+            id: "conn-1".into(),
+            connector: "homebox".into(),
+            name: "Homebox".into(),
+            base_url: "http://hb.lan:7745".into(),
+            public_url: Some("https://homebox.example.com".into()),
+            credential: "secret".into(),
+            enabled: true,
+        };
+        let view = ConnectionView::from(&conn);
+        assert_eq!(
+            view,
+            ConnectionView {
+                id: "conn-1".into(),
+                connector: "homebox".into(),
+                name: "Homebox".into(),
+                base_url: "http://hb.lan:7745".into(),
+                public_url: Some("https://homebox.example.com".into()),
+                enabled: true,
+                has_credential: true,
+            }
+        );
+
+        let conn_no_cred = crate::store::Connection {
+            id: "conn-2".into(),
+            connector: "homebox".into(),
+            name: "Homebox".into(),
+            base_url: "http://hb.lan:7745".into(),
+            public_url: None,
+            credential: "".into(),
+            enabled: false,
+        };
+        let view2 = ConnectionView::from(&conn_no_cred);
+        assert_eq!(view2.has_credential, false);
+        assert_eq!(view2.public_url, None);
+        assert_eq!(view2.enabled, false);
     }
 }

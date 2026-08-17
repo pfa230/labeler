@@ -3,9 +3,10 @@ use utoipa::OpenApi;
 use crate::{
     api,
     api::{
-        AuthStatus, ConnectionInput, Credentials, DatetimePreviewRequest, DatetimePreviewResponse,
-        OkResponse, PasswordChange, ProbeCapabilities, ProbeRequest, ProbeResponse,
-        ResolvedSetting, SettingValue, TokenCreate, TokenCreated, TokenSummary, UserSummary,
+        AuthStatus, ConnectionInput, ConnectionView, Credentials, DatetimePreviewRequest,
+        DatetimePreviewResponse, OkResponse, PasswordChange, ProbeCapabilities, ProbeRequest,
+        ProbeResponse, ResolvedSetting, SettingValue, TokenCreate, TokenCreated, TokenSummary,
+        UserSummary,
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
@@ -132,6 +133,7 @@ use crate::{
             TokenCreated,
             OkResponse,
             ConnectionInput,
+            ConnectionView,
             ConnectorSchema,
             ResourceSpec,
             FieldSpec,
