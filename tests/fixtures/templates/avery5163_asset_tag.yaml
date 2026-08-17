@@ -47,13 +47,13 @@ layout:
     size: [4.0, 2.0]
     items:
       - type: qr
-        name: url
+        value: "{url}"
         at: [0.1, 0.45]
         size: [1.3, 1.3]
         params:
           quiet_zone: 0.0
       - type: text
-        name: id
+        value: "{id}"
         at: [0.1, 0.1]
         size: [1.3, 0.35]
         font_size: {min: 11.0, max: 22.0}
@@ -67,21 +67,21 @@ layout:
         to: [4.0, 1.5]
         thickness: 0.01
       - type: text
-        name: name
+        value: "{name}"
         at: [1.6, 1.5]
         size: [2.3, 0.4]
         font_size: {min: 12.0, max: 24.0}
         multiline: true
         alignment: {horizontal: left, vertical: center}
       - type: text
-        name: tags
+        value: "{tags}"
         at: [1.6, 0.75]
         size: [2.3, 0.65]
         font_size: 12.0
         multiline: true
         alignment: {horizontal: left, vertical: center}
       - type: text
-        name: description
+        value: "{description}"
         at: [1.6, 0.1]
         size: [2.3, 0.65]
         font_size: 12.0
@@ -97,13 +97,13 @@ layout:
     rotate: 90
     items:
       - type: qr
-        name: url
+        value: "{url}"
         at: [0.2, 2.3]
         size: [1.6, 1.6]
         params:
           quiet_zone: 0.0
       - type: text
-        name: id
+        value: "{id}"
         at: [0.1, 1.92]
         size: [1.8, 0.38]
         font_size: {min: 10.0, max: 20.0}
@@ -113,7 +113,7 @@ layout:
         to: [2.0, 1.92]
         thickness: 0.007
       - type: text
-        name: name
+        value: "{name}"
         at: [0.1, 1.01]
         size: [1.8, 0.91]
         font_size: {min: 13.0, max: 26.0}
@@ -124,14 +124,14 @@ layout:
         to: [2.0, 1.01]
         thickness: 0.007
       - type: text
-        name: tags
+        value: "{tags}"
         at: [0.1, 0.5]
         size: [1.8, 0.41]
         font_size: 12.0
         multiline: true
         alignment: {horizontal: left, vertical: top}
       - type: text
-        name: description
+        value: "{description}"
         at: [0.1, 0.1]
         size: [1.8, 0.4]
         font_size: 12.0

@@ -20,7 +20,7 @@ layout:
     padding: 1.0
     items:
       - type: text
-        name: line1
+        value: "{line1}"
         at: [0.0, 8.6]
         to: [-0.0, 16.1]
         font_size:
@@ -34,7 +34,7 @@ layout:
         to: [-0.0, 8.05]
         thickness: 0.2
       - type: text
-        name: line2
+        value: "{line2}"
         at: [0.0, 0.0]
         to: [-0.0, 7.5]
         font_size:
