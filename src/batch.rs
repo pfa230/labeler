@@ -209,8 +209,7 @@ mod tests {
             },
             params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
-                name: Some("message".to_string()),
-                value: None,
+                value: "{message}".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
