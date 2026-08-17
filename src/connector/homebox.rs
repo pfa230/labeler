@@ -22,6 +22,66 @@ fn base(conn: &Connection) -> Result<Url, ConnectorError> {
         .map_err(|_| ConnectorError::ConnectionFailed("invalid base_url".into()))
 }
 
+struct EffectiveHomeboxFilters {
+    q: Option<String>,
+    parent: Option<String>,
+    tags: Vec<String>,
+}
+
+impl EffectiveHomeboxFilters {
+    fn parse(req: &BrowseRequest) -> Result<Self, ConnectorError> {
+        let mut q = None;
+        let mut parent = None;
+        let mut tags = Vec::new();
+
+        for (k, v) in &req.filters {
+            match k.as_str() {
+                "q" => q = v.as_single_trimmed("q")?,
+                "parent" => parent = v.as_single_trimmed("parent")?,
+                "tag" => {
+                    for t in v.as_tokens() {
+                        let trimmed = t.trim().to_string();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
+                        if trimmed.len() > 64 {
+                            return Err(ConnectorError::InvalidFilter("tag filter exceeds max length of 64".into()));
+                        }
+                        if !tags.contains(&trimmed) {
+                            tags.push(trimmed);
+                        }
+                    }
+                    if tags.len() > 16 {
+                        return Err(ConnectorError::InvalidFilter("too many tags, max 16".into()));
+                    }
+                }
+                _ => return Err(ConnectorError::InvalidFilter(format!("unknown filter: {k}"))),
+            }
+        }
+
+        if parent.is_some() && req.parent.is_some() {
+            return Err(ConnectorError::InvalidFilter("conflicting parent params".into()));
+        }
+
+        Ok(Self { q, parent, tags })
+    }
+
+    fn to_hash(&self, resource: &str, req_parent: Option<&str>) -> String {
+        let parent_val = req_parent.or(self.parent.as_deref()).unwrap_or("");
+        let mut m = serde_json::Map::new();
+        if let Some(q) = &self.q {
+            m.insert("q".into(), serde_json::Value::String(q.clone()));
+        }
+        if !self.tags.is_empty() {
+            let mut sorted = self.tags.clone();
+            sorted.sort();
+            m.insert("tags".into(), serde_json::Value::Array(sorted.into_iter().map(serde_json::Value::String).collect()));
+        }
+        let json_str = serde_json::to_string(&m).unwrap();
+        crate::auth::sha256_hex(&format!("{}|{}|{}", resource, parent_val, json_str))
+    }
+}
+
 impl HomeboxConnector {
     pub async fn schema(
         &self,
@@ -79,7 +139,7 @@ impl HomeboxConnector {
                         },
                         FilterSpec {
                             key: "tag".into(),
-                            label: "Label".into(),
+                            label: "Tags".into(),
                             ty: FilterType::LabelId,
                         },
                     ],
@@ -119,11 +179,13 @@ impl HomeboxConnector {
         req: BrowseRequest,
     ) -> Result<BrowsePage, ConnectorError> {
         let b = base(conn)?;
-        let page_size = req.page_size.unwrap_or(PAGE_DEFAULT).min(200);
-        let filter_hash = hash_filters(&req);
+        let eff = EffectiveHomeboxFilters::parse(&req)?;
+        let filter_hash = eff.to_hash(&req.resource, req.parent.as_ref().map(|p| p.key.as_str()));
+
+        let mut page_size = req.page_size.unwrap_or(PAGE_DEFAULT).clamp(1, 200);
         let page = match &req.cursor {
             Some(tok) => {
-                cursor::verify(
+                let claims = cursor::verify(
                     key,
                     tok,
                     &CursorBinding {
@@ -132,8 +194,9 @@ impl HomeboxConnector {
                         resource: &req.resource,
                         filter_hash: &filter_hash,
                     },
-                )?
-                .page
+                )?;
+                page_size = claims.page_size;
+                claims.page
             }
             None => 1,
         };
@@ -144,21 +207,29 @@ impl HomeboxConnector {
             ("page".into(), page.to_string()),
             ("pageSize".into(), page_size.to_string()),
         ];
-        if let Some(q) = req.filters.get("q") {
+        if let Some(q) = &eff.q {
             query.push(("q".into(), q.clone()));
         }
-        if let Some(tag) = req.filters.get("tag") {
-            query.push(("tags".into(), tag.clone()));
+        for t in &eff.tags {
+            query.push(("tags".into(), t.clone()));
         }
         if let Some(p) = req.parent.as_ref() {
             query.push(("parentIds".into(), p.key.clone()));
-        } else if let Some(p) = req.filters.get("parent") {
+        } else if let Some(p) = &eff.parent {
             query.push(("parentIds".into(), p.clone()));
         }
 
         let resp: EntityList = egress
             .get_json(&b, "/api/v1/entities", &query, &conn.credential)
-            .await?;
+            .await
+            .map_err(|e| {
+                if let crate::egress::EgressError::Transport(ref m) = e {
+                    if m.starts_with("json:") {
+                        return ConnectorError::UpstreamSchemaMismatch(m.clone());
+                    }
+                }
+                ConnectorError::from(e)
+            })?;
         let rows: Vec<DisplayRow> = resp
             .items
             .iter()
@@ -373,23 +444,65 @@ fn extract_field(detail: &serde_json::Value, key: &str, base_url: &str, id: &str
     }
 }
 
-fn hash_filters(req: &BrowseRequest) -> String {
-    let parent = req.parent.as_ref().map(|p| p.key.as_str()).unwrap_or("");
-    let mut parts: Vec<String> = req
-        .filters
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect();
-    parts.sort();
-    crate::auth::sha256_hex(&format!("{}|{}|{}", req.resource, parent, parts.join("&")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::Connection;
+    use crate::connector::FilterValue;
     use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn effective_filters_parsing_and_hashing() {
+        let mut req = BrowseRequest {
+            resource: "entities".into(),
+            filters: BTreeMap::new(),
+            parent: None,
+            cursor: None,
+            page_size: None,
+        };
+        req.filters.insert("q".into(), FilterValue::Single(" search ".into()));
+        req.filters.insert("tag".into(), FilterValue::Multiple(vec!["  t2  ".into(), "t1".into(), "t1".into()]));
+        
+        let eff = EffectiveHomeboxFilters::parse(&req).unwrap();
+        assert_eq!(eff.q.as_deref(), Some("search"));
+        assert_eq!(eff.tags, vec!["t2", "t1"]);
+
+        let hash1 = eff.to_hash("entities", None);
+        
+        // Reverse tag order should yield same hash due to sorting
+        req.filters.insert("tag".into(), FilterValue::Multiple(vec!["t1".into(), "t2".into()]));
+        let eff2 = EffectiveHomeboxFilters::parse(&req).unwrap();
+        let hash2 = eff2.to_hash("entities", None);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn effective_filters_rejects_long_tags() {
+        let mut req = BrowseRequest {
+            resource: "entities".into(),
+            filters: BTreeMap::new(),
+            parent: None,
+            cursor: None,
+            page_size: None,
+        };
+        let long_tag = "a".repeat(65);
+        req.filters.insert("tag".into(), FilterValue::Single(long_tag));
+        assert!(matches!(EffectiveHomeboxFilters::parse(&req), Err(ConnectorError::InvalidFilter(_))));
+    }
+
+    #[test]
+    fn effective_filters_rejects_conflicting_parents() {
+        let mut req = BrowseRequest {
+            resource: "entities".into(),
+            filters: BTreeMap::new(),
+            parent: Some(crate::connector::BrowseParent { relationship: "r".into(), key: "k1".into() }),
+            cursor: None,
+            page_size: None,
+        };
+        req.filters.insert("parent".into(), FilterValue::Single("k2".into()));
+        assert!(matches!(EffectiveHomeboxFilters::parse(&req), Err(ConnectorError::InvalidFilter(_))));
+    }
 
     fn conn(base: &str) -> Connection {
         Connection {

@@ -9,7 +9,7 @@ use crate::{
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
-        ExpansionPolicy, FieldSpec, FieldType, FilterSpec, FilterType, LabelRow,
+        ExpansionPolicy, FieldSpec, FieldType, FilterSpec, FilterType, FilterValue, LabelRow,
         MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, Tier, View,
     },
     models::{
@@ -147,6 +147,7 @@ use crate::{
             BrowseRequest,
             BrowseParent,
             BrowsePage,
+            FilterValue,
             MaterializeRequest,
             ExpansionPolicy,
             LabelRow
