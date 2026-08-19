@@ -67,11 +67,13 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Accepted |
 | [0055](0055-standardize-on-value-interpolation.md) | Standardize on value interpolation for text and QR items | Accepted |
 | [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted |
+| [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted |
 
 ## Adding an ADR
 
 1. Copy the structure of an existing record. Use the next zero-padded number.
 2. Set `Status: Proposed`, fill in Context / Decision / Consequences.
 3. Add a row to the index above.
-4. On acceptance, set `Status: Accepted` and update [`../SPEC.md`](../SPEC.md) to reflect the new
-   behavior (and its changelog).
+4. On acceptance, set `Status: Accepted` and specify the new behavior as an OpenSpec delta under
+   `openspec/changes/<change>/specs/`, which folds into `openspec/specs/` on archive.
+   [`../SPEC.md`](../SPEC.md) is frozen (ADR-0057) and is no longer updated.

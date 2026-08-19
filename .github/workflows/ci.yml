@@ -83,6 +83,34 @@ jobs:
       - name: Build
         run: npm run build
 
+  openspec:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      # Pinned to match the CLI that generated the committed skill/command files under .claude/,
+      # .agent/, .agents/ and .opencode/ (the 24 SKILL.md manifests record `generatedBy: 1.9.0`).
+      # To upgrade: bump this pin, run `openspec update --force`, and commit the regeneration.
+      - name: Install OpenSpec
+        run: npm install -g @fission-ai/openspec@1.9.0
+
+      - name: Doctor
+        run: openspec doctor
+
+      # Specs and active changes are well-formed against the spec-driven schema.
+      - name: Validate specs and changes
+        run: openspec validate --all --strict --no-interactive
+
+      # Archived changes have every task checked; catches a change archived while still incomplete.
+      - name: Validate archived changes
+        run: openspec validate --archived --no-interactive
+
   build:
     needs: [rust, ui]
     permissions:

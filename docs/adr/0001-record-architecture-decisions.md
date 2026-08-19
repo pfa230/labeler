@@ -1,6 +1,9 @@
 # 1. Record architecture decisions
 
-**Status:** Accepted
+**Status:** Accepted, with two clauses superseded by [ADR-0057](0057-openspec-adoption.md). The ADR
+log itself stands. The paired artifact is now an OpenSpec delta spec under
+`openspec/changes/<change>/specs/` (folded into `openspec/specs/` on archive), not a living
+`docs/SPEC.md`; and the trigger is every behavior change, not every "major decision".
 
 ## Context
 
