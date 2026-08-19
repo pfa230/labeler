@@ -22,3 +22,8 @@ ui/dist
 
 # Per-machine Claude Code permissions (the rest of .claude/ is committed)
 /.claude/settings.local.json
+
+# Project instructions live in this repo, not in a personal dotfiles symlink (#178).
+# A global gitignore matches CLAUDE.md / AGENTS.md; these negations override it here.
+!/CLAUDE.md
+!/AGENTS.md
