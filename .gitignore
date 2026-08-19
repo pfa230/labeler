@@ -20,3 +20,5 @@ ui/dist
 # Git worktrees
 /.worktrees/
 
+# Per-machine Claude Code permissions (the rest of .claude/ is committed)
+/.claude/settings.local.json

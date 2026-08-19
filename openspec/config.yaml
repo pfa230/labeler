@@ -1,0 +1,121 @@
+schema: spec-driven
+
+context: |
+  Labeler is a stateless label-rendering REST service in Rust (axum). It loads YAML label templates
+  and renders a single label to PNG or a batch to PDF/ZIP by generating Typst source on the fly and
+  compiling it in-process with `typst-as-lib` (`typst-render` for PNG, `typst-pdf` for PDF).
+
+  Architecture. Request path: `api.rs` -> `render/`. Template path: `templates.rs` -> `parse.rs` ->
+  `raw.rs` -> `convert.rs`. Parsing is two-stage: YAML deserializes into `raw.rs` structs (all
+  `deny_unknown_fields`), then converts into the domain model via `TryFrom` in `convert.rs`. When
+  adding a layout field, update `raw.rs`, the matching `models.rs` type, and the `TryFrom` in
+  `convert.rs` together. Template coordinates use a bottom-left origin, y-up, in the template `unit`;
+  Typst uses top-left, so the renderer flips with `frame_height_units - top`. Size resolution is
+  duplicated between compile-time validation (`templates.rs`) and render-time resolution
+  (`render/mod.rs`); keep the two in sync. Errors: `TemplateError` carries a parse/validation path
+  (a broken template is quarantined at load, not fatal to startup); `AppError` is the HTTP error and
+  serializes to `{ "error": { code, message, details } }`. Add new error kinds as `AppError`
+  constructors so `code` strings stay stable. Every model exposed in the API must be registered in
+  `openapi.rs`.
+
+  Specs. `docs/SPEC.md` is FROZEN at commit bc7b1ce as the baseline reference for behavior that
+  existed on 2026-08-19. It is no longer edited. New and changed behavior is specified in
+  `openspec/specs/<capability-path>/spec.md`. See `rules.specs` below for the precedence rule.
+
+  Decisions. `docs/adr/` holds append-only Nygard ADRs. Every behavior change adds or supersedes an
+  ADR in the same change, and adds its row to `docs/adr/README.md`. Supersede rather than edit.
+
+  Tracker. GitHub issues and milestones are the sole live backlog. Every change corresponds to
+  exactly one open issue.
+
+  Gates. Before reporting any change: `cargo fmt`, `cargo clippy --all-targets --all-features`, and
+  `cargo test` must pass. Never silence a lint with `#[allow(clippy::...)]`; fix the root cause.
+  Templates are visual artifacts: a YAML edit that parses and renders without error is not proof the
+  label looks right. Use a render -> inspect -> fix loop against a PNG before calling a template done.
+
+rules:
+  proposal:
+    - >-
+      Link the GitHub issue this change implements, by number, in the first section. Exactly one
+      open issue per change.
+    - >-
+      Keep scope inside that issue's accepted scope. Work discovered mid-change that falls outside
+      it becomes a new GitHub issue, never an extra task here.
+
+  specs:
+    - >-
+      `docs/SPEC.md` is frozen at commit bc7b1ce. Its sections stay authoritative until an OpenSpec
+      requirement explicitly supersedes them.
+    - >-
+      When a change touches behavior documented only in frozen `docs/SPEC.md`, write an ADDED
+      requirement containing the complete post-change contract, not the difference, and name the
+      exact `docs/SPEC.md` section it supersedes. Never write a MODIFIED delta against a requirement
+      that does not yet exist in `openspec/specs/`.
+    - >-
+      An ADDED requirement supersedes only the `docs/SPEC.md` section it names. Unrelated frozen
+      sections remain authoritative.
+    - >-
+      Once a requirement lives in `openspec/specs/`, later changes to it use MODIFIED as normal.
+    - >-
+      A delta spec is proposed truth. It becomes normative only after it is synced into
+      `openspec/specs/`.
+
+  design:
+    - >-
+      Name the ADR this change adds or supersedes under `docs/adr/`. Every behavior change needs one.
+    - >-
+      If the change is genuinely behavior-neutral (refactor, docs, tooling), say so explicitly and
+      state why no ADR is required.
+
+  tasks:
+    - >-
+      Tasks are execution steps for this change only. They are not a backlog, so never park future
+      work as an unchecked task. Open a GitHub issue instead.
+    - >-
+      Include a task for the ADR and its `docs/adr/README.md` index row whenever `design.md` names
+      one.
+    - >-
+      Include a task for `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test`.
+
+operations:
+  apply:
+    guidance:
+      - >-
+        Implementation is not done when the tasks are checked. Spin up a separate adversarial code
+        reviewer, briefed to find real problems rather than rubber-stamp, and run a review -> fix ->
+        review loop against the diff: the reviewer audits it against the issue's acceptance criteria,
+        correctness, edge cases, tests and these conventions; you address every meaningful finding or
+        justify with file:line evidence why it is not one; repeat until a pass surfaces no meaningful
+        fixes. Verify each finding against the actual code before accepting or dismissing it.
+      - >-
+        When that reviewer is codex, the cap is 5 passes absent an unresolved blocking issue.
+        Converging on "no MAJOR issues" is the goal, not an empty findings list.
+      - >-
+        Do not commit here. The commit happens after archive and the final verification pass. See the
+        archive guidance for the full order.
+
+  archive:
+    guidance:
+      - >-
+        Always sync every delta spec into `openspec/specs/`. Never take the "archive without
+        syncing" option, and never archive with unchecked tasks or incomplete artifacts.
+      - >-
+        Verify the ADR named in `design.md` exists under `docs/adr/` and has its row in
+        `docs/adr/README.md`.
+      - >-
+        Archive rewrites the main specs, so that diff has not been reviewed yet. Read it before
+        committing.
+      - >-
+        Then verify, in this order: `openspec doctor`, `openspec validate --all --strict
+        --no-interactive`, `openspec validate --archived --no-interactive`, `cargo fmt`,
+        `cargo clippy --all-targets --all-features`, `cargo test`.
+      - >-
+        Then make one commit covering code, ADR, main specs and the archived change, with `Fixes #N`
+        so the issue closes on push. This repo does not use pull requests: do the work on a
+        short-lived branch, then `git checkout main && git merge <branch> && git push`. Never
+        force-push and never rewrite pushed history.
+      - >-
+        The `openspec-*` skills and `opsx` commands under `.claude/`, `.agent/`, `.agents/` and
+        `.opencode/` are generated by the OpenSpec CLI and are committed. Never hand-edit them:
+        `openspec update` overwrites them. To upgrade, upgrade the CLI, run `openspec update
+        --force`, review all four trees together, and commit the regeneration on its own.

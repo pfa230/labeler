@@ -1,7 +1,13 @@
 # Labeler: Specification
 
-**Status:** Living document. Update this file on every major decision or behavior change, and record
-the decision as an ADR under [`docs/adr/`](adr/).
+**Status:** **Frozen** at commit `bc7b1ce` (2026-08-19). This document is the baseline reference for
+behavior that existed on that date, and it is no longer edited. New and changed behavior is specified
+in `openspec/specs/<capability>/spec.md` through the OpenSpec workflow (ADR-0057).
+
+**Precedence:** every section here stays authoritative until an OpenSpec requirement explicitly names
+and supersedes it. Where an `openspec/specs/` requirement names a section of this document, that
+requirement wins for the named section only; the rest of this document is unaffected. Decisions are
+still recorded as ADRs under [`docs/adr/`](adr/).
 
 **Version:** 0.1.0
 
@@ -1090,6 +1096,10 @@ Internally, `/import/csv` parses the CSV into labels and delegates to the shared
 
 ## Changelog
 
+- **2026-08-19**: **This document is frozen** at commit `bc7b1ce` and receives no further entries
+  (ADR-0057). Behavior specified here remains authoritative until an OpenSpec requirement under
+  `openspec/specs/` explicitly names and supersedes the relevant section. Subsequent behavior changes
+  are specified as OpenSpec deltas and recorded as ADRs; they are not appended below.
 - **2026-08-17**: Parameterized templates and dynamic layout constraints (ADR-0056, #162). Unified all
   template inputs under top-level `params:` with first-class types (`string`, `length`, `integer`, `number`,
   `boolean`, `enum`), default values, range bounds, and multiline/description metadata. Replaced legacy

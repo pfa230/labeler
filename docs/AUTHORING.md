@@ -3,9 +3,15 @@
 A template is one YAML file that describes one label. This guide walks from a blank file to a working
 label through worked examples, in the order the concepts actually bite.
 
-[`SPEC.md`](SPEC.md) is the normative reference: it states every rule precisely, organised by
-subsystem. This guide is organised by what you are trying to do, and links into the spec rather than
-restating it. Where the two disagree, the spec is right and this guide is a bug.
+[`SPEC.md`](SPEC.md) is the normative reference for the behavior it documents: it states every rule
+precisely, organised by subsystem. This guide is organised by what you are trying to do, and links
+into the spec rather than restating it. Where this guide and the normative rules disagree, this guide
+is the bug.
+
+The normative rules live in two places. `SPEC.md` is frozen at commit `bc7b1ce` (2026-08-19, ADR-0057);
+behavior added or changed after that date lives in `openspec/specs/<capability>/spec.md`. To look a
+rule up: read `SPEC.md`, then check whether an `openspec/specs/` requirement names and supersedes that
+section. If one does, it wins for that section; otherwise `SPEC.md` holds.
 
 Every worked example below is a template that ships in this repo, under `catalog/` or
 `tests/fixtures/templates/`, so the guide cannot drift from the shipped set, and every render shown
