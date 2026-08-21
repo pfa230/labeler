@@ -137,6 +137,18 @@ cargo clippy --all-targets --all-features
 **Before reporting any change**, run `cargo fmt`, `cargo clippy --all-targets --all-features`, and
 `cargo test`. Never silence a lint with `#[allow(clippy::...)]`; fix the root cause.
 
+`rust-toolchain.toml` pins the compiler those gates run on, so a local pass and a CI pass mean the
+same thing (#186). rustup installs the pinned toolchain on first `cargo` call; you need do nothing.
+It is **not** an MSRV: it says "build with this", not "this is the oldest compiler we support", and
+`Cargo.toml` declares no `rust-version`. One thing silently beats it: a per-directory
+`rustup override set` from an earlier session. If your gate results stop matching CI, run
+`rustup override unset` in the repo root and `rustc --version` to confirm.
+
+Nothing bumps the pin for you. Dependabot has no updater for the file, which is the point: a new
+stable can add a lint, and here that arrives as a deliberate commit with its fallout attached rather
+than as a red build on someone else's PR. To bump: edit `channel`, run the three gates, fix what the
+new toolchain flags, and commit the bump on its own.
+
 For non-trivial changes, web-search first to confirm current API behavior, especially for Typst, axum,
 and utoipa, whose APIs shift between versions.
 
