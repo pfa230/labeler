@@ -24,6 +24,10 @@ ui/dist
 /.claude/settings.local.json
 
 # Project instructions live in this repo, not in a personal dotfiles symlink (#178).
-# A global gitignore matches CLAUDE.md / AGENTS.md; these negations override it here.
+# AGENTS.md is the canonical file; CLAUDE.md is a symlink to it (#179).
+# A global gitignore matches both names; these negations override it here.
 !/CLAUDE.md
 !/AGENTS.md
+
+# Personal, machine-specific instructions. Loaded alongside CLAUDE.md, never committed.
+/CLAUDE.local.md
