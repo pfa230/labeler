@@ -1,4 +1,4 @@
-schema: spec-driven
+schema: labeler
 
 context: |
   Labeler is a stateless label-rendering REST service in Rust (axum). It loads YAML label templates
