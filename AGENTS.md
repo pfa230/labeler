@@ -5,9 +5,6 @@ A stateless label-rendering REST service (Rust/axum). It loads YAML label templa
 generating [Typst](https://typst.app/) source on the fly and compiling it in-process via
 `typst-as-lib`.
 
-`CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`; both stay in sync. Personal, machine-specific
-instructions go in `CLAUDE.local.md`, which is gitignored.
-
 ## Where behavior is specified
 
 Two places, and the split is deliberate (ADR-0057).
@@ -149,6 +146,8 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
 
 ## Notes
 
+- `CLAUDE.md` is a symlink to this file, so the two names are one file. Put personal,
+  machine-specific instructions in `CLAUDE.local.md` instead; it is gitignored and loads alongside.
 - `openspec/specs/.gitkeep` and `openspec/changes/archive/.gitkeep` anchor directories git cannot
   otherwise track. Do not delete them while those directories are empty.
 - `*.pdf` is gitignored; sample PDFs in the repo root are local render artifacts.
