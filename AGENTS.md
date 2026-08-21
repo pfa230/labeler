@@ -148,8 +148,7 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
 
 - `CLAUDE.md` is a symlink to this file, so the two names are one file. Put personal,
   machine-specific instructions in `CLAUDE.local.md` instead; it is gitignored and loads alongside.
-- `openspec/specs/.gitkeep` and `openspec/changes/archive/.gitkeep` anchor directories git cannot
-  otherwise track. Do not delete them while those directories are empty.
-- `*.pdf` is gitignored; sample PDFs in the repo root are local render artifacts.
+- Do not delete `openspec/specs/.gitkeep` or `openspec/changes/archive/.gitkeep` while those
+  directories are empty.
 - Fonts: Inter loads via `typst-kit` from `fonts/InterVariable.ttf`; Typst is told to use
   `"Inter Variable"`/`"Inter"`.
