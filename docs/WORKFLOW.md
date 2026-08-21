@@ -60,12 +60,31 @@ Also available: `/opsx:explore` for thinking something through before an issue e
 Any of the four can take the propose or the apply step. Roles are interchangeable; the only fixed
 constraint is that the reviewer is not the author.
 
-| Agent | Invoked as |
-| --- | --- |
-| Claude Code | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` in-session |
-| `agy` | `cd .worktrees/issue-<N> && agy -i "<prompt>"` — `--mode accept-edits` skips per-edit approval, `--effort high` raises reasoning. `--model` is ignored in print mode. |
-| `codex` | `codex exec --ignore-user-config -s read-only … < /dev/null` for reviews; drop `-s read-only` to let it write. `< /dev/null` is required or it blocks on stdin. |
-| `opencode` | `opencode run "<prompt>"`, or `opencode` for the TUI |
+The stage commands differ per agent, because OpenSpec writes a separate command set for each and not
+every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` and the **skill** form
+`/openspec-*`.
+
+| Agent | Stage commands | Notes |
+| --- | --- | --- |
+| Claude Code | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` | Colon-separated. From `.claude/commands/opsx/`. |
+| `agy` (Antigravity) | `/openspec-propose`, `/openspec-apply-change`, `/openspec-archive-change` | **Skill form.** The CLI reads `.agent/skills/` and ignores `.agent/workflows/`, so `/opsx-apply` is not a command despite what OpenSpec's tool table implies. |
+| `codex` | none needed | Used for reviews via `codex exec`, with the instructions piped in. |
+| `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Unverified. |
+
+Run `agy` from inside the worktree, since it indexes its working directory:
+
+```bash
+cd .worktrees/issue-<N>
+agy -i --mode accept-edits --effort high "/openspec-apply-change issue-<N>-<slug>. Do not commit."
+```
+
+`-i` runs the prompt then stays interactive. `--mode accept-edits` skips per-edit approval. `--model`
+is ignored in print mode. "Do not commit" matters: the change is committed once at the end, after
+archive and verification.
+
+Its commits are gated the same as anyone's — `core.hooksPath` resolves inside a worktree, so
+`.githooks/pre-commit` runs. What it cannot see is the Claude Code edit-time hook, so its only gate is
+at commit time.
 
 Stages hand off through **files on disk, not conversation**. Every artifact's instructions re-read
 their dependencies from disk, so a stage can run in a fresh session, a different agent, or the same
