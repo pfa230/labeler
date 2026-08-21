@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Tool-agnostic review gate (#191). Every agent commits through git, so this is the
+# one choke point Claude Code, agy, codex and opencode all pass. Enabled by
+# `git config core.hooksPath .githooks`, which `scripts/setup-hooks.sh` does.
+#
+# Skippable with `git commit --no-verify`; CI runs the same script on what lands.
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
+[ "${#staged[@]}" -gt 0 ] || exit 0
+exec "$root/scripts/review-gate-check.sh" "$root" "${staged[@]}"
