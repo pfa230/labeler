@@ -13,6 +13,7 @@ type C = {
   connector: string;
   name: string;
   base_url: string;
+  public_url?: string | null;
   enabled: boolean;
   has_credential: boolean;
   transforms: FieldTransform[];
@@ -21,6 +22,7 @@ type ConnectionInputBody = {
   connector: string;
   name: string;
   base_url: string;
+  public_url?: string | null;
   credential?: string;
   transforms?: FieldTransform[];
 };
@@ -45,6 +47,7 @@ function stubFetch() {
               ...c,
               name: b.name,
               base_url: b.base_url,
+              public_url: "public_url" in b ? b.public_url : c.public_url,
               has_credential: c.has_credential || !!b.credential,
               transforms: b.transforms ?? c.transforms,
             }
@@ -59,6 +62,7 @@ function stubFetch() {
         connector: b.connector,
         name: b.name,
         base_url: b.base_url,
+        public_url: b.public_url ?? null,
         enabled: true,
         has_credential: !!b.credential,
         transforms: b.transforms ?? [],
@@ -242,5 +246,76 @@ describe("ConnectionsSection", () => {
     expect(
       await screen.findByText("pattern must declare at least one named capture group"),
     ).toBeInTheDocument();
+  });
+
+  it("setting a public URL: request body carries it and table row shows it", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add connection/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home" } });
+    fireEvent.change(screen.getByLabelText(/base url/i), { target: { value: "http://hb.lan:7745" } });
+    fireEvent.change(screen.getByLabelText(/public url/i), { target: { value: "https://homebox.example.com" } });
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "hb_secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText("Home")).toBeInTheDocument();
+    expect(await screen.findByText("https://homebox.example.com")).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find(
+      ([u, i]) => String(u) === "/api/connections" && (i?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse(post![1]!.body as string).public_url).toBe("https://homebox.example.com");
+  });
+
+  it("clearing a public URL: edit a connection that has one, empty the field, save, asserts body carries public_url: null and row shows -", async () => {
+    renderSection();
+    // seed connection with public_url
+    fireEvent.click(await screen.findByRole("button", { name: /add connection/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home" } });
+    fireEvent.change(screen.getByLabelText(/base url/i), { target: { value: "http://hb.lan:7745" } });
+    fireEvent.change(screen.getByLabelText(/public url/i), { target: { value: "https://homebox.example.com" } });
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "hb_secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText("https://homebox.example.com")).toBeInTheDocument();
+
+    // edit: clear public url
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    expect(screen.getByLabelText(/public url/i)).toHaveValue("https://homebox.example.com");
+    fireEvent.change(screen.getByLabelText(/public url/i), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText("-")).toBeInTheDocument();
+    expect(screen.queryByText("https://homebox.example.com")).not.toBeInTheDocument();
+
+    const put = fetchMock.mock.calls.find(([, i]) => (i?.method ?? "GET") === "PUT");
+    expect(put).toBeTruthy();
+    const body = JSON.parse(put![1]!.body as string) as ConnectionInputBody;
+    expect(body.public_url).toBeNull();
+  });
+
+  it("rejecting invalid public URL in form: shows error and sends no request", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add connection/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home" } });
+    fireEvent.change(screen.getByLabelText(/base url/i), { target: { value: "http://hb.lan:7745" } });
+    fireEvent.change(screen.getByLabelText(/public url/i), { target: { value: "homebox.example.com" } });
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "hb_secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText(/public url must be a valid url/i)).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find(
+      ([u, i]) => String(u) === "/api/connections" && (i?.method ?? "GET") === "POST",
+    );
+    expect(post).toBeUndefined();
+  });
+
+  it("creating with public url left empty: body carries public_url: null", async () => {
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /add connection/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home" } });
+    fireEvent.change(screen.getByLabelText(/base url/i), { target: { value: "http://hb.lan:7745" } });
+    fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: "hb_secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(await screen.findByText("Home")).toBeInTheDocument();
+    expect(await screen.findByText("-")).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find(
+      ([u, i]) => String(u) === "/api/connections" && (i?.method ?? "GET") === "POST",
+    );
+    expect(JSON.parse(post![1]!.body as string).public_url).toBeNull();
   });
 });
