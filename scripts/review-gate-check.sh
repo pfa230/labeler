@@ -40,6 +40,10 @@ for change in "$changes_dir"/*/; do
   review="$change/review.md"
   [ -f "$review" ] || fail "change '$name' has no review.md. The plan must be adversarially reviewed before implementation."
 
+  # The reviewer is read-only, so review.md is transcribed from its output. Without
+  # the raw capture there is nothing to check a softened finding against.
+  ls "$change"/review-raw-* >/dev/null 2>&1 || fail "change '$name': review.md has no review-raw-*.txt beside it. Preserve the reviewer's output verbatim, one file per round."
+
   verdict=$(field "$review" VERDICT)
   case "$verdict" in
     __MISSING__|__AMBIGUOUS__)

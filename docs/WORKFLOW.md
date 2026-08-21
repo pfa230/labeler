@@ -118,7 +118,12 @@ intent:
 - **The implementation is reviewed after it is written.**
 
 An artifact is never reviewed by whoever wrote it. `review.md` records `AUTHOR:` and `REVIEWER:`, and
-the gate refuses a change where they match, so the rule is checked rather than trusted. The reviewer
+the gate refuses a change where they match, so the rule is checked rather than trusted.
+
+The reviewer runs read-only and therefore cannot write its own verdict; its output is captured and
+preserved verbatim as `review-raw-<round>.txt` beside `review.md`, one per round. The gate refuses a
+review with no raw capture. Without it the author, who is the interested party, would sit between the
+findings and the record with nothing to check a softened finding against. The reviewer
 works from the files alone, without access to the conversation that produced them, and cannot edit
 what it reviews.
 
