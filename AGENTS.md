@@ -29,8 +29,7 @@ against an unmigrated section has nothing to resolve against.
 `docs/adr/` holds append-only Nygard ADRs. Every behavior change adds or supersedes an ADR and adds
 its row to `docs/adr/README.md`, in the same change. Supersede rather than edit.
 
-Also in `docs/`: `WORKFLOW.md` (the end-to-end change manual, including which model runs which
-step), `AUTHORING.md` (template model by worked example), `VISION.md`, `DEPLOY.md`.
+Also in `docs/`: `WORKFLOW.md` (how changes get made, for humans), `AUTHORING.md` (template model by worked example), `VISION.md`, `DEPLOY.md`.
 
 ## Tracking work
 
@@ -71,7 +70,8 @@ because the review gates implementation and archive rewrites the main specs *aft
 6. **Review the archive diff.** It rewrote `openspec/specs/` after your last review pass.
 7. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
 
-The end-to-end manual is [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
+[`docs/WORKFLOW.md`](docs/WORKFLOW.md) describes this loop for a human reader: what it guarantees
+and when it stops for them. It carries no commands. Mechanics belong here, not there.
 
 `tasks.md` is execution state for one accepted issue, never a backlog. That is what keeps the
 "issues are the sole tracker" rule intact.
