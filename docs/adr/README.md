@@ -70,6 +70,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted |
 | [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
 | [0059](0059-auto-length-text-box-is-the-alignment-slot.md) | Auto-length text box is the alignment slot | Accepted |
+| [0060](0060-connection-scoped-field-transforms.md) | Connection-scoped field transforms | Accepted |
 
 ## Adding an ADR
 

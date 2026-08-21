@@ -565,24 +565,51 @@ mod tests {
 
         // Column 2 is the slug, in backticks. The header cell reads "Reason" without backticks and
         // the separator row has none either, so both drop out here.
-        let documented: HashSet<&str> = section
+        let mut documented: HashSet<String> = section
             .lines()
             .filter(|line| line.starts_with('|'))
             .filter_map(|line| line.split('|').nth(2))
             .map(str::trim)
             .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
+            .map(ToString::to_string)
             .collect();
 
-        let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
+        // SPEC.md is frozen (ADR-0057); reasons added since are documented in OpenSpec specs.
+        let openspec_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/openspec"));
+        if openspec_dir.exists() {
+            fn collect_reasons(dir: &std::path::Path, out: &mut HashSet<String>) {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            collect_reasons(&path, out);
+                        } else if path.extension().is_some_and(|ext| ext == "md") {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                for r in Reason::ALL {
+                                    let slug = r.as_slug();
+                                    if content.contains(&format!("`{slug}`")) {
+                                        out.insert(slug.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            collect_reasons(openspec_dir, &mut documented);
+        }
 
-        let mut undocumented: Vec<_> = declared.difference(&documented).collect();
+        let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
+        let documented_refs: HashSet<&str> = documented.iter().map(|s| s.as_str()).collect();
+
+        let mut undocumented: Vec<_> = declared.difference(&documented_refs).collect();
         undocumented.sort_unstable();
         assert!(
             undocumented.is_empty(),
-            "reasons missing from SPEC §10.1: {undocumented:?}"
+            "reasons missing from SPEC §10.1 or OpenSpec: {undocumented:?}"
         );
 
-        let mut phantom: Vec<_> = documented.difference(&declared).collect();
+        let mut phantom: Vec<_> = documented_refs.difference(&declared).collect();
         phantom.sort_unstable();
         assert!(
             phantom.is_empty(),

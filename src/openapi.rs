@@ -10,8 +10,8 @@ use crate::{
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
-        ExpansionPolicy, FieldSpec, FieldType, FilterSpec, FilterType, FilterValue, LabelRow,
-        MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, Tier, View,
+        ExpansionPolicy, FieldSpec, FieldTransform, FieldType, FilterSpec, FilterType, FilterValue,
+        LabelRow, MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, Tier, View,
     },
     models::{
         AutoSize, BatchRequest, BatchRowError, BatchSummary, Dimension, ErrorBody, ErrorResponse,
@@ -134,6 +134,7 @@ use crate::{
             OkResponse,
             ConnectionInput,
             ConnectionView,
+            FieldTransform,
             ConnectorSchema,
             ResourceSpec,
             FieldSpec,
