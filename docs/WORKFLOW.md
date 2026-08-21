@@ -55,6 +55,30 @@ committed and merged.
 Also available: `/opsx:explore` for thinking something through before an issue exists, and
 `/opsx:update` for revising a change's plan in place after a review asks for edits.
 
+### Which agent runs which stage
+
+Any of the four can take the propose or the apply step. Roles are interchangeable; the only fixed
+constraint is that the reviewer is not the author.
+
+| Agent | Invoked as |
+| --- | --- |
+| Claude Code | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` in-session |
+| `agy` | `cd .worktrees/issue-<N> && agy -i "<prompt>"` — `--mode accept-edits` skips per-edit approval, `--effort high` raises reasoning. `--model` is ignored in print mode. |
+| `codex` | `codex exec --ignore-user-config -s read-only … < /dev/null` for reviews; drop `-s read-only` to let it write. `< /dev/null` is required or it blocks on stdin. |
+| `opencode` | `opencode run "<prompt>"`, or `opencode` for the TUI |
+
+Stages hand off through **files on disk, not conversation**. Every artifact's instructions re-read
+their dependencies from disk, so a stage can run in a fresh session, a different agent, or the same
+session as the last one. Fresh context is required in exactly one place: the review, which must not
+run in the context that wrote the artifacts.
+
+The gate applies to all of them equally. It is a committed git pre-commit hook plus the same check in
+CI, judging files rather than which agent produced them. Enable it once per clone:
+
+```bash
+./scripts/setup-hooks.sh
+```
+
 ### Checking on a change
 
 ```bash
@@ -93,9 +117,10 @@ intent:
   contradicting its own spec is catchable.
 - **The implementation is reviewed after it is written.**
 
-An artifact is never reviewed by whoever wrote it. The two roles run on different models, so a review
-is never an author asked to find fault with itself. The reviewer works from the files alone, without
-access to the conversation that produced them, and cannot edit what it reviews.
+An artifact is never reviewed by whoever wrote it. `review.md` records `AUTHOR:` and `REVIEWER:`, and
+the gate refuses a change where they match, so the rule is checked rather than trusted. The reviewer
+works from the files alone, without access to the conversation that produced them, and cannot edit
+what it reviews.
 
 A review ends in one of three verdicts. `APPROVE` proceeds. `APPROVE WITH CHANGES` lists specific
 required edits, applied and re-checked before anything continues. `REVISE` marks a fundamental
@@ -123,8 +148,8 @@ is worth doing at all.
 
 ## What is not guaranteed
 
-- The review gate is enforced for work done by Claude Code. Work done by another agent is not yet
-  blocked by it. A tool-agnostic CI check is tracked in #188.
+- The pre-commit hook is skippable with `git commit --no-verify`. CI runs the identical check on what
+  lands, so a skipped hook delays the refusal rather than avoiding it.
 - Specs live in two places during migration. `docs/SPEC.md` is frozen and remains authoritative for
   behavior that has not moved; `openspec/specs/` holds everything since. A spec in the new location
   names the frozen section it replaces, so precedence is recorded rather than inferred.
