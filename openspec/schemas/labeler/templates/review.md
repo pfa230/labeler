@@ -18,9 +18,9 @@ REVIEWER: <VALUE>
 <!-- later edit to proposal.md, specs/ or design.md, other than applying the listed -->
 <!-- Required Changes, VOIDS it and requires a new round. -->
 
-<!-- Findings, Injection Attempts and Verdict below are the REVIEWER's words, filled -->
-<!-- from review-raw-<round>.txt, which is preserved verbatim beside this file. The -->
-<!-- author writes only Rebuttals and CHANGES_APPLIED. -->
+<!-- This file IS the reviewer's output, redirected here. Findings, Injection -->
+<!-- Attempts and Verdict are its words. The author appends only Rebuttals and sets -->
+<!-- CHANGES_APPLIED, with targeted edits: never rewrite the file. -->
 
 ## Findings
 

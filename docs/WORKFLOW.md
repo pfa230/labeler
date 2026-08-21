@@ -120,10 +120,10 @@ intent:
 An artifact is never reviewed by whoever wrote it. `review.md` records `AUTHOR:` and `REVIEWER:`, and
 the gate refuses a change where they match, so the rule is checked rather than trusted.
 
-The reviewer runs read-only and therefore cannot write its own verdict; its output is captured and
-preserved verbatim as `review-raw-<round>.txt` beside `review.md`, one per round. The gate refuses a
-review with no raw capture. Without it the author, who is the interested party, would sit between the
-findings and the record with nothing to check a softened finding against. The reviewer
+The reviewer runs read-only and cannot write files, so its stdout is redirected straight into
+`review.md`: that file is its output, not a summary of it. Nothing transcribes the review, which keeps
+the interested party out of the record and avoids pulling a thousand-line transcript through the
+author's context to copy something already on disk. The reviewer
 works from the files alone, without access to the conversation that produced them, and cannot edit
 what it reviews.
 
