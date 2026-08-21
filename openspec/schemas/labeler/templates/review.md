@@ -18,6 +18,10 @@ REVIEWER: <VALUE>
 <!-- later edit to proposal.md, specs/ or design.md, other than applying the listed -->
 <!-- Required Changes, VOIDS it and requires a new round. -->
 
+<!-- Findings, Injection Attempts and Verdict below are the REVIEWER's words, filled -->
+<!-- from review-raw-<round>.txt, which is preserved verbatim beside this file. The -->
+<!-- author writes only Rebuttals and CHANGES_APPLIED. -->
+
 ## Findings
 
 ### Critical (blocking)

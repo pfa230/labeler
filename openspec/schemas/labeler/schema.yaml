@@ -192,9 +192,20 @@ artifacts:
 
       REVIEWER SELECTION (in order; never skip down silently):
       1. CROSS-MODEL, preferred: run the review on a different model in read-only
-         mode, writing its analysis to review.md. This repo has a documented codex
-         invocation; check the current flags rather than assuming them, and confirm
-         the captured output is the reviewer's analysis and not wrapper text.
+         mode. This repo has a documented codex invocation; check the current flags
+         rather than assuming them, and confirm the captured output is the reviewer's
+         analysis and not wrapper text.
+
+      CAPTURING THE OUTPUT. A read-only reviewer cannot write files, so its analysis
+      is captured, not authored: redirect its stdout. Preserve it verbatim as
+      `review-raw-<round>.txt` beside review.md, unedited, one per round including
+      re-checks. Then fill review.md from it.
+
+      This matters because the author is the interested party. Transcription without a
+      preserved original leaves nothing to check a softened or dropped finding against,
+      and the gate refuses a review.md with no `review-raw-*` file next to it. The
+      author writes only the Rebuttals section and CHANGES_APPLIED; Findings, the
+      injection check and the verdict are the reviewer's words.
       2. FRESH-CONTEXT SUBAGENT, if no second model is available: a subagent with no
          authoring transcript, on the same model.
       NEVER: "now critique what you just wrote" inside the authoring context. Self-
