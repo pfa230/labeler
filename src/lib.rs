@@ -2791,7 +2791,15 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", &hb.uri(), None, "hb_key", true)
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));
@@ -2825,7 +2833,15 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", &hb.uri(), None, "hb_key", true)
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));
@@ -2864,7 +2880,15 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", &hb.uri(), None, "hb_key", true)
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));
@@ -2892,7 +2916,15 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", "http://hb.lan:7745", None, "hb_key", true)
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: "http://hb.lan:7745",
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
             .await
             .unwrap();
         let router = app(state.clone()); // NO with_auth
@@ -2933,7 +2965,15 @@ layout:
         let state = loopback_state();
         let c = state
             .store()
-            .create_connection("homebox", "h", "http://hb.lan:7745", None, "hb_key", true)
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: "http://hb.lan:7745",
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
             .await
             .unwrap();
         let router = with_auth(app(state.clone()));
@@ -2951,6 +2991,402 @@ layout:
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn schema_with_transforms_includes_derived_fields() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let rules = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &rules,
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/connections/{}/schema", c.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let entities = v["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "entities")
+            .unwrap();
+        let loc_id_col = entities["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["key"] == "location_id")
+            .expect("location_id column present");
+        assert_eq!(loc_id_col["ty"], "text");
+        assert_eq!(loc_id_col["tier"], "derived");
+
+        let locations = v["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "locations")
+            .unwrap();
+        assert!(!locations["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["key"] == "location_id"));
+    }
+
+    #[tokio::test]
+    async fn browse_with_transforms_populates_derived_cells() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {"id":"e1","name":"Drill","parent":{"id":"loc1","name":"BOX.123 | Garage"}}
+                ],
+                "total": 1
+            })))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let rules = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &rules,
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let row = &v["rows"][0];
+        assert_eq!(row["cells"]["location_id"], "BOX.123");
+        assert_eq!(row["cells"]["location_name"], "Garage");
+    }
+
+    #[tokio::test]
+    async fn materialize_derived_field_alone_returns_it_without_source() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"e1","name":"Drill","parent":{"id":"loc1","name":"BOX.123 | Garage"}
+            })))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let rules = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &rules,
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/materialize", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["location_id"],"expansion":"as_listed"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let data = &v[0]["data"];
+        assert_eq!(data["location_id"], "BOX.123");
+        assert!(
+            data.get("location").is_none(),
+            "source must not be returned when unrequested"
+        );
+    }
+
+    #[tokio::test]
+    async fn materialize_non_matching_row_omits_key() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"e1","name":"Drill","parent":{"id":"loc1","name":"Simple Garage"}
+            })))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let rules = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<location_id>BOX\.\d+)\s*\|\s*(?<location_name>.*)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &rules,
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/materialize", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["location_id"],"expansion":"as_listed"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let data = &v[0]["data"];
+        assert!(
+            data.get("location_id").is_none(),
+            "non-matching row must omit key entirely"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_connection_save_leaves_stored_connection_untouched() {
+        let state = loopback_state();
+        let original_rules = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: "http://hb.lan:7745",
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &original_rules,
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+
+        // PUT with invalid regex pattern
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{}", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"Renamed","base_url":"http://hb.lan:7745","transforms":[{"resource":"entities","source":"location","pattern":"(?<bad>[0-9+"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "connection_transform_invalid"
+        );
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rule 0"));
+
+        // Verify stored connection is unchanged
+        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(stored.name, "h");
+        assert_eq!(stored.transforms, original_rules);
+    }
+
+    #[tokio::test]
+    async fn create_connection_rejects_invalid_transforms() {
+        let state = loopback_state();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"New","base_url":"http://hb.lan:7745","credential":"key","transforms":[{"resource":"entities","source":"unknown_col","pattern":"(?<out>.*)"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "connection_transform_invalid"
+        );
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("rule 0"));
+    }
+
+    #[tokio::test]
+    async fn inert_transform_for_unsupported_resource() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&hb)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"e1","name":"Drill"
+            })))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let inert_rule = vec![crate::connector::FieldTransform {
+            resource: "retired_resource".into(),
+            source: "name".into(),
+            pattern: r"^(?<retired_id>.*)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &inert_rule,
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+
+        // Schema succeeds and does not include retired_id
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/connections/{}/schema", c.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(!v["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "retired_resource"));
+
+        // Materialize succeeds
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/materialize", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["name"],"expansion":"as_listed"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
