@@ -43,19 +43,29 @@ exists; its scratch stays under `docs/superpowers/` (gitignored).
 
 ## OpenSpec workflow
 
-Behavior changes go through OpenSpec (CLI 1.9.0). Order matters, because archive rewrites the main
-specs *after* implementation:
+Behavior changes go through OpenSpec (CLI 1.9.0) on this project's own schema,
+`openspec/schemas/labeler/`: `proposal → specs → design → review → tasks → apply`. Order matters,
+because the review gates implementation and archive rewrites the main specs *after* it:
 
 1. **Issue**, then a worktree: `git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>`.
 2. **`/opsx:propose`** writes `openspec/changes/issue-<N>-<slug>/`. Planning only; it must not touch
    code. Link the issue in `proposal.md`.
 3. **Human reviews all artifacts**, not just `proposal.md`. The delta specs become normative.
-4. **`/opsx:apply`**, then the adversarial review loop below. Do not skip it because tasks are checked.
-5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
+4. **Adversarial review of the plan**, before any task is written: the `review` artifact, judging
+   `proposal.md` + `specs/` + `design.md`. A second model in read-only mode, else a fresh-context
+   subagent. **Never** self-review inside the authoring context. It writes `review.md` ending in a
+   `VERDICT:` line. `REVISE` → fix and re-run the *full* review; `APPROVE_WITH_CHANGES` → apply the
+   listed edits, reviewer re-checks only those, then set `CHANGES_APPLIED: yes`. Two consecutive
+   `REVISE` rounds escalate to the human. Editing the specs or design afterwards voids the verdict.
+5. **`/opsx:apply`**, then the adversarial review of the *diff* below. Two different reviews: step 4
+   judged the plan, this one judges the code. Do not skip it because tasks are checked.
+   `.claude/hooks/review-gate.sh` refuses writes to `src/` and `ui/src/` until the verdict passes,
+   because OpenSpec only checks that artifacts exist, never what they say.
+6. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
-6. **Review the archive diff.** It rewrote `openspec/specs/` after your last review pass.
-7. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
+7. **Review the archive diff.** It rewrote `openspec/specs/` after your last review pass.
+8. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
 
 `tasks.md` is execution state for one accepted issue, never a backlog. That is what keeps the
 "issues are the sole tracker" rule intact.
@@ -63,6 +73,11 @@ specs *after* implementation:
 `openspec/config.yaml` (`context`, `rules.*`, `operations.*.guidance`) is what the `opsx` workflows
 inject into each artifact. It restates these rules on purpose, so the workflow stands alone. Change a
 process rule here and change it there too.
+
+`openspec/schemas/labeler/` is a **fork** of the built-in `spec-driven` schema, so it does not inherit
+upstream improvements. On a CLI upgrade, diff it against the new built-in and port what matters; the
+command is in the schema's header comment. Its `review` artifact is adapted from the `anvil` community
+schema by @jikkujoyce, minus the TDD stages.
 
 The `openspec-*` skills and `opsx` commands under `.claude/`, `.agent/`, `.agents/`, `.opencode/` are
 **generated** (43 files; the 24 `SKILL.md` manifests record `generatedBy: 1.9.0`). Never hand-edit
