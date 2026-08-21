@@ -71,30 +71,10 @@ every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` 
 | `codex` | none needed | Used for reviews via `codex exec`, with the instructions piped in. |
 | `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Unverified. |
 
-The apply stage does not need a human at a terminal. From the Claude session, after the review passes:
-
-```bash
-scripts/apply-with-agy.sh issue-<N>-<slug>
-```
-
-It resolves the worktree, refuses to start if the review gate would reject the commit anyway, runs
-agy there, and returns only the exit status and the last 30 lines. The full transcript stays in
-`.worktrees/issue-<N>/.agy-apply.log` rather than being pulled through the orchestrator's context.
-
-Claude then reviews the resulting diff, which keeps the implementer and the reviewer on different
-models without anyone arranging it.
-
-To drive agy by hand instead, run it from inside the worktree, since it indexes its working
-directory:
-
-```bash
-cd .worktrees/issue-<N>
-agy -i --mode accept-edits --effort high "/openspec-apply-change issue-<N>-<slug>. Do not commit."
-```
-
-`-i` runs the prompt then stays interactive. `--mode accept-edits` skips per-edit approval. `--model`
-is ignored in print mode. "Do not commit" matters: the change is committed once at the end, after
-archive and verification.
+Implementation runs on a second agent, so the model that writes the code is not the model that
+reviews it. That happens without arrangement: the stage is dispatched to `agy` and the diff comes back
+here to be reviewed. The transcript stays in a log rather than being read back, since a full agent
+transcript is thousands of lines of no interest to anyone.
 
 Its commits are gated the same as anyone's — `core.hooksPath` resolves inside a worktree, so
 `.githooks/pre-commit` runs. What it cannot see is the Claude Code edit-time hook, so its only gate is
