@@ -4,12 +4,115 @@ use url::Url;
 
 use super::cursor::{self, CursorBinding, CursorClaims, SigningKey};
 use super::{
-    BrowsePage, BrowseRequest, CellValue, ConnectorError, ConnectorSchema, DisplayRow, FieldSpec,
-    FieldType, FilterSpec, FilterType, LabelRow, MaterializeRequest, RelationshipSpec,
-    ResourceSpec, RowRef, Tier, View,
+    BrowsePage, BrowseRequest, CellValue, ColumnDef, ConnectorError, ConnectorSchema, DisplayRow,
+    FieldSpec, FieldType, FilterSpec, FilterType, LabelRow, MaterializeRequest, RelationshipSpec,
+    ResourceDescriptor, ResourceSpec, RowRef, Tier, View,
 };
 use crate::egress::Egress;
 use crate::store::Connection;
+
+static ENTITIES_COLUMNS: &[ColumnDef] = &[
+    ColumnDef {
+        key: "name",
+        label: "Name",
+        ty: FieldType::Text,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "description",
+        label: "Description",
+        ty: FieldType::Text,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "assetId",
+        label: "Asset ID",
+        ty: FieldType::Text,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "quantity",
+        label: "Quantity",
+        ty: FieldType::Number,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "purchasePrice",
+        label: "Price",
+        ty: FieldType::Money,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "location",
+        label: "Location",
+        ty: FieldType::Text,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "manufacturer",
+        label: "Manufacturer",
+        ty: FieldType::Text,
+        tier: Tier::Hydrated,
+    },
+    ColumnDef {
+        key: "modelNumber",
+        label: "Model",
+        ty: FieldType::Text,
+        tier: Tier::Hydrated,
+    },
+    ColumnDef {
+        key: "serialNumber",
+        label: "Serial",
+        ty: FieldType::Text,
+        tier: Tier::Hydrated,
+    },
+    ColumnDef {
+        key: "item_url",
+        label: "Homebox URL",
+        ty: FieldType::Text,
+        tier: Tier::Derived,
+    },
+];
+
+static LOCATIONS_COLUMNS: &[ColumnDef] = &[
+    ColumnDef {
+        key: "name",
+        label: "Name",
+        ty: FieldType::Text,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "description",
+        label: "Description",
+        ty: FieldType::Text,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "itemCount",
+        label: "Items",
+        ty: FieldType::Number,
+        tier: Tier::Cheap,
+    },
+    ColumnDef {
+        key: "location_url",
+        label: "Homebox URL",
+        ty: FieldType::Text,
+        tier: Tier::Derived,
+    },
+];
+
+pub static HOMEBOX_RESOURCES: &[ResourceDescriptor] = &[
+    ResourceDescriptor {
+        id: "entities",
+        columns: ENTITIES_COLUMNS,
+        dynamic_text_prefix: Some("custom:"),
+    },
+    ResourceDescriptor {
+        id: "locations",
+        columns: LOCATIONS_COLUMNS,
+        dynamic_text_prefix: None,
+    },
+];
 
 #[derive(Default)]
 pub struct HomeboxConnector;
@@ -112,28 +215,21 @@ impl EffectiveHomeboxFilters {
 }
 
 impl HomeboxConnector {
+    pub fn resources(&self) -> &'static [ResourceDescriptor] {
+        HOMEBOX_RESOURCES
+    }
+
     pub async fn schema(
         &self,
         conn: &Connection,
         egress: &Egress,
     ) -> Result<ConnectorSchema, ConnectorError> {
-        let mut columns = vec![
-            field("name", "Name", FieldType::Text, Tier::Cheap),
-            field("description", "Description", FieldType::Text, Tier::Cheap),
-            field("assetId", "Asset ID", FieldType::Text, Tier::Cheap),
-            field("quantity", "Quantity", FieldType::Number, Tier::Cheap),
-            field("purchasePrice", "Price", FieldType::Money, Tier::Cheap),
-            field("location", "Location", FieldType::Text, Tier::Cheap),
-            field(
-                "manufacturer",
-                "Manufacturer",
-                FieldType::Text,
-                Tier::Hydrated,
-            ),
-            field("modelNumber", "Model", FieldType::Text, Tier::Hydrated),
-            field("serialNumber", "Serial", FieldType::Text, Tier::Hydrated),
-            field("item_url", "Homebox URL", FieldType::Text, Tier::Derived),
-        ];
+        let entities_desc = &HOMEBOX_RESOURCES[0];
+        let mut columns: Vec<FieldSpec> = entities_desc
+            .columns
+            .iter()
+            .map(|c| field(c.key, c.label, c.ty, c.tier))
+            .collect();
         let b = base(conn)?;
         let custom: Vec<String> = egress
             .get_json(&b, "/api/v1/entities/fields", &[], &conn.credential)
@@ -147,6 +243,12 @@ impl HomeboxConnector {
                 Tier::Hydrated,
             ));
         }
+        let locations_desc = &HOMEBOX_RESOURCES[1];
+        let location_columns: Vec<FieldSpec> = locations_desc
+            .columns
+            .iter()
+            .map(|c| field(c.key, c.label, c.ty, c.tier))
+            .collect();
         Ok(ConnectorSchema {
             version: "homebox-1".into(),
             resources: vec![
@@ -177,17 +279,7 @@ impl HomeboxConnector {
                     id: "locations".into(),
                     label: "Locations".into(),
                     view: View::Table,
-                    columns: vec![
-                        field("name", "Name", FieldType::Text, Tier::Cheap),
-                        field("description", "Description", FieldType::Text, Tier::Cheap),
-                        field("itemCount", "Items", FieldType::Number, Tier::Cheap),
-                        field(
-                            "location_url",
-                            "Homebox URL",
-                            FieldType::Text,
-                            Tier::Derived,
-                        ),
-                    ],
+                    columns: location_columns,
                     filters: vec![],
                 },
             ],
@@ -560,6 +652,7 @@ mod tests {
             public_url: None,
             credential: "hb_key".into(),
             enabled: true,
+            transforms: vec![],
         }
     }
 
@@ -739,6 +832,38 @@ mod tests {
             .columns
             .iter()
             .any(|f| f.label == "Calibration Date"));
+    }
+
+    #[tokio::test]
+    async fn static_columns_match_descriptors() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::with_loopback();
+        let c = HomeboxConnector;
+        let s = c.schema(&conn(&server.uri()), &egress).await.unwrap();
+        let descriptors = c.resources();
+
+        for desc in descriptors {
+            let res = s
+                .resources
+                .iter()
+                .find(|r| r.id == desc.id)
+                .expect("resource present");
+            let expected: Vec<FieldSpec> = desc
+                .columns
+                .iter()
+                .map(|cd| field(cd.key, cd.label, cd.ty, cd.tier))
+                .collect();
+            assert_eq!(
+                res.columns, expected,
+                "columns mismatch for resource {}",
+                desc.id
+            );
+        }
     }
 
     #[tokio::test]

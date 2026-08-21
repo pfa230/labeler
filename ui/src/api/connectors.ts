@@ -1,20 +1,30 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getJson, sendJson, del } from "./client";
 
+export interface FieldTransform {
+  resource: string;
+  source: string;
+  pattern: string;
+}
+
 export interface Connection {
   id: string;
   connector: string;
   name: string;
   base_url: string;
+  public_url?: string | null;
   enabled: boolean;
   has_credential: boolean;
+  transforms: FieldTransform[];
 }
 export interface ConnectionInput {
   connector: string;
   name: string;
   base_url: string;
+  public_url?: string | null;
   credential?: string;
   enabled?: boolean;
+  transforms?: FieldTransform[];
 }
 
 export type ConnectorView = "table" | "tree";

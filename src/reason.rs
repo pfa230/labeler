@@ -75,6 +75,7 @@ reasons! {
     DatetimePatternInvalid => "datetime_pattern_invalid",
     ConnectorUnknown => "connector_unknown",
     ConnectionConnectorMissing => "connection_connector_missing",
+    ConnectionTransformInvalid => "connection_transform_invalid",
     CredentialRequired => "credential_required",
     BaseUrlInvalid => "base_url_invalid",
     CsvHeaderInvalid => "csv_header_invalid",

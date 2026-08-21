@@ -1,10 +1,21 @@
 import { useState } from "react";
-import { useConnections, useSaveConnection, useDeleteConnection, type Connection, type ConnectionInput } from "../../api/connectors";
+import {
+  useConnections,
+  useSaveConnection,
+  useDeleteConnection,
+  type Connection,
+  type ConnectionInput,
+  type FieldTransform,
+} from "../../api/connectors";
 import { useToast } from "../../app/toast-context";
 
 const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
+
+const CONNECTOR_RESOURCES: Record<string, string[]> = {
+  homebox: ["entities", "locations"],
+};
 
 function ConnectionForm({ initial, onClose }: { initial: Connection | null; onClose: () => void }) {
   const isNew = initial === null;
@@ -12,9 +23,24 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
   const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [transforms, setTransforms] = useState<FieldTransform[]>(initial?.transforms ?? []);
   const [error, setError] = useState<string | null>(null);
   const save = useSaveConnection();
   const { push } = useToast();
+
+  const connectorName = initial?.connector ?? "homebox";
+  const availableResources = CONNECTOR_RESOURCES[connectorName] ?? ["entities", "locations"];
+
+  const parseRuleError = (errMsg: string | null): { ruleIndex: number | null; message: string | null } => {
+    if (!errMsg) return { ruleIndex: null, message: null };
+    const match = errMsg.match(/rule\s+(\d+):\s*(.*)/i);
+    if (match) {
+      return { ruleIndex: parseInt(match[1], 10), message: match[2] };
+    }
+    return { ruleIndex: null, message: errMsg };
+  };
+
+  const { ruleIndex, message: parsedRuleMessage } = parseRuleError(error);
 
   const submit = () => {
     if (name.trim() === "") { setError("name must not be empty"); return; }
@@ -24,10 +50,11 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
     if (isNew && apiKey.trim() === "") { setError("api key is required"); return; }
     setError(null);
     const input: ConnectionInput = {
-      connector: initial?.connector ?? "homebox",
+      connector: connectorName,
       name: name.trim(),
       base_url: baseUrl.trim(),
       enabled,
+      transforms,
       ...(apiKey.trim() !== "" ? { credential: apiKey.trim() } : {}),
     };
     save.mutate(
@@ -44,7 +71,7 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
       <div className="flex flex-wrap gap-3">
         <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>connector</span>
-          <select aria-label="connector" value={initial?.connector ?? "homebox"} disabled className={inputClass} style={inputStyle}>
+          <select aria-label="connector" value={connectorName} disabled className={inputClass} style={inputStyle}>
             <option value="homebox">homebox</option>
           </select>
         </label>
@@ -65,7 +92,100 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
           <span className="text-sm">enabled</span>
         </label>
       </div>
-      {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
+
+      <div className="flex flex-col gap-2 pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>Field transforms</span>
+          <button
+            type="button"
+            onClick={() =>
+              setTransforms([
+                ...transforms,
+                { resource: availableResources[0] ?? "entities", source: "", pattern: "" },
+              ])
+            }
+            className="text-xs underline"
+            style={{ color: "var(--ink)" }}
+          >
+            + Add rule
+          </button>
+        </div>
+        {transforms.map((t, idx) => {
+          const isThisRuleError = ruleIndex === idx;
+          return (
+            <div key={idx} className="flex flex-col gap-1 rounded border p-2" style={{ borderColor: "var(--border)" }}>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex flex-col gap-1 min-w-[120px]">
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>resource</span>
+                  <select
+                    aria-label={`rule ${idx} resource`}
+                    value={t.resource}
+                    onChange={(e) => {
+                      const updated = [...transforms];
+                      updated[idx] = { ...updated[idx], resource: e.target.value };
+                      setTransforms(updated);
+                    }}
+                    className={inputClass}
+                    style={inputStyle}
+                  >
+                    {availableResources.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-1 flex-col gap-1 min-w-[150px]">
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>source</span>
+                  <input
+                    aria-label={`rule ${idx} source`}
+                    value={t.source}
+                    onChange={(e) => {
+                      const updated = [...transforms];
+                      updated[idx] = { ...updated[idx], source: e.target.value };
+                      setTransforms(updated);
+                    }}
+                    placeholder="location"
+                    className={inputClass}
+                    style={inputStyle}
+                  />
+                </label>
+                <label className="flex flex-1 flex-col gap-1 min-w-[200px]">
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>pattern</span>
+                  <input
+                    aria-label={`rule ${idx} pattern`}
+                    value={t.pattern}
+                    onChange={(e) => {
+                      const updated = [...transforms];
+                      updated[idx] = { ...updated[idx], pattern: e.target.value };
+                      setTransforms(updated);
+                    }}
+                    placeholder="^(?<id>[^|]+)\s*\|\s*(?<name>.*)$"
+                    className={inputClass}
+                    style={inputStyle}
+                  />
+                </label>
+                <button
+                  type="button"
+                  aria-label={`remove rule ${idx}`}
+                  onClick={() => setTransforms(transforms.filter((_, i) => i !== idx))}
+                  className="self-end pb-2 text-xs hover:underline"
+                  style={{ color: "var(--bad)" }}
+                >
+                  Remove
+                </button>
+              </div>
+              {isThisRuleError && (
+                <p className="text-xs" style={{ color: "var(--bad)" }}>
+                  {parsedRuleMessage}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {ruleIndex === null && error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
       <div className="flex gap-3">
         <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>Save</button>
         <button type="button" onClick={onClose} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Cancel</button>

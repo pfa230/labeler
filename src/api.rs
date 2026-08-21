@@ -1073,6 +1073,7 @@ pub struct ConnectionView {
     pub public_url: Option<String>,
     pub enabled: bool,
     pub has_credential: bool,
+    pub transforms: Vec<crate::connector::FieldTransform>,
 }
 
 impl From<&crate::store::Connection> for ConnectionView {
@@ -1085,6 +1086,7 @@ impl From<&crate::store::Connection> for ConnectionView {
             public_url: c.public_url.clone(),
             enabled: c.enabled,
             has_credential: !c.credential.is_empty(),
+            transforms: c.transforms.clone(),
         }
     }
 }
@@ -1100,11 +1102,15 @@ pub struct ConnectionInput {
     pub credential: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    #[schema(value_type = Option<Vec<crate::connector::FieldTransform>>)]
+    pub transforms: Option<Option<Vec<crate::connector::FieldTransform>>>,
 }
 
-fn deserialize_optional_field<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
 {
     serde::Deserialize::deserialize(deserializer).map(Some)
 }
@@ -1164,10 +1170,18 @@ pub async fn create_connection(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ConnectionInput>,
 ) -> Result<Response, AppError> {
-    if state.connectors().get(&body.connector).is_none() {
+    let connector = state
+        .connectors()
+        .get(&body.connector)
+        .ok_or_else(|| AppError::invalid_request(Reason::ConnectorUnknown, "unknown connector"))?;
+    let transforms = match &body.transforms {
+        Some(Some(t)) => t.as_slice(),
+        _ => &[],
+    };
+    if let Err((idx, msg)) = connector.validate_transforms(transforms) {
         return Err(AppError::invalid_request(
-            Reason::ConnectorUnknown,
-            "unknown connector",
+            Reason::ConnectionTransformInvalid,
+            format!("rule {idx}: {msg}"),
         ));
     }
     let cred = body.credential.unwrap_or_default();
@@ -1192,14 +1206,15 @@ pub async fn create_connection(
     let _g = state.write_lock.lock().await;
     let c = state
         .store()
-        .create_connection(
-            &body.connector,
-            &body.name,
-            &base_url,
-            pub_url.as_deref(),
-            &cred,
-            body.enabled,
-        )
+        .create_connection(crate::store::NewConnection {
+            connector: &body.connector,
+            name: &body.name,
+            base_url: &base_url,
+            public_url: pub_url.as_deref(),
+            credential: &cred,
+            enabled: body.enabled,
+            transforms,
+        })
         .await?;
     Ok((
         axum::http::StatusCode::CREATED,
@@ -1245,6 +1260,14 @@ pub async fn update_connection_h(
     Path(id): Path<String>,
     Json(body): Json<ConnectionInput>,
 ) -> Result<Response, AppError> {
+    let existing = state
+        .store()
+        .get_connection(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found(&id))?;
+    let connector = state.connectors().get(&existing.connector).ok_or_else(|| {
+        AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
+    })?;
     let base_url = validate_and_normalize_url(&body.base_url, "base_url")?;
     let public_url = match &body.public_url {
         None => crate::store::UpdateField::Keep,
@@ -1258,17 +1281,37 @@ pub async fn update_connection_h(
             }
         }
     };
+    let transforms = match &body.transforms {
+        None => crate::store::UpdateField::Keep,
+        Some(None) => crate::store::UpdateField::Clear,
+        Some(Some(rules)) => {
+            if let Err((idx, msg)) = connector.validate_transforms(rules) {
+                return Err(AppError::invalid_request(
+                    Reason::ConnectionTransformInvalid,
+                    format!("rule {idx}: {msg}"),
+                ));
+            }
+            if rules.is_empty() {
+                crate::store::UpdateField::Clear
+            } else {
+                crate::store::UpdateField::Set(rules.clone())
+            }
+        }
+    };
     let _g = state.write_lock.lock().await;
     let cred = body.credential.filter(|c| !c.is_empty());
     let ok = state
         .store()
         .update_connection(
             &id,
-            &body.name,
-            &base_url,
-            public_url,
-            cred.as_deref(),
-            body.enabled,
+            crate::store::UpdateConnection {
+                name: &body.name,
+                base_url: &base_url,
+                public_url,
+                credential: cred.as_deref(),
+                enabled: body.enabled,
+                transforms,
+            },
         )
         .await?;
     if !ok {
@@ -2575,7 +2618,6 @@ mod tests {
         let input: ConnectionInput = serde_json::from_str(json).unwrap();
         assert_eq!(input.public_url, Some(Some("https://example.com".into())));
     }
-
     #[test]
     fn connection_view_from_connection() {
         let conn = crate::store::Connection {
@@ -2586,6 +2628,7 @@ mod tests {
             public_url: Some("https://homebox.example.com".into()),
             credential: "secret".into(),
             enabled: true,
+            transforms: vec![],
         };
         let view = ConnectionView::from(&conn);
         assert_eq!(
@@ -2598,6 +2641,7 @@ mod tests {
                 public_url: Some("https://homebox.example.com".into()),
                 enabled: true,
                 has_credential: true,
+                transforms: vec![],
             }
         );
 
@@ -2609,10 +2653,12 @@ mod tests {
             public_url: None,
             credential: "".into(),
             enabled: false,
+            transforms: vec![],
         };
         let view2 = ConnectionView::from(&conn_no_cred);
         assert!(!view2.has_credential);
         assert_eq!(view2.public_url, None);
         assert!(!view2.enabled);
+        assert!(view2.transforms.is_empty());
     }
 }
