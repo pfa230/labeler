@@ -122,9 +122,19 @@ a change's worktree, and never carry one change's worktree into another's work.
 
 ## Committing
 
-Commit and push without prompting; do not wait to be asked. No pull requests: from the repo root,
-`git merge issue-<N>-<slug> && git push`, then `git worktree remove .worktrees/issue-<N>` and
-`git branch -d issue-<N>-<slug>`. Never force-push, never rewrite pushed history.
+Commit and push without prompting; do not wait to be asked. There are no pull requests, so the change
+branch is the only place a change can be checked before it reaches `main`:
+
+```bash
+git push -u origin issue-<N>-<slug>     # runs the checks; publishing stays bound to main
+# once that run is green, from the repo root:
+git merge issue-<N>-<slug> && git push
+git push origin --delete issue-<N>-<slug>
+git worktree remove .worktrees/issue-<N> && git branch -d issue-<N>-<slug>
+```
+
+Do not merge on a red or absent branch run. CI on `main` is not a gate, it is a post-mortem: by the
+time it fails, the commit is already integrated. Never rewrite history that has been pushed.
 
 ## Commands
 
