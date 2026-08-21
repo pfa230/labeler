@@ -1,0 +1,5 @@
+# Pins the toolchain so a local gate run and a CI gate run mean the same thing (#186).
+# Why it exists, how to bump it, and what beats it: AGENTS.md, next to the gate commands.
+[toolchain]
+channel = "1.98.0"
+components = ["rustfmt", "clippy"]

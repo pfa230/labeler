@@ -20,10 +20,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # No `toolchain:` input on purpose: with none, this action installs whatever
+      # `rust-toolchain.toml` names, and passing one would make it ignore the file. That file is the
+      # single source of truth for the compiler here and in every local checkout (#186).
+      # Both of the action's defaults are switched off deliberately:
+      #   rustflags - it otherwise exports RUSTFLAGS=-D warnings for the whole job, which would
+      #     promote rustc warnings to errors in Test and the catalog-index step too. Only Clippy
+      #     below denies warnings, and widening that is its own decision, not a side effect of a
+      #     toolchain step.
+      #   cache - it otherwise adds Swatinem/rust-cache on top of the explicit actions/cache step
+      #     right below, two cache implementations over the same directories.
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          rustflags: ""
+          cache: false
 
       - name: Cache cargo
         uses: actions/cache@v6

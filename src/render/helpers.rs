@@ -14,7 +14,7 @@ use typst_as_lib::typst_kit_options::TypstKitFontOptions;
 /// dithering). Typst pages render opaque (alpha 255), so premultiplied == straight and Rec.601 luma is
 /// correct. Threshold 128 = 0.5.
 pub(super) fn binarize_rgba(data: &mut [u8]) {
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0.iter_mut() {
         let luma = (77 * px[0] as u32 + 150 * px[1] as u32 + 29 * px[2] as u32) >> 8;
         let v = if luma < 128 { 0u8 } else { 255u8 };
         px[0] = v;
@@ -957,7 +957,7 @@ mod binarize_tests {
             255, 255, 255, 255, 255,
         ];
         binarize_rgba(&mut data);
-        for (i, px) in data.chunks_exact(4).enumerate() {
+        for (i, px) in data.as_chunks::<4>().0.iter().enumerate() {
             assert!(px[3] == 255, "alpha forced opaque");
             assert!(
                 (px[0], px[1], px[2]) == (0, 0, 0) || (px[0], px[1], px[2]) == (255, 255, 255),
