@@ -22,6 +22,7 @@ issue=$(printf '%s' "$change" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
 wt="$root/.worktrees/$issue"
 [ -d "$wt" ] || { echo "no worktree at $wt. Create it before applying." >&2; exit 2; }
 [ -d "$wt/openspec/changes/$change" ] || { echo "no change '$change' in $wt" >&2; exit 2; }
+command -v agy >/dev/null 2>&1 || { echo "agy is not on PATH; nothing would run." >&2; exit 2; }
 
 # Refuse to start if the gate would refuse the commit anyway. Failing here beats
 # letting an agent write code that cannot land.
@@ -35,10 +36,23 @@ log="$wt/.agy-apply.log"
 prompt="/openspec-apply-change $change. Do not commit; the change is committed once at the end after archive and verification. $extra"
 
 # `script` gives agy a pseudo-TTY: bare `agy -p` off a pipe greets or narrates
-# instead of working. sed/tr strip ANSI and carriage returns.
-( cd "$wt" && script -q /dev/null agy -p --mode accept-edits --effort high "$prompt" ) \
+# instead of working. util-linux script(1) is `script [options] [file]`, so a
+# trailing command is read as script's own options and the run dies on
+# `invalid option -- 'p'` before agy starts; the agent goes in -c instead, and
+# -e is what makes the child's exit status the wrapper's. %q quotes a prompt
+# that contains quotes of its own, so SHELL pins the interpreter script(1)
+# hands it to: %q emits bash quoting and the operator's login shell need not be
+# bash. sed/tr strip ANSI and carriage returns.
+printf -v agy_cmd 'agy -p --mode accept-edits --effort high %q' "$prompt"
+( cd "$wt" && SHELL="$BASH" script -q -e -c "$agy_cmd" /dev/null ) \
   2>&1 | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r' > "$log"
 status=$?
+
+# 127 is the pty shell failing to exec agy. Say so, because the tail below is
+# then the wrapper's own error and reads exactly like agy refusing the task.
+if [ "$status" -eq 127 ]; then
+  echo "agy failed to start under script(1); the output below is not agent output." >&2
+fi
 
 echo "log: $log"
 echo "exit: $status"
