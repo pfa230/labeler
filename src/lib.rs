@@ -2050,6 +2050,281 @@ layout:
         assert_eq!(template_count(&app).await, 1);
     }
 
+    #[tokio::test]
+    async fn template_list_group_filtering_and_exposure() {
+        let dir = temp_templates_dir();
+        // 1. Grouped template "t_wh1" in "Warehouse"
+        std::fs::write(
+            dir.join("t_wh1.yaml"),
+            "id: t_wh1\nname: Warehouse 1\ngroup: Warehouse\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+        ).unwrap();
+        // 2. Grouped template "t_wh2" in "Warehouse"
+        std::fs::write(
+            dir.join("t_wh2.yaml"),
+            "id: t_wh2\nname: Warehouse 2\ngroup: Warehouse\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+        ).unwrap();
+        // 3. Grouped template "t_ship" in "Shipping"
+        std::fs::write(
+            dir.join("t_ship.yaml"),
+            "id: t_ship\nname: Shipping\ngroup: Shipping\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+        ).unwrap();
+        // 4. Ungrouped template "t_ungrouped"
+        std::fs::write(
+            dir.join("t_ungrouped.yaml"),
+            "id: t_ungrouped\nname: Ungrouped\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+        ).unwrap();
+        // 5. Broken template "bad.yaml"
+        std::fs::write(dir.join("bad.yaml"), "not valid yaml : [").unwrap();
+
+        let app = build_app_in(&dir);
+
+        // a grouped summary carries `group`; an ungrouped response has no `group` key
+        let (_, list) = get_json(&app, "/api/templates").await;
+        let tpls = list["templates"].as_array().unwrap();
+        assert_eq!(tpls.len(), 4);
+        let wh1 = tpls.iter().find(|t| t["id"] == "t_wh1").unwrap();
+        assert_eq!(wh1["group"], "Warehouse");
+        let ungr = tpls.iter().find(|t| t["id"] == "t_ungrouped").unwrap();
+        assert!(
+            ungr.get("group").is_none(),
+            "ungrouped template summary must omit 'group' key"
+        );
+
+        // detail of ungrouped has no group key
+        let (_, detail) = get_json(&app, "/api/templates/t_ungrouped").await;
+        assert!(
+            detail.get("group").is_none(),
+            "ungrouped template detail must omit 'group' key"
+        );
+
+        // detail of grouped carries group key
+        let (_, detail_wh) = get_json(&app, "/api/templates/t_wh1").await;
+        assert_eq!(detail_wh["group"], "Warehouse");
+
+        // ?group=Warehouse returns the 2 warehouse templates
+        let (_, list_wh) = get_json(&app, "/api/templates?group=Warehouse").await;
+        let tpls_wh = list_wh["templates"].as_array().unwrap();
+        let ids_wh: Vec<&str> = tpls_wh.iter().map(|t| t["id"].as_str().unwrap()).collect();
+        assert_eq!(ids_wh, vec!["t_wh1", "t_wh2"]);
+        assert_eq!(list_wh["broken"].as_array().unwrap().len(), 1);
+
+        // ?group= returns only ungrouped
+        let (_, list_ungr) = get_json(&app, "/api/templates?group=").await;
+        let tpls_ungr = list_ungr["templates"].as_array().unwrap();
+        let ids_ungr: Vec<&str> = tpls_ungr
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids_ungr, vec!["t_ungrouped"]);
+        assert_eq!(list_ungr["broken"].as_array().unwrap().len(), 1);
+
+        // ?group=Nonexistent returns empty templates list (200 OK)
+        let (status, list_none) = get_json(&app, "/api/templates?group=Nonexistent").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(list_none["templates"].as_array().unwrap().is_empty());
+        assert_eq!(list_none["broken"].as_array().unwrap().len(), 1);
+
+        // ?group=warehouse (case difference) returns none against Warehouse
+        let (_, list_case) = get_json(&app, "/api/templates?group=warehouse").await;
+        assert!(list_case["templates"].as_array().unwrap().is_empty());
+        assert_eq!(list_case["broken"].as_array().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_move_group_http_endpoint() {
+        let dir = temp_templates_dir();
+        let t1_yaml = "# Template 1 comment\nid: t1\nname: Template 1\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 18\nlayout: []\n";
+        let t1_path = dir.join("t1.yaml");
+        std::fs::write(&t1_path, t1_yaml).unwrap();
+
+        let app = build_app_in(&dir);
+
+        // 1. Move ungrouped template into "Warehouse" -> 200 OK
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = json_response(res).await;
+        assert_eq!(detail["id"], "t1");
+        assert_eq!(detail["group"], "Warehouse");
+        let source_after = std::fs::read_to_string(&t1_path).unwrap();
+        assert!(source_after.contains("group: Warehouse"));
+        assert!(source_after.starts_with(
+            "# Template 1 comment\nid: t1\nname: Template 1\ngroup: Warehouse\nunit: mm"
+        ));
+
+        // 2. Idempotent set to "Warehouse" -> 200 OK, byte-identical file
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = json_response(res).await;
+        assert_eq!(detail["group"], "Warehouse");
+        let source_idem = std::fs::read_to_string(&t1_path).unwrap();
+        assert_eq!(source_idem, source_after);
+
+        // 3. Move to "Shipping" -> 200 OK
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Shipping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = json_response(res).await;
+        assert_eq!(detail["group"], "Shipping");
+
+        // 4. Clear group with null -> 200 OK
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = json_response(res).await;
+        assert!(detail.get("group").is_none());
+        let source_cleared = std::fs::read_to_string(&t1_path).unwrap();
+        assert_eq!(source_cleared, t1_yaml);
+
+        // 5. Idempotent clear -> 200 OK, byte-identical
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = json_response(res).await;
+        assert!(detail.get("group").is_none());
+        assert_eq!(std::fs::read_to_string(&t1_path).unwrap(), t1_yaml);
+
+        // 6. Unknown id -> 404
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/nonexistent_id/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        // 7. Bad request body (non-string/non-null group) -> 400 Bad Request
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":123}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // 8. Invalid group name (empty) -> 422 Unprocessable Entity, file unchanged
+        let pre_invalid = std::fs::read_to_string(&t1_path).unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(res).await;
+        assert_eq!(err["error"]["details"]["reason"], "template_group_invalid");
+        assert_eq!(std::fs::read_to_string(&t1_path).unwrap(), pre_invalid);
+
+        // 9. Unpatchable template (flow mapping) -> 422 Unprocessable Entity, file unchanged
+        let flow_yaml = "{id: flow_t, name: Flow, unit: mm, dpi: 200, format: {type: single, width: 50, height: 18}, layout: []}\n";
+        let flow_path = dir.join("flow_t.yaml");
+        std::fs::write(&flow_path, flow_yaml).unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/templates/reload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/flow_t/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(res).await;
+        assert_eq!(
+            err["error"]["details"]["reason"],
+            "template_group_unpatchable"
+        );
+        assert_eq!(std::fs::read_to_string(&flow_path).unwrap(), flow_yaml);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn yaml_post(uri: &str, method: &str, body: String) -> Request<Body> {
         Request::builder()
             .method(method)

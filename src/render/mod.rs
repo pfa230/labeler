@@ -2636,6 +2636,7 @@ mod tests {
             id: "t".to_string(),
             name: "T".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -3315,6 +3316,7 @@ mod tests {
             id: "t".to_string(),
             name: "T".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -3368,6 +3370,7 @@ mod tests {
             id: "t".to_string(),
             name: "T".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -3582,6 +3585,7 @@ mod tests {
             id: "rot".to_string(),
             name: "Rot".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -3787,6 +3791,7 @@ mod tests {
             id: "nest".to_string(),
             name: "Nest".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -3823,6 +3828,7 @@ mod tests {
             id: "tape".to_string(),
             name: "Tape".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -4175,6 +4181,7 @@ mod tests {
             id: "sheet2".to_string(),
             name: "Sheet2".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Sheet {
@@ -4262,6 +4269,7 @@ mod tests {
             id: "test".to_string(),
             name: "Test".to_string(),
             description: "Test template".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4317,6 +4325,7 @@ mod tests {
             id: "test_qr".to_string(),
             name: "Test QR".to_string(),
             description: "Test template with qr".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4405,6 +4414,7 @@ mod tests {
             id: "sheet".to_string(),
             name: "Sheet".to_string(),
             description: "Sheet template".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Sheet {
@@ -4449,6 +4459,7 @@ mod tests {
             id: "img".to_string(),
             name: "Img".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4510,6 +4521,7 @@ mod tests {
             id: "sheetimg".to_string(),
             name: "Sheet".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Sheet {
@@ -4666,6 +4678,7 @@ mod tests {
             id: "pdf".to_string(),
             name: "Pdf".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4827,6 +4840,7 @@ mod tests {
             id: "interp".to_string(),
             name: "Interp".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4878,6 +4892,7 @@ mod tests {
             id: "inject".to_string(),
             name: "Inject".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4956,6 +4971,7 @@ mod tests {
             id: "s".into(),
             name: "s".into(),
             description: String::new(),
+            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Sheet {
@@ -4989,6 +5005,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             description: String::new(),
+            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5062,6 +5079,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             description: String::new(),
+            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5145,6 +5163,7 @@ mod tests {
             id: "t".into(),
             name: "t".into(),
             description: String::new(),
+            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5542,6 +5561,7 @@ mod tests {
             id: "t".to_string(),
             name: "T".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -5701,6 +5721,7 @@ mod tests {
             id: "t".to_string(),
             name: "T".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -5751,6 +5772,7 @@ mod tests {
             id: "t".to_string(),
             name: "T".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {

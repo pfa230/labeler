@@ -194,6 +194,7 @@ mod tests {
             id: "s".to_string(),
             name: "S".to_string(),
             description: String::new(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {

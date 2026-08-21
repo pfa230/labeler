@@ -38,6 +38,7 @@ export interface TemplateSummary {
   id: string;
   name: string;
   description: string;
+  group?: string;
   unit: string;
   dpi: number;
   format: TemplateFormat;
@@ -48,6 +49,7 @@ export interface TemplateDetail {
   id: string;
   name: string;
   description: string;
+  group?: string;
   unit: string;
   dpi: number;
   format: TemplateFormat;

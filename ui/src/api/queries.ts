@@ -112,6 +112,15 @@ export function useReplaceTemplate() {
   });
 }
 
+export function useMoveTemplateGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, group }: { id: string; group: string | null }) =>
+      sendJson<TemplateDetail>("PUT", `/templates/${encodeURIComponent(id)}/group`, { group }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+  });
+}
+
 export function useVariables() {
   return useQuery({ queryKey: ["variables"], queryFn: () => getJson<Record<string, string>>("/variables") });
 }

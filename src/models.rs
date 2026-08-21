@@ -55,6 +55,8 @@ pub struct TemplateSummary {
     pub id: String,
     pub name: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub unit: String,
     pub dpi: u32,
     pub params: BTreeMap<String, ParamSpec>,
@@ -66,6 +68,8 @@ pub struct TemplateDetail {
     pub id: String,
     pub name: String,
     pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
@@ -73,6 +77,13 @@ pub struct TemplateDetail {
     pub layout: Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateGroupUpdate {
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]

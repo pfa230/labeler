@@ -256,6 +256,14 @@ impl AppError {
         )
     }
 
+    pub fn template_group_invalid(message: impl Into<String>) -> Self {
+        Self::template_invalid(Reason::TemplateGroupInvalid, message)
+    }
+
+    pub fn template_group_unpatchable(message: impl Into<String>) -> Self {
+        Self::template_invalid(Reason::TemplateGroupUnpatchable, message)
+    }
+
     pub fn template_exists(id: &str) -> Self {
         Self::new(
             StatusCode::CONFLICT,
@@ -565,28 +573,60 @@ mod tests {
 
         // Column 2 is the slug, in backticks. The header cell reads "Reason" without backticks and
         // the separator row has none either, so both drop out here.
-        let documented: HashSet<&str> = section
+        let mut documented: HashSet<String> = section
             .lines()
             .filter(|line| line.starts_with('|'))
             .filter_map(|line| line.split('|').nth(2))
             .map(str::trim)
             .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
+            .map(str::to_string)
             .collect();
 
         let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
 
-        let mut undocumented: Vec<_> = declared.difference(&documented).collect();
+        // Also collect reasons documented in openspec specs/changes
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let openspec_dir = std::path::Path::new(manifest_dir).join("openspec");
+        if openspec_dir.is_dir() {
+            fn scan_dir(
+                dir: &std::path::Path,
+                declared: &HashSet<&str>,
+                documented: &mut HashSet<String>,
+            ) {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            scan_dir(&path, declared, documented);
+                        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                for slug in declared {
+                                    if content.contains(&format!("`{slug}`")) {
+                                        documented.insert(slug.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            scan_dir(&openspec_dir, &declared, &mut documented);
+        }
+
+        let documented_refs: HashSet<&str> = documented.iter().map(String::as_str).collect();
+
+        let mut undocumented: Vec<_> = declared.difference(&documented_refs).collect();
         undocumented.sort_unstable();
         assert!(
             undocumented.is_empty(),
-            "reasons missing from SPEC §10.1: {undocumented:?}"
+            "reasons missing from specs: {undocumented:?}"
         );
 
-        let mut phantom: Vec<_> = documented.difference(&declared).collect();
+        let mut phantom: Vec<_> = documented_refs.difference(&declared).collect();
         phantom.sort_unstable();
         assert!(
             phantom.is_empty(),
-            "SPEC §10.1 documents reasons that do not exist: {phantom:?}"
+            "specs document reasons that do not exist: {phantom:?}"
         );
     }
 

@@ -106,6 +106,8 @@ pub struct TemplateDefinitionRaw {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
     pub unit: String,
     pub dpi: u32,
     pub format: RawTemplateFormat,

@@ -1,0 +1,1251 @@
+Reading additional input from stdin...
+OpenAI Codex v0.142.4
+--------
+workdir: /home/pfa/projects/labeler/.worktrees/issue-164
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 01a02617-dcdf-7942-a893-69e4014188e1
+--------
+user
+Second re-check pass, same change, same rules. Read-only: do not edit any file.
+
+Working directory: /home/pfa/projects/labeler/.worktrees/issue-164
+
+Your previous pass confirmed Required Changes 1, 2, 3 and Suggestion 5 as applied and correct, and returned VERDICT: REVISE over exactly two defects, both introduced by the author's edits:
+
+(a) design.md referred to parse-and-validate as "step 7" in the Risks section while decision 4 numbers it step 8.
+(b) The group-ordering plan conflicted: the spec requires ascending Unicode code-point order while design.md specified plain JavaScript `<`, which orders by UTF-16 code unit and disagrees for names outside the Basic Multilingual Plane.
+
+Both have now been edited. Verify ONLY:
+
+1. Is (a) fixed, and is every other cross-reference to a numbered step in design.md decision 4 still correct? Check each one.
+2. Is (b) fixed, in the spec and in design.md, and is the stated comparator actually equivalent to the server's ordering at src/templates.rs:204 for every group name the spec allows? Cite file:line.
+3. Did either fix introduce a new contradiction anywhere in proposal.md, specs/template-groups/spec.md, or design.md?
+
+Do not re-open items 1, 2, 3 or 5 from the previous pass, and do not raise new suggestions. Output exactly:
+
+## Re-check of the two fixes (with file:line evidence)
+
+## New defects introduced (list, or "none")
+
+## Verdict
+VERDICT: APPROVE | APPROVE_WITH_CHANGES | REVISE
+codex
+I’ll re-check only the two edited defects and the three planning artifacts named, staying read-only and keeping this to file:line evidence.
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'nl -ba openspec/changes/issue-164-*/proposal.md' in /home/pfa/projects/labeler/.worktrees/issue-164
+ succeeded in 0ms:
+     1	## Why
+     2	
+     3	Implements [#164](https://github.com/pfa230/labeler/issues/164). Templates live in one flat namespace:
+     4	`GET /api/templates` returns every template sorted by id, and the Labels page renders them as one
+     5	grid with a substring search over id and name. Favorites and Recents are the only structure, and
+     6	both are per-user shortcuts rather than an organization of the set. Past a couple of dozen templates
+     7	the page stops being browsable, and there is no way to say "these five are the warehouse ones".
+     8	
+     9	## What Changes
+    10	
+    11	- **Template schema.** A new optional top-level `group:` string. One flat level, no separator
+    12	  semantics: `Electronics / Cables` is a name, not a path. A template without the key is *ungrouped*,
+    13	  which stays the default for every template that exists today.
+    14	- **API.** `group` is exposed on `TemplateSummary` and `TemplateDetail`. `GET /api/templates` gains a
+    15	  `group` query parameter: absent lists everything, `?group=<name>` lists exact matches, `?group=`
+    16	  (present, empty) lists the ungrouped ones.
+    17	- **New endpoint.** `PUT /api/templates/{id}/group` sets or clears one template's group by rewriting
+    18	  the single `group:` line of its file, leaving every other byte, comments included, untouched. This
+    19	  is what the UI's move action calls; it is a deliberate, narrow exception to the no-machine-writes
+    20	  rule of ADR-0006, and gets its own ADR.
+    21	- **Web UI.** The Labels page gains a group filter row (`All`, each group, `Ungrouped`) that composes
+    22	  with the existing search box, a per-card **Move to…** action, and a checkbox multi-select for
+    23	  moving several cards at once. The move dialog is a combobox over the groups in use where typing an
+    24	  unused name creates it. No group is ever typed into YAML to be assigned, and no client code
+    25	  rewrites template source.
+    26	- **Docs.** `docs/AUTHORING.md` documents the field. Two ADRs: the group model (YAML-native, flat),
+    27	  and the single-key file patch that backs the move endpoint.
+    28	
+    29	Not breaking: every existing template, request, and response stays valid, and `group` is omitted
+    30	from responses when unset.
+    31	
+    32	## Capabilities
+    33	
+    34	### New Capabilities
+    35	
+    36	- `template-groups`: how a template declares its group, what a valid group name is, how groups
+    37	  appear in and filter the template API, how a template is moved between groups, and how groups are
+    38	  browsed in the Labels view.
+    39	
+    40	### Modified Capabilities
+    41	
+    42	None. `template-groups` is additive: it introduces a field, a query parameter, and an endpoint, and
+    43	supersedes only the frozen `docs/SPEC.md` sections that enumerate those (§2 endpoint table, §2.0,
+    44	§3 top-level field table). No requirement in `openspec/specs/template-registry/spec.md` changes:
+    45	loading order, duplicate-id refusal, and broken-file reporting all behave identically whether or not
+    46	a file carries a `group:` key.
+    47	
+    48	## Impact
+    49	
+    50	- **Schema path:** `src/raw.rs`, `src/models.rs`, `src/convert.rs` (the three-file rule of ADR-0002),
+    51	  plus group-name validation and its `TemplateError` path.
+    52	- **API:** `src/api.rs` (list filter, the new route and handler, the line patcher), `src/models.rs`
+    53	  (`TemplateSummary`, `TemplateDetail`), `src/reason.rs` (a reason for an invalid group name),
+    54	  `src/openapi.rs` (the new parameter, request body, and route).
+    55	- **UI:** `ui/src/pages/Templates.tsx`, `ui/src/api/types.ts`, `ui/src/api/queries.ts`, plus a move
+    56	  dialog component and its tests.
+    57	- **Docs:** `docs/AUTHORING.md`, two new `docs/adr/` records and their `docs/adr/README.md` rows.
+    58	- **Not touched:** the render path, the batch path, favorites and recents, the catalog, and the
+    59	  templates directory layout, which stays flat.
+    60	- **Out of scope:** drag-and-drop onto a group chip, renaming or deleting a group across every
+    61	  template that uses it, nested groups, and per-group thumbnails. None of these is queued work: each
+    62	  gets its own issue if and when it is wanted.
+
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'nl -ba openspec/changes/issue-164-*/specs/template-groups/spec.md' in /home/pfa/projects/labeler/.worktrees/issue-164
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'nl -ba openspec/changes/issue-164-*/design.md' in /home/pfa/projects/labeler/.worktrees/issue-164
+ succeeded in 0ms:
+     1	## Context
+     2	
+     3	See `proposal.md` for motivation and `specs/template-groups/spec.md` for the contract. What shapes
+     4	the approach here:
+     5	
+     6	- Templates are files. The registry loads `{config}/templates/*.yaml` one level deep
+     7	  (`src/templates.rs:95`), keys on the `id` inside each file, and remembers which file each id came
+     8	  from (`src/templates.rs:190`). `POST /api/templates` writes `{id}.yaml`; every other write resolves
+     9	  the path through the registry rather than guessing at a filename (`src/api.rs:332`).
+    10	- Parsing is two-stage and rejects unknown fields: YAML → `TemplateDefinitionRaw` (`src/raw.rs:104`)
+    11	  → `TemplateDefinition` via `TryFrom` (`src/convert.rs:265`), then `validate()`
+    12	  (`src/templates.rs:306`) returns a human message. A file that fails either is quarantined, not
+    13	  fatal (`openspec/specs/template-registry/spec.md`).
+    14	- ADR-0006 forbids a GUI from rewriting a hand-authored template, because a YAML parse-and-re-emit
+    15	  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+    16	  source textarea today (`ui/src/pages/TemplateDetail.tsx`).
+    17	- The Labels page loads the full template list once and derives Favorites and Recents from it
+    18	  (`ui/src/pages/Templates.tsx:107`), so it already holds every summary in memory.
+    19	
+    20	## Goals / Non-Goals
+    21	
+    22	**Goals:**
+    23	
+    24	- Group assignment is a one-click action from the Labels page, on one card or on many, and never
+    25	  requires typing YAML.
+    26	- A move changes exactly one line of the file and leaves comments, key order, and formatting intact.
+    27	- The group survives export, backup, catalog install, and copying a file to another machine.
+    28	- No grouping fault reaches further than the file that carries it. An invalid hand-authored `group:`
+    29	  quarantines that one template, exactly as any other validation failure does, and never aborts
+    30	  startup or touches another template; and the move endpoint cannot create such a file, because it
+    31	  validates before it writes.
+    32	
+    33	**Non-Goals:**
+    34	
+    35	- Hierarchy. `Shipping/Pallets` is a name, not a path (decision 2).
+    36	- Group entities. There is no create-group or delete-group operation and no place a group is stored
+    37	  apart from the templates naming it, so an empty group cannot exist.
+    38	- Renaming a group across every template that uses it, and drag-and-drop onto a filter chip. Neither
+    39	  is part of #164, and neither is queued: each gets its own issue if and when it is wanted.
+    40	- Directory reorganization. `{config}/templates/` stays one flat level.
+    41	
+    42	## Decisions
+    43	
+    44	### 1. The group is a YAML field on the template, not a directory and not a store row
+    45	
+    46	Alternatives were directory mapping (`templates/<group>/x.yaml`) and a row in the SQLite store
+    47	beside favorites.
+    48	
+    49	Directory mapping loses on four counts, all in code that exists today. The loader walks one level
+    50	(`src/templates.rs:95`) and every downstream identity is a basename, including `BrokenTemplateSummary.filename`
+    51	(`src/models.rs:36`) and the duplicate-id tie-break just frozen in `template-registry` ("the one whose
+    52	filename sorts first in byte order"); recursion turns all of those into relative paths and reopens a
+    53	requirement written days ago. It puts a caller-supplied string on the write path, where
+    54	`template_file_path` currently derives the filename from an id restricted to `[A-Za-z0-9_-]`
+    55	(`src/api.rs:310`), so a group segment would need its own traversal, separator, and case-collision
+    56	guards on an endpoint that writes files. It turns a regroup into mkdir plus cross-directory rename
+    57	plus pruning the emptied directory, with a half-failed state the current single atomic rename does
+    58	not have. And it puts the group outside the artifact, so a catalog install (`ui/src/pages/Catalog.tsx:127`
+    59	POSTs the YAML body) arrives ungrouped.
+    60	
+    61	Store metadata fails the portability test the same way, and additionally splits template truth across
+    62	a file and a database, which is what ADR-0006 exists to prevent.
+    63	
+    64	The YAML field costs one field in each of the three parse-path files and nothing else. Its one real
+    65	loss: reorganizing `/config/templates` by hand with `mv` does not group anything, because the
+    66	directory carries no meaning. Accepted knowingly.
+    67	
+    68	Recorded as **ADR-0062, "A template's group is a YAML field, not its directory"**.
+    69	
+    70	### 2. One flat level
+    71	
+    72	`group` is a single name. The service does not split on `/` or any other character, so
+    73	`Electronics / Cables` is one group whose name happens to contain a slash.
+    74	
+    75	Hierarchy was rejected for this change, not forever: it costs a tree control with expansion state in
+    76	the Labels view, a decision about whether selecting a parent includes its children, per-segment
+    77	validation, and a depth cap, for a set that is currently a few dozen templates. Widening later is a
+    78	pure loosening of `validate_group_name`, and no existing file or response has to change, so the
+    79	cheap option here does not become the wrong one later. Same ADR-0062.
+    80	
+    81	### 3. Validation lives in one function, shared by the parse path and the move endpoint
+    82	
+    83	`validate_group_name(&str) -> Result<String, String>` returns the whitespace-stripped name or a
+    84	message naming `group`. It is called from `TemplateDefinition::validate()` (so a bad group quarantines
+    85	the file like any other validation failure) and from the move handler before it patches anything (so a
+    86	bad name is a `422` with nothing written). One definition, so the file path and the API path cannot
+    87	drift.
+    88	
+    89	The domain model stores the stripped value: `TemplateDefinition.group: Option<String>`, `raw.rs` gains
+    90	`group: Option<String>` with `#[serde(default)]`, and `convert.rs` strips on the way through. A
+    91	non-string value fails at deserialization with `serde_path_to_error` naming `group`, which is why the
+    92	spec says "parse or validation message" rather than naming one.
+    93	
+    94	Bounds: non-empty after stripping, at most 64 characters, no control characters. 64 is a display
+    95	bound, not a storage one: these names sit in a filter row and on cards.
+    96	
+    97	Case is significant, so `Warehouse` and `warehouse` are two groups. Case-folding would be wrong for
+    98	`3M` and `pH`, and cross-file collision detection would need a registry-wide rule for something that
+    99	is only a naming preference. The mitigation is in the UI: the move dialog offers the names already in
+   100	use, so the normal path picks an existing name instead of retyping it.
+   101	
+   102	### 4. Move is `PUT /api/templates/{id}/group`, a targeted single-line file patch
+   103	
+   104	The endpoint replaces one subresource and is idempotent, which is `PUT`, not `PATCH`.
+   105	
+   106	The patch is textual, never a parse-and-re-emit, which is what keeps it inside ADR-0006's intent
+   107	rather than against it. Under `state.write_lock`, with the path resolved through the registry
+   108	(`existing_template_file`), the handler:
+   109	
+   110	1. reads the stored file;
+   111	2. refuses a file holding more than one YAML document (`422`), since "the top-level `group`" is
+   112	   ambiguous there, and likewise a file whose root is not a block mapping written one key per line.
+   113	   A top-level flow mapping parses fine and has no line to patch or to insert, so reflowing it into
+   114	   block style would be exactly the whole-file rewrite this design exists to avoid;
+   115	3. finds a top-level `group:` line: a line whose first character is at column 0, that is not a
+   116	   comment, and whose key is exactly `group`. Column 0 is what makes a nested `group:` key
+   117	   (inside `params`, or a layout item) unreachable, since nested keys are indented;
+   118	4. cross-checks that scan against the parsed template. The parser accepts spellings the scan does not
+   119	   recognize, `"group": Shipping` among them, so when the parsed template has a group and the scan
+   120	   found no line to replace, or found more than one, the handler refuses with `422` instead of
+   121	   inserting. Without this check step 7 would append a second top-level `group` key;
+   122	5. if the matched line's value is not a scalar it can replace in place (a block scalar `|`/`>`, a
+   123	   flow collection, an anchor or alias, or an empty value introducing a nested block), refuses with
+   124	   `422` rather than guessing. Plain and quoted scalars are both replaceable, which matters because
+   125	   `group: "Shipping"` is a valid and expected spelling;
+   126	6. builds the new line as `group: ` plus the name emitted through the YAML serializer, so a name
+   127	   needing quotes gets them, and re-attaches any trailing comment the old line carried. Finding that
+   128	   comment means skipping a quoted scalar before looking for ` #`, so `group: "A # B"  # keep me`
+   129	   keeps both the `#` inside the value and the comment after it; that case is a test, not a comment
+   130	   in the code;
+   131	7. for a clear, deletes the whole line and its terminator; for an insert, places the new line
+   132	   immediately after the top-level `name:` line, falling back to after `id:`, then to the top of the
+   133	   document body after any leading comments and `---` marker;
+   134	8. parses and validates the patched text, and asserts the group reads back as requested. Only then
+   135	   does it write, through the same atomic temp-then-rename as every other template write, and reload
+   136	   the registry.
+   137	
+   138	Step 8 is the safety net that makes the textual patch acceptable: a patch that would produce a file
+   139	the service cannot load never reaches the disk. Step 4 is the one that keeps a *loadable* file from
+   140	being wrong: a duplicated key can round-trip through a parser that takes the last value, so the
+   141	scan-versus-parse disagreement has to be caught before the write, not after it. Line endings are preserved by splitting on line
+   142	terminators and keeping each line's own ending, so a CRLF file stays CRLF.
+   143	
+   144	Recorded as **ADR-0063, "The service may rewrite one key of a hand-authored template"**, which
+   145	qualifies ADR-0006: a targeted single-key patch that preserves every other byte is not the lossy
+   146	round trip that ADR forbids, and the guarantee is enforced by tests that assert byte equality outside
+   147	the patched line.
+   148	
+   149	New reasons in `src/reason.rs`: `template_group_invalid` (`422`, a name that fails validation) and
+   150	`template_group_unpatchable` (`422`, a file the patcher will not touch). Existing reasons cover the
+   151	rest: `template_id_invalid`, `template_write_failed`, `template_registry_io`.
+   152	
+   153	### 5. The server filters, the UI does not have to
+   154	
+   155	`GET /api/templates?group=` exists for API clients, and its three states (absent, a name, empty) are
+   156	distinguishable in axum as `Option<String>` from `Query`, so "all" and "ungrouped" do not collide.
+   157	
+   158	The Labels page keeps fetching the unfiltered list and filters in the browser, because it needs the
+   159	full set anyway to resolve Favorites and Recents (`ui/src/pages/Templates.tsx:107`) and to build the
+   160	filter row itself. Refetching per filter selection would add a round trip and make the group list
+   161	depend on the current filter. The endpoint parameter and the UI's client-side filter are specified to
+   162	mean the same thing, and the API tests are what hold them together.
+   163	
+   164	### 6. UI shape
+   165	
+   166	- A filter row above the grid: `All`, each group in use in ascending Unicode code-point order,
+   167	  `Ungrouped` only while something is ungrouped. Code-point order is what `summaries()` already
+   168	  applies to ids (`src/templates.rs:204`, Rust's `str` comparison is UTF-8 byte order, which is
+   169	  code-point order). JavaScript's `<` is not that: it compares UTF-16 code units, so a group name
+   170	  outside the Basic Multilingual Plane, an emoji being the realistic case, sorts before a name in the
+   171	  `U+E000`-`U+FFFF` range while the server would put it after. The comparator therefore compares
+   172	  code-point sequences (`Array.from(name)`), not the raw strings, and `localeCompare` is wrong for a
+   173	  different reason: its order depends on the viewer's locale. Selection is component state, composed with the existing search box by
+   174	  `useMemo`, so both narrow at once. A selection other than `All` also hides the Favorites and
+   175	  Recents rows, reusing the `searching` condition already in `ui/src/pages/Templates.tsx:137`: those
+   176	  rows are drawn from the whole set, and leaving them on screen under a group filter would show
+   177	  cards from the groups the user just filtered out.
+   178	- Each card shows its group next to the format badge, and gains a **Move to…** item.
+   179	- The move dialog is a text input over a `<datalist>` of the groups in use, plus a "Make ungrouped"
+   180	  action. Typing an unused name and confirming creates that group by moving a template into it.
+   181	- Multi-select: a checkbox per card and a selection bar reading "N selected · Move to…". A bulk move
+   182	  issues one request per template with `Promise.allSettled`, then reports successes and failures
+   183	  per template, so a partial failure is visible rather than silent.
+   184	- One `useMoveTemplateGroup` mutation invalidating the `templates` query, so the grid and filter row
+   185	  both refresh from the server's answer rather than from optimistic local state.
+   186	
+   187	## Risks / Trade-offs
+   188	
+   189	- **The patcher corrupts a hand-authored file.** → It never writes text the service cannot parse and
+   190	  validate (decision 4, step 8), the write stays atomic, and the tests assert byte equality outside the patched
+   191	  line across the whole `catalog/` tree, which is the real corpus of comment-carrying templates.
+   192	- **A move silently overwrites a source edit open in another tab.** The editor PUTs the whole file
+   193	  with no version check, so a stale draft saved after a move reverts the group. This hazard exists
+   194	  today between two editors; grouping widens it to a second writer. Documented here, and optimistic
+   195	  concurrency on template writes is a separate issue rather than a rider on this one.
+   196	- **Rollback quarantines grouped templates.** `deny_unknown_fields` means a binary from before this
+   197	  change rejects a file carrying `group:`. Per `template-registry` those files are quarantined and
+   198	  reported as broken, not fatal, so an older binary starts and serves everything else. Recovery is to
+   199	  roll forward, or to delete the `group:` lines. Stated in ADR-0062's consequences.
+   200	- **Group names drift by case and spelling.** Only the dialog's list of existing names pushes against
+   201	  it. Deliberate: enforcement would mean a registry-wide uniqueness rule for a naming preference.
+   202	- **Bulk move is N requests.** At a few dozen templates that is fine; a bulk endpoint is not worth its
+   203	  contract until the count justifies it.
+   204	
+   205	## Migration Plan
+   206	
+   207	No data migration. Every existing template, request, and response stays valid, and `group` is omitted
+   208	from responses when unset, so no consumer sees a shape change. Deployment is the normal image roll
+   209	(ADR-0016); rollback is the previous image, with the caveat above.
+   210	
+   211	## Open Questions
+   212	
+   213	None. The three decisions that would have changed the specs or the task breakdown (storage model,
+   214	flat versus hierarchical, who rewrites the file) were settled before this document was written.
+   215	
+   216	## ADR numbering
+   217	
+   218	ADR-0062 and ADR-0063 are the next free numbers on `main`, which holds through ADR-0058. Numbers
+   219	0059 through 0061 are claimed by changes in flight in other worktrees (#161 and #180 both claim 0059,
+   220	#169 claims 0060 and 0061). Whichever change merges last renumbers; verify against `main` before
+   221	writing the files.
+
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc "nl -ba src/templates.rs | sed -n '180,220p'" in /home/pfa/projects/labeler/.worktrees/issue-164
+ succeeded in 0ms:
+   180	        self.templates.is_empty()
+   181	    }
+   182	
+   183	    pub fn get(&self, id: &str) -> Option<&TemplateDefinition> {
+   184	        self.templates.get(id)
+   185	    }
+   186	
+   187	    /// Lowercase hex SHA-256 of the template's raw YAML, used as a strong ETag.
+   188	    pub fn content_hash(&self, id: &str) -> Option<&str> {
+   189	        self.hashes.get(id).map(String::as_str)
+   190	    }
+   191	
+   192	    /// The file this id was loaded from, or `None` if the registry does not hold the id.
+   193	    pub fn path(&self, id: &str) -> Option<&FsPath> {
+   194	        self.paths.get(id).map(PathBuf::as_path)
+   195	    }
+   196	
+   197	    /// Files refused during this load, by a parse, validation or duplicate-id fault.
+   198	    pub fn broken(&self) -> &[BrokenTemplate] {
+   199	        &self.broken
+   200	    }
+   201	
+   202	    pub fn summaries(&self) -> Vec<TemplateSummary> {
+   203	        let mut items: Vec<_> = self.templates.values().map(TemplateSummary::from).collect();
+   204	        items.sort_by(|a, b| a.id.cmp(&b.id));
+   205	        items
+   206	    }
+   207	
+   208	    pub fn detail(&self, id: &str) -> Option<TemplateDetail> {
+   209	        self.templates.get(id).map(TemplateDetail::from)
+   210	    }
+   211	}
+   212	
+   213	#[derive(Debug, Error)]
+   214	pub enum TemplateRegistryError {
+   215	    #[error("failed to read templates from {path}: {source}")]
+   216	    Io {
+   217	        path: PathBuf,
+   218	        source: std::io::Error,
+   219	    },
+   220	    #[error("failed to parse template {path}: {source}")]
+
+ succeeded in 114ms:
+     1	## Purpose
+     2	
+     3	Defines how a template declares the group it belongs to, what a valid group name is, how groups reach
+     4	the API on template summaries and detail, how the template list is filtered by group, how a template
+     5	is moved from one group to another without disturbing the rest of its file, and how groups are
+     6	browsed in the Labels view.
+     7	
+     8	## ADDED Requirements
+     9	
+    10	### Requirement: A template declares its group as an optional top-level field
+    11	
+    12	A template MAY carry a top-level `group` field naming the one group it belongs to. The field is
+    13	optional; a template without it is *ungrouped*, and ungrouped is a first-class state, not an error.
+    14	
+    15	A group name is one flat name. The service SHALL NOT assign meaning to any character inside it: a
+    16	name containing `/` is a name, not a path, and produces no hierarchy.
+    17	
+    18	A `group` value SHALL be valid when, after stripping leading and trailing whitespace, it is:
+    19	
+    20	- a string;
+    21	- non-empty;
+    22	- at most 64 characters;
+    23	- free of control characters, including tab, carriage return, and line feed.
+    24	
+    25	The stored group is the whitespace-stripped value. A `group` that is not a string, is empty or
+    26	whitespace-only, exceeds 64 characters, or carries a control character SHALL make the template fail
+    27	to load, with a parse or validation message naming the `group` field. That quarantines the file
+    28	under the existing rules of the `template-registry` capability rather than aborting startup.
+    29	
+    30	Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+    31	
+    32	The post-change set of top-level template fields is:
+    33	
+    34	| Field | Type | Notes |
+    35	| --- | --- | --- |
+    36	| `id` | string | Required, non-empty. Uniqueness across the directory is enforced per `template-registry`. |
+    37	| `name` | string | Required, non-empty. |
+    38	| `description` | string | Optional. |
+    39	| `group` | string | Optional. One flat group name, validated as above. Absent means ungrouped. |
+    40	| `unit` | `"mm"` \| `"in"` | Length unit for all coordinates/sizes in the template. |
+    41	| `dpi` | integer > 0 | Raster resolution for PNG output. |
+    42	| `format` | object | See `docs/SPEC.md` §3.1. |
+    43	| `params` | map | Optional. Map of parameter name → `ParamSpec`. See `docs/SPEC.md` §3.0. |
+    44	| `options` | map | Optional, legacy. Map of option name → allowed values, desugared into an enum `params` entry. Still accepted; not for new templates (ADR-0055, ADR-0056). |
+    45	| `layout` | list | Tree of layout items. See `docs/SPEC.md` §4. |
+    46	| `version` | string | Optional, free-form. |
+    47	
+    48	Parsing still rejects unknown fields. `options` is listed because this table is the complete set of
+    49	accepted top-level fields: it parses today and SHALL keep parsing, so omitting it here would make a
+    50	working template read as invalid.
+    51	
+    52	This requirement supersedes the `docs/SPEC.md` §3 top-level field table, and only that table. Every
+    53	other rule in §3, and the frozen §3.0 and §3.1 subsections, stay authoritative.
+    54	
+    55	#### Scenario: A template carries a group
+    56	
+    57	- **WHEN** a template file declares `group: Warehouse` and is otherwise valid
+    58	- **THEN** the template loads
+    59	- **AND** its group is `Warehouse`
+    60	
+    61	#### Scenario: A template without the field is ungrouped
+    62	
+    63	- **WHEN** a valid template file declares no `group` key
+    64	- **THEN** the template loads
+    65	- **AND** it is reported as ungrouped, not as broken
+    66	
+    67	#### Scenario: Surrounding whitespace is not part of the name
+    68	
+    69	- **WHEN** a template declares `group: "  Warehouse  "`
+    70	- **THEN** its group is `Warehouse`
+    71	
+    72	#### Scenario: An empty group name is a validation failure
+    73	
+    74	- **WHEN** a template declares `group: ""` or a whitespace-only value
+    75	- **THEN** the template fails to load, with a message naming `group`
+    76	- **AND** the file is quarantined as broken while the service keeps running
+    77	
+    78	#### Scenario: An over-long or control-character name is a validation failure
+    79	
+    80	- **WHEN** a template declares a `group` longer than 64 characters, or one containing a line feed
+    81	- **THEN** the template fails to load, with a message naming `group`
+    82	
+    83	#### Scenario: A slash produces no hierarchy
+    84	
+    85	- **WHEN** two templates declare `group: Shipping/Pallets` and `group: Shipping`
+    86	- **THEN** they belong to two unrelated groups
+    87	- **AND** neither is nested inside the other
+    88	
+    89	### Requirement: Group is exposed on template summaries and detail
+    90	
+    91	`GET /api/templates` SHALL carry each template's `group` in its summary, and `GET /api/templates/{id}`
+    92	SHALL carry it in the detail. The field SHALL be omitted from the response body when the template is
+    93	ungrouped, so an existing consumer sees exactly the payload it saw before this change.
+    94	
+    95	The `broken` list of `GET /api/templates` SHALL be unchanged: a refused file is reported as
+    96	`{ filename, error }` whether or not it declares a group, since a file that failed to load has no
+    97	group to report.
+    98	
+    99	The OpenAPI document at `GET /api/openapi.json` SHALL describe `group` on both schemas.
+   100	
+   101	This requirement supersedes the `docs/SPEC.md` §2 endpoint-table success column for
+   102	`GET /api/templates` and `GET /api/templates/{id}` as to response content, and adds `group` to the
+   103	template payloads described in §2.0. It changes nothing else about those endpoints: the list stays
+   104	sorted by id, and detail still carries the full layout.
+   105	
+   106	#### Scenario: A grouped template reports its group
+   107	
+   108	- **WHEN** `GET /api/templates` is called and one template declares `group: Warehouse`
+   109	- **THEN** that template's summary carries `group` with the value `Warehouse`
+   110	
+   111	#### Scenario: An ungrouped template omits the field
+   112	
+   113	- **WHEN** `GET /api/templates/{id}` is called for a template that declares no group
+   114	- **THEN** the response body contains no `group` key
+   115	
+   116	### Requirement: The template list filters by group
+   117	
+   118	`GET /api/templates` SHALL accept an optional `group` query parameter:
+   119	
+   120	- **absent** — every template is listed, grouped and ungrouped alike;
+   121	- **`?group=<name>`** — only templates whose group equals `<name>` exactly, after the same
+   122	  whitespace stripping applied to the stored value;
+   123	- **`?group=`**, present with an empty value — only ungrouped templates.
+   124	
+   125	A `group` naming no existing group SHALL return `200` with an empty `templates` list, never `404`.
+   126	
+   127	Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+   128	change the `broken` list, which continues to report every refused file regardless of the filter,
+   129	because a refused file has no group to filter on.
+   130	
+   131	`GET /api/openapi.json` SHALL document the `group` query parameter on `GET /api/templates`,
+   132	including that it is optional and that an empty value selects the ungrouped templates.
+   133	
+   134	This requirement supersedes the `docs/SPEC.md` §2 endpoint-table row for `GET /api/templates`
+   135	("List template summaries (sorted by id)") as to the accepted query parameters.
+   136	
+   137	#### Scenario: Filtering to one group
+   138	
+   139	- **WHEN** `GET /api/templates?group=Warehouse` is called
+   140	- **THEN** every returned summary has group `Warehouse`
+   141	- **AND** templates in other groups and ungrouped templates are absent
+   142	
+   143	#### Scenario: Filtering to the ungrouped templates
+   144	
+   145	- **WHEN** `GET /api/templates?group=` is called
+   146	- **THEN** only templates declaring no group are returned
+   147	
+   148	#### Scenario: An unknown group is empty, not an error
+   149	
+   150	- **WHEN** `GET /api/templates?group=Nonexistent` is called
+   151	- **THEN** the response is `200`
+   152	- **AND** `templates` is empty
+   153	
+   154	#### Scenario: Case is significant
+   155	
+   156	- **WHEN** templates exist in `Warehouse` and `GET /api/templates?group=warehouse` is called
+   157	- **THEN** the response is `200` with an empty `templates` list
+   158	
+   159	#### Scenario: Broken files are reported whatever the filter
+   160	
+   161	- **WHEN** one file in the directory is refused and `GET /api/templates?group=Warehouse` is called
+   162	- **THEN** the refused file still appears under `broken`
+   163	
+   164	### Requirement: A template is moved between groups without rewriting the rest of its file
+   165	
+   166	`PUT /api/templates/{id}/group` SHALL set or clear one template's group. The request body is
+   167	`{ "group": "<name>" }` to move it into a group, or `{ "group": null }` to make it ungrouped.
+   168	
+   169	The service SHALL apply the change as a targeted edit of the stored file: it replaces the value of
+   170	the existing top-level `group:` line, or, when there is none, inserts one. Every other byte of the
+   171	file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+   172	values, and blank lines. Clearing a group SHALL remove the whole `group:` line.
+   173	
+   174	The patched text SHALL be parsed and validated before anything is written, and SHALL be written only
+   175	if it is a valid template whose group reads back as the requested value. The file SHALL be replaced
+   176	atomically, and the registry reloaded, exactly as the other template writes do.
+   177	
+   178	The service SHALL refuse, with nothing written, any file it cannot patch unambiguously:
+   179	
+   180	- one holding more than one YAML document;
+   181	- one whose top-level `group` value is not a scalar the patch can replace in place. Plain and quoted
+   182	  scalars are patchable; a block scalar, a flow collection, an anchor or alias, and a value
+   183	  introducing a nested block are not;
+   184	- one the template parser reads as already having a group while the patch cannot identify exactly one
+   185	  top-level `group:` line to replace, which is what a quoted key (`"group": Shipping`) or any other
+   186	  spelling the parser accepts and the patch does not recognize produces. Inserting a second line in
+   187	  that case is forbidden: a file SHALL never come back with two top-level `group` keys;
+   188	- one whose root is not a block mapping written one key per line, a top-level flow mapping
+   189	  (`{id: bin-tag, name: Bin Tag, ...}`) being the case that reaches the parser intact. Such a file
+   190	  offers no line to replace and no line to insert, so it is refused rather than reflowed.
+   191	
+   192	A `group:` key that is not top-level, such as one inside `params` or a layout item, SHALL be left
+   193	alone and SHALL NOT be mistaken for the template's group.
+   194	
+   195	Responses:
+   196	
+   197	| Status | Meaning |
+   198	| --- | --- |
+   199	| `200` | Moved. Body is the updated `TemplateDetail`. |
+   200	| `400` | The path id is invalid, or the body is not `{ "group": string \| null }`. |
+   201	| `404` | The registry holds no template with that id. |
+   202	| `422` | The group name fails validation, or the file cannot be patched unambiguously. |
+   203	| `500` | The file could not be written, or the directory could not be re-read afterwards. |
+   204	
+   205	The operation SHALL be idempotent: setting the group a template already has, or clearing an already
+   206	ungrouped template, SHALL return `200` and leave the file byte-identical.
+   207	
+   208	This endpoint SHALL be the only path by which the service writes a group into a hand-authored file.
+   209	`PUT /api/templates/{id}` continues to replace the whole file from a submitted body, and a `group:`
+   210	key typed there is honoured exactly like any other field.
+   211	
+   212	`GET /api/openapi.json` SHALL document this route: its path parameter, its request body as
+   213	`{ "group": string | null }`, and every status in the table above, alongside the error reasons it
+   214	introduces.
+   215	
+   216	This requirement supersedes the `docs/SPEC.md` §2 endpoint table and §2.0 template management to the
+   217	extent of adding this route and its semantics: both enumerate the template write surface without it.
+   218	Every other route in that table, and every other rule in §2.0, is unchanged, as is the
+   219	`template-registry` requirement that a `422` from a template write means nothing was written, which
+   220	this endpoint follows.
+   221	
+   222	#### Scenario: Moving a template into a group
+   223	
+   224	- **WHEN** `PUT /api/templates/bin-tag/group` is called with `{ "group": "Warehouse" }`
+   225	- **THEN** the response is `200` and the detail carries group `Warehouse`
+   226	- **AND** `GET /api/templates/bin-tag/source` shows a `group: Warehouse` line
+   227	- **AND** every comment and every other line of the file is unchanged
+   228	
+   229	#### Scenario: Changing an existing group replaces only that line
+   230	
+   231	- **WHEN** a template already declaring `group: Shipping` is moved to `Warehouse`
+   232	- **THEN** the stored file differs from its previous content only in the value on the `group:` line
+   233	
+   234	#### Scenario: A quoted value and a trailing comment both survive
+   235	
+   236	- **WHEN** a template whose line reads `group: "A # B"  # keep me` is moved to `Warehouse`
+   237	- **THEN** the response is `200` and its group is `Warehouse`
+   238	- **AND** the `# keep me` comment is still on the `group:` line
+   239	
+   240	#### Scenario: Clearing a group
+   241	
+   242	- **WHEN** `PUT /api/templates/bin-tag/group` is called with `{ "group": null }`
+   243	- **THEN** the response is `200` and the detail carries no group
+   244	- **AND** the stored file no longer contains a top-level `group:` line
+   245	
+   246	#### Scenario: An invalid name is rejected and nothing is written
+   247	
+   248	- **WHEN** the endpoint is called with a group name of 200 characters
+   249	- **THEN** the response is `422`
+   250	- **AND** the stored file is unchanged
+   251	
+   252	#### Scenario: An unknown template is a 404
+   253	
+   254	- **WHEN** the endpoint is called for an id the registry does not hold
+   255	- **THEN** the response is `404`
+   256	
+   257	#### Scenario: A nested `group:` key is not the template's group
+   258	
+   259	- **WHEN** a template declaring no top-level group, but carrying a param named `group`, is moved into `Warehouse`
+   260	- **THEN** a top-level `group: Warehouse` line is added
+   261	- **AND** the param named `group` is untouched
+   262	
+   263	#### Scenario: An unpatchable file is refused
+   264	
+   265	- **WHEN** the endpoint is called for a template whose file holds two YAML documents
+   266	- **THEN** the response is `422`
+   267	- **AND** the stored file is unchanged
+   268	
+   269	#### Scenario: A flow-mapping root is refused
+   270	
+   271	- **WHEN** the endpoint is called for a valid template whose whole document is one top-level flow
+   272	  mapping and which declares no group
+   273	- **THEN** the response is `422`
+   274	- **AND** the stored file is unchanged
+   275	
+   276	#### Scenario: An unrecognized spelling of the key is refused, not duplicated
+   277	
+   278	- **WHEN** the endpoint is called for a template whose group is written as `"group": Shipping`
+   279	- **THEN** the response is `422`
+   280	- **AND** the stored file is unchanged
+   281	- **AND** no second top-level `group` key is added
+   282	
+   283	#### Scenario: Moving to the group it already has changes nothing
+   284	
+   285	- **WHEN** a template in `Warehouse` is moved to `Warehouse`
+   286	- **THEN** the response is `200`
+   287	- **AND** the stored file is byte-identical to before the call
+   288	
+   289	### Requirement: The Labels view browses and edits groups
+   290	
+   291	The Labels view SHALL let a user browse by group and move templates between groups without editing
+   292	YAML.
+   293	
+   294	It SHALL show a filter control listing `All`, every group in use in ascending Unicode code-point
+   295	order, and `Ungrouped`. That is the ordering the API already applies to template ids, so `Warehouse`
+   296	sorts before `warehouse`, and it holds for every valid group name, including one outside the Basic
+   297	Multilingual Plane, where ordering by UTF-16 code unit would disagree.
+   298	`Ungrouped` SHALL be offered only while at least one ungrouped template exists. Selecting an entry
+   299	SHALL narrow the grid to that group, and SHALL compose with the existing text search so that both
+   300	constraints apply together.
+   301	
+   302	While a group other than `All` is selected, the view SHALL hide the Favorites and Recents rows,
+   303	exactly as an active search already does, so that everything on screen belongs to the selected group.
+   304	When the selection is `All` and the search box is empty, both rows return.
+   305	
+   306	When a group and a search term together match nothing, the view SHALL say so rather than render an
+   307	empty grid.
+   308	
+   309	Each template card SHALL show its group, and SHALL offer a **Move to…** action. The move dialog SHALL
+   310	offer the groups already in use and SHALL accept a name that is not yet in use, which creates that
+   311	group by the act of moving a template into it. It SHALL offer a way to make the template ungrouped.
+   312	A group therefore exists exactly as long as at least one template names it; there is no separate
+   313	create or delete step.
+   314	
+   315	The view SHALL support selecting several templates and moving them in one action, reporting per
+   316	template which moves succeeded when some fail.
+   317	
+   318	After a successful move the view SHALL reflect the template's new group without a manual reload.
+   319	
+   320	Favorites and Recents SHALL otherwise keep working exactly as they do today: they are per-user
+   321	shortcuts over the whole set, a move SHALL NOT change either, and neither is reordered or pruned by
+   322	grouping.
+   323	
+   324	#### Scenario: Filtering the grid to a group
+   325	
+   326	- **WHEN** the user selects the `Warehouse` filter
+   327	- **THEN** only Warehouse templates are shown in the grid
+   328	
+   329	#### Scenario: Group filter and search compose
+   330	
+   331	- **WHEN** the user selects `Warehouse` and types `bin` in the search box
+   332	- **THEN** only Warehouse templates matching `bin` are shown
+   333	
+   334	#### Scenario: Ungrouped is offered only when it is non-empty
+   335	
+   336	- **WHEN** every template belongs to a group
+   337	- **THEN** the filter control offers no `Ungrouped` entry
+   338	
+   339	#### Scenario: Moving one template from the grid
+   340	
+   341	- **WHEN** the user picks **Move to…** on a card and chooses `Warehouse`
+   342	- **THEN** the card shows `Warehouse` without a manual page reload
+   343	
+   344	#### Scenario: Creating a group by naming it
+   345	
+   346	- **WHEN** the user types a group name that no template uses and confirms the move
+   347	- **THEN** the template is moved into that group
+   348	- **AND** the new group appears in the filter control
+   349	
+   350	#### Scenario: Moving several templates at once
+   351	
+   352	- **WHEN** the user selects three templates and moves them to `Shipping`
+   353	- **THEN** all three are moved
+   354	- **AND** a failure on one of them is reported without hiding the successes of the others
+   355	
+   356	#### Scenario: A group filter hides the Favorites and Recents rows
+   357	
+   358	- **WHEN** the user selects the `Warehouse` filter while favorites exist
+   359	- **THEN** the Favorites and Recents rows are not shown
+   360	- **AND** selecting `All` again brings both back
+   361	
+   362	#### Scenario: A group and a search that match nothing say so
+   363	
+   364	- **WHEN** the user selects `Warehouse` and types a term no Warehouse template matches
+   365	- **THEN** the view reports that nothing matches
+   366	
+   367	#### Scenario: A move leaves favorites alone
+   368	
+   369	- **WHEN** a favorited template is moved to another group
+   370	- **THEN** it is still favorited
+   371	- **AND** it appears in the Favorites row again once the filter is cleared
+
+codex
+The relevant edits are visible: design.md now says the parse-and-validate safety net is decision 4 step 8, and both spec/design now call for Unicode code-point ordering rather than raw JavaScript string comparison. I’m doing one targeted consistency scan now for numbered step references and contradictions in the three artifacts.
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'rg -n "decision 4|step [0-9]|Step [0-9]" openspec/changes/issue-164-*/design.md' in /home/pfa/projects/labeler/.worktrees/issue-164
+ succeeded in 0ms:
+121:   inserting. Without this check step 7 would append a second top-level `group` key;
+138:Step 8 is the safety net that makes the textual patch acceptable: a patch that would produce a file
+139:the service cannot load never reaches the disk. Step 4 is the one that keeps a *loadable* file from
+190:  validate (decision 4, step 8), the write stays atomic, and the tests assert byte equality outside the patched
+
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'rg -n "Unicode|code-point|UTF-16|localeCompare|JavaScript|sort|order|cmp|compare|ascending" openspec/changes/issue-164-*' in /home/pfa/projects/labeler/.worktrees/issue-164
+ succeeded in 0ms:
+openspec/changes/issue-164-template-groups/review.md:65:**Define group sort order mechanically**
+openspec/changes/issue-164-template-groups/review.md:67:"ascending order" at `spec.md:271`.
+openspec/changes/issue-164-template-groups/review.md:68:Why it matters: `Warehouse`, `warehouse`, accented names, and punctuation can sort differently
+openspec/changes/issue-164-template-groups/review.md:70:Fix: specify the collation used for group chips, for example Unicode code point order or the same
+openspec/changes/issue-164-template-groups/review.md:107:  ordering conflict where the spec required Unicode code-point order while the design specified
+openspec/changes/issue-164-template-groups/review.md:108:  JavaScript `<`, which orders by UTF-16 code unit and disagrees for names outside the Basic
+openspec/changes/issue-164-template-groups/review.md:110:  would have sorted differently in the UI than on the server.
+openspec/changes/issue-164-template-groups/review.md:131:**Round 2, both Suggestions — taken, though the author may decline suggestions.** Group ordering is
+openspec/changes/issue-164-template-groups/review.md:132:now ascending Unicode code-point order in both documents, matching the byte ordering `summaries()`
+openspec/changes/issue-164-template-groups/proposal.md:4:`GET /api/templates` returns every template sorted by id, and the Labels page renders them as one
+openspec/changes/issue-164-template-groups/proposal.md:45:loading order, duplicate-id refusal, and broken-file reporting all behave identically whether or not
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:23:4. Suggestion: group ordering made mechanically checkable. Check the Labels-view requirement in the spec and the UI decision in design.md, and confirm the stated ordering matches what the server already does for ids in src/templates.rs.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:37:I’ll re-check only the named artifacts plus `src/templates.rs` for the existing server ordering behavior, and I’ll keep this read-only.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:72:    30	Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:146:   104	sorted by id, and detail still carries the full layout.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:169:   127	Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:177:   135	("List template summaries (sorted by id)") as to the accepted query parameters.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:213:   171	file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:336:   294	It SHALL show a filter control listing `All`, every group in use in ascending Unicode code-point
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:337:   295	order, and `Ungrouped`. That is the ordering the API already applies to template ids, so
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:338:   296	`Warehouse` sorts before `warehouse` and the two views agree.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:362:   320	shortcuts over the whole set, a move SHALL NOT change either, and neither is reordered or pruned by
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:480:    66	/// Every entry of `dir`, sorted. Loading in sorted order rather than `read_dir` order is what makes
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:482:    68	/// filesystem's enumeration (#181). Every path shares the same parent, so ordering by path is
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:483:    69	/// ordering by filename.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:484:    70	fn sorted_dir_paths(dir: &FsPath) -> Result<Vec<PathBuf>, TemplateRegistryError> {
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:497:    83	    paths.sort();
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:509:    95	        for path in sorted_dir_paths(dir)? {
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:618:   204	        items.sort_by(|a, b| a.id.cmp(&b.id));
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2129:  1715	        // Both present: the smaller wins, in both orders.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2514:  2100	    /// The sort is what makes the collision winner reproducible, and no test can force a filesystem
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2515:  2101	    /// to enumerate out of order, so assert the sorted list directly (#181).
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2517:  2103	    fn dir_paths_come_back_sorted_whatever_the_creation_order() {
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2518:  2104	        let dir = temp_dir("sorted_paths");
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2523:  2109	        let names: Vec<String> = super::sorted_dir_paths(&dir)
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2557:  2143	    /// to hand back first, so both creation orders must give the same answer.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2615:  2201	    fn summaries_are_sorted_by_id() {
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:2616:  2202	        let dir = temp_dir("sorted");
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3176:  2762	  show_border:
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3196:  2782	      show_border: "true"
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3404:    15	  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3415:    26	- A move changes exactly one line of the file and leaves comments, key order, and formatting intact.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3441:    52	filename sorts first in byte order"); recursion turns all of those into relative paths and reopens a
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3555:   166	- A filter row above the grid: `All`, each group in use in ascending Unicode code-point order (plain
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3556:   167	  `<` on the string, not `localeCompare`, so it matches the byte ordering `summaries()` already uses
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3616:4. Suggestion: applied, but not fully correct. The spec requires groups in ascending Unicode code-point order at `spec.md:294`. The design says to use plain string `<` in the UI at `design.md:166`, citing server id sorting at `src/templates.rs:202`. The server does sort ids with `a.id.cmp(&b.id)` at `src/templates.rs:204`, but the planned UI comparator is not equivalent to Unicode code-point order for all allowed group names.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3623:- The group ordering plan conflicts for non-BMP group names: `spec.md:18` allows any non-control string, `spec.md:294` requires Unicode code-point order, but `design.md:166` specifies plain UI string `<`.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3638:4. Suggestion: applied, but not fully correct. The spec requires groups in ascending Unicode code-point order at `spec.md:294`. The design says to use plain string `<` in the UI at `design.md:166`, citing server id sorting at `src/templates.rs:202`. The server does sort ids with `a.id.cmp(&b.id)` at `src/templates.rs:204`, but the planned UI comparator is not equivalent to Unicode code-point order for all allowed group names.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck.txt:3645:- The group ordering plan conflicts for non-BMP group names: `spec.md:18` allows any non-control string, `spec.md:294` requires Unicode code-point order, but `design.md:166` specifies plain UI string `<`.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:21:(b) The group-ordering plan conflicted: the spec requires ascending Unicode code-point order while design.md specified plain JavaScript `<`, which orders by UTF-16 code unit and disagrees for names outside the Basic Multilingual Plane.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:26:2. Is (b) fixed, in the spec and in design.md, and is the stated comparator actually equivalent to the server's ordering at src/templates.rs:204 for every group name the spec allows? Cite file:line.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:45:     4	`GET /api/templates` returns every template sorted by id, and the Labels page renders them as one
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:86:    45	loading order, duplicate-id refusal, and broken-file reporting all behave identically whether or not
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:124:    15	  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:135:    26	- A move changes exactly one line of the file and leaves comments, key order, and formatting intact.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:161:    52	filename sorts first in byte order"); recursion turns all of those into relative paths and reopens a
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:275:   166	- A filter row above the grid: `All`, each group in use in ascending Unicode code-point order,
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:276:   167	  `Ungrouped` only while something is ungrouped. Code-point order is what `summaries()` already
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:277:   168	  applies to ids (`src/templates.rs:204`, Rust's `str` comparison is UTF-8 byte order, which is
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:278:   169	  code-point order). JavaScript's `<` is not that: it compares UTF-16 code units, so a group name
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:279:   170	  outside the Basic Multilingual Plane, an emoji being the realistic case, sorts before a name in the
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:280:   171	  `U+E000`-`U+FFFF` range while the server would put it after. The comparator therefore compares
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:281:   172	  code-point sequences (`Array.from(name)`), not the raw strings, and `localeCompare` is wrong for a
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:282:   173	  different reason: its order depends on the viewer's locale. Selection is component state, composed with the existing search box by
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:359:   204	        items.sort_by(|a, b| a.id.cmp(&b.id));
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:407:    30	Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:481:   104	sorted by id, and detail still carries the full layout.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:504:   127	Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:512:   135	("List template summaries (sorted by id)") as to the accepted query parameters.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:548:   171	file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:671:   294	It SHALL show a filter control listing `All`, every group in use in ascending Unicode code-point
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:672:   295	order, and `Ungrouped`. That is the ordering the API already applies to template ids, so `Warehouse`
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:673:   296	sorts before `warehouse`, and it holds for every valid group name, including one outside the Basic
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:674:   297	Multilingual Plane, where ordering by UTF-16 code unit would disagree.
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:698:   321	shortcuts over the whole set, a move SHALL NOT change either, and neither is reordered or pruned by
+openspec/changes/issue-164-template-groups/review-raw-2-recheck-2.txt:751:The relevant edits are visible: design.md now says the parse-and-validate safety net is decision 4 step 8, and both spec/design now call for Unicode code-point ordering rather than raw JavaScript string comparison. I’m doing one targeted consistency scan now for numbered step references and contradictions in the three artifacts.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:30:Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:104:sorted by id, and detail still carries the full layout.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:127:Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:135:("List template summaries (sorted by id)") as to the accepted query parameters.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:171:file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:294:It SHALL show a filter control listing `All`, every group in use in ascending Unicode code-point
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:295:order, and `Ungrouped`. That is the ordering the API already applies to template ids, so `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:296:sorts before `warehouse`, and it holds for every valid group name, including one outside the Basic
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:297:Multilingual Plane, where ordering by UTF-16 code unit would disagree.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:321:shortcuts over the whole set, a move SHALL NOT change either, and neither is reordered or pruned by
+openspec/changes/issue-164-template-groups/design.md:15:  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/design.md:26:- A move changes exactly one line of the file and leaves comments, key order, and formatting intact.
+openspec/changes/issue-164-template-groups/design.md:52:filename sorts first in byte order"); recursion turns all of those into relative paths and reopens a
+openspec/changes/issue-164-template-groups/design.md:166:- A filter row above the grid: `All`, each group in use in ascending Unicode code-point order,
+openspec/changes/issue-164-template-groups/design.md:167:  `Ungrouped` only while something is ungrouped. Code-point order is what `summaries()` already
+openspec/changes/issue-164-template-groups/design.md:168:  applies to ids (`src/templates.rs:204`, Rust's `str` comparison is UTF-8 byte order, which is
+openspec/changes/issue-164-template-groups/design.md:169:  code-point order). JavaScript's `<` is not that: it compares UTF-16 code units, so a group name
+openspec/changes/issue-164-template-groups/design.md:170:  outside the Basic Multilingual Plane, an emoji being the realistic case, sorts before a name in the
+openspec/changes/issue-164-template-groups/design.md:171:  `U+E000`-`U+FFFF` range while the server would put it after. The comparator therefore compares
+openspec/changes/issue-164-template-groups/design.md:172:  code-point sequences (`Array.from(name)`), not the raw strings, and `localeCompare` is wrong for a
+openspec/changes/issue-164-template-groups/design.md:173:  different reason: its order depends on the viewer's locale. Selection is component state, composed with the existing search box by
+openspec/changes/issue-164-template-groups/review-raw-2.txt:18:Read, in this order:
+openspec/changes/issue-164-template-groups/review-raw-2.txt:192:2. Run `openspec status --change "<name>" --json` (append the confirmed `--store "<id>"` only for a registered standalone store), then process the requested artifacts in dependency order. For each requested artifact that is `ready`, run `openspec instructions "<artifact-id>" --change "<name>" --json` (append the confirmed `--store "<id>"` only for a registered standalone store). Before creating a requested artifact, evaluate any condition in its own `instruction` against the explored change; record a deliberate skip instead when the condition does not apply. If a requested artifact is blocked by a direct prerequisite the user did not request, run `openspec instructions "<prerequisite-id>" --change "<name>" --json` (append the confirmed `--store "<id>"` only for a registered standalone store) for that prerequisite whether it is `ready` or `blocked`. If its own `instruction` states a condition, evaluate that condition against the explored change and record a deliberate skip only when the condition does not apply. If the condition applies, or the prerequisite is not conditional, treat it as a normal prerequisite and ask before expanding the capture. Do not create an unrequested prerequisite unless the user approves.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:309:     4	`GET /api/templates` returns every template sorted by id, and the Labels page renders them as one
+openspec/changes/issue-164-template-groups/review-raw-2.txt:350:    45	loading order, duplicate-id refusal, and broken-file reporting all behave identically whether or not
+openspec/changes/issue-164-template-groups/review-raw-2.txt:401:    30	Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:475:   104	sorted by id, and detail still carries the full layout.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:498:   127	Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+openspec/changes/issue-164-template-groups/review-raw-2.txt:503:   132	("List template summaries (sorted by id)") as to the accepted query parameters.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:539:   168	file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+openspec/changes/issue-164-template-groups/review-raw-2.txt:642:   271	It SHALL show a filter control listing `All`, every group in use in ascending order, and `Ungrouped`.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:666:   295	shortcuts over the whole set, a move SHALL NOT change either, and neither is reordered or pruned by
+openspec/changes/issue-164-template-groups/review-raw-2.txt:924:    15	  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/review-raw-2.txt:935:    26	- A move changes exactly one line of the file and leaves comments, key order, and formatting intact.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:958:    49	filename sorts first in byte order"); recursion turns all of those into relative paths and reopens a
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1067:   158	- A filter row above the grid: `All`, each group in use in ascending order, `Ungrouped` only while
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1180:    28	### Requirement: Templates load in a deterministic order
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1182:    30	The registry SHALL load the files of the templates directory whose extension is `yaml` or `yml`, compared case-insensitively, in ascending byte order of filename, independent of the order the filesystem enumerates them. Files with any other extension SHALL be ignored.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1186:    34	#### Scenario: Load result does not depend on filesystem order
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1188:    36	- **WHEN** the same set of template files is loaded on two machines whose directory enumeration order differs
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1194:    42	When two or more files in the templates directory declare the same template `id`, the registry SHALL serve the one whose filename sorts first in byte order (so `Z.yaml` sorts before `a.yaml` on a case-sensitive filesystem) and SHALL refuse each later file for that id.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1279:43:| GET | `/api/templates` | List template summaries (sorted by id) | `200 {"templates":[…]}` |
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1366:    43	| GET | `/api/templates` | List template summaries (sorted by id) | `200 {"templates":[…]}` |
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1497:   174	    { "data": { "orientation": "horizontal", "show_border": "true", "id": "A1", "url": "https://example.com/A1", "name": "…", "tags": "…", "description": "…" } }
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1917:    66	/// Every entry of `dir`, sorted. Loading in sorted order rather than `read_dir` order is what makes
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1919:    68	/// filesystem's enumeration (#181). Every path shares the same parent, so ordering by path is
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1920:    69	/// ordering by filename.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1921:    70	fn sorted_dir_paths(dir: &FsPath) -> Result<Vec<PathBuf>, TemplateRegistryError> {
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1934:    83	    paths.sort();
+openspec/changes/issue-164-template-groups/review-raw-2.txt:1946:    95	        for path in sorted_dir_paths(dir)? {
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2055:   204	        items.sort_by(|a, b| a.id.cmp(&b.id));
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2365:   494	    // fails, and a prune-first order would mean a failed unlink had already destroyed favorites for
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2705:    18	            /// Every reason, in declaration order.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2859:    10	is lossy: standard YAML emitters strip comments and normalize key order, so a GUI save would silently
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2936:    35	      className="flex h-full flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2937:    36	      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2946:    45	            className="flex aspect-[3/1] items-center justify-center rounded-md border text-xs"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2947:    46	            style={{ background: "var(--bg)", borderColor: "var(--border)", color: "var(--muted)" }}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2958:    57	            className="aspect-[3/1] w-full rounded-md border object-contain"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2959:    58	            style={{ background: "var(--bg)", borderColor: "var(--border)" }}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2980:    79	            className="flex h-11 w-11 items-center justify-center rounded-md border text-sm focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2983:    82	              borderColor: "var(--border)",
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2994:    93	            className="flex h-11 w-11 items-center justify-center rounded-md border text-lg focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:2997:    96	              borderColor: "var(--border)",
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3073:   172	            className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3074:   173	            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3094:   193	        className="w-full max-w-sm rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3095:   194	        style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3176:    32	      className="flex flex-col gap-2 rounded-lg border p-4"
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3177:    33	      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3226:    82	            className={`${buttonBase} border`}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3227:    83	            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3257:   113	    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3295:   151	            message: readErr instanceof Error ? readErr.message : "Could not compare templates",
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3438:src/api.rs:494:    // fails, and a prune-first order would mean a failed unlink had already destroyed favorites for
+openspec/changes/issue-164-template-groups/review-raw-2.txt:3504:src/store.rs:860:    async fn recent_templates_distinct_ordered_and_per_user() {
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4435:openspec/changes/issue-164-template-groups/design.md:15:  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4504:openspec/changes/issue-164-template-groups/review-raw-1.txt:637:    15	  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4522:openspec/changes/issue-164-template-groups/review-raw-1.txt:865:    42	When two or more files in the templates directory declare the same template `id`, the registry SHALL serve the one whose filename sorts first in byte order (so `Z.yaml` sorts before `a.yaml` on a case-sensitive filesystem) and SHALL refuse each later file for that id.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4680:openspec/changes/issue-164-template-groups/review-raw-2.txt:924:    15	  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4700:openspec/changes/issue-164-template-groups/review-raw-2.txt:1194:    42	When two or more files in the templates directory declare the same template `id`, the registry SHALL serve the one whose filename sorts first in byte order (so `Z.yaml` sorts before `a.yaml` on a case-sensitive filesystem) and SHALL refuse each later file for that id.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4767:/home/linuxbrew/.linuxbrew/bin/zsh -lc 'find openspec/changes/issue-164-template-groups -maxdepth 3 -type f -print | sort' in /home/pfa/projects/labeler/.worktrees/issue-164
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4801:**Define group sort order mechanically**  
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4802:Evidence: group names are case-sensitive at `spec.md:30`, while the Labels view lists groups in “ascending order” at `spec.md:271`.  
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4803:Why it matters: `Warehouse`, `warehouse`, accented names, and punctuation can sort differently depending on locale/API choices.  
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4804:Fix: specify the collation used for group chips, for example Unicode code point order or the same comparator the implementation will test.
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4858:**Define group sort order mechanically**  
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4859:Evidence: group names are case-sensitive at `spec.md:30`, while the Labels view lists groups in “ascending order” at `spec.md:271`.  
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4860:Why it matters: `Warehouse`, `warehouse`, accented names, and punctuation can sort differently depending on locale/API choices.  
+openspec/changes/issue-164-template-groups/review-raw-2.txt:4861:Fix: specify the collation used for group chips, for example Unicode code point order or the same comparator the implementation will test.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:18:Read, in this order:
+openspec/changes/issue-164-template-groups/review-raw-1.txt:295:`GET /api/templates` returns every template sorted by id, and the Labels page renders them as one
+openspec/changes/issue-164-template-groups/review-raw-1.txt:336:loading order, duplicate-id refusal, and broken-file reporting all behave identically whether or not
+openspec/changes/issue-164-template-groups/review-raw-1.txt:386:Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:457:sorted by id, and detail still carries the full layout.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:480:Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+openspec/changes/issue-164-template-groups/review-raw-1.txt:485:("List template summaries (sorted by id)") as to the accepted query parameters.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:521:file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+openspec/changes/issue-164-template-groups/review-raw-1.txt:602:It SHALL show a filter control listing `All`, every group in use in ascending order, and `Ungrouped`.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:637:    15	  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/review-raw-1.txt:648:    26	- A move changes exactly one line of the file and leaves comments, key order, and formatting intact.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:671:    49	filename sorts first in byte order"); recursion turns all of those into relative paths and reopens a
+openspec/changes/issue-164-template-groups/review-raw-1.txt:773:   151	- A filter row above the grid: `All`, each group in use in ascending order, `Ungrouped` only while
+openspec/changes/issue-164-template-groups/review-raw-1.txt:851:    28	### Requirement: Templates load in a deterministic order
+openspec/changes/issue-164-template-groups/review-raw-1.txt:853:    30	The registry SHALL load the files of the templates directory whose extension is `yaml` or `yml`, compared case-insensitively, in ascending byte order of filename, independent of the order the filesystem enumerates them. Files with any other extension SHALL be ignored.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:857:    34	#### Scenario: Load result does not depend on filesystem order
+openspec/changes/issue-164-template-groups/review-raw-1.txt:859:    36	- **WHEN** the same set of template files is loaded on two machines whose directory enumeration order differs
+openspec/changes/issue-164-template-groups/review-raw-1.txt:865:    42	When two or more files in the templates directory declare the same template `id`, the registry SHALL serve the one whose filename sorts first in byte order (so `Z.yaml` sorts before `a.yaml` on a case-sensitive filesystem) and SHALL refuse each later file for that id.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:984:    43	| GET | `/api/templates` | List template summaries (sorted by id) | `200 {"templates":[…]}` |
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1115:   174	    { "data": { "orientation": "horizontal", "show_border": "true", "id": "A1", "url": "https://example.com/A1", "name": "…", "tags": "…", "description": "…" } }
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1272:   331	  show_border:
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1391:    66	/// Every entry of `dir`, sorted. Loading in sorted order rather than `read_dir` order is what makes
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1393:    68	/// filesystem's enumeration (#181). Every path shares the same parent, so ordering by path is
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1394:    69	/// ordering by filename.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1395:    70	fn sorted_dir_paths(dir: &FsPath) -> Result<Vec<PathBuf>, TemplateRegistryError> {
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1408:    83	    paths.sort();
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1420:    95	        for path in sorted_dir_paths(dir)? {
+openspec/changes/issue-164-template-groups/review-raw-1.txt:1529:   204	        items.sort_by(|a, b| a.id.cmp(&b.id));
+openspec/changes/issue-164-template-groups/review-raw-1.txt:2248:   494	    // fails, and a prune-first order would mean a failed unlink had already destroyed favorites for
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3221:    18	            /// Every reason, in declaration order.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3400:    35	      className="flex h-full flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3401:    36	      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3410:    45	            className="flex aspect-[3/1] items-center justify-center rounded-md border text-xs"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3411:    46	            style={{ background: "var(--bg)", borderColor: "var(--border)", color: "var(--muted)" }}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3422:    57	            className="aspect-[3/1] w-full rounded-md border object-contain"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3423:    58	            style={{ background: "var(--bg)", borderColor: "var(--border)" }}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3444:    79	            className="flex h-11 w-11 items-center justify-center rounded-md border text-sm focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3447:    82	              borderColor: "var(--border)",
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3458:    93	            className="flex h-11 w-11 items-center justify-center rounded-md border text-lg focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3461:    96	              borderColor: "var(--border)",
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3537:   172	            className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3538:   173	            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3558:   193	        className="w-full max-w-sm rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3559:   194	        style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3637:    32	      className="flex flex-col gap-2 rounded-lg border p-4"
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3638:    33	      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3687:    82	            className={`${buttonBase} border`}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3688:    83	            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3718:   113	    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3756:   151	            message: readErr instanceof Error ? readErr.message : "Could not compare templates",
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3835:     4	`GET /api/templates` returns every template sorted by id, and the Labels page renders them as one
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3876:    45	loading order, duplicate-id refusal, and broken-file reporting all behave identically whether or not
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3906:    10	is lossy: standard YAML emitters strip comments and normalize key order, so a GUI save would silently
+openspec/changes/issue-164-template-groups/review-raw-1.txt:3976:    30	Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:4047:   101	sorted by id, and detail still carries the full layout.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:4070:   124	Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+openspec/changes/issue-164-template-groups/review-raw-1.txt:4075:   129	("List template summaries (sorted by id)") as to the accepted query parameters.
+openspec/changes/issue-164-template-groups/review-raw-1.txt:4111:   165	file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+openspec/changes/issue-164-template-groups/review-raw-1.txt:4192:   246	It SHALL show a filter control listing `All`, every group in use in ascending order, and `Ungrouped`.
+
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'rg -n "group|Unicode|code-point|UTF-16|JavaScript|localeCompare|sort|order|step [0-9]|Step [0-9]|decision 4" openspec/changes/issue-164-*/proposal.md openspec/changes/issue-164-*/specs/template-groups/spec.md openspec/changes/issue-164-*/design.md' in /home/pfa/projects/labeler/.worktrees/issue-164
+ succeeded in 0ms:
+openspec/changes/issue-164-template-groups/proposal.md:4:`GET /api/templates` returns every template sorted by id, and the Labels page renders them as one
+openspec/changes/issue-164-template-groups/proposal.md:11:- **Template schema.** A new optional top-level `group:` string. One flat level, no separator
+openspec/changes/issue-164-template-groups/proposal.md:12:  semantics: `Electronics / Cables` is a name, not a path. A template without the key is *ungrouped*,
+openspec/changes/issue-164-template-groups/proposal.md:14:- **API.** `group` is exposed on `TemplateSummary` and `TemplateDetail`. `GET /api/templates` gains a
+openspec/changes/issue-164-template-groups/proposal.md:15:  `group` query parameter: absent lists everything, `?group=<name>` lists exact matches, `?group=`
+openspec/changes/issue-164-template-groups/proposal.md:16:  (present, empty) lists the ungrouped ones.
+openspec/changes/issue-164-template-groups/proposal.md:17:- **New endpoint.** `PUT /api/templates/{id}/group` sets or clears one template's group by rewriting
+openspec/changes/issue-164-template-groups/proposal.md:18:  the single `group:` line of its file, leaving every other byte, comments included, untouched. This
+openspec/changes/issue-164-template-groups/proposal.md:21:- **Web UI.** The Labels page gains a group filter row (`All`, each group, `Ungrouped`) that composes
+openspec/changes/issue-164-template-groups/proposal.md:23:  moving several cards at once. The move dialog is a combobox over the groups in use where typing an
+openspec/changes/issue-164-template-groups/proposal.md:24:  unused name creates it. No group is ever typed into YAML to be assigned, and no client code
+openspec/changes/issue-164-template-groups/proposal.md:26:- **Docs.** `docs/AUTHORING.md` documents the field. Two ADRs: the group model (YAML-native, flat),
+openspec/changes/issue-164-template-groups/proposal.md:29:Not breaking: every existing template, request, and response stays valid, and `group` is omitted
+openspec/changes/issue-164-template-groups/proposal.md:36:- `template-groups`: how a template declares its group, what a valid group name is, how groups
+openspec/changes/issue-164-template-groups/proposal.md:37:  appear in and filter the template API, how a template is moved between groups, and how groups are
+openspec/changes/issue-164-template-groups/proposal.md:42:None. `template-groups` is additive: it introduces a field, a query parameter, and an endpoint, and
+openspec/changes/issue-164-template-groups/proposal.md:45:loading order, duplicate-id refusal, and broken-file reporting all behave identically whether or not
+openspec/changes/issue-164-template-groups/proposal.md:46:a file carries a `group:` key.
+openspec/changes/issue-164-template-groups/proposal.md:51:  plus group-name validation and its `TemplateError` path.
+openspec/changes/issue-164-template-groups/proposal.md:53:  (`TemplateSummary`, `TemplateDetail`), `src/reason.rs` (a reason for an invalid group name),
+openspec/changes/issue-164-template-groups/proposal.md:60:- **Out of scope:** drag-and-drop onto a group chip, renaming or deleting a group across every
+openspec/changes/issue-164-template-groups/proposal.md:61:  template that uses it, nested groups, and per-group thumbnails. None of these is queued work: each
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:3:Defines how a template declares the group it belongs to, what a valid group name is, how groups reach
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:4:the API on template summaries and detail, how the template list is filtered by group, how a template
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:5:is moved from one group to another without disturbing the rest of its file, and how groups are
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:10:### Requirement: A template declares its group as an optional top-level field
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:12:A template MAY carry a top-level `group` field naming the one group it belongs to. The field is
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:13:optional; a template without it is *ungrouped*, and ungrouped is a first-class state, not an error.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:15:A group name is one flat name. The service SHALL NOT assign meaning to any character inside it: a
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:18:A `group` value SHALL be valid when, after stripping leading and trailing whitespace, it is:
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:25:The stored group is the whitespace-stripped value. A `group` that is not a string, is empty or
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:27:to load, with a parse or validation message naming the `group` field. That quarantines the file
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:30:Group names SHALL be compared exactly, including case: `Warehouse` and `warehouse` are two groups.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:39:| `group` | string | Optional. One flat group name, validated as above. Absent means ungrouped. |
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:55:#### Scenario: A template carries a group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:57:- **WHEN** a template file declares `group: Warehouse` and is otherwise valid
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:59:- **AND** its group is `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:61:#### Scenario: A template without the field is ungrouped
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:63:- **WHEN** a valid template file declares no `group` key
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:65:- **AND** it is reported as ungrouped, not as broken
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:69:- **WHEN** a template declares `group: "  Warehouse  "`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:70:- **THEN** its group is `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:72:#### Scenario: An empty group name is a validation failure
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:74:- **WHEN** a template declares `group: ""` or a whitespace-only value
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:75:- **THEN** the template fails to load, with a message naming `group`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:80:- **WHEN** a template declares a `group` longer than 64 characters, or one containing a line feed
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:81:- **THEN** the template fails to load, with a message naming `group`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:85:- **WHEN** two templates declare `group: Shipping/Pallets` and `group: Shipping`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:86:- **THEN** they belong to two unrelated groups
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:91:`GET /api/templates` SHALL carry each template's `group` in its summary, and `GET /api/templates/{id}`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:93:ungrouped, so an existing consumer sees exactly the payload it saw before this change.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:96:`{ filename, error }` whether or not it declares a group, since a file that failed to load has no
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:97:group to report.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:99:The OpenAPI document at `GET /api/openapi.json` SHALL describe `group` on both schemas.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:102:`GET /api/templates` and `GET /api/templates/{id}` as to response content, and adds `group` to the
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:104:sorted by id, and detail still carries the full layout.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:106:#### Scenario: A grouped template reports its group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:108:- **WHEN** `GET /api/templates` is called and one template declares `group: Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:109:- **THEN** that template's summary carries `group` with the value `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:111:#### Scenario: An ungrouped template omits the field
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:113:- **WHEN** `GET /api/templates/{id}` is called for a template that declares no group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:114:- **THEN** the response body contains no `group` key
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:116:### Requirement: The template list filters by group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:118:`GET /api/templates` SHALL accept an optional `group` query parameter:
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:120:- **absent** — every template is listed, grouped and ungrouped alike;
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:121:- **`?group=<name>`** — only templates whose group equals `<name>` exactly, after the same
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:123:- **`?group=`**, present with an empty value — only ungrouped templates.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:125:A `group` naming no existing group SHALL return `200` with an empty `templates` list, never `404`.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:127:Filtering SHALL NOT change the order of the results, which stays ascending by id, and SHALL NOT
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:129:because a refused file has no group to filter on.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:131:`GET /api/openapi.json` SHALL document the `group` query parameter on `GET /api/templates`,
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:132:including that it is optional and that an empty value selects the ungrouped templates.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:135:("List template summaries (sorted by id)") as to the accepted query parameters.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:137:#### Scenario: Filtering to one group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:139:- **WHEN** `GET /api/templates?group=Warehouse` is called
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:140:- **THEN** every returned summary has group `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:141:- **AND** templates in other groups and ungrouped templates are absent
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:143:#### Scenario: Filtering to the ungrouped templates
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:145:- **WHEN** `GET /api/templates?group=` is called
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:146:- **THEN** only templates declaring no group are returned
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:148:#### Scenario: An unknown group is empty, not an error
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:150:- **WHEN** `GET /api/templates?group=Nonexistent` is called
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:156:- **WHEN** templates exist in `Warehouse` and `GET /api/templates?group=warehouse` is called
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:161:- **WHEN** one file in the directory is refused and `GET /api/templates?group=Warehouse` is called
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:164:### Requirement: A template is moved between groups without rewriting the rest of its file
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:166:`PUT /api/templates/{id}/group` SHALL set or clear one template's group. The request body is
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:167:`{ "group": "<name>" }` to move it into a group, or `{ "group": null }` to make it ungrouped.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:170:the existing top-level `group:` line, or, when there is none, inserts one. Every other byte of the
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:171:file SHALL be preserved exactly, including comments, key order, indentation style, quoting of other
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:172:values, and blank lines. Clearing a group SHALL remove the whole `group:` line.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:175:if it is a valid template whose group reads back as the requested value. The file SHALL be replaced
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:181:- one whose top-level `group` value is not a scalar the patch can replace in place. Plain and quoted
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:184:- one the template parser reads as already having a group while the patch cannot identify exactly one
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:185:  top-level `group:` line to replace, which is what a quoted key (`"group": Shipping`) or any other
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:187:  that case is forbidden: a file SHALL never come back with two top-level `group` keys;
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:192:A `group:` key that is not top-level, such as one inside `params` or a layout item, SHALL be left
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:193:alone and SHALL NOT be mistaken for the template's group.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:200:| `400` | The path id is invalid, or the body is not `{ "group": string \| null }`. |
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:202:| `422` | The group name fails validation, or the file cannot be patched unambiguously. |
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:205:The operation SHALL be idempotent: setting the group a template already has, or clearing an already
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:206:ungrouped template, SHALL return `200` and leave the file byte-identical.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:208:This endpoint SHALL be the only path by which the service writes a group into a hand-authored file.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:209:`PUT /api/templates/{id}` continues to replace the whole file from a submitted body, and a `group:`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:213:`{ "group": string | null }`, and every status in the table above, alongside the error reasons it
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:222:#### Scenario: Moving a template into a group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:224:- **WHEN** `PUT /api/templates/bin-tag/group` is called with `{ "group": "Warehouse" }`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:225:- **THEN** the response is `200` and the detail carries group `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:226:- **AND** `GET /api/templates/bin-tag/source` shows a `group: Warehouse` line
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:229:#### Scenario: Changing an existing group replaces only that line
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:231:- **WHEN** a template already declaring `group: Shipping` is moved to `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:232:- **THEN** the stored file differs from its previous content only in the value on the `group:` line
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:236:- **WHEN** a template whose line reads `group: "A # B"  # keep me` is moved to `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:237:- **THEN** the response is `200` and its group is `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:238:- **AND** the `# keep me` comment is still on the `group:` line
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:240:#### Scenario: Clearing a group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:242:- **WHEN** `PUT /api/templates/bin-tag/group` is called with `{ "group": null }`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:243:- **THEN** the response is `200` and the detail carries no group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:244:- **AND** the stored file no longer contains a top-level `group:` line
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:248:- **WHEN** the endpoint is called with a group name of 200 characters
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:257:#### Scenario: A nested `group:` key is not the template's group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:259:- **WHEN** a template declaring no top-level group, but carrying a param named `group`, is moved into `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:260:- **THEN** a top-level `group: Warehouse` line is added
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:261:- **AND** the param named `group` is untouched
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:272:  mapping and which declares no group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:278:- **WHEN** the endpoint is called for a template whose group is written as `"group": Shipping`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:281:- **AND** no second top-level `group` key is added
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:283:#### Scenario: Moving to the group it already has changes nothing
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:289:### Requirement: The Labels view browses and edits groups
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:291:The Labels view SHALL let a user browse by group and move templates between groups without editing
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:294:It SHALL show a filter control listing `All`, every group in use in ascending Unicode code-point
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:295:order, and `Ungrouped`. That is the ordering the API already applies to template ids, so `Warehouse`
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:296:sorts before `warehouse`, and it holds for every valid group name, including one outside the Basic
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:297:Multilingual Plane, where ordering by UTF-16 code unit would disagree.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:298:`Ungrouped` SHALL be offered only while at least one ungrouped template exists. Selecting an entry
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:299:SHALL narrow the grid to that group, and SHALL compose with the existing text search so that both
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:302:While a group other than `All` is selected, the view SHALL hide the Favorites and Recents rows,
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:303:exactly as an active search already does, so that everything on screen belongs to the selected group.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:306:When a group and a search term together match nothing, the view SHALL say so rather than render an
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:309:Each template card SHALL show its group, and SHALL offer a **Move to…** action. The move dialog SHALL
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:310:offer the groups already in use and SHALL accept a name that is not yet in use, which creates that
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:311:group by the act of moving a template into it. It SHALL offer a way to make the template ungrouped.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:312:A group therefore exists exactly as long as at least one template names it; there is no separate
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:318:After a successful move the view SHALL reflect the template's new group without a manual reload.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:321:shortcuts over the whole set, a move SHALL NOT change either, and neither is reordered or pruned by
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:322:grouping.
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:324:#### Scenario: Filtering the grid to a group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:334:#### Scenario: Ungrouped is offered only when it is non-empty
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:336:- **WHEN** every template belongs to a group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:337:- **THEN** the filter control offers no `Ungrouped` entry
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:344:#### Scenario: Creating a group by naming it
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:346:- **WHEN** the user types a group name that no template uses and confirms the move
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:347:- **THEN** the template is moved into that group
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:348:- **AND** the new group appears in the filter control
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:356:#### Scenario: A group filter hides the Favorites and Recents rows
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:362:#### Scenario: A group and a search that match nothing say so
+openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:369:- **WHEN** a favorited template is moved to another group
+openspec/changes/issue-164-template-groups/design.md:3:See `proposal.md` for motivation and `specs/template-groups/spec.md` for the contract. What shapes
+openspec/changes/issue-164-template-groups/design.md:15:  round trip destroys comments and normalizes key order. That ADR is the reason the editor is a raw
+openspec/changes/issue-164-template-groups/design.md:26:- A move changes exactly one line of the file and leaves comments, key order, and formatting intact.
+openspec/changes/issue-164-template-groups/design.md:27:- The group survives export, backup, catalog install, and copying a file to another machine.
+openspec/changes/issue-164-template-groups/design.md:28:- No grouping fault reaches further than the file that carries it. An invalid hand-authored `group:`
+openspec/changes/issue-164-template-groups/design.md:36:- Group entities. There is no create-group or delete-group operation and no place a group is stored
+openspec/changes/issue-164-template-groups/design.md:37:  apart from the templates naming it, so an empty group cannot exist.
+openspec/changes/issue-164-template-groups/design.md:38:- Renaming a group across every template that uses it, and drag-and-drop onto a filter chip. Neither
+openspec/changes/issue-164-template-groups/design.md:44:### 1. The group is a YAML field on the template, not a directory and not a store row
+openspec/changes/issue-164-template-groups/design.md:46:Alternatives were directory mapping (`templates/<group>/x.yaml`) and a row in the SQLite store
+openspec/changes/issue-164-template-groups/design.md:52:filename sorts first in byte order"); recursion turns all of those into relative paths and reopens a
+openspec/changes/issue-164-template-groups/design.md:55:(`src/api.rs:310`), so a group segment would need its own traversal, separator, and case-collision
+openspec/changes/issue-164-template-groups/design.md:56:guards on an endpoint that writes files. It turns a regroup into mkdir plus cross-directory rename
+openspec/changes/issue-164-template-groups/design.md:58:not have. And it puts the group outside the artifact, so a catalog install (`ui/src/pages/Catalog.tsx:127`
+openspec/changes/issue-164-template-groups/design.md:59:POSTs the YAML body) arrives ungrouped.
+openspec/changes/issue-164-template-groups/design.md:65:loss: reorganizing `/config/templates` by hand with `mv` does not group anything, because the
+openspec/changes/issue-164-template-groups/design.md:68:Recorded as **ADR-0062, "A template's group is a YAML field, not its directory"**.
+openspec/changes/issue-164-template-groups/design.md:72:`group` is a single name. The service does not split on `/` or any other character, so
+openspec/changes/issue-164-template-groups/design.md:73:`Electronics / Cables` is one group whose name happens to contain a slash.
+openspec/changes/issue-164-template-groups/design.md:78:pure loosening of `validate_group_name`, and no existing file or response has to change, so the
+openspec/changes/issue-164-template-groups/design.md:83:`validate_group_name(&str) -> Result<String, String>` returns the whitespace-stripped name or a
+openspec/changes/issue-164-template-groups/design.md:84:message naming `group`. It is called from `TemplateDefinition::validate()` (so a bad group quarantines
+openspec/changes/issue-164-template-groups/design.md:89:The domain model stores the stripped value: `TemplateDefinition.group: Option<String>`, `raw.rs` gains
+openspec/changes/issue-164-template-groups/design.md:90:`group: Option<String>` with `#[serde(default)]`, and `convert.rs` strips on the way through. A
+openspec/changes/issue-164-template-groups/design.md:91:non-string value fails at deserialization with `serde_path_to_error` naming `group`, which is why the
+openspec/changes/issue-164-template-groups/design.md:97:Case is significant, so `Warehouse` and `warehouse` are two groups. Case-folding would be wrong for
+openspec/changes/issue-164-template-groups/design.md:102:### 4. Move is `PUT /api/templates/{id}/group`, a targeted single-line file patch
+openspec/changes/issue-164-template-groups/design.md:111:2. refuses a file holding more than one YAML document (`422`), since "the top-level `group`" is
+openspec/changes/issue-164-template-groups/design.md:115:3. finds a top-level `group:` line: a line whose first character is at column 0, that is not a
+openspec/changes/issue-164-template-groups/design.md:116:   comment, and whose key is exactly `group`. Column 0 is what makes a nested `group:` key
+openspec/changes/issue-164-template-groups/design.md:119:   recognize, `"group": Shipping` among them, so when the parsed template has a group and the scan
+openspec/changes/issue-164-template-groups/design.md:121:   inserting. Without this check step 7 would append a second top-level `group` key;
+openspec/changes/issue-164-template-groups/design.md:125:   `group: "Shipping"` is a valid and expected spelling;
+openspec/changes/issue-164-template-groups/design.md:126:6. builds the new line as `group: ` plus the name emitted through the YAML serializer, so a name
+openspec/changes/issue-164-template-groups/design.md:128:   comment means skipping a quoted scalar before looking for ` #`, so `group: "A # B"  # keep me`
+openspec/changes/issue-164-template-groups/design.md:134:8. parses and validates the patched text, and asserts the group reads back as requested. Only then
+openspec/changes/issue-164-template-groups/design.md:138:Step 8 is the safety net that makes the textual patch acceptable: a patch that would produce a file
+openspec/changes/issue-164-template-groups/design.md:139:the service cannot load never reaches the disk. Step 4 is the one that keeps a *loadable* file from
+openspec/changes/issue-164-template-groups/design.md:149:New reasons in `src/reason.rs`: `template_group_invalid` (`422`, a name that fails validation) and
+openspec/changes/issue-164-template-groups/design.md:150:`template_group_unpatchable` (`422`, a file the patcher will not touch). Existing reasons cover the
+openspec/changes/issue-164-template-groups/design.md:155:`GET /api/templates?group=` exists for API clients, and its three states (absent, a name, empty) are
+openspec/changes/issue-164-template-groups/design.md:156:distinguishable in axum as `Option<String>` from `Query`, so "all" and "ungrouped" do not collide.
+openspec/changes/issue-164-template-groups/design.md:160:filter row itself. Refetching per filter selection would add a round trip and make the group list
+openspec/changes/issue-164-template-groups/design.md:166:- A filter row above the grid: `All`, each group in use in ascending Unicode code-point order,
+openspec/changes/issue-164-template-groups/design.md:167:  `Ungrouped` only while something is ungrouped. Code-point order is what `summaries()` already
+openspec/changes/issue-164-template-groups/design.md:168:  applies to ids (`src/templates.rs:204`, Rust's `str` comparison is UTF-8 byte order, which is
+openspec/changes/issue-164-template-groups/design.md:169:  code-point order). JavaScript's `<` is not that: it compares UTF-16 code units, so a group name
+openspec/changes/issue-164-template-groups/design.md:170:  outside the Basic Multilingual Plane, an emoji being the realistic case, sorts before a name in the
+openspec/changes/issue-164-template-groups/design.md:172:  code-point sequences (`Array.from(name)`), not the raw strings, and `localeCompare` is wrong for a
+openspec/changes/issue-164-template-groups/design.md:173:  different reason: its order depends on the viewer's locale. Selection is component state, composed with the existing search box by
+openspec/changes/issue-164-template-groups/design.md:176:  rows are drawn from the whole set, and leaving them on screen under a group filter would show
+openspec/changes/issue-164-template-groups/design.md:177:  cards from the groups the user just filtered out.
+openspec/changes/issue-164-template-groups/design.md:178:- Each card shows its group next to the format badge, and gains a **Move to…** item.
+openspec/changes/issue-164-template-groups/design.md:179:- The move dialog is a text input over a `<datalist>` of the groups in use, plus a "Make ungrouped"
+openspec/changes/issue-164-template-groups/design.md:180:  action. Typing an unused name and confirming creates that group by moving a template into it.
+openspec/changes/issue-164-template-groups/design.md:190:  validate (decision 4, step 8), the write stays atomic, and the tests assert byte equality outside the patched
+openspec/changes/issue-164-template-groups/design.md:193:  with no version check, so a stale draft saved after a move reverts the group. This hazard exists
+openspec/changes/issue-164-template-groups/design.md:194:  today between two editors; grouping widens it to a second writer. Documented here, and optimistic
+openspec/changes/issue-164-template-groups/design.md:196:- **Rollback quarantines grouped templates.** `deny_unknown_fields` means a binary from before this
+openspec/changes/issue-164-template-groups/design.md:197:  change rejects a file carrying `group:`. Per `template-registry` those files are quarantined and
+openspec/changes/issue-164-template-groups/design.md:199:  roll forward, or to delete the `group:` lines. Stated in ADR-0062's consequences.
+openspec/changes/issue-164-template-groups/design.md:207:No data migration. Every existing template, request, and response stays valid, and `group` is omitted
+
+codex
+## Re-check of the two fixes (with file:line evidence)
+
+(a) Fixed. `design.md` now refers to parse-and-validate as decision 4, step 8 in the Risks section at `openspec/changes/issue-164-template-groups/design.md:189-190`; decision 4 defines step 8 as parsing/validating the patched text at `design.md:134-136`.
+
+Other decision 4 step cross-references are correct:
+- `design.md:121` says without step 4, step 7 would append a second `group` key; step 7 is the delete/insert action at `design.md:131-133`.
+- `design.md:138-140` correctly says step 8 is the safety net and step 4 catches scan-versus-parse disagreement; step 4 is defined at `design.md:118-121`.
+
+(b) Fixed. The spec requires ascending Unicode code-point order at `openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:294-297`. The design rejects raw JavaScript `<`, rejects `localeCompare`, and requires comparing code-point sequences via `Array.from(name)` at `openspec/changes/issue-164-template-groups/design.md:166-173`.
+
+That comparator is equivalent to the server ordering cited: `src/templates.rs:204` sorts ids with Rust `str::cmp`; Rust string ordering is lexicographic UTF-8 byte order, which preserves Unicode scalar/code-point order for valid strings. The spec allows valid string group names after stripping, excluding only empty, over-64-character, and control-character names at `spec.md:18-23`, so the equivalence holds for every allowed group name.
+
+## New defects introduced
+
+none
+
+## Verdict
+
+VERDICT: APPROVE
+tokens used
+39,864
+## Re-check of the two fixes (with file:line evidence)
+
+(a) Fixed. `design.md` now refers to parse-and-validate as decision 4, step 8 in the Risks section at `openspec/changes/issue-164-template-groups/design.md:189-190`; decision 4 defines step 8 as parsing/validating the patched text at `design.md:134-136`.
+
+Other decision 4 step cross-references are correct:
+- `design.md:121` says without step 4, step 7 would append a second `group` key; step 7 is the delete/insert action at `design.md:131-133`.
+- `design.md:138-140` correctly says step 8 is the safety net and step 4 catches scan-versus-parse disagreement; step 4 is defined at `design.md:118-121`.
+
+(b) Fixed. The spec requires ascending Unicode code-point order at `openspec/changes/issue-164-template-groups/specs/template-groups/spec.md:294-297`. The design rejects raw JavaScript `<`, rejects `localeCompare`, and requires comparing code-point sequences via `Array.from(name)` at `openspec/changes/issue-164-template-groups/design.md:166-173`.
+
+That comparator is equivalent to the server ordering cited: `src/templates.rs:204` sorts ids with Rust `str::cmp`; Rust string ordering is lexicographic UTF-8 byte order, which preserves Unicode scalar/code-point order for valid strings. The spec allows valid string group names after stripping, excluding only empty, over-64-character, and control-character names at `spec.md:18-23`, so the equivalence holds for every allowed group name.
+
+## New defects introduced
+
+none
+
+## Verdict
+
+VERDICT: APPROVE

@@ -76,6 +76,7 @@ edge. Those are the failures a 200 hides.
 ```yaml
 id: my_label          # unique across the templates directory
 name: My Label        # shown in the UI
+group: Warehouse      # optional: category name for grouping and filtering in the UI
 unit: mm              # mm | in — every coordinate and size below is in this unit
 dpi: 180              # raster resolution for PNG output
 params: { ... }       # typed inputs, defaults, bounds, and UI hints (see §9)
@@ -83,7 +84,12 @@ format: { ... }       # the physical shape of the label (below)
 layout: [ ... ]       # the tree of items to draw
 ```
 
-An invalid template stops the server from starting. Full field table:
+`group` is an optional string (1 to 64 characters) used to categorize templates in the web UI. Grouping
+is a flat single level: a slash in a group name (e.g. `Shipping/Pallets`) carries no directory or
+hierarchical structure and is treated simply as a character in the name. Templates without a `group`
+field are treated as ungrouped.
+
+An invalid template is quarantined on load while other templates continue to serve. Full field table:
 [SPEC §3](SPEC.md#3-template-schema).
 
 An unknown field at the top level, or on a layout item, is rejected — so a misspelled `paddding` on a
