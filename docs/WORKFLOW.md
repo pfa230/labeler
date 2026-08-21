@@ -71,7 +71,21 @@ every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` 
 | `codex` | none needed | Used for reviews via `codex exec`, with the instructions piped in. |
 | `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Unverified. |
 
-Run `agy` from inside the worktree, since it indexes its working directory:
+The apply stage does not need a human at a terminal. From the Claude session, after the review passes:
+
+```bash
+scripts/apply-with-agy.sh issue-<N>-<slug>
+```
+
+It resolves the worktree, refuses to start if the review gate would reject the commit anyway, runs
+agy there, and returns only the exit status and the last 30 lines. The full transcript stays in
+`.worktrees/issue-<N>/.agy-apply.log` rather than being pulled through the orchestrator's context.
+
+Claude then reviews the resulting diff, which keeps the implementer and the reviewer on different
+models without anyone arranging it.
+
+To drive agy by hand instead, run it from inside the worktree, since it indexes its working
+directory:
 
 ```bash
 cd .worktrees/issue-<N>
