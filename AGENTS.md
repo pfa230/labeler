@@ -91,7 +91,6 @@ pushed history.
 ```bash
 LABELER_CONFIG_DIR=./config-dev cargo run   # needs a writable config dir; /config is not one
 cargo test                                  # unit + HTTP integration
-cargo test render_pdf                       # single test by name
 cargo fmt
 cargo clippy --all-targets --all-features
 ```
@@ -128,8 +127,10 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
   contenders. Nothing is seeded into a fresh config dir. Templates are immutable, shared via `Arc`.
 - **Layout model** (`models.rs`). `layout` is a tree of `LayoutItem`s: `Text`, `Qr`, `Image`, `Line`,
   `Container`. `Container` nests `items` recursively and may carry `frame` and `padding`. Any item may
-  carry `when:`, the universal conditional-visibility predicate over `params` (ADR-0056, #162; it
-  replaced the legacy top-level `options` map and `container.option`).
+  carry `when:`, the universal conditional-visibility predicate over `params` (ADR-0056, #162).
+  Write new templates with `params` + `when`, but note the legacy top-level `options:` map and
+  `container.option` still **parse**: they desugar into an enum `params` entry and into `when`
+  (`convert.rs:284`, `convert.rs:107`). Do not treat a template using them as invalid.
 - **Coordinates.** Bottom-left origin, y-up, in the template `unit` (`mm` or `in`). Typst is top-left,
   so the renderer flips with `frame_height_units - top`. A `Container` re-bases children into its
   padded inner box via a fresh `RenderContext`. *Watch this when touching placement math.*
@@ -138,7 +139,8 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
   (`templates.rs`) and render-time resolution (`render/mod.rs`); keep the two in sync.*
 - **Rendering** (`render/mod.rs`). Walks the layout emitting Typst markup; PNG via `typst-render`,
   sheets as one clipped box per slot via `typst-pdf`. `render/helpers.rs` holds string escaping,
-  length formatting, QR-SVG generation, and `fontdue`-based text fitting for `font_size: {min, max}`.
+  length formatting, QR-SVG generation (`qrcode`), and `ttf-parser`-based text fitting for
+  `font_size: {min, max}` (auto-shrink plus ellipsis truncation).
 - **Errors.** `TemplateError` (parse/validation, carries a path) quarantines rather than aborting
   startup. `AppError` is the HTTP error, serializing to `{ "error": { code, message, details } }`. Add
   new kinds as `AppError` constructors so `code` strings stay stable.
