@@ -10,31 +10,50 @@ The mechanics — commands, tooling, enforcement — are in [`AGENTS.md`](../AGE
 A change starts as a GitHub issue. Issues and milestones are the only backlog, and one change
 implements exactly one open issue: scope is agreed there, before anything else happens.
 
-Everything after that runs unattended — isolating the work, writing the spec and design, getting them
-reviewed, implementing, reviewing the implementation, updating the specs of record, merging — and the
-merge commit closes the issue.
+From there the work runs in three stages — plan, implement, archive — each started by one command and
+each running to completion without supervision: isolating the work, writing the spec and design,
+getting them reviewed, implementing, reviewing the implementation, updating the specs of record, and
+merging. The merge commit closes the issue.
+
+The stage boundaries are deliberate. Planning stops before implementation so the spec and design are
+settled, and reviewed, while changing them is still cheap.
 
 Work discovered mid-change that falls outside its issue becomes a new issue. It does not widen the
 one in flight, and it is never parked as an unchecked task.
 
 ## Running it
 
-Two commands. File the issue, then hand it to the agent:
+File the issue, then drive the stages. Use the slash commands explicitly — a plain-English request
+like "implement #181" is unreliable, because it matches the *apply* skill ("Implement tasks from an
+OpenSpec change") rather than propose, and would try to apply a change that does not exist yet.
 
 ```bash
 gh issue create --title "Duplicate template id should not be fatal" --body "..."
 ```
 
 ```
-implement #181
+/opsx:propose issue #181
 ```
 
-The agent takes it from there: worktree, spec, design, review, implementation, review, archive,
-merge. Nothing further is required unless it stops (see [Where it stops](#where-it-stops)).
+Writes the proposal, the delta specs and the design, then **stops**. Planning does not run on into
+implementation in the same turn, by design: the artifacts are meant to be settled before code exists.
+The adversarial review of that plan runs next, on a different model, and gates what follows.
 
-To drive a single stage by hand instead, the stages are slash commands: `/opsx:propose`,
-`/opsx:apply`, `/opsx:archive`, plus `/opsx:explore` for thinking something through before an issue
-exists and `/opsx:update` for revising a change's plan in place.
+```
+/opsx:apply
+```
+
+Refused until the review passes. Runs the task list, then the implementation is reviewed in turn.
+
+```
+/opsx:archive
+```
+
+Folds the delta specs into `openspec/specs/`, archives the planning record, and the change is
+committed and merged.
+
+Also available: `/opsx:explore` for thinking something through before an issue exists, and
+`/opsx:update` for revising a change's plan in place after a review asks for edits.
 
 ### Checking on a change
 
@@ -92,7 +111,8 @@ Four things the process refuses to let slide:
 
 ## Where it stops
 
-Once, and only on failure: when a plan has been revised twice and still not passed review.
+Stages are started by hand, but only one thing stops the work and needs a *decision*: a plan revised
+twice that still has not passed review.
 
 The change halts with nothing implemented, and the review and artifacts are surfaced for a decision.
 
