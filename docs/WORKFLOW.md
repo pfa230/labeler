@@ -155,6 +155,9 @@ is worth doing at all.
 
 - The pre-commit hook is skippable with `git commit --no-verify`. CI runs the identical check on what
   lands, so a skipped hook delays the refusal rather than avoiding it.
+- There are no pull requests, so a change is checked by pushing its branch, which runs the validation
+  jobs without publishing anything. Merging on a red or absent branch run puts the failure on `main`,
+  where CI becomes a post-mortem rather than a gate.
 - Specs live in two places during migration. `docs/SPEC.md` is frozen and remains authoritative for
   behavior that has not moved; `openspec/specs/` holds everything since. A spec in the new location
   names the frozen section it replaces, so precedence is recorded rather than inferred.
