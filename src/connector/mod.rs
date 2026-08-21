@@ -117,6 +117,13 @@ impl CompiledTransforms {
         self.0.iter().filter(move |t| t.resource == resource)
     }
 
+    /// Whether any rule on `resource` derives a field called `name`.
+    pub fn derives(&self, resource: &str, name: &str) -> bool {
+        self.0
+            .iter()
+            .any(|t| t.resource == resource && t.capture_names.iter().any(|n| n == name))
+    }
+
     pub fn apply_to_map(&self, resource: &str, data: &mut BTreeMap<String, String>) {
         let mut derived = Vec::new();
         for t in self.for_resource(resource) {
@@ -510,29 +517,42 @@ impl Connectors {
         let compiled = CompiledTransforms::compile(&conn.transforms).unwrap_or_default();
         let requested_fields = req.fields.clone();
 
-        let mut downstream_fields = Vec::new();
-        let mut needed_sources = std::collections::HashSet::new();
-        let mut derived_field_names = std::collections::HashSet::new();
+        let mut resources: Vec<&str> = Vec::new();
+        for r in &req.rows {
+            if !resources.contains(&r.resource.as_str()) {
+                resources.push(&r.resource);
+            }
+        }
 
+        // A name is safe to keep off the connector's field list only when every resource in this
+        // request derives it. A name derived on one resource can be a real column of another
+        // (`itemCount` is declared on `locations` and not on `entities`), and validation only
+        // forbids a collision on the rule's own resource, so stripping globally would drop that
+        // other resource's real value (#196).
+        let mut needed_sources = Vec::new();
+        let mut universally_derived = std::collections::HashSet::new();
         for t in &compiled.0 {
-            if req.rows.iter().any(|r| r.resource == t.resource) {
-                for name in &t.capture_names {
-                    derived_field_names.insert(name.clone());
-                    if requested_fields.contains(name) {
-                        needed_sources.insert(t.source.clone());
-                    }
+            if !resources.contains(&t.resource.as_str()) {
+                continue;
+            }
+            for name in &t.capture_names {
+                if requested_fields.contains(name) && !needed_sources.contains(&t.source) {
+                    needed_sources.push(t.source.clone());
+                }
+                if resources.iter().all(|r| compiled.derives(r, name)) {
+                    universally_derived.insert(name.clone());
                 }
             }
         }
 
-        for f in &requested_fields {
-            if !derived_field_names.contains(f) && !downstream_fields.contains(f) {
+        let mut downstream_fields = Vec::new();
+        for f in requested_fields
+            .iter()
+            .filter(|f| !universally_derived.contains(*f))
+            .chain(needed_sources.iter())
+        {
+            if !downstream_fields.contains(f) {
                 downstream_fields.push(f.clone());
-            }
-        }
-        for s in needed_sources {
-            if !downstream_fields.contains(&s) {
-                downstream_fields.push(s);
             }
         }
 
@@ -546,12 +566,17 @@ impl Connectors {
             Connectors::Homebox(c) => c.materialize(conn, egress, downstream_req).await?,
         };
 
-        for row in &mut rows {
-            compiled.apply_to_map(&row.source.resource, &mut row.data);
-        }
-
         let requested_set: std::collections::HashSet<_> = requested_fields.into_iter().collect();
         for row in &mut rows {
+            // A derived name the connector was still asked for came back as whatever that connector
+            // makes of a key it does not know (Homebox: an empty string). Drop it before the pass,
+            // so a rule that does not match leaves the key absent rather than blank.
+            for t in compiled.for_resource(&row.source.resource) {
+                for name in &t.capture_names {
+                    row.data.remove(name);
+                }
+            }
+            compiled.apply_to_map(&row.source.resource, &mut row.data);
             row.data.retain(|k, _| requested_set.contains(k));
         }
 
@@ -581,6 +606,159 @@ impl ConnectorRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_connection(base: &str, transforms: Vec<FieldTransform>) -> Connection {
+        Connection {
+            id: "c1".into(),
+            connector: "homebox".into(),
+            name: "hb".into(),
+            base_url: base.into(),
+            public_url: None,
+            credential: "k".into(),
+            enabled: true,
+            transforms,
+        }
+    }
+
+    /// #196: a rule on one resource must not strip a field that is real on another resource in the
+    /// same selection. `itemCount` is declared on `locations` only, so deriving it on `entities` is
+    /// legal, and a mixed selection must still return the location's real value.
+    #[tokio::test]
+    async fn mixed_resource_materialize_keeps_the_other_resource_real_field() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "e1", "name": "Drill", "parent": {"name": "BOX.9 | Garage"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/loc1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "loc1", "name": "Garage", "itemCount": 7
+            })))
+            .mount(&server)
+            .await;
+
+        let conn = test_connection(
+            &server.uri(),
+            vec![FieldTransform {
+                resource: "entities".into(),
+                source: "location".into(),
+                pattern: r"^(?<itemCount>[A-Z]+\.\d+)".into(),
+            }],
+        );
+        let egress = Egress::with_loopback();
+        let registry = ConnectorRegistry::default();
+        let connector = registry.get("homebox").unwrap();
+
+        let rows = connector
+            .materialize(
+                &conn,
+                &egress,
+                MaterializeRequest {
+                    rows: vec![
+                        RowRef {
+                            resource: "entities".into(),
+                            key: "e1".into(),
+                        },
+                        RowRef {
+                            resource: "locations".into(),
+                            key: "loc1".into(),
+                        },
+                    ],
+                    fields: vec!["itemCount".into()],
+                    expansion: ExpansionPolicy::AsListed,
+                },
+            )
+            .await
+            .unwrap();
+
+        let entity = rows.iter().find(|r| r.source.key == "e1").unwrap();
+        let location = rows.iter().find(|r| r.source.key == "loc1").unwrap();
+        assert_eq!(
+            entity.data.get("itemCount").map(String::as_str),
+            Some("BOX.9")
+        );
+        assert_eq!(
+            location.data.get("itemCount").map(String::as_str),
+            Some("7")
+        );
+    }
+
+    /// The same shape, but the rule does not match: the derived key must be absent for that row,
+    /// never the empty string the connector fills in for a field it does not know.
+    #[tokio::test]
+    async fn mixed_resource_materialize_leaves_a_non_matching_derived_key_absent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "e1", "name": "Drill", "parent": {"name": "no code here"}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/loc1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "loc1", "name": "Garage", "itemCount": 7
+            })))
+            .mount(&server)
+            .await;
+
+        let conn = test_connection(
+            &server.uri(),
+            vec![FieldTransform {
+                resource: "entities".into(),
+                source: "location".into(),
+                pattern: r"^(?<itemCount>[A-Z]+\.\d+)".into(),
+            }],
+        );
+        let egress = Egress::with_loopback();
+        let registry = ConnectorRegistry::default();
+        let connector = registry.get("homebox").unwrap();
+
+        let rows = connector
+            .materialize(
+                &conn,
+                &egress,
+                MaterializeRequest {
+                    rows: vec![
+                        RowRef {
+                            resource: "entities".into(),
+                            key: "e1".into(),
+                        },
+                        RowRef {
+                            resource: "locations".into(),
+                            key: "loc1".into(),
+                        },
+                    ],
+                    fields: vec!["itemCount".into()],
+                    expansion: ExpansionPolicy::AsListed,
+                },
+            )
+            .await
+            .unwrap();
+
+        let entity = rows.iter().find(|r| r.source.key == "e1").unwrap();
+        let location = rows.iter().find(|r| r.source.key == "loc1").unwrap();
+        assert!(
+            !entity.data.contains_key("itemCount"),
+            "a non-matching rule must leave the key absent, got {:?}",
+            entity.data
+        );
+        assert_eq!(
+            location.data.get("itemCount").map(String::as_str),
+            Some("7")
+        );
+    }
 
     #[test]
     fn filter_value_as_tokens() {
