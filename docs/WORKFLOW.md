@@ -7,6 +7,13 @@ The loop is **unattended on the converging path**. You describe what you want; t
 everything below and pushes. You are pulled in exactly once, and only on failure: when the
 adversarial review cannot reach a verdict in two rounds.
 
+> **Every command in this document is run by the agent. You never type any of them.**
+> Your entire interface is two sentences: the one that starts a change, and a decision if the loop
+> escalates. Blocks marked **[you]** are the exceptions; there are none in the main loop.
+
+Read this as a description of what the agent will do, not a recipe to follow by hand. It is written
+down so the behavior is reviewable and so the agent has one place to be held to.
+
 ## Who runs what
 
 The rule that makes this work: **whoever wrote an artifact never reviews it.** Splitting the roles
@@ -63,13 +70,22 @@ codex exec --ignore-user-config -s read-only -c model_reasoning_effort=high \
 ```
 
 `< /dev/null` is mandatory. Without it codex blocks reading stdin forever and never calls the API,
-which looks identical to thinking hard. A stalled run has ~0 CPU and no TCP connections:
+which looks identical to thinking hard.
+
+<details>
+<summary>Agent troubleshooting: telling a stalled reviewer from a working one</summary>
+
+A stalled run has burned almost no CPU and holds no network connections. Measure, do not guess: the
+same symptom was misattributed three times in one session to a missing directory, a deleted working
+directory, and a config problem, before anyone checked.
 
 ```bash
 P=$(pgrep -f "codex exec" | tail -1)
 ps -o etime,time,%cpu -p $P     # working: CPU climbing.  stalled: ~0:00.10
 lsof -p $P | grep -c TCP        # working: 3-5.           stalled: 0
 ```
+
+</details>
 
 `review.md` ends with exactly one canonical line, `VERDICT:` followed by one of:
 
@@ -89,9 +105,11 @@ Rules that stop the loop being gamed:
 - A reviewer that errors, stalls, or emits garbage does **not** fall back to self-review and does not
   get a fabricated verdict. Drop to a fresh-context subagent, or stop.
 
-**Escalation.** Two consecutive `REVISE` rounds is a hard stop. The agent does not implement and does
-not keep retrying: it surfaces `review.md` and the artifacts and waits. This is the one place you are
-asked to read anything, and it means the reviewer and the author could not converge.
+**Escalation [you].** Two consecutive `REVISE` rounds is a hard stop. The agent does not implement
+and does not keep retrying: it surfaces `review.md` and the artifacts, and waits. This is the only
+point in the loop that is addressed to you, and reaching it means the reviewer and the author could
+not converge. What is wanted from you is direction, not proofreading: is this solving the right
+problem, is the scope right, should it be abandoned.
 
 ### 4. Apply
 
