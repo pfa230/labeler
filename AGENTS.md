@@ -29,7 +29,8 @@ against an unmigrated section has nothing to resolve against.
 `docs/adr/` holds append-only Nygard ADRs. Every behavior change adds or supersedes an ADR and adds
 its row to `docs/adr/README.md`, in the same change. Supersede rather than edit.
 
-Also in `docs/`: `AUTHORING.md` (template model by worked example), `VISION.md`, `DEPLOY.md`.
+Also in `docs/`: `WORKFLOW.md` (the end-to-end change manual, including which model runs which
+step), `AUTHORING.md` (template model by worked example), `VISION.md`, `DEPLOY.md`.
 
 ## Tracking work
 
@@ -50,22 +51,27 @@ because the review gates implementation and archive rewrites the main specs *aft
 1. **Issue**, then a worktree: `git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>`.
 2. **`/opsx:propose`** writes `openspec/changes/issue-<N>-<slug>/`. Planning only; it must not touch
    code. Link the issue in `proposal.md`.
-3. **Human reviews all artifacts**, not just `proposal.md`. The delta specs become normative.
-4. **Adversarial review of the plan**, before any task is written: the `review` artifact, judging
+3. **Adversarial review of the plan**, before any task is written: the `review` artifact, judging
    `proposal.md` + `specs/` + `design.md`. A second model in read-only mode, else a fresh-context
    subagent. **Never** self-review inside the authoring context. It writes `review.md` ending in a
-   `VERDICT:` line. `REVISE` → fix and re-run the *full* review; `APPROVE_WITH_CHANGES` → apply the
-   listed edits, reviewer re-checks only those, then set `CHANGES_APPLIED: yes`. Two consecutive
-   `REVISE` rounds escalate to the human. Editing the specs or design afterwards voids the verdict.
-5. **`/opsx:apply`**, then the adversarial review of the *diff* below. Two different reviews: step 4
+   `VERDICT:` line. `REVISE` → fix the artifacts and re-run the *full* review in a fresh context;
+   `APPROVE_WITH_CHANGES` → apply the listed edits, reviewer re-checks only those, then set
+   `CHANGES_APPLIED: yes`. Editing the specs or design afterwards voids the verdict.
+
+   **This is the only place a human enters the loop, and only on failure.** Two consecutive `REVISE`
+   rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
+   artifacts, and wait. On the converging path the loop runs unattended through to the merge.
+4. **`/opsx:apply`**, then the adversarial review of the *diff* below. Two different reviews: step 3
    judged the plan, this one judges the code. Do not skip it because tasks are checked.
    `.claude/hooks/review-gate.sh` refuses writes to `src/` and `ui/src/` until the verdict passes,
    because OpenSpec only checks that artifacts exist, never what they say.
-6. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
+5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
-7. **Review the archive diff.** It rewrote `openspec/specs/` after your last review pass.
-8. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
+6. **Review the archive diff.** It rewrote `openspec/specs/` after your last review pass.
+7. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
+
+The end-to-end manual is [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
 
 `tasks.md` is execution state for one accepted issue, never a backlog. That is what keeps the
 "issues are the sole tracker" rule intact.
