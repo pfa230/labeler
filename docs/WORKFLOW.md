@@ -60,12 +60,25 @@ Also available: `/opsx:explore` for thinking something through before an issue e
 Any of the four can take the propose or the apply step. Roles are interchangeable; the only fixed
 constraint is that the reviewer is not the author.
 
-| Agent | Invoked as |
-| --- | --- |
-| Claude Code | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` in-session |
-| `agy` | `cd .worktrees/issue-<N> && agy -i "<prompt>"` — `--mode accept-edits` skips per-edit approval, `--effort high` raises reasoning. `--model` is ignored in print mode. |
-| `codex` | `codex exec --ignore-user-config -s read-only … < /dev/null` for reviews; drop `-s read-only` to let it write. `< /dev/null` is required or it blocks on stdin. |
-| `opencode` | `opencode run "<prompt>"`, or `opencode` for the TUI |
+The stage commands differ per agent, because OpenSpec writes a separate command set for each and not
+every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` and the **skill** form
+`/openspec-*`.
+
+| Agent | Stage commands | Notes |
+| --- | --- | --- |
+| Claude Code | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` | Colon-separated. From `.claude/commands/opsx/`. |
+| `agy` (Antigravity) | `/openspec-propose`, `/openspec-apply-change`, `/openspec-archive-change` | **Skill form.** The CLI reads `.agent/skills/` and ignores `.agent/workflows/`, so `/opsx-apply` is not a command despite what OpenSpec's tool table implies. |
+| `codex` | none needed | Used for reviews via `codex exec`, with the instructions piped in. |
+| `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Unverified. |
+
+Implementation runs on a second agent, so the model that writes the code is not the model that
+reviews it. That happens without arrangement: the stage is dispatched to `agy` and the diff comes back
+here to be reviewed. The transcript stays in a log rather than being read back, since a full agent
+transcript is thousands of lines of no interest to anyone.
+
+Its commits are gated the same as anyone's — `core.hooksPath` resolves inside a worktree, so
+`.githooks/pre-commit` runs. What it cannot see is the Claude Code edit-time hook, so its only gate is
+at commit time.
 
 Stages hand off through **files on disk, not conversation**. Every artifact's instructions re-read
 their dependencies from disk, so a stage can run in a fresh session, a different agent, or the same
@@ -120,10 +133,10 @@ intent:
 An artifact is never reviewed by whoever wrote it. `review.md` records `AUTHOR:` and `REVIEWER:`, and
 the gate refuses a change where they match, so the rule is checked rather than trusted.
 
-The reviewer runs read-only and therefore cannot write its own verdict; its output is captured and
-preserved verbatim as `review-raw-<round>.txt` beside `review.md`, one per round. The gate refuses a
-review with no raw capture. Without it the author, who is the interested party, would sit between the
-findings and the record with nothing to check a softened finding against. The reviewer
+The reviewer runs read-only and cannot write files, so its stdout is redirected straight into
+`review.md`: that file is its output, not a summary of it. Nothing transcribes the review, which keeps
+the interested party out of the record and avoids pulling a thousand-line transcript through the
+author's context to copy something already on disk. The reviewer
 works from the files alone, without access to the conversation that produced them, and cannot edit
 what it reviews.
 
@@ -155,6 +168,9 @@ is worth doing at all.
 
 - The pre-commit hook is skippable with `git commit --no-verify`. CI runs the identical check on what
   lands, so a skipped hook delays the refusal rather than avoiding it.
+- There are no pull requests, so a change is checked by pushing its branch, which runs the validation
+  jobs without publishing anything. Merging on a red or absent branch run puts the failure on `main`,
+  where CI becomes a post-mortem rather than a gate.
 - Specs live in two places during migration. `docs/SPEC.md` is frozen and remains authoritative for
   behavior that has not moved; `openspec/specs/` holds everything since. A spec in the new location
   names the frozen section it replaces, so precedence is recorded rather than inferred.

@@ -196,16 +196,20 @@ artifacts:
          rather than assuming them, and confirm the captured output is the reviewer's
          analysis and not wrapper text.
 
-      CAPTURING THE OUTPUT. A read-only reviewer cannot write files, so its analysis
-      is captured, not authored: redirect its stdout. Preserve it verbatim as
-      `review-raw-<round>.txt` beside review.md, unedited, one per round including
-      re-checks. Then fill review.md from it.
+      CAPTURING THE OUTPUT. A read-only reviewer cannot write files, so redirect its
+      stdout straight into review.md. These instructions already contain the template,
+      so the reviewer emits the filled form directly and there is no transcription
+      step. review.md IS the reviewer's output.
 
-      This matters because the author is the interested party. Transcription without a
-      preserved original leaves nothing to check a softened or dropped finding against,
-      and the gate refuses a review.md with no `review-raw-*` file next to it. The
-      author writes only the Rebuttals section and CHANGES_APPLIED; Findings, the
-      injection check and the verdict are the reviewer's words.
+      NEVER read the review into the authoring context in order to copy it into place.
+      It is already on disk, a reviewer transcript runs to thousands of lines, and
+      passing it through the author both wastes the context and puts the interested
+      party between the findings and the record.
+
+      Read only what must be acted on: the `VERDICT:` line, and the Required Changes
+      section when the verdict is APPROVE_WITH_CHANGES. Append the Rebuttals section
+      and set CHANGES_APPLIED with a targeted edit. Never rewrite the file: Findings,
+      the injection check and the verdict stay the reviewer's words.
       2. FRESH-CONTEXT SUBAGENT, if no second model is available: a subagent with no
          authoring transcript, on the same model.
       NEVER: "now critique what you just wrote" inside the authoring context. Self-
