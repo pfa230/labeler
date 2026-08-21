@@ -294,7 +294,6 @@ pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResp
     path = "/templates/reload",
     responses(
         (status = 200, description = "Templates reloaded from disk", body = ReloadResponse),
-        (status = 422, description = "A template on disk is invalid; previous set kept", body = ErrorResponse),
         (status = 500, description = "Failed to read the templates directory", body = ErrorResponse)
     )
 )]
@@ -398,8 +397,10 @@ pub async fn create_template(
     let path = template_file_path(&state.templates_dir, &id)?;
     let _guard = state.write_lock.lock().await;
     // Registry first: the id may already be held by a file under a different name, which
-    // `path.exists()` misses — and writing anyway leaves two files declaring one id, failing the
-    // reload below. The path check still covers a file the registry has not loaded.
+    // `path.exists()` misses. The path check still covers a file the registry has not loaded. Since
+    // #181 the reload below no longer fails on a duplicate id, so this guard is the only thing
+    // standing between a write and a silent collision, and it misses a file added to the directory
+    // since the last reload (#184).
     if state.templates.load_full().get(&id).is_some() || path.exists() {
         return Err(AppError::template_exists(&id));
     }
@@ -465,8 +466,7 @@ pub async fn replace_template(
         (status = 204, description = "Template deleted"),
         (status = 400, description = "Invalid id", body = ErrorResponse),
         (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 422, description = "File removed, but reloading the directory found an invalid template", body = ErrorResponse),
-        (status = 500, description = "File removal or the favorites prune failed", body = ErrorResponse)
+        (status = 500, description = "File removal, the favorites prune, or the directory re-read failed", body = ErrorResponse)
     )
 )]
 pub async fn delete_template(
@@ -479,9 +479,9 @@ pub async fn delete_template(
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         // The registry can outlive the file: if a previous delete unlinked it but its `reload()`
-        // then failed on an unrelated invalid sibling, the old set stays live and still names this
-        // path. Treat an already-absent file as removed and carry on, so retrying the delete once
-        // the directory is fixed converges instead of failing forever on a file that is already gone.
+        // then failed on an unreadable directory, the old set stays live and still names this path.
+        // Treat an already-absent file as removed and carry on, so retrying the delete once the
+        // directory is readable converges instead of failing forever on a file that is already gone.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
             return Err(AppError::render_failed(
@@ -493,9 +493,9 @@ pub async fn delete_template(
     // After the unlink, before the reload. Unlink first because it is the step that realistically
     // fails, and a prune-first order would mean a failed unlink had already destroyed favorites for
     // a template that still exists. Before the reload because `reload()` re-reads the whole
-    // directory and can fail on an unrelated invalid sibling (see
-    // `reload_invalid_file_keeps_previous_set`) — with the prune after it, that unrelated failure
-    // would leave the file deleted and the favorite alive, the exact state this prune prevents.
+    // directory and can still fail on an unreadable one (bad content is quarantined, I/O is not).
+    // With the prune after it, that failure would leave the file deleted and the favorite alive,
+    // the exact state this prune prevents.
     // Recents are not pruned: they derive from the job log, which is print history (#94).
     state.store().remove_favorites_for_template(&id).await?;
     state.reload()?;

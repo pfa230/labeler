@@ -568,7 +568,8 @@ What to know:
 
 ## 10. Why some mistakes are caught at startup and others at print time
 
-Templates are validated when the server loads them, and one invalid template stops startup. So a
+Templates are validated when the server loads them, and a file that fails is quarantined and
+reported rather than served. So a
 `422` from a template that loaded fine looks like a contradiction. It is not.
 
 The split is about **geometry**. Data-driven failures — a missing field, an undecodable image, an

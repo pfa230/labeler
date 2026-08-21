@@ -1944,6 +1944,112 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    async fn reload(app: &axum::Router) -> Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/templates/reload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        json_response(response).await
+    }
+
+    /// A copy-pasted file claiming a live id is refused on its own; the reload still succeeds and
+    /// the template already serving the id is untouched (#181).
+    #[tokio::test]
+    async fn reload_with_duplicate_id_succeeds_and_quarantines_the_collider() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("a.yaml"), template_yaml("dup")).unwrap();
+        let app = build_app_in(&dir);
+        assert_eq!(template_count(&app).await, 1);
+
+        std::fs::write(dir.join("z.yaml"), template_yaml("dup")).unwrap();
+        let body = reload(&app).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["broken_count"], 1);
+
+        let (_, list) = get_json(&app, "/api/templates").await;
+        let templates = list["templates"].as_array().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0]["id"], "dup");
+        let broken = list["broken"].as_array().unwrap();
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0]["filename"], "z.yaml");
+        let error = broken[0]["error"].as_str().unwrap();
+        assert!(
+            error.contains("dup") && error.contains("a.yaml"),
+            "broken entry names the id and the file it collides with: {error}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The operator's fix converges: drop one of the two files, reload, and the collision is gone
+    /// while the winner keeps serving (#181).
+    #[tokio::test]
+    async fn removing_the_colliding_file_clears_the_broken_entry() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("a.yaml"), template_yaml("dup")).unwrap();
+        std::fs::write(dir.join("z.yaml"), template_yaml("dup")).unwrap();
+        // The app builds at all only because a duplicate id no longer fails the load.
+        let app = build_app_in(&dir);
+        let (_, list) = get_json(&app, "/api/templates").await;
+        assert_eq!(list["broken"].as_array().unwrap().len(), 1);
+
+        std::fs::remove_file(dir.join("z.yaml")).unwrap();
+        let body = reload(&app).await;
+        assert_eq!(body["count"], 1);
+        assert_eq!(body["broken_count"], 0);
+
+        let (_, list) = get_json(&app, "/api/templates").await;
+        assert_eq!(list["templates"].as_array().unwrap().len(), 1);
+        assert_eq!(list["templates"][0]["id"], "dup");
+        assert!(
+            list.get("broken").is_none(),
+            "an empty broken list is omitted: {list}"
+        );
+
+        let (status, _) = get_json(&app, "/api/templates/dup").await;
+        assert_eq!(status, StatusCode::OK);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The one fault that can still fail a reload now that every content fault is quarantined: the
+    /// directory itself is unreadable. The previously-loaded set survives it (#181).
+    #[tokio::test]
+    async fn reload_with_unreadable_dir_fails_and_keeps_the_live_set() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+        assert_eq!(template_count(&app).await, 1);
+
+        std::fs::remove_dir_all(&dir).expect("remove templates dir");
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/templates/reload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "RenderFailed");
+        assert_eq!(body["error"]["details"]["reason"], "template_registry_io");
+
+        assert_eq!(template_count(&app).await, 1);
+    }
+
     fn yaml_post(uri: &str, method: &str, body: String) -> Request<Body> {
         Request::builder()
             .method(method)
@@ -2127,6 +2233,8 @@ layout:
             "the unlink should have happened"
         );
         assert_eq!(template_count(&app).await, 0);
+        let (_, list) = get_json(&app, "/api/templates").await;
+        assert_eq!(list["broken"][0]["filename"], "bad.yaml");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2182,7 +2290,8 @@ layout:
         assert_eq!(resp.status(), StatusCode::OK);
 
         // PUT must overwrite custom.yaml in place. A y2.yaml sibling would give two files one id,
-        // and the reload inside the handler would fail the duplicate-id check.
+        // and the reload inside the handler would refuse one of them as a duplicate, leaving a
+        // broken entry behind and making which file serves y2 depend on filename order (#181).
         let body200 = template_yaml("y2").replace("dpi: 300", "dpi: 200");
         let resp = app
             .clone()

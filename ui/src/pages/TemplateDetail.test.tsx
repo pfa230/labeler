@@ -41,8 +41,10 @@ function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200, slow
             );
       }
       if (init?.method === "PUT") {
-        // Both branches persist. A 422 does not imply an unchanged file: the server writes before it
-        // reloads, so a failed reload leaves the edit on disk (SPEC, PUT /templates/{id}).
+        // Every branch persists, because the case worth stubbing is the one where the write landed:
+        // the server writes before it reloads, so a failed reload leaves the edit on disk. Since
+        // #181 that failure is a 500 (only I/O still fails a reload); a 422 comes from the body
+        // being rejected before anything is written, and no test here depends on that branch.
         currentSource = String(init.body);
         return putStatus === 200
           ? new Response(JSON.stringify(detail), {
@@ -266,9 +268,10 @@ describe("Template detail", () => {
   });
 
   it("after a failed save, the next edit seeds from what is actually stored", async () => {
-    // The persisted-but-422 case: the stub kept the submitted bytes (the write landed) and still
-    // returned 422 (the reload failed), so the cached source is now wrong in the other direction.
-    stubFetch(204, 422);
+    // The persisted-but-failed case: the stub kept the submitted bytes (the write landed) and still
+    // returned 500 (the reload hit an unreadable directory), so the cached source is now wrong in
+    // the other direction.
+    stubFetch(204, 500);
     renderPage();
     fireEvent.click(await screen.findByText(/raw yaml/i));
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));

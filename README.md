@@ -40,8 +40,10 @@ docker compose up -d --build      # serves on http://localhost:${HOST_PORT:-8080
 See [`docs/DEPLOY.md`](docs/DEPLOY.md) for configuration, persistent volumes and backups, and CUPS/IPP
 printing setup.
 
-YAML templates are loaded from `{config}/templates/` at startup; an invalid template stops the
-service from starting.
+YAML templates are loaded from `{config}/templates/` at startup and on
+`POST /api/templates/reload`. A file that fails to parse, fails validation, or claims an id another
+file already holds is quarantined: it is listed under `broken` in `GET /api/templates` and does not
+stop the service (ADR-0058).
 
 **A new install starts with no templates.** Install what you need from the catalog in the UI
 (Labels → Browse the catalog), or paste YAML. The catalog lives in this repo under `catalog/`,

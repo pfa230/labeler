@@ -68,6 +68,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0055](0055-standardize-on-value-interpolation.md) | Standardize on value interpolation for text and QR items | Accepted |
 | [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted |
 | [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted |
+| [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
 
 ## Adding an ADR
 

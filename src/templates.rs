@@ -42,7 +42,7 @@ impl TemplateDefinition {
     }
 }
 
-/// A template file that could not be parsed or failed validation.
+/// A template file that could not be parsed, failed validation, or lost an id collision.
 #[derive(Debug, Clone)]
 pub struct BrokenTemplate {
     /// Basename of the file (e.g. `foo.yaml`).
@@ -58,8 +58,30 @@ pub struct TemplateRegistry {
     // The file each id was loaded from. A template's filename is only conventionally its id, so the
     // file-backed endpoints (source/PUT/DELETE) cannot reconstruct this from the id alone (#140).
     paths: HashMap<String, PathBuf>,
-    /// Files that failed to parse or validate; excluded from the valid set but not fatal.
+    /// Files refused by a parse, validation or duplicate-id fault; excluded from the valid set
+    /// but not fatal.
     broken: Vec<BrokenTemplate>,
+}
+
+/// Every entry of `dir`, sorted. Loading in sorted order rather than `read_dir` order is what makes
+/// the winner of an id collision a property of the directory contents instead of a property of this
+/// filesystem's enumeration (#181). Every path shares the same parent, so ordering by path is
+/// ordering by filename.
+fn sorted_dir_paths(dir: &FsPath) -> Result<Vec<PathBuf>, TemplateRegistryError> {
+    let entries = std::fs::read_dir(dir).map_err(|source| TemplateRegistryError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| TemplateRegistryError::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        paths.push(entry.path());
+    }
+    paths.sort();
+    Ok(paths)
 }
 
 impl TemplateRegistry {
@@ -69,17 +91,8 @@ impl TemplateRegistry {
         let mut hashes = HashMap::new();
         let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
         let mut broken: Vec<BrokenTemplate> = Vec::new();
-        let entries = std::fs::read_dir(dir).map_err(|source| TemplateRegistryError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
 
-        for entry in entries {
-            let entry = entry.map_err(|source| TemplateRegistryError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })?;
-            let path = entry.path();
+        for path in sorted_dir_paths(dir)? {
             let ext = path
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -128,12 +141,19 @@ impl TemplateRegistry {
                 continue;
             }
 
+            // The id is already taken, so this file is refused and the template already accepted
+            // for the id stays served. Quarantined like a parse or validation fault rather than
+            // fatal: one copy-pasted file must not take the whole service down (#181).
             if let Some(existing_path) = seen_paths.get(&template.id) {
-                return Err(TemplateRegistryError::DuplicateId {
+                let error = TemplateRegistryError::DuplicateId {
                     id: template.id.clone(),
                     first: existing_path.clone(),
                     second: path,
-                });
+                }
+                .to_string();
+                tracing::warn!(%error, "skipping broken template");
+                broken.push(BrokenTemplate { filename, error });
+                continue;
             }
 
             seen_paths.insert(template.id.clone(), path);
@@ -174,7 +194,7 @@ impl TemplateRegistry {
         self.paths.get(id).map(PathBuf::as_path)
     }
 
-    /// Templates that failed to parse or validate during this load.
+    /// Files refused during this load, by a parse, validation or duplicate-id fault.
     pub fn broken(&self) -> &[BrokenTemplate] {
         &self.broken
     }
@@ -2048,9 +2068,131 @@ layout:
 "#,
         );
 
+        // A non-YAML file in the same dir is ignored: neither served nor reported broken. An
+        // uppercase extension is not, the filter lowercases before matching.
+        write_template(&dir, "notes.txt", "id: sample\n");
+        write_template(
+            &dir,
+            "SHOUTED.YAML",
+            r#"
+id: shouted
+name: Shouted
+description: Uppercase extension
+unit: mm
+dpi: 300
+format:
+  type: single
+  width: 12.0
+  height: 25.0
+layout: []
+"#,
+        );
+
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
-        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.len(), 2);
         assert!(registry.get("sample").is_some());
+        assert!(registry.get("shouted").is_some());
+        assert!(registry.broken().is_empty());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The sort is what makes the collision winner reproducible, and no test can force a filesystem
+    /// to enumerate out of order, so assert the sorted list directly (#181).
+    #[test]
+    fn dir_paths_come_back_sorted_whatever_the_creation_order() {
+        let dir = temp_dir("sorted_paths");
+        for name in ["z.yaml", "m.yaml", "a.yaml", "notes.txt"] {
+            write_template(&dir, name, "");
+        }
+
+        let names: Vec<String> = super::sorted_dir_paths(&dir)
+            .expect("read dir")
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .expect("file name")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(names, ["a.yaml", "m.yaml", "notes.txt", "z.yaml"]);
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn yaml_with_id(id: &str) -> String {
+        format!(
+            r#"
+id: {id}
+name: {id}
+description: d
+unit: mm
+dpi: 300
+format:
+  type: single
+  width: 12.0
+  height: 25.0
+layout: []
+"#
+        )
+    }
+
+    /// A duplicate id refuses the colliding file instead of the whole directory (#181), and the
+    /// survivor is the lexicographically first filename, not whichever file the filesystem happened
+    /// to hand back first, so both creation orders must give the same answer.
+    #[test]
+    fn duplicate_id_serves_first_filename_and_quarantines_the_collider() {
+        for (label, first_written, second_written) in [
+            ("dup_az", "a.yaml", "z.yaml"),
+            ("dup_za", "z.yaml", "a.yaml"),
+        ] {
+            let dir = temp_dir(label);
+            write_template(&dir, first_written, &yaml_with_id("dup"));
+            write_template(&dir, second_written, &yaml_with_id("dup"));
+
+            let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+
+            assert_eq!(registry.len(), 1, "{label}: only the winner is served");
+            assert!(registry.get("dup").is_some(), "{label}: id is still served");
+            assert_eq!(
+                registry.path("dup").and_then(|p| p.file_name()),
+                Some(std::ffi::OsStr::new("a.yaml")),
+                "{label}: a.yaml wins the id"
+            );
+
+            let broken = registry.broken();
+            assert_eq!(broken.len(), 1, "{label}: one file refused");
+            assert_eq!(broken[0].filename, "z.yaml", "{label}: z.yaml is refused");
+            assert!(
+                broken[0].error.contains("dup") && broken[0].error.contains("a.yaml"),
+                "{label}: message names the id and the file it collides with: {}",
+                broken[0].error
+            );
+
+            fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// Refusing a collider is scoped to that file: an unrelated template in the same directory is
+    /// unaffected (#181).
+    #[test]
+    fn duplicate_id_leaves_unrelated_templates_served() {
+        let dir = temp_dir("dup_sibling");
+        write_template(&dir, "a.yaml", &yaml_with_id("dup"));
+        write_template(&dir, "z.yaml", &yaml_with_id("dup"));
+        write_template(&dir, "other.yaml", &yaml_with_id("other"));
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+
+        assert_eq!(registry.len(), 2);
+        assert!(registry.get("other").is_some());
+        assert_eq!(
+            registry.path("other").and_then(|p| p.file_name()),
+            Some(std::ffi::OsStr::new("other.yaml"))
+        );
+        assert_eq!(registry.broken().len(), 1);
+        assert_eq!(registry.broken()[0].filename, "z.yaml");
 
         fs::remove_dir_all(&dir).ok();
     }
