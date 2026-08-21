@@ -46,7 +46,7 @@ exists; its scratch stays under `docs/superpowers/` (gitignored).
 Behavior changes go through OpenSpec (CLI 1.9.0). Order matters, because archive rewrites the main
 specs *after* implementation:
 
-1. **Issue**, then a short-lived branch off `main`.
+1. **Issue**, then a worktree: `git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>`.
 2. **`/opsx:propose`** writes `openspec/changes/issue-<N>-<slug>/`. Planning only; it must not touch
    code. Link the issue in `proposal.md`.
 3. **Human reviews all artifacts**, not just `proposal.md`. The delta specs become normative.
@@ -80,11 +80,27 @@ Fluent code is not correct code: verify each finding against the actual code bef
 dismissing it. When the reviewer is **codex**, cap at **5** passes absent an unresolved blocking
 issue. Converging on "no MAJOR issues" is the goal, not an empty findings list.
 
+## Isolation: one change, one worktree, one issue
+
+Every change gets its own git **worktree**, not just a branch. A branch shares one working directory,
+so two sessions collide, and an OpenSpec change folder is untracked until the final commit, which
+means it follows you across `git checkout` and makes "is a change in progress here?" unanswerable.
+
+```bash
+git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>   # start
+cd .worktrees/issue-<N>                                     # work here, only here
+```
+
+Need an unrelated hotfix while a change is in flight? Another worktree. Never switch branches inside
+a change's worktree, and never carry one change's worktree into another's work.
+
+`/.worktrees/` is gitignored. See `superpowers:using-git-worktrees`.
+
 ## Committing
 
-Commit and push without prompting; do not wait to be asked. No pull requests: work on a short-lived
-branch, then `git checkout main && git merge <branch> && git push`. Never force-push, never rewrite
-pushed history.
+Commit and push without prompting; do not wait to be asked. No pull requests: from the repo root,
+`git merge issue-<N>-<slug> && git push`, then `git worktree remove .worktrees/issue-<N>` and
+`git branch -d issue-<N>-<slug>`. Never force-push, never rewrite pushed history.
 
 ## Commands
 
