@@ -28,7 +28,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0015](0015-settings-printers-ux.md) | Settings & Printers screen UX | Accepted |
 | [0016](0016-deployment-and-packaging.md) | Deployment and packaging | Accepted |
 | [0017](0017-app-authentication.md) | App authentication | Accepted |
-| [0018](0018-api-integration-spine.md) | API integration spine (connectors) | Accepted |
+| [0018](0018-api-integration-spine.md) | API integration spine (connectors) | Accepted (connections store superseded in part by [0061](0061-connection-public-url-is-the-link-base.md)) |
 | [0019](0019-ci-and-image-publishing.md) | CI and image publishing | Accepted |
 | [0020](0020-variables-vs-settings.md) | Variables vs settings (substitution vs app config) | Accepted |
 | [0021](0021-homebox-connect-hardening.md) | Homebox & Connect hardening (isLocation, row link, selection) | Accepted |
@@ -71,6 +71,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
 | [0059](0059-auto-length-text-box-is-the-alignment-slot.md) | Auto-length text box is the alignment slot | Accepted |
 | [0060](0060-connection-scoped-field-transforms.md) | Connection-scoped field transforms | Accepted |
+| [0061](0061-connection-public-url-is-the-link-base.md) | A connection's public URL is the link base, its base URL is the fetch base | Accepted |
 
 ## Adding an ADR
 
