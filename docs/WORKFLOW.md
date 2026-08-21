@@ -1,17 +1,21 @@
 # How changes get made
 
-This document describes the path a behavior change takes from request to `main`, and the single point
+This document describes the path a behavior change takes from issue to `main`, and the single point
 at which it stops for a human decision.
 
 The mechanics — commands, tooling, enforcement — are in [`AGENTS.md`](../AGENTS.md).
 
 ## The input
 
-A change starts from a description of what is wanted. That is the entire input.
+A change starts as a GitHub issue. Issues and milestones are the only backlog, and one change
+implements exactly one open issue: scope is agreed there, before anything else happens.
 
-Everything after it runs unattended: filing the issue, isolating the work, writing the spec and
-design, getting them reviewed, implementing, reviewing the implementation, updating the specs of
-record, and merging.
+Everything after that runs unattended — isolating the work, writing the spec and design, getting them
+reviewed, implementing, reviewing the implementation, updating the specs of record, merging — and the
+merge commit closes the issue.
+
+Work discovered mid-change that falls outside its issue becomes a new issue. It does not widen the
+one in flight, and it is never parked as an unchecked task.
 
 ## The output
 
