@@ -20,14 +20,17 @@ use crate::{
     errors::AppError,
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, PrintRequest,
-        ReloadResponse, RenderLabelRequest, TemplateDetail, TemplateList, VariableValue,
+        ReloadResponse, RenderLabelRequest, TemplateDetail, TemplateGroupUpdate, TemplateList,
+        VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
     reason::Reason,
     render::{render_single_label_image, render_single_label_pdf, ColorMode, ImageRenderOptions},
     store::{Printer, Store},
-    templates::{TemplateDefinition, TemplateRegistry, TemplateRegistryError},
+    templates::{
+        patch_template_group, TemplateDefinition, TemplateRegistry, TemplateRegistryError,
+    },
 };
 
 const MAX_BATCH_LABELS: usize = 500;
@@ -155,6 +158,7 @@ fn api_router() -> Router<Arc<AppState>> {
                 .put(replace_template)
                 .delete(delete_template),
         )
+        .route("/templates/{id}/group", put(update_template_group))
         .route("/templates/{id}/source", get(template_source))
         .route("/templates/{id}/thumbnail", get(thumbnail))
         .route("/printers", get(list_printers).post(create_printer))
@@ -268,16 +272,35 @@ pub async fn health() -> impl IntoResponse {
     })
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct TemplateListQuery {
+    pub group: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/templates",
+    params(
+        ("group" = Option<String>, Query, description = "Filter templates by group. Omit for all templates; pass empty (?group=) for ungrouped templates.")
+    ),
     responses(
         (status = 200, description = "List templates", body = TemplateList)
     )
 )]
-pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn list_templates(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TemplateListQuery>,
+) -> impl IntoResponse {
     let registry = state.templates.load_full();
-    let templates = registry.summaries();
+    let mut templates = registry.summaries();
+    if let Some(ref group) = query.group {
+        let stripped = group.trim();
+        if stripped.is_empty() {
+            templates.retain(|t| t.group.is_none());
+        } else {
+            templates.retain(|t| t.group.as_deref() == Some(stripped));
+        }
+    }
     let broken = registry
         .broken()
         .iter()
@@ -449,6 +472,44 @@ pub async fn replace_template(
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     write_template_file(&path, &body)?;
     state.reload()?;
+    let detail = state.templates.load_full().detail(&id).ok_or_else(|| {
+        AppError::render_failed(
+            Reason::TemplateMissingAfterWrite,
+            "template missing after write",
+        )
+    })?;
+    Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
+}
+
+#[utoipa::path(
+    put,
+    path = "/templates/{id}/group",
+    params(("id" = String, Path, description = "Template ID")),
+    request_body(content = TemplateGroupUpdate, description = "Group assignment"),
+    responses(
+        (status = 200, description = "Template group updated", body = TemplateDetail),
+        (status = 400, description = "Invalid id or request body", body = ErrorResponse),
+        (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 422, description = "Invalid group name or unpatchable template", body = ErrorResponse),
+        (status = 500, description = "File write or registry reload failed", body = ErrorResponse)
+    )
+)]
+pub async fn update_template_group(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    payload: Result<Json<TemplateGroupUpdate>, JsonRejection>,
+) -> Result<Response, AppError> {
+    let Json(update) = payload.map_err(AppError::from)?;
+    let _guard = state.write_lock.lock().await;
+    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+    let yaml = std::fs::read_to_string(&path)
+        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
+    let patched = patch_template_group(&yaml, update.group.as_deref())?;
+    if patched != yaml {
+        write_template_file(&path, &patched)?;
+        state.reload()?;
+    }
     let detail = state.templates.load_full().detail(&id).ok_or_else(|| {
         AppError::render_failed(
             Reason::TemplateMissingAfterWrite,

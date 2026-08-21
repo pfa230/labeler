@@ -5,19 +5,21 @@ use std::{
 };
 use thiserror::Error;
 
-use crate::errors::TemplateError;
+use crate::errors::{AppError, TemplateError};
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, Layout, LayoutItem, Options,
     ParamSpec, ParamType, Point, Position, Size, SizeValue, TemplateDetail, TemplateFormat,
     TemplateSummary,
 };
 use crate::parse::parse_template;
+use crate::reason::Reason;
 
 #[derive(Debug, Clone)]
 pub struct TemplateDefinition {
     pub id: String,
     pub name: String,
     pub description: String,
+    pub group: Option<String>,
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
@@ -294,6 +296,7 @@ impl TemplateDefinition {
             id: self.id.clone(),
             name: self.name.clone(),
             description: self.description.clone(),
+            group: self.group.clone(),
             unit: self.unit.clone(),
             dpi: self.dpi,
             format: instantiate_format_defaults(&self.format, &self.params),
@@ -309,6 +312,9 @@ impl TemplateDefinition {
         }
         if self.name.trim().is_empty() {
             return Err("name must not be empty".to_string());
+        }
+        if let Some(group) = &self.group {
+            validate_group_name(group)?;
         }
         match self.unit.as_str() {
             "mm" | "in" => {}
@@ -421,6 +427,376 @@ impl TemplateDefinition {
 
         Ok(())
     }
+}
+
+pub fn validate_group_name(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("group must not be empty".to_string());
+    }
+    if trimmed.chars().count() > 64 {
+        return Err("group must be at most 64 characters".to_string());
+    }
+    if trimmed.chars().any(|c| c.is_control()) {
+        return Err("group must not contain control characters".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// A targeted single-key patch that sets, changes, or clears a template's top-level `group:` line
+/// while preserving every other byte of the file (ADR-0063).
+pub fn patch_template_group(yaml: &str, new_group: Option<&str>) -> Result<String, AppError> {
+    // 1. If a group name is provided, validate it first
+    let target_group = match new_group {
+        Some(name) => Some(validate_group_name(name).map_err(AppError::template_group_invalid)?),
+        None => None,
+    };
+
+    // 2. Check for multi-document YAML (refuse if > 1 doc)
+    let doc_count = serde_yaml_ng::Deserializer::from_str(yaml).count();
+    if doc_count > 1 {
+        return Err(AppError::template_group_unpatchable(
+            "multi-document template files cannot be patched",
+        ));
+    }
+
+    // 3. Parse and validate the original template
+    let original = crate::parse::parse_template(yaml)
+        .map_err(|e| AppError::template_invalid(Reason::TemplateParseFailed, e.to_string()))?;
+    original
+        .validate()
+        .map_err(|e| AppError::template_invalid(Reason::TemplateValidationFailed, e))?;
+
+    // 4. Idempotency: if already matching target_group, return original yaml unchanged
+    if original.group.as_deref() == target_group.as_deref() {
+        return Ok(yaml.to_string());
+    }
+
+    // 5. Split into lines preserving terminators
+    struct Line<'a> {
+        content: &'a str,
+        terminator: &'a str,
+    }
+
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let bytes = yaml.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i] == b'\r' {
+            if i + 1 < len && bytes[i + 1] == b'\n' {
+                lines.push(Line {
+                    content: &yaml[start..i],
+                    terminator: &yaml[i..i + 2],
+                });
+                i += 2;
+                start = i;
+            } else {
+                lines.push(Line {
+                    content: &yaml[start..i],
+                    terminator: &yaml[i..i + 1],
+                });
+                i += 1;
+                start = i;
+            }
+        } else if bytes[i] == b'\n' {
+            lines.push(Line {
+                content: &yaml[start..i],
+                terminator: &yaml[i..i + 1],
+            });
+            i += 1;
+            start = i;
+        } else {
+            i += 1;
+        }
+    }
+    if start < len {
+        lines.push(Line {
+            content: &yaml[start..len],
+            terminator: "",
+        });
+    }
+
+    // 6. Check root is not a flow mapping
+    for line in &lines {
+        let trimmed = line.content.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" || trimmed == "..." {
+            continue;
+        }
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return Err(AppError::template_group_unpatchable(
+                "flow-mapping root is not patchable",
+            ));
+        }
+        break;
+    }
+
+    // 7. Find top-level group lines (column 0)
+    let mut group_line_indices = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let c = line.content;
+        if c.is_empty()
+            || c.starts_with(' ')
+            || c.starts_with('\t')
+            || c.starts_with('#')
+            || c.starts_with("---")
+            || c.starts_with("...")
+        {
+            continue;
+        }
+        if c.starts_with("group:") {
+            group_line_indices.push(idx);
+        } else if let Some(rest) = c.strip_prefix("group") {
+            if rest.starts_with(':') {
+                group_line_indices.push(idx);
+            }
+        }
+    }
+
+    // 8. Cross-check against parsed template
+    if original.group.is_some() {
+        if group_line_indices.len() != 1 {
+            return Err(AppError::template_group_unpatchable(
+                "cannot locate single top-level group line to replace",
+            ));
+        }
+    } else if !group_line_indices.is_empty() {
+        return Err(AppError::template_group_unpatchable(
+            "scan found top-level group line in ungrouped template",
+        ));
+    }
+
+    // 9. If existing group line found, inspect its value and extract trailing comment
+    let mut trailing_comment = None;
+    if let Some(&idx) = group_line_indices.first() {
+        let line_content = lines[idx].content;
+        let colon_idx = line_content.find(':').unwrap();
+        let rest = line_content[colon_idx + 1..].trim_start();
+
+        if rest.starts_with('|') || rest.starts_with('>') {
+            return Err(AppError::template_group_unpatchable(
+                "block scalar group value is not patchable",
+            ));
+        }
+        if rest.starts_with('[') || rest.starts_with('{') {
+            return Err(AppError::template_group_unpatchable(
+                "collection group value is not patchable",
+            ));
+        }
+        if rest.starts_with('&') || rest.starts_with('*') {
+            return Err(AppError::template_group_unpatchable(
+                "anchor or alias group value is not patchable",
+            ));
+        }
+
+        // Parse scalar to locate trailing comment
+        if let Some(stripped) = rest.strip_prefix('"') {
+            let mut escape = false;
+            let mut close_idx = None;
+            for (i, ch) in stripped.char_indices() {
+                if escape {
+                    escape = false;
+                } else if ch == '\\' {
+                    escape = true;
+                } else if ch == '"' {
+                    close_idx = Some(1 + i);
+                    break;
+                }
+            }
+            let close_pos = close_idx.ok_or_else(|| {
+                AppError::template_group_unpatchable("unterminated double-quoted scalar")
+            })?;
+            let after_quote = &rest[close_pos + 1..];
+            if let Some(hash_pos) = after_quote.find('#') {
+                if after_quote[..hash_pos].trim().is_empty() {
+                    trailing_comment = Some(after_quote[hash_pos..].to_string());
+                } else {
+                    return Err(AppError::template_group_unpatchable(
+                        "invalid characters after quoted scalar",
+                    ));
+                }
+            } else if !after_quote.trim().is_empty() {
+                return Err(AppError::template_group_unpatchable(
+                    "invalid characters after quoted scalar",
+                ));
+            }
+        } else if rest.starts_with('\'') {
+            let chars: Vec<char> = rest.chars().collect();
+            let mut close_char_idx = None;
+            let mut ci = 1;
+            while ci < chars.len() {
+                if chars[ci] == '\'' {
+                    if ci + 1 < chars.len() && chars[ci + 1] == '\'' {
+                        ci += 2;
+                    } else {
+                        close_char_idx = Some(ci);
+                        break;
+                    }
+                } else {
+                    ci += 1;
+                }
+            }
+            let close_pos = close_char_idx.ok_or_else(|| {
+                AppError::template_group_unpatchable("unterminated single-quoted scalar")
+            })?;
+            let after_quote: String = chars[close_pos + 1..].iter().collect();
+            if let Some(hash_pos) = after_quote.find('#') {
+                if after_quote[..hash_pos].trim().is_empty() {
+                    trailing_comment = Some(after_quote[hash_pos..].to_string());
+                } else {
+                    return Err(AppError::template_group_unpatchable(
+                        "invalid characters after single-quoted scalar",
+                    ));
+                }
+            } else if !after_quote.trim().is_empty() {
+                return Err(AppError::template_group_unpatchable(
+                    "invalid characters after single-quoted scalar",
+                ));
+            }
+        } else {
+            let mut comment_start = None;
+            let bytes = rest.as_bytes();
+            for b_idx in 0..bytes.len() {
+                if bytes[b_idx] == b'#'
+                    && (b_idx == 0 || bytes[b_idx - 1] == b' ' || bytes[b_idx - 1] == b'\t')
+                {
+                    comment_start = Some(b_idx);
+                    break;
+                }
+            }
+            if let Some(c_pos) = comment_start {
+                trailing_comment = Some(rest[c_pos..].to_string());
+            }
+        }
+    }
+
+    // 10. Perform replacement, deletion, or insertion
+    let mut patched_lines: Vec<String> = Vec::new();
+    match target_group {
+        None => {
+            // Delete group line
+            for (idx, line) in lines.iter().enumerate() {
+                if group_line_indices.contains(&idx) {
+                    continue;
+                }
+                patched_lines.push(format!("{}{}", line.content, line.terminator));
+            }
+        }
+        Some(ref name) => {
+            // Serialize YAML scalar for name
+            let yaml_val = serde_yaml_ng::to_string(name)
+                .map_err(|e| AppError::template_group_invalid(e.to_string()))?;
+            let yaml_scalar = yaml_val.trim();
+
+            if let Some(&idx) = group_line_indices.first() {
+                // Replace existing line
+                let term = lines[idx].terminator;
+                let new_line_content = match trailing_comment {
+                    Some(ref comment) => format!("group: {yaml_scalar}  {comment}"),
+                    None => format!("group: {yaml_scalar}"),
+                };
+                for (i, line) in lines.iter().enumerate() {
+                    if i == idx {
+                        patched_lines.push(format!("{new_line_content}{term}"));
+                    } else {
+                        patched_lines.push(format!("{}{}", line.content, line.terminator));
+                    }
+                }
+            } else {
+                // Insert new line
+                // Find insertion position: after `name:`, falling back to after `id:`, then after header
+                let mut insert_after_idx = None;
+                for (i, line) in lines.iter().enumerate() {
+                    let c = line.content;
+                    if !c.starts_with(' ')
+                        && !c.starts_with('\t')
+                        && !c.starts_with('#')
+                        && c.starts_with("name:")
+                    {
+                        insert_after_idx = Some(i);
+                        break;
+                    }
+                }
+                if insert_after_idx.is_none() {
+                    for (i, line) in lines.iter().enumerate() {
+                        let c = line.content;
+                        if !c.starts_with(' ')
+                            && !c.starts_with('\t')
+                            && !c.starts_with('#')
+                            && c.starts_with("id:")
+                        {
+                            insert_after_idx = Some(i);
+                            break;
+                        }
+                    }
+                }
+                let (insert_pos, default_term) = match insert_after_idx {
+                    Some(pos) => {
+                        let term = if !lines[pos].terminator.is_empty() {
+                            lines[pos].terminator
+                        } else {
+                            "\n"
+                        };
+                        (pos + 1, term)
+                    }
+                    None => {
+                        // After leading comments and `---`
+                        let mut header_pos = 0;
+                        for (i, line) in lines.iter().enumerate() {
+                            let trimmed = line.content.trim();
+                            if trimmed.starts_with('#') || trimmed == "---" || trimmed.is_empty() {
+                                header_pos = i + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        let term = lines
+                            .first()
+                            .map(|l| {
+                                if !l.terminator.is_empty() {
+                                    l.terminator
+                                } else {
+                                    "\n"
+                                }
+                            })
+                            .unwrap_or("\n");
+                        (header_pos, term)
+                    }
+                };
+
+                let new_line = format!("group: {yaml_scalar}{default_term}");
+                let mut i = 0;
+                while i < lines.len() {
+                    if i == insert_pos {
+                        patched_lines.push(new_line.clone());
+                    }
+                    patched_lines.push(format!("{}{}", lines[i].content, lines[i].terminator));
+                    i += 1;
+                }
+                if insert_pos >= lines.len() {
+                    patched_lines.push(new_line);
+                }
+            }
+        }
+    }
+
+    let patched_yaml = patched_lines.concat();
+
+    // 11. Parse & validate the patched result and assert readback
+    let patched_template = crate::parse::parse_template(&patched_yaml)
+        .map_err(|e| AppError::template_invalid(Reason::TemplateParseFailed, e.to_string()))?;
+    patched_template
+        .validate()
+        .map_err(|e| AppError::template_invalid(Reason::TemplateValidationFailed, e))?;
+
+    if patched_template.group.as_deref() != target_group.as_deref() {
+        return Err(AppError::template_group_unpatchable(
+            "patched template group does not match requested group",
+        ));
+    }
+
+    Ok(patched_yaml)
 }
 
 fn validate_param_name(name: &str) -> Result<(), String> {
@@ -1417,6 +1793,7 @@ impl From<&TemplateDefinition> for TemplateSummary {
             id: template.id.clone(),
             name: template.name.clone(),
             description: template.description.clone(),
+            group: template.group.clone(),
             unit: template.unit.clone(),
             dpi: template.dpi,
             params: template.params.clone(),
@@ -1431,6 +1808,7 @@ impl From<&TemplateDefinition> for TemplateDetail {
             id: template.id.clone(),
             name: template.name.clone(),
             description: template.description.clone(),
+            group: template.group.clone(),
             unit: template.unit.clone(),
             dpi: template.dpi,
             format: template.format.clone(),
@@ -1498,7 +1876,7 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
 
 #[cfg(test)]
 mod tests {
-    use super::{TemplateDefinition, TemplateRegistry};
+    use super::{patch_template_group, TemplateDefinition, TemplateRegistry};
     use crate::models::{
         Alignment, Dimension, DynamicDimension, DynamicValue, FontSize, Layout, LayoutItem,
         ParamSpec, ParamType, Position, Size, SizeValue, TemplateFormat,
@@ -1984,6 +2362,7 @@ mod tests {
             id: " ".to_string(),
             name: "Label".to_string(),
             description: "desc".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2016,6 +2395,7 @@ mod tests {
             id: "test".to_string(),
             name: "Label".to_string(),
             description: "desc".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2265,6 +2645,7 @@ layout: []
             id: "w".to_string(),
             name: "w".to_string(),
             description: "w".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2297,6 +2678,7 @@ layout: []
             id: "dup".to_string(),
             name: "dup".to_string(),
             description: "dup".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2371,6 +2753,7 @@ layout:
             id: "empty_text".to_string(),
             name: "Empty Text".to_string(),
             description: "test".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -2403,6 +2786,7 @@ layout:
             id: "empty_qr".to_string(),
             name: "Empty Qr".to_string(),
             description: "test".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -2432,6 +2816,7 @@ layout:
             id: "ln".to_string(),
             name: "ln".to_string(),
             description: "ln".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2457,6 +2842,7 @@ layout:
             id: "ln".to_string(),
             name: "ln".to_string(),
             description: "ln".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2517,6 +2903,7 @@ layout:
             id: "tape".to_string(),
             name: "Tape".to_string(),
             description: "tape".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2557,6 +2944,7 @@ layout:
             id: "tape2".to_string(),
             name: "Tape2".to_string(),
             description: "tape".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2594,6 +2982,7 @@ layout:
             id: "tape_multiline".to_string(),
             name: "Tape Multiline".to_string(),
             description: "tape".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2630,6 +3019,7 @@ layout:
             id: "tape_single_line".to_string(),
             name: "Tape Single Line".to_string(),
             description: "tape".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2666,6 +3056,7 @@ layout:
             id: "fixed_multiline".to_string(),
             name: "Fixed Multiline".to_string(),
             description: "fixed".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2699,6 +3090,7 @@ layout:
             id: "mw_test".to_string(),
             name: "MW Test".to_string(),
             description: "test".to_string(),
+            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2967,5 +3359,341 @@ layout:
             res.is_err(),
             "should reject default box_w = 60 exceeding width 50"
         );
+    }
+
+    #[test]
+    fn template_with_group_loads_and_reports_it() {
+        let yaml = r#"
+id: t
+name: T
+group: Warehouse
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 18
+  width: 50
+layout: []
+"#;
+        let t = crate::parse::parse_template(yaml).expect("parse template");
+        t.validate().expect("validate template");
+        assert_eq!(t.group.as_deref(), Some("Warehouse"));
+    }
+
+    #[test]
+    fn template_without_group_is_ungrouped() {
+        let yaml = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 18
+  width: 50
+layout: []
+"#;
+        let t = crate::parse::parse_template(yaml).expect("parse template");
+        t.validate().expect("validate template");
+        assert_eq!(t.group, None);
+    }
+
+    #[test]
+    fn template_group_padded_value_is_stripped() {
+        let yaml = r#"
+id: t
+name: T
+group: "  Warehouse  "
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 18
+  width: 50
+layout: []
+"#;
+        let t = crate::parse::parse_template(yaml).expect("parse template");
+        t.validate().expect("validate template");
+        assert_eq!(t.group.as_deref(), Some("Warehouse"));
+    }
+
+    #[test]
+    fn template_group_invalid_values_fail_with_group_in_message() {
+        let cases = [
+            ("empty", r#"group: """#),
+            ("whitespace", r#"group: "   ""#),
+            (
+                "65-char",
+                r#"group: "12345678901234567890123456789012345678901234567890123456789012345""#,
+            ),
+            ("line-feed", r#"group: "Warehouse\n1""#),
+            ("tab", r#"group: "Warehouse\t1""#),
+        ];
+
+        for (name, group_line) in cases {
+            let yaml = format!(
+                "id: t\nname: T\n{group_line}\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n"
+            );
+            let t = crate::parse::parse_template(&yaml);
+            if let Ok(tpl) = t {
+                let err = tpl
+                    .validate()
+                    .expect_err(&format!("case {name} should fail validation"));
+                assert!(
+                    err.contains("group"),
+                    "case {name}: error '{err}' should mention 'group'"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn template_group_non_string_fails_at_parse_with_group_in_path() {
+        let yaml = "id: t\nname: T\ngroup: [a, b]\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n";
+        let err =
+            crate::parse::parse_template(yaml).expect_err("should fail to parse non-string group");
+        assert!(
+            err.to_string().contains("group"),
+            "error '{err}' should contain 'group'"
+        );
+    }
+
+    #[test]
+    fn template_group_slash_no_hierarchy() {
+        let yaml1 = "id: t1\nname: T1\ngroup: Shipping/Pallets\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n";
+        let yaml2 = "id: t2\nname: T2\ngroup: Shipping\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n";
+        let t1 = crate::parse::parse_template(yaml1).expect("parse t1");
+        let t2 = crate::parse::parse_template(yaml2).expect("parse t2");
+        assert_eq!(t1.group.as_deref(), Some("Shipping/Pallets"));
+        assert_eq!(t2.group.as_deref(), Some("Shipping"));
+        assert_ne!(t1.group, t2.group);
+    }
+
+    #[test]
+    fn patcher_comments_and_key_order_survive_set_change_clear() {
+        let original = r#"# Top header comment
+id: badge
+name: Event Badge
+# Line before unit
+unit: mm
+dpi: 300
+format:
+  type: single
+  width: 50
+  height: 20
+layout: []
+# Trailing comment
+"#;
+        // 1. Set group
+        let set_res = patch_template_group(original, Some("Conferences")).expect("set group");
+        assert!(set_res.contains("group: Conferences"));
+        assert!(set_res.starts_with("# Top header comment\nid: badge\nname: Event Badge\ngroup: Conferences\n# Line before unit"));
+        assert!(set_res.ends_with("# Trailing comment\n"));
+
+        // 2. Change group
+        let change_res = patch_template_group(&set_res, Some("Workshops")).expect("change group");
+        assert!(change_res.contains("group: Workshops"));
+        assert!(!change_res.contains("Conferences"));
+        assert!(change_res.starts_with("# Top header comment\nid: badge\nname: Event Badge\ngroup: Workshops\n# Line before unit"));
+
+        // 3. Clear group
+        let clear_res = patch_template_group(&change_res, None).expect("clear group");
+        assert_eq!(
+            clear_res, original,
+            "clearing group should restore exact byte equality"
+        );
+    }
+
+    #[test]
+    fn patcher_quoted_value_keeps_quotes_and_comment() {
+        let yaml_double = r#"id: badge
+name: Badge
+group: "A # B"  # keep me
+unit: mm
+dpi: 300
+format:
+  type: single
+  width: 50
+  height: 20
+layout: []
+"#;
+        let res = patch_template_group(yaml_double, Some("Warehouse"))
+            .expect("patch double quoted with comment");
+        assert!(
+            res.contains("group: Warehouse  # keep me"),
+            "expected comment to survive, got:\n{res}"
+        );
+
+        let yaml_single = r#"id: badge
+name: Badge
+group: 'A # B'  # keep me single
+unit: mm
+dpi: 300
+format:
+  type: single
+  width: 50
+  height: 20
+layout: []
+"#;
+        let res_single = patch_template_group(yaml_single, Some("Warehouse"))
+            .expect("patch single quoted with comment");
+        assert!(
+            res_single.contains("group: Warehouse  # keep me single"),
+            "expected single quote comment to survive, got:\n{res_single}"
+        );
+
+        // Group name needing quotes
+        let res_special =
+            patch_template_group(yaml_double, Some("A: B")).expect("patch special char name");
+        assert!(
+            res_special.contains(r#"group: "A: B"  # keep me"#)
+                || res_special.contains(r#"group: 'A: B'  # keep me"#)
+        );
+    }
+
+    #[test]
+    fn patcher_crlf_stays_crlf() {
+        let crlf_yaml = "id: badge\r\nname: Badge\r\nunit: mm\r\ndpi: 300\r\nformat:\r\n  type: single\r\n  width: 50\r\n  height: 20\r\nlayout: []\r\n";
+        let patched = patch_template_group(crlf_yaml, Some("Warehouse")).expect("patch CRLF");
+        assert!(patched.contains("\r\n"));
+        assert!(!patched.replace("\r\n", "").contains('\n'));
+        assert!(patched.contains("group: Warehouse\r\n"));
+
+        let cleared = patch_template_group(&patched, None).expect("clear CRLF");
+        assert_eq!(cleared, crlf_yaml);
+    }
+
+    #[test]
+    fn patcher_nested_group_key_untouched() {
+        let yaml = r#"id: badge
+name: Badge
+unit: mm
+dpi: 300
+params:
+  group:
+    type: string
+format:
+  type: single
+  width: 50
+  height: 20
+layout: []
+"#;
+        let patched =
+            patch_template_group(yaml, Some("Warehouse")).expect("patch with nested group param");
+        assert!(patched.contains("name: Badge\ngroup: Warehouse\nunit: mm"));
+        assert!(patched.contains("params:\n  group:\n    type: string"));
+
+        let cleared = patch_template_group(&patched, None).expect("clear with nested group param");
+        assert_eq!(cleared, yaml);
+    }
+
+    #[test]
+    fn patcher_refusals() {
+        // Flow mapping root
+        let flow_yaml = r#"{id: t, name: T, unit: mm, dpi: 200, format: {type: single, width: 50, height: 18}, layout: []}"#;
+        let err = patch_template_group(flow_yaml, Some("Warehouse"))
+            .expect_err("flow mapping root should be refused");
+        assert_eq!(err.reason(), Some("template_group_unpatchable"));
+
+        // Quoted key
+        let quoted_key_yaml = r#""group": Shipping
+id: t
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 18
+layout: []
+"#;
+        let err = patch_template_group(quoted_key_yaml, Some("Warehouse"))
+            .expect_err("quoted key should be refused");
+        assert_eq!(err.reason(), Some("template_group_unpatchable"));
+
+        // Multi document
+        let multi_doc_yaml = r#"---
+id: t1
+name: T1
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 18
+layout: []
+---
+id: t2
+name: T2
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 18
+layout: []
+"#;
+        let err = patch_template_group(multi_doc_yaml, Some("Warehouse"))
+            .expect_err("multi document should be refused");
+        assert_eq!(err.reason(), Some("template_group_unpatchable"));
+
+        // Block scalar
+        let block_scalar_yaml = r#"id: t
+name: T
+group: |
+  Shipping
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 18
+layout: []
+"#;
+        let err = patch_template_group(block_scalar_yaml, Some("Warehouse"))
+            .expect_err("block scalar should be refused");
+        assert_eq!(err.reason(), Some("template_group_unpatchable"));
+
+        // Invalid group name (empty)
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 18\nlayout: []\n";
+        let err =
+            patch_template_group(yaml, Some("")).expect_err("empty group name should be rejected");
+        assert_eq!(err.reason(), Some("template_group_invalid"));
+
+        // Invalid group name (65 chars)
+        let long_name = "12345678901234567890123456789012345678901234567890123456789012345";
+        let err = patch_template_group(yaml, Some(long_name))
+            .expect_err("65 char group name should be rejected");
+        assert_eq!(err.reason(), Some("template_group_invalid"));
+    }
+
+    #[test]
+    fn patcher_catalog_byte_equality() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let catalog_dir = std::path::Path::new(manifest_dir).join("catalog");
+        assert!(catalog_dir.is_dir(), "catalog directory must exist");
+
+        fn test_dir(dir: &std::path::Path) {
+            for entry in std::fs::read_dir(dir).expect("read dir").flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    test_dir(&p);
+                } else if p.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                    let original = std::fs::read_to_string(&p).expect("read catalog template");
+                    let set = patch_template_group(&original, Some("TestGroup"))
+                        .unwrap_or_else(|e| panic!("failed to patch {}: {e:?}", p.display()));
+                    let cleared = patch_template_group(&set, None)
+                        .unwrap_or_else(|e| panic!("failed to clear {}: {e:?}", p.display()));
+                    assert_eq!(
+                        cleared,
+                        original,
+                        "byte equality failed after set+clear on {}",
+                        p.display()
+                    );
+                }
+            }
+        }
+
+        test_dir(&catalog_dir);
     }
 }

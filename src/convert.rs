@@ -299,6 +299,7 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
             id: raw.id,
             name: raw.name,
             description: raw.description.unwrap_or_default(),
+            group: raw.group.map(|g| g.trim().to_string()),
             unit: raw.unit,
             dpi: raw.dpi,
             format,

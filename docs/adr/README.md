@@ -69,6 +69,8 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted |
 | [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted |
 | [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
+| [0062](0062-template-group-yaml-field.md) | A template's group is a YAML field, not its directory | Accepted |
+| [0063](0063-service-may-rewrite-single-template-key.md) | The service may rewrite one key of a hand-authored template | Accepted |
 
 ## Adding an ADR
 

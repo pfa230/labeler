@@ -33,6 +33,8 @@ reasons! {
     TemplateParseFailed => "template_parse_failed",
     TemplateValidationFailed => "template_validation_failed",
     TemplateDuplicateId => "template_duplicate_id",
+    TemplateGroupInvalid => "template_group_invalid",
+    TemplateGroupUnpatchable => "template_group_unpatchable",
 
     // UnsupportedLayoutItem
     CoordOutOfFrame => "coord_out_of_frame",
