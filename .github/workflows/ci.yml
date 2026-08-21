@@ -99,6 +99,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # The review gate diffs against the previous commit; depth 1 has no parent.
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -121,6 +124,18 @@ jobs:
       # Archived changes have every task checked; catches a change archived while still incomplete.
       - name: Validate archived changes
         run: openspec validate --archived --no-interactive
+
+      # Same script the pre-commit hook runs, so local and CI cannot disagree.
+      # Tool-agnostic: judges files, never which agent produced them (#191).
+      - name: Review gate
+        run: |
+          base='${{ github.event.pull_request.base.sha || github.event.before }}'
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          fi
+          mapfile -t files < <(git diff --name-only "$base" HEAD)
+          [ "${#files[@]}" -gt 0 ] || exit 0
+          ./scripts/review-gate-check.sh "$PWD" "${files[@]}"
 
   build:
     needs: [rust, ui]

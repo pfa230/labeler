@@ -10,31 +10,74 @@ The mechanics — commands, tooling, enforcement — are in [`AGENTS.md`](../AGE
 A change starts as a GitHub issue. Issues and milestones are the only backlog, and one change
 implements exactly one open issue: scope is agreed there, before anything else happens.
 
-Everything after that runs unattended — isolating the work, writing the spec and design, getting them
-reviewed, implementing, reviewing the implementation, updating the specs of record, merging — and the
-merge commit closes the issue.
+From there the work runs in three stages — plan, implement, archive — each started by one command and
+each running to completion without supervision: isolating the work, writing the spec and design,
+getting them reviewed, implementing, reviewing the implementation, updating the specs of record, and
+merging. The merge commit closes the issue.
+
+The stage boundaries are deliberate. Planning stops before implementation so the spec and design are
+settled, and reviewed, while changing them is still cheap.
 
 Work discovered mid-change that falls outside its issue becomes a new issue. It does not widen the
 one in flight, and it is never parked as an unchecked task.
 
 ## Running it
 
-Two commands. File the issue, then hand it to the agent:
+File the issue, then drive the stages. Use the slash commands explicitly — a plain-English request
+like "implement #181" is unreliable, because it matches the *apply* skill ("Implement tasks from an
+OpenSpec change") rather than propose, and would try to apply a change that does not exist yet.
 
 ```bash
 gh issue create --title "Duplicate template id should not be fatal" --body "..."
 ```
 
 ```
-implement #181
+/opsx:propose issue #181
 ```
 
-The agent takes it from there: worktree, spec, design, review, implementation, review, archive,
-merge. Nothing further is required unless it stops (see [Where it stops](#where-it-stops)).
+Writes the proposal, the delta specs and the design, then **stops**. Planning does not run on into
+implementation in the same turn, by design: the artifacts are meant to be settled before code exists.
+The adversarial review of that plan runs next, on a different model, and gates what follows.
 
-To drive a single stage by hand instead, the stages are slash commands: `/opsx:propose`,
-`/opsx:apply`, `/opsx:archive`, plus `/opsx:explore` for thinking something through before an issue
-exists and `/opsx:update` for revising a change's plan in place.
+```
+/opsx:apply
+```
+
+Refused until the review passes. Runs the task list, then the implementation is reviewed in turn.
+
+```
+/opsx:archive
+```
+
+Folds the delta specs into `openspec/specs/`, archives the planning record, and the change is
+committed and merged.
+
+Also available: `/opsx:explore` for thinking something through before an issue exists, and
+`/opsx:update` for revising a change's plan in place after a review asks for edits.
+
+### Which agent runs which stage
+
+Any of the four can take the propose or the apply step. Roles are interchangeable; the only fixed
+constraint is that the reviewer is not the author.
+
+| Agent | Invoked as |
+| --- | --- |
+| Claude Code | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` in-session |
+| `agy` | `cd .worktrees/issue-<N> && agy -i "<prompt>"` — `--mode accept-edits` skips per-edit approval, `--effort high` raises reasoning. `--model` is ignored in print mode. |
+| `codex` | `codex exec --ignore-user-config -s read-only … < /dev/null` for reviews; drop `-s read-only` to let it write. `< /dev/null` is required or it blocks on stdin. |
+| `opencode` | `opencode run "<prompt>"`, or `opencode` for the TUI |
+
+Stages hand off through **files on disk, not conversation**. Every artifact's instructions re-read
+their dependencies from disk, so a stage can run in a fresh session, a different agent, or the same
+session as the last one. Fresh context is required in exactly one place: the review, which must not
+run in the context that wrote the artifacts.
+
+The gate applies to all of them equally. It is a committed git pre-commit hook plus the same check in
+CI, judging files rather than which agent produced them. Enable it once per clone:
+
+```bash
+./scripts/setup-hooks.sh
+```
 
 ### Checking on a change
 
@@ -74,9 +117,15 @@ intent:
   contradicting its own spec is catchable.
 - **The implementation is reviewed after it is written.**
 
-An artifact is never reviewed by whoever wrote it. The two roles run on different models, so a review
-is never an author asked to find fault with itself. The reviewer works from the files alone, without
-access to the conversation that produced them, and cannot edit what it reviews.
+An artifact is never reviewed by whoever wrote it. `review.md` records `AUTHOR:` and `REVIEWER:`, and
+the gate refuses a change where they match, so the rule is checked rather than trusted.
+
+The reviewer runs read-only and therefore cannot write its own verdict; its output is captured and
+preserved verbatim as `review-raw-<round>.txt` beside `review.md`, one per round. The gate refuses a
+review with no raw capture. Without it the author, who is the interested party, would sit between the
+findings and the record with nothing to check a softened finding against. The reviewer
+works from the files alone, without access to the conversation that produced them, and cannot edit
+what it reviews.
 
 A review ends in one of three verdicts. `APPROVE` proceeds. `APPROVE WITH CHANGES` lists specific
 required edits, applied and re-checked before anything continues. `REVISE` marks a fundamental
@@ -92,7 +141,8 @@ Four things the process refuses to let slide:
 
 ## Where it stops
 
-Once, and only on failure: when a plan has been revised twice and still not passed review.
+Stages are started by hand, but only one thing stops the work and needs a *decision*: a plan revised
+twice that still has not passed review.
 
 The change halts with nothing implemented, and the review and artifacts are surfaced for a decision.
 
@@ -103,8 +153,8 @@ is worth doing at all.
 
 ## What is not guaranteed
 
-- The review gate is enforced for work done by Claude Code. Work done by another agent is not yet
-  blocked by it. A tool-agnostic CI check is tracked in #188.
+- The pre-commit hook is skippable with `git commit --no-verify`. CI runs the identical check on what
+  lands, so a skipped hook delays the refusal rather than avoiding it.
 - Specs live in two places during migration. `docs/SPEC.md` is frozen and remains authoritative for
   behavior that has not moved; `openspec/specs/` holds everything since. A spec in the new location
   names the frozen section it replaces, so precedence is recorded rather than inferred.

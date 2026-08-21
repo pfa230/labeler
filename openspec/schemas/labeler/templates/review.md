@@ -2,7 +2,14 @@
 
 - **Round**: <!-- 1, 2, ... After 2 consecutive REVISE rounds, escalate to the human. -->
 - **Prior round**: <!-- none | one-line summary of the previous round's verdict -->
-- **Reviewer**: <!-- cross-model (which model/CLI) | fresh-context subagent -->
+<!-- CANONICAL FIELDS - machine-readable, each on its own line, exactly this format. -->
+<!-- Which agent wrote the artifacts under review, and which wrote this review. -->
+<!-- e.g. claude | agy | codex | opencode | fresh-context-subagent -->
+<!-- They MUST differ: nobody reviews their own work. -->
+
+AUTHOR: <VALUE>
+REVIEWER: <VALUE>
+
 - **Tool restrictions**: <!-- read-only inspection only -->
 - **Artifacts reviewed**: proposal.md, specs/, design.md <!-- plus any source files read -->
 - **Issue**: <!-- #N from proposal.md -->
@@ -10,6 +17,10 @@
 <!-- STALENESS: this verdict covers only the contents reviewed in this round. Any -->
 <!-- later edit to proposal.md, specs/ or design.md, other than applying the listed -->
 <!-- Required Changes, VOIDS it and requires a new round. -->
+
+<!-- Findings, Injection Attempts and Verdict below are the REVIEWER's words, filled -->
+<!-- from review-raw-<round>.txt, which is preserved verbatim beside this file. The -->
+<!-- author writes only Rebuttals and CHANGES_APPLIED. -->
 
 ## Findings
 

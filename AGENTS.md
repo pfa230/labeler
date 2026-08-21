@@ -62,8 +62,11 @@ because the review gates implementation and archive rewrites the main specs *aft
    artifacts, and wait. On the converging path the loop runs unattended through to the merge.
 4. **`/opsx:apply`**, then the adversarial review of the *diff* below. Two different reviews: step 3
    judged the plan, this one judges the code. Do not skip it because tasks are checked.
-   `.claude/hooks/review-gate.sh` refuses writes to `src/` and `ui/src/` until the verdict passes,
-   because OpenSpec only checks that artifacts exist, never what they say.
+   The gate is `scripts/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
+   to every agent equally: it judges files, not which tool produced them. It refuses a commit touching
+   `src/` or `ui/src/` while the change's verdict has not passed, and refuses a review whose `AUTHOR:`
+   and `REVIEWER:` match. `.claude/hooks/review-gate.sh` calls the same script at edit time as an
+   early signal for Claude Code only. Enable the hooks once per clone with `./scripts/setup-hooks.sh`.
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
