@@ -123,8 +123,10 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
   JSON path to every error. This lets the wire format differ from the validated model. *Adding a
   layout field means editing three files together: `raw.rs`, `models.rs`, `convert.rs`.*
 - **Template registry.** Loaded and `validate()`d at startup (`main.rs`). A template that fails to
-  parse or validate is **quarantined** and the server still starts (#175); a duplicate id ejects both
-  contenders. Nothing is seeded into a fresh config dir. Templates are immutable, shared via `Arc`.
+  parse or validate is **quarantined** and the server still starts (#175); so is a file whose id is
+  already taken, with the lexicographically first filename keeping the id (#181, ADR-0058). No
+  template content is fatal. Nothing is seeded into a fresh config dir. Templates are immutable,
+  shared via `Arc`.
 - **Layout model** (`models.rs`). `layout` is a tree of `LayoutItem`s: `Text`, `Qr`, `Image`, `Line`,
   `Container`. `Container` nests `items` recursively and may carry `frame` and `padding`. Any item may
   carry `when:`, the universal conditional-visibility predicate over `params` (ADR-0056, #162).

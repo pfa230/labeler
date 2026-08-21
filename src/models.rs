@@ -36,14 +36,15 @@ pub struct ReloadResponse {
 pub struct BrokenTemplateSummary {
     /// Basename of the YAML file that failed to load (e.g. `foo.yaml`).
     pub filename: String,
-    /// Human-readable parse or validation error.
+    /// Human-readable parse error, validation error, or duplicate-id refusal.
     pub error: String,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct TemplateList {
     pub templates: Vec<TemplateSummary>,
-    /// Files in the templates directory that failed to parse or validate.
+    /// Files in the templates directory that failed to parse, failed validation, or were refused
+    /// because another file already holds their id.
     /// An empty list means all files loaded successfully.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub broken: Vec<BrokenTemplateSummary>,
