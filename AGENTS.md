@@ -60,7 +60,10 @@ because the review gates implementation and archive rewrites the main specs *aft
    **This is the only place a human enters the loop, and only on failure.** Two consecutive `REVISE`
    rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
    artifacts, and wait. On the converging path the loop runs unattended through to the merge.
-4. **`/opsx:apply`**, then the adversarial review of the *diff* below. Two different reviews: step 3
+4. **Apply**, then the adversarial review of the *diff* below. `/opsx:apply` implements it here;
+   `scripts/apply-with-agy.sh issue-<N>-<slug>` hands it to agy instead, which is preferable because
+   it puts the implementation and its review on different models. That script keeps agy's transcript
+   in a log rather than in this context. Two different reviews: step 3
    judged the plan, this one judges the code. Do not skip it because tasks are checked.
    The gate is `scripts/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
    to every agent equally: it judges files, not which tool produced them. It refuses a commit touching
@@ -122,9 +125,19 @@ a change's worktree, and never carry one change's worktree into another's work.
 
 ## Committing
 
-Commit and push without prompting; do not wait to be asked. No pull requests: from the repo root,
-`git merge issue-<N>-<slug> && git push`, then `git worktree remove .worktrees/issue-<N>` and
-`git branch -d issue-<N>-<slug>`. Never force-push, never rewrite pushed history.
+Commit and push without prompting; do not wait to be asked. There are no pull requests, so the change
+branch is the only place a change can be checked before it reaches `main`:
+
+```bash
+git push -u origin issue-<N>-<slug>     # runs the checks; publishing stays bound to main
+# once that run is green, from the repo root:
+git merge issue-<N>-<slug> && git push
+git push origin --delete issue-<N>-<slug>
+git worktree remove .worktrees/issue-<N> && git branch -d issue-<N>-<slug>
+```
+
+Do not merge on a red or absent branch run. CI on `main` is not a gate, it is a post-mortem: by the
+time it fails, the commit is already integrated. Never rewrite history that has been pushed.
 
 ## Commands
 
