@@ -82,8 +82,28 @@ pub struct TemplateDetail {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TemplateGroupUpdate {
-    #[serde(default)]
-    pub group: Option<String>,
+    /// Nested on purpose: the outer `Option` is *presence of the key*, the inner one is its null.
+    /// `{"group": null}` clears the group deliberately, `{}` is a malformed body, and a plain
+    /// `Option<String>` cannot tell them apart, since serde reads a missing field of option type as
+    /// `None` whether or not it carries `#[serde(default)]`. That collapse let `{}` silently
+    /// ungroup a template (#164 review). Read it through [`TemplateGroupUpdate::group`].
+    #[serde(default, deserialize_with = "deserialize_present_group")]
+    #[schema(value_type = Option<String>)]
+    group: Option<Option<String>>,
+}
+
+fn deserialize_present_group<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+impl TemplateGroupUpdate {
+    /// The requested group, or `None` when the body omitted the key entirely.
+    pub fn group(&self) -> Option<Option<&str>> {
+        self.group.as_ref().map(|inner| inner.as_deref())
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]

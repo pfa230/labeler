@@ -116,6 +116,43 @@ Codex re-checks the listed items only; each pass is preserved verbatim beside th
 Two passes, within the five-pass cap for a codex reviewer. The round-2 verdict of
 APPROVE_WITH_CHANGES therefore stands with its required changes applied and re-checked.
 
+## Post-implementation diff review (round 3)
+
+The plan review above gated implementation. Implementation was handed to agy, and its diff was then
+reviewed by codex in read-only mode; that transcript is preserved beside this file as
+`review-raw-diff-1.txt`. Verdict: REVISE, four Major findings, no Critical. Each was reproduced
+against a running server before being accepted, and each is fixed in the same commit:
+
+1. **`{}` cleared a template's group.** `PUT /api/templates/{id}/group` with an empty object returned
+   `200` and removed the `group:` line, because a plain `Option<String>` reads a missing field as
+   `None` whether or not it carries `#[serde(default)]`. The body field is now a nested option, so
+   presence of the key is distinguishable from its null, and `{}` is a `400`. The spec gained the
+   rule and a scenario; `src/lib.rs` gained a test that asserts the file is untouched.
+2. **A present but valueless `group:` loaded as ungrouped.** `group:`, `group: ~`, `group: null`,
+   `group: 42` and `group: true` all loaded, the first three as ungrouped and the rest coerced to
+   strings, against a spec that requires a non-string to fail. `raw.rs` now deserializes through a
+   presence-preserving helper and `convert.rs` rejects a present non-string naming `group`.
+3. **UI sentinels collided with legal group names.** The filter state was a bare string with `all`
+   and `ungrouped` as sentinels, so a group actually named `ungrouped` filtered the ungrouped set and
+   one named `all` could not be filtered. It is a tagged union now, with a regression test that was
+   confirmed to fail against the old logic before the fix landed.
+4. **The reason-registry guard accepted non-contract evidence.** The rewritten
+   `spec_documents_every_reason_and_invents_none` scanned every markdown file under `openspec/`,
+   archived change artifacts included, so the two new slugs counted as documented on the strength of
+   design prose. It now reads `docs/SPEC.md` §10.1 plus `openspec/specs/**/spec.md` only, and the
+   slugs are named in the published spec, which is where a client would look. The phantom half runs
+   off the §10.1 table alone, exactly as before.
+
+Three smaller items, found by the author rather than the reviewer: three explanatory comments that
+the change had no reason to touch had been deleted (the `#128` note on why a card is not one anchor,
+the ADR-0047 note on the permanent catalog link, and the note on how Favorites and Recents resolve),
+and are restored; and the empty state said "No templates match your search" when only a group filter
+was active.
+
+Not changed, and deliberately: a preserved trailing comment is re-emitted with two spaces before the
+`#`, so that one line's original spacing is normalized. The spec promises the value on that line
+changes and the comment survives, both of which hold.
+
 ## Rebuttals
 
 **Round 2, Required 1 (flow-mapping root) — fixed.** The move requirement's unpatchable list gained a

@@ -2267,6 +2267,42 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
+        // 7b. A body omitting the key entirely is malformed, not a clear. Before #164's diff review
+        // `group` carried a serde default, so `{}` returned 200 and silently ungrouped the
+        // template: a destructive edit from a body the contract rejects.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let grouped_source = std::fs::read_to_string(&t1_path).unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            std::fs::read_to_string(&t1_path).unwrap(),
+            grouped_source,
+            "a body without the group key must not touch the file"
+        );
+
         // 8. Invalid group name (empty) -> 422 Unprocessable Entity, file unchanged
         let pre_invalid = std::fs::read_to_string(&t1_path).unwrap();
         let res = app

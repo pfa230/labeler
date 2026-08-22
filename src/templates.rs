@@ -3668,6 +3668,35 @@ layout: []
     }
 
     #[test]
+    fn present_but_valueless_group_fails_to_load() {
+        // `group:` with nothing after it is a present null, not an absent key. Loading it as
+        // ungrouped would silently swallow an authoring slip (#164 review).
+        for value in ["", " ~", " null", " Null", " 42", " true"] {
+            let yaml = format!(
+                "id: t\nname: T\ngroup:{value}\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n"
+            );
+            let err = crate::parse::parse_template(&yaml)
+                .map_err(|e| e.to_string())
+                .and_then(|t| t.validate().map(|()| t))
+                .err()
+                .unwrap_or_else(|| panic!("`group:{value}` must not load"));
+            assert!(
+                err.contains("group"),
+                "error for `group:{value}` must name the field, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_group_still_loads_as_ungrouped() {
+        // The other side of the test above: absence is legal and must stay legal.
+        let yaml = "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n";
+        let template = crate::parse::parse_template(yaml).expect("absent group must load");
+        template.validate().expect("absent group must validate");
+        assert_eq!(template.group, None);
+    }
+
+    #[test]
     fn patcher_catalog_byte_equality() {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let catalog_dir = std::path::Path::new(manifest_dir).join("catalog");

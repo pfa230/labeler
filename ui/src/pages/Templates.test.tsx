@@ -320,6 +320,42 @@ describe("Templates list", () => {
     expect(screen.queryByText("Shipping Envelope")).not.toBeInTheDocument();
   });
 
+  it("treats a group literally named ungrouped as a group, not as the ungrouped filter", async () => {
+    // "all" and "ungrouped" are legal group names. While the filter state was a bare string with
+    // those two as sentinels, this template's own chip filtered the ungrouped set instead of the
+    // group, and a group named "all" could not be filtered at all (#164 review).
+    const collide = [
+      {
+        id: "named",
+        name: "Named",
+        group: "ungrouped",
+        description: "",
+        unit: "mm",
+        dpi: 300,
+        format: { type: "single" as const, width: 50, height: 25 },
+      },
+      {
+        id: "loose",
+        name: "Loose",
+        description: "",
+        unit: "mm",
+        dpi: 300,
+        format: { type: "single" as const, width: 50, height: 25 },
+      },
+    ];
+    stubFetch({ templates: collide });
+    renderPage();
+    await screen.findByText("Named");
+    const groupToolbar = screen.getByRole("toolbar", { name: "Group filter" });
+    fireEvent.click(within(groupToolbar).getByRole("button", { name: "ungrouped" }));
+    await waitFor(() => expect(screen.queryByText("Loose")).not.toBeInTheDocument());
+    expect(screen.getByText("Named")).toBeInTheDocument();
+
+    fireEvent.click(within(groupToolbar).getByRole("button", { name: "Ungrouped" }));
+    await waitFor(() => expect(screen.getByText("Loose")).toBeInTheDocument());
+    expect(screen.queryByText("Named")).not.toBeInTheDocument();
+  });
+
   it("omits Ungrouped filter button when all templates have a group", async () => {
     const allGrouped = [
       {

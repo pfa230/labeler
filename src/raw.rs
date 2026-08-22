@@ -37,6 +37,13 @@ pub struct RawParamSpec {
     pub description: Option<String>,
 }
 
+fn deserialize_present<'de, D>(deserializer: D) -> Result<Option<serde_yaml_ng::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_yaml_ng::Value::deserialize(deserializer).map(Some)
+}
+
 pub type Dynamic<T> = DynamicValue<T>;
 
 pub(crate) fn deserialize_when_map<'de, D>(
@@ -106,8 +113,12 @@ pub struct TemplateDefinitionRaw {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
-    pub group: Option<String>,
+    // Presence-preserving, because `Option<T>` maps an explicit null to `None` for any `T`: without
+    // `deserialize_present`, `group:` with nothing after it would load as ungrouped instead of
+    // failing. `default` supplies `None` for an absent key; anything written, null included, arrives
+    // as `Some` and `convert.rs` decides whether it is a string.
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub group: Option<serde_yaml_ng::Value>,
     pub unit: String,
     pub dpi: u32,
     pub format: RawTemplateFormat,
