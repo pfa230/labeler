@@ -573,23 +573,22 @@ mod tests {
 
         // Column 2 is the slug, in backticks. The header cell reads "Reason" without backticks and
         // the separator row has none either, so both drop out here.
-        let mut documented: HashSet<String> = section
+        let spec_table: HashSet<&str> = section
             .lines()
             .filter(|line| line.starts_with('|'))
             .filter_map(|line| line.split('|').nth(2))
             .map(str::trim)
             .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
-            .map(str::to_string)
             .collect();
 
         let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
 
-        // A reason added after `docs/SPEC.md` was frozen cannot be listed in §10.1, so its
+        // A reason added after `docs/SPEC.md` was frozen (ADR-0057) cannot be listed in §10.1, so its
         // documented home is the OpenSpec spec that introduced it. Only `openspec/specs/**/spec.md`
-        // counts: a proposal, a design note, or an archived change folder is a record of what was
-        // planned, not a published contract, and accepting one would let a reason ship documented
-        // nowhere a client reads (#164 review). The phantom half below still runs off the §10.1
-        // table alone, so widening the undocumented half does not weaken it.
+        // counts: a proposal, a design note, or an archived change folder records what was planned,
+        // not a published contract, and accepting one lets a reason ship documented nowhere a client
+        // reads (#164 diff review). The phantom half below still runs off the §10.1 table alone, so
+        // widening the undocumented half does not weaken it.
         let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("openspec")
             .join("specs");
@@ -613,8 +612,9 @@ mod tests {
                 }
             }
         }
+        let mut documented: HashSet<String> =
+            spec_table.iter().map(|slug| (*slug).to_string()).collect();
         scan_specs(&specs_dir, &declared, &mut documented);
-
         let documented_refs: HashSet<&str> = documented.iter().map(String::as_str).collect();
 
         let mut undocumented: Vec<_> = declared.difference(&documented_refs).collect();
@@ -626,14 +626,7 @@ mod tests {
 
         // Phantom check: §10.1 only. `documented` also holds slugs harvested from OpenSpec specs,
         // but those are filtered through `declared` on the way in, so they can never be phantoms.
-        let spec_table_only: HashSet<&str> = section
-            .lines()
-            .filter(|line| line.starts_with('|'))
-            .filter_map(|line| line.split('|').nth(2))
-            .map(str::trim)
-            .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
-            .collect();
-        let mut phantom: Vec<_> = spec_table_only.difference(&declared).collect();
+        let mut phantom: Vec<_> = spec_table.difference(&declared).collect();
         phantom.sort_unstable();
         assert!(
             phantom.is_empty(),

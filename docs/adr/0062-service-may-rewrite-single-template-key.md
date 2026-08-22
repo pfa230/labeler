@@ -1,4 +1,4 @@
-# 63. The service may rewrite one key of a hand-authored template
+# 62. The service may rewrite one key of a hand-authored template
 
 Date: 2026-08-21
 

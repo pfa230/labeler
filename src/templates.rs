@@ -444,7 +444,7 @@ pub fn validate_group_name(raw: &str) -> Result<String, String> {
 }
 
 /// A targeted single-key patch that sets, changes, or clears a template's top-level `group:` line
-/// while preserving every other byte of the file (ADR-0063).
+/// while preserving every other byte of the file (ADR-0062).
 pub fn patch_template_group(yaml: &str, new_group: Option<&str>) -> Result<String, AppError> {
     // 1. If a group name is provided, validate it first
     let target_group = match new_group {
