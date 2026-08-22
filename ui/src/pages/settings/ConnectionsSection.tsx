@@ -21,6 +21,7 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
   const isNew = initial === null;
   const [name, setName] = useState(initial?.name ?? "");
   const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
+  const [publicUrl, setPublicUrl] = useState(initial?.public_url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [transforms, setTransforms] = useState<FieldTransform[]>(initial?.transforms ?? []);
@@ -47,12 +48,18 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
     let url: URL;
     try { url = new URL(baseUrl.trim()); } catch { setError("base url must be a valid URL"); return; }
     if (url.protocol !== "http:" && url.protocol !== "https:") { setError("base url must be http or https"); return; }
+    if (publicUrl.trim() !== "") {
+      let pubUrl: URL;
+      try { pubUrl = new URL(publicUrl.trim()); } catch { setError("public url must be a valid URL"); return; }
+      if (pubUrl.protocol !== "http:" && pubUrl.protocol !== "https:") { setError("public url must be http or https"); return; }
+    }
     if (isNew && apiKey.trim() === "") { setError("api key is required"); return; }
     setError(null);
     const input: ConnectionInput = {
       connector: connectorName,
       name: name.trim(),
       base_url: baseUrl.trim(),
+      public_url: publicUrl.trim() === "" ? null : publicUrl.trim(),
       enabled,
       transforms,
       ...(apiKey.trim() !== "" ? { credential: apiKey.trim() } : {}),
@@ -82,6 +89,10 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
         <label className="flex flex-1 flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>base url</span>
           <input aria-label="base url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://homebox.lan:7745" className={inputClass} style={inputStyle} />
+        </label>
+        <label className="flex flex-1 flex-col gap-1">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>public url</span>
+          <input aria-label="public url" value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)} placeholder="https://homebox.example.com" className={inputClass} style={inputStyle} />
         </label>
         <label className="flex flex-1 flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>api key{isNew ? "" : " (leave blank to keep)"}</span>
@@ -204,6 +215,7 @@ function ConnectionRow({ conn, onEdit, onDeleted }: { conn: Connection; onEdit: 
       <td className={td}>{conn.name}</td>
       <td className={`${td} font-mono`}>{conn.connector}</td>
       <td className={`${td} font-mono`}>{conn.base_url}</td>
+      <td className={`${td} font-mono`}>{conn.public_url || "-"}</td>
       <td className={td}>{conn.has_credential ? "set" : "none"}</td>
       <td className={td}>{conn.enabled ? "yes" : "no"}</td>
       <td className={`${td} flex gap-2`}>
@@ -254,6 +266,7 @@ export function ConnectionsSection() {
               <th className={th} style={{ color: "var(--muted)" }}>Name</th>
               <th className={th} style={{ color: "var(--muted)" }}>Connector</th>
               <th className={th} style={{ color: "var(--muted)" }}>Base URL</th>
+              <th className={th} style={{ color: "var(--muted)" }}>Public URL</th>
               <th className={th} style={{ color: "var(--muted)" }}>API key</th>
               <th className={th} style={{ color: "var(--muted)" }}>Enabled</th>
               <th className={th} style={{ color: "var(--muted)" }}></th>
