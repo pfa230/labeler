@@ -5,6 +5,17 @@
 #
 # Skippable with `git commit --no-verify`; CI runs the same script on what lands.
 set -euo pipefail
+
+# Refuse commits while an agy apply is running. The apply stage implements; it does
+# not commit, merge or archive. Prompting an agent not to do something is a request,
+# so this makes git refuse instead.
+lock="$(git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
+if [ -f "$lock" ]; then
+  echo "apply-lock: an agy apply is in progress ($(cat "$lock"))." >&2
+  echo "apply-lock: the apply stage does not commit. The change is committed once, after review and archive." >&2
+  exit 1
+fi
+
 root=$(git rev-parse --show-toplevel)
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
 [ "${#staged[@]}" -gt 0 ] || exit 0

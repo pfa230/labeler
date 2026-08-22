@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Refuse merges while an apply is running (#agy-lock). git does not run pre-commit
+# for merge commits, so this is the separate hook that covers them.
+set -euo pipefail
+lock="$(git rev-parse --git-common-dir)/APPLY_IN_PROGRESS"
+[ -f "$lock" ] || exit 0
+echo "apply-lock: an agy apply is in progress ($(cat "$lock"))." >&2
+echo "apply-lock: merging is not part of the apply stage. Wait for it to finish, review the diff, then integrate deliberately." >&2
+echo "apply-lock: git has already staged this merge and left MERGE_HEAD behind. Run 'git merge --abort' now to clear it." >&2
+exit 1

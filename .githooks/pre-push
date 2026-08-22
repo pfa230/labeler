@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Refuse pushes while an apply is running (#agy-lock).
+set -euo pipefail
+lock="$(git rev-parse --git-common-dir)/APPLY_IN_PROGRESS"
+[ -f "$lock" ] || exit 0
+echo "apply-lock: an agy apply is in progress ($(cat "$lock"))." >&2
+echo "apply-lock: nothing leaves this machine mid-apply." >&2
+exit 1

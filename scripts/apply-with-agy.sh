@@ -32,6 +32,20 @@ if ! "$root/scripts/review-gate-check.sh" "$wt" src/_apply_probe >/dev/null 2>&1
   exit 1
 fi
 
+# Hold a lock for the duration. The apply stage implements and stops; it does not
+# commit, merge, push or archive. Telling an agent that is a request, and agents have
+# merged and left main in a broken state anyway, so git refuses instead: pre-commit,
+# pre-merge-commit and pre-push all check this file. It lives in the common git dir,
+# so it applies from every worktree and from the repo root.
+lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
+if [ -f "$lock" ]; then
+  echo "an apply is already in progress: $(cat "$lock")" >&2
+  echo "if that is stale, remove $lock" >&2
+  exit 1
+fi
+printf '%s started %s (pid %s)\n' "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
+trap 'rm -f "$lock"' EXIT INT TERM
+
 log="$wt/.agy-apply.log"
 prompt="/openspec-apply-change $change. Do not commit; the change is committed once at the end after archive and verification. $extra"
 
