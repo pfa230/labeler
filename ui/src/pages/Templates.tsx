@@ -23,6 +23,18 @@ function compareCodePoints(a: string, b: string): number {
   return ca.length - cb.length;
 }
 
+// A group name is any valid string (see the template-groups spec), so "all" and "ungrouped" are
+// legal names. Holding the filter as a bare string with those two as sentinels made a group actually
+// named `ungrouped` filter as the ungrouped set, and one named `all` unfilterable (#164 review).
+type GroupFilter = { kind: "all" } | { kind: "ungrouped" } | { kind: "group"; name: string };
+
+const ALL_FILTER: GroupFilter = { kind: "all" };
+
+function sameFilter(a: GroupFilter, b: GroupFilter): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind !== "group" || b.kind !== "group" || a.name === b.name;
+}
+
 function FormatBadge({ type }: { type: string }) {
   return (
     <span
@@ -51,6 +63,10 @@ function TemplateCard({
 }) {
   const [failed, setFailed] = useState(false);
   return (
+    // #128: the card is no longer one giant anchor. Interactive controls cannot nest inside an <a>,
+    // so when the whole card was the link the ⓘ and ☆ had to be absolutely positioned over it — which
+    // put them on top of the thumbnail, the one thing the card exists to show. Linking only the image
+    // and title lets the controls sit in normal flow, and drops the absolute/z-index stacking with it.
     <div
       className="flex h-full flex-col gap-3 rounded-lg border p-4 transition-shadow hover:shadow-md"
       style={{
@@ -334,7 +350,7 @@ export function Templates() {
   const setFav = useSetFavorite();
   const { push } = useToast();
   const [query, setQuery] = useState("");
-  const [selectedGroup, setSelectedGroup] = useState<string>("all");
+  const [selectedGroup, setSelectedGroup] = useState<GroupFilter>(ALL_FILTER);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [movingTemplateIds, setMovingTemplateIds] = useState<string[] | null>(null);
 
@@ -363,10 +379,10 @@ export function Templates() {
 
   const filtered = useMemo(() => {
     let list = data?.templates ?? [];
-    if (selectedGroup === "ungrouped") {
+    if (selectedGroup.kind === "ungrouped") {
       list = list.filter((t) => !t.group);
-    } else if (selectedGroup !== "all") {
-      list = list.filter((t) => t.group === selectedGroup);
+    } else if (selectedGroup.kind === "group") {
+      list = list.filter((t) => t.group === selectedGroup.name);
     }
     const needle = query.trim().toLowerCase();
     if (!needle) return list;
@@ -388,6 +404,10 @@ export function Templates() {
     });
   };
 
+  // Favorites/Recent are keyed by id; resolve against the loaded list and drop unknowns. Recent excludes
+  // favorited ids so a card never shows in both rows. Both rows are hidden while the search box is
+  // active, and likewise while a group filter is on: they are drawn from the whole set, so leaving
+  // them up would show cards from the groups the user just filtered out.
   const byId = useMemo(() => {
     const map = new Map<string, TemplateSummary>();
     for (const t of data?.templates ?? []) map.set(t.id, t);
@@ -395,7 +415,7 @@ export function Templates() {
   }, [data]);
 
   const searching = query.trim() !== "";
-  const isFiltered = searching || selectedGroup !== "all";
+  const isFiltered = searching || selectedGroup.kind !== "all";
   const favTemplates = favoriteIds.map((id) => byId.get(id)).filter((t): t is TemplateSummary => !!t);
   const recentTemplates = (recents.data ?? [])
     .filter((id) => !favoriteIds.includes(id))
@@ -419,6 +439,10 @@ export function Templates() {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold">Labels</h1>
         <div className="flex flex-wrap items-center gap-2">
+          {/* The catalog was reachable only from the empty-state card, which disappears as soon as
+              you install anything — so after the first template it could only be reached by typing
+              the URL. The starter set is deliberately small (ADR-0047) on the assumption people come
+              back to browse and adapt, so it needs a permanent way in. */}
           <Link
             to="/templates/catalog"
             className="rounded-md border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
@@ -439,14 +463,14 @@ export function Templates() {
       <div className="flex flex-wrap items-center gap-1.5" role="toolbar" aria-label="Group filter">
         <button
           type="button"
-          onClick={() => setSelectedGroup("all")}
-          aria-pressed={selectedGroup === "all"}
+          onClick={() => setSelectedGroup(ALL_FILTER)}
+          aria-pressed={selectedGroup.kind === "all"}
           className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
           style={{
-            background: selectedGroup === "all" ? "var(--accent)" : "var(--surface)",
-            color: selectedGroup === "all" ? "var(--accent-ink, #fff)" : "var(--ink)",
+            background: selectedGroup.kind === "all" ? "var(--accent)" : "var(--surface)",
+            color: selectedGroup.kind === "all" ? "var(--accent-ink, #fff)" : "var(--ink)",
             border: "1px solid",
-            borderColor: selectedGroup === "all" ? "var(--accent)" : "var(--border)",
+            borderColor: selectedGroup.kind === "all" ? "var(--accent)" : "var(--border)",
           }}
         >
           All
@@ -455,14 +479,20 @@ export function Templates() {
           <button
             key={g}
             type="button"
-            onClick={() => setSelectedGroup(g)}
-            aria-pressed={selectedGroup === g}
+            onClick={() => setSelectedGroup({ kind: "group", name: g })}
+            aria-pressed={sameFilter(selectedGroup, { kind: "group", name: g })}
             className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
             style={{
-              background: selectedGroup === g ? "var(--accent)" : "var(--surface)",
-              color: selectedGroup === g ? "var(--accent-ink, #fff)" : "var(--ink)",
+              background: sameFilter(selectedGroup, { kind: "group", name: g })
+                ? "var(--accent)"
+                : "var(--surface)",
+              color: sameFilter(selectedGroup, { kind: "group", name: g })
+                ? "var(--accent-ink, #fff)"
+                : "var(--ink)",
               border: "1px solid",
-              borderColor: selectedGroup === g ? "var(--accent)" : "var(--border)",
+              borderColor: sameFilter(selectedGroup, { kind: "group", name: g })
+                ? "var(--accent)"
+                : "var(--border)",
             }}
           >
             {g}
@@ -471,14 +501,14 @@ export function Templates() {
         {hasUngrouped && (
           <button
             type="button"
-            onClick={() => setSelectedGroup("ungrouped")}
-            aria-pressed={selectedGroup === "ungrouped"}
+            onClick={() => setSelectedGroup({ kind: "ungrouped" })}
+            aria-pressed={selectedGroup.kind === "ungrouped"}
             className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
             style={{
-              background: selectedGroup === "ungrouped" ? "var(--accent)" : "var(--surface)",
-              color: selectedGroup === "ungrouped" ? "var(--accent-ink, #fff)" : "var(--ink)",
+              background: selectedGroup.kind === "ungrouped" ? "var(--accent)" : "var(--surface)",
+              color: selectedGroup.kind === "ungrouped" ? "var(--accent-ink, #fff)" : "var(--ink)",
               border: "1px solid",
-              borderColor: selectedGroup === "ungrouped" ? "var(--accent)" : "var(--border)",
+              borderColor: selectedGroup.kind === "ungrouped" ? "var(--accent)" : "var(--border)",
             }}
           >
             Ungrouped
@@ -502,10 +532,14 @@ export function Templates() {
           {error instanceof Error ? error.message : "Failed to load templates"}
         </p>
       )}
-      {data && filtered.length === 0 && (query || selectedGroup !== "all") && (
-        <p style={{ color: "var(--muted)" }}>No templates match your search.</p>
+      {data && filtered.length === 0 && (query || selectedGroup.kind !== "all") && (
+        <p style={{ color: "var(--muted)" }}>
+          {query ? "No templates match your search." : "No templates in this group."}
+        </p>
       )}
-      {data && (data.templates ?? []).length === 0 && !query && selectedGroup === "all" && <EmptyTemplates />}
+      {data && (data.templates ?? []).length === 0 && !query && selectedGroup.kind === "all" && (
+        <EmptyTemplates />
+      )}
       {!isFiltered && favTemplates.length > 0 && (
         <section aria-label="Favorites" className="flex flex-col gap-2">
           <h2 className="text-sm font-medium" style={{ color: "var(--muted)" }}>

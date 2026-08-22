@@ -505,7 +505,13 @@ pub async fn update_template_group(
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     let yaml = std::fs::read_to_string(&path)
         .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
-    let patched = patch_template_group(&yaml, update.group.as_deref())?;
+    let group = update.group().ok_or_else(|| {
+        AppError::invalid_request(
+            Reason::RequestBodyInvalid,
+            "body must carry a 'group' key; use null to clear the group",
+        )
+    })?;
+    let patched = patch_template_group(&yaml, group)?;
     if patched != yaml {
         write_template_file(&path, &patched)?;
         state.reload()?;

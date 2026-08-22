@@ -584,34 +584,36 @@ mod tests {
 
         let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
 
-        // Also collect reasons documented in openspec specs/changes
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let openspec_dir = std::path::Path::new(manifest_dir).join("openspec");
-        if openspec_dir.is_dir() {
-            fn scan_dir(
-                dir: &std::path::Path,
-                declared: &HashSet<&str>,
-                documented: &mut HashSet<String>,
-            ) {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.is_dir() {
-                            scan_dir(&path, declared, documented);
-                        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-                            if let Ok(content) = std::fs::read_to_string(&path) {
-                                for slug in declared {
-                                    if content.contains(&format!("`{slug}`")) {
-                                        documented.insert(slug.to_string());
-                                    }
-                                }
-                            }
+        // A reason added after `docs/SPEC.md` was frozen cannot be listed in §10.1, so its
+        // documented home is the OpenSpec spec that introduced it. Only `openspec/specs/**/spec.md`
+        // counts: a proposal, a design note, or an archived change folder is a record of what was
+        // planned, not a published contract, and accepting one would let a reason ship documented
+        // nowhere a client reads (#164 review). The phantom half below still runs off the §10.1
+        // table alone, so widening the undocumented half does not weaken it.
+        let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("openspec")
+            .join("specs");
+        fn scan_specs(dir: &std::path::Path, declared: &HashSet<&str>, out: &mut HashSet<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan_specs(&path, declared, out);
+                } else if path.file_name().and_then(|n| n.to_str()) == Some("spec.md") {
+                    let Ok(content) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    for slug in declared {
+                        if content.contains(&format!("`{slug}`")) {
+                            out.insert((*slug).to_string());
                         }
                     }
                 }
             }
-            scan_dir(&openspec_dir, &declared, &mut documented);
         }
+        scan_specs(&specs_dir, &declared, &mut documented);
 
         let documented_refs: HashSet<&str> = documented.iter().map(String::as_str).collect();
 
@@ -619,14 +621,23 @@ mod tests {
         undocumented.sort_unstable();
         assert!(
             undocumented.is_empty(),
-            "reasons missing from specs: {undocumented:?}"
+            "reasons documented in neither SPEC \u{a7}10.1 nor openspec/specs: {undocumented:?}"
         );
 
-        let mut phantom: Vec<_> = documented_refs.difference(&declared).collect();
+        // Phantom check: §10.1 only. `documented` also holds slugs harvested from OpenSpec specs,
+        // but those are filtered through `declared` on the way in, so they can never be phantoms.
+        let spec_table_only: HashSet<&str> = section
+            .lines()
+            .filter(|line| line.starts_with('|'))
+            .filter_map(|line| line.split('|').nth(2))
+            .map(str::trim)
+            .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
+            .collect();
+        let mut phantom: Vec<_> = spec_table_only.difference(&declared).collect();
         phantom.sort_unstable();
         assert!(
             phantom.is_empty(),
-            "specs document reasons that do not exist: {phantom:?}"
+            "SPEC \u{a7}10.1 documents reasons that do not exist: {phantom:?}"
         );
     }
 

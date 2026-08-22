@@ -71,6 +71,17 @@ This requirement supersedes the `docs/SPEC.md` §3 top-level field table, and on
 - **WHEN** a template declares a `group` longer than 64 characters, or one containing a line feed
 - **THEN** the template fails to load, with a message naming `group`
 
+#### Scenario: A present but valueless group is a failure, not an absent one
+
+- **WHEN** a template declares `group:` with nothing after it, or `group: ~`, or `group: null`
+- **THEN** the template fails to load, with a message naming `group`
+- **AND** it is not served as ungrouped
+
+#### Scenario: A non-string group is a failure
+
+- **WHEN** a template declares `group: 42` or `group: true`
+- **THEN** the template fails to load, with a message naming `group`
+
 #### Scenario: A slash produces no hierarchy
 
 - **WHEN** two templates declare `group: Shipping/Pallets` and `group: Shipping`
@@ -171,7 +182,11 @@ The operation SHALL be idempotent: setting the group a template already has, or 
 
 This endpoint SHALL be the only path by which the service writes a group into a hand-authored file. `PUT /api/templates/{id}` continues to replace the whole file from a submitted body, and a `group:` key typed there is honoured exactly like any other field.
 
-`GET /api/openapi.json` SHALL document this route: its path parameter, its request body as `{ "group": string | null }`, and every status in the table above, alongside the error reasons it introduces.
+The two `422` cases SHALL be told apart by `details.reason`: `template_group_invalid` for a name that fails validation, and `template_group_unpatchable` for a file the patch will not touch. Both are additions to the reason registry of `docs/SPEC.md` §10.1, which is frozen and therefore does not list them; this requirement is their published home.
+
+The request body SHALL carry the `group` key. `{ "group": null }` clears the group deliberately, while a body omitting the key entirely is malformed and SHALL be rejected with `400`, since treating an absent key as null would let an empty object silently ungroup a template.
+
+`GET /api/openapi.json` SHALL document this route: its path parameter, its request body as `{ "group": string | null }`, and every status in the table above, alongside the two error reasons named here.
 
 This requirement supersedes the `docs/SPEC.md` §2 endpoint table and §2.0 template management to the extent of adding this route and its semantics: both enumerate the template write surface without it. Every other route in that table, and every other rule in §2.0, is unchanged, as is the `template-registry` requirement that a `422` from a template write means nothing was written, which this endpoint follows.
 
@@ -204,6 +219,12 @@ This requirement supersedes the `docs/SPEC.md` §2 endpoint table and §2.0 temp
 - **WHEN** the endpoint is called with a group name of 200 characters
 - **THEN** the response is `422`
 - **AND** the stored file is unchanged
+
+#### Scenario: A body omitting the key is rejected
+
+- **WHEN** `PUT /api/templates/bin-tag/group` is called with the body `{}`
+- **THEN** the response is `400`
+- **AND** the template's group is unchanged
 
 #### Scenario: An unknown template is a 404
 

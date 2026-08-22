@@ -293,13 +293,24 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
             }
         }
 
+        let group = match raw.group {
+            None => None,
+            Some(serde_yaml_ng::Value::String(value)) => Some(value.trim().to_string()),
+            Some(_) => {
+                return Err(TemplateError::Validation {
+                    path: "group".to_string(),
+                    msg: "group must be a string".to_string(),
+                })
+            }
+        };
+
         let format = TemplateFormat::try_from(raw.format)?;
 
         Ok(TemplateDefinition {
             id: raw.id,
             name: raw.name,
             description: raw.description.unwrap_or_default(),
-            group: raw.group.map(|g| g.trim().to_string()),
+            group,
             unit: raw.unit,
             dpi: raw.dpi,
             format,
