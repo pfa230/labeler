@@ -1,0 +1,836 @@
+Reading additional input from stdin...
+OpenAI Codex v0.142.4
+--------
+workdir: /home/pfa/projects/labeler/.worktrees/issue-169
+model: gpt-5.5
+provider: openai
+approval: never
+sandbox: read-only
+reasoning effort: high
+reasoning summaries: none
+session id: 01a02625-422a-7093-9126-46b76e0cf07b
+--------
+user
+You re-check a prior adversarial review's Required Changes. Read-only: do not edit any file.
+Working directory: /home/pfa/projects/labeler/.worktrees/issue-169
+
+You reviewed these planning artifacts and returned APPROVE_WITH_CHANGES with two required changes:
+1. Remove the uncited follow-up/open-question from design.md, or replace it with a concrete GitHub
+   issue reference if that follow-up has already been filed.
+2. Add `transforms` to the "Reading a connection" scenario so the scenario matches the stated record
+   contract and current ConnectionView.
+
+The author has now edited:
+- openspec/changes/issue-169-connection-public-url/design.md
+- openspec/changes/issue-169-connection-public-url/specs/connections/spec.md
+
+Re-check ONLY those two items against the current files on disk. For each: state APPLIED / PARTIALLY
+APPLIED / NOT APPLIED with file:line evidence, and whether the applied text is factually correct
+against the source (src/api.rs ConnectionView and the update handler, and gh issue 197 in
+github.com/pfa230/labeler if you can read it; if you cannot reach the network, say so and judge only
+the internal consistency of the citation). Flag any NEW defect the edits introduced, including a
+dangling reference left behind by the removed section. Do not re-open anything else.
+
+Output exactly:
+
+## Re-check
+(one entry per item)
+
+## New defects introduced
+(list with file:line evidence, or "none")
+
+## Verdict
+VERDICT: APPROVE | APPROVE_WITH_CHANGES | REVISE
+codex
+I’ll check only the two edited planning files plus the cited source contract in `src/api.rs`; no file edits. If GitHub issue access fails, I’ll call that out and judge the citation’s internal consistency.
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'rg -n "struct ConnectionView|ConnectionView|transforms|public_url|update.*connection|connections" src/api.rs' in /home/pfa/projects/labeler/.worktrees/issue-169
+ succeeded in 0ms:
+171:            "/connections",
+172:            get(list_connections).post(create_connection),
+175:            "/connections/{id}",
+177:                .put(update_connection_h)
+180:        .route("/connections/{id}/schema", get(connection_schema))
+181:        .route("/connections/{id}/browse", post(connection_browse))
+183:            "/connections/{id}/materialize",
+1068:pub struct ConnectionView {
+1073:    pub public_url: Option<String>,
+1076:    pub transforms: Vec<crate::connector::FieldTransform>,
+1079:impl From<&crate::store::Connection> for ConnectionView {
+1086:            public_url: c.public_url.clone(),
+1089:            transforms: c.transforms.clone(),
+1101:    pub public_url: Option<Option<String>>,
+1107:    pub transforms: Option<Option<Vec<crate::connector::FieldTransform>>>,
+1150:    path = "/connections",
+1152:        (status = 200, description = "List connections (credential redacted; only has_credential exposed)", body = [ConnectionView])
+1155:pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+1156:    let cs = state.store().list_connections().await?;
+1157:    Ok(Json(cs.iter().map(ConnectionView::from).collect::<Vec<_>>()).into_response())
+1162:    path = "/connections",
+1165:        (status = 201, description = "Connection created (credential redacted in response)", body = ConnectionView),
+1177:    let transforms = match &body.transforms {
+1181:    if let Err((idx, msg)) = connector.validate_transforms(transforms) {
+1195:    let pub_url = match &body.public_url {
+1201:                Some(validate_and_normalize_url(trimmed, "public_url")?)
+1213:            public_url: pub_url.as_deref(),
+1216:            transforms,
+1221:        Json(ConnectionView::from(&c)),
+1228:    path = "/connections/{id}",
+1231:        (status = 200, description = "Connection (credential redacted)", body = ConnectionView),
+1244:    Ok(Json(ConnectionView::from(&c)).into_response())
+1249:    path = "/connections/{id}",
+1253:        (status = 200, description = "Connection updated (credential redacted)", body = ConnectionView),
+1258:pub async fn update_connection_h(
+1272:    let public_url = match &body.public_url {
+1280:                crate::store::UpdateField::Set(validate_and_normalize_url(trimmed, "public_url")?)
+1284:    let transforms = match &body.transforms {
+1288:            if let Err((idx, msg)) = connector.validate_transforms(rules) {
+1305:        .update_connection(
+1310:                public_url,
+1313:                transforms,
+1321:    Ok(Json(ConnectionView::from(&c)).into_response())
+1326:    path = "/connections/{id}",
+1361:    path = "/connections/{id}/schema",
+1383:    path = "/connections/{id}/browse",
+1408:    path = "/connections/{id}/materialize",
+2555:            validate_and_normalize_url("  https://example.com/sub/path///  ", "public_url")
+2568:        let err = validate_and_normalize_url("ftp://example.com", "public_url").unwrap_err();
+2578:            validate_and_normalize_url("http://example.com?query=1", "public_url").unwrap_err();
+2598:    fn connection_input_deserialization_public_url_tri_state() {
+2602:        assert_eq!(input.public_url, None);
+2606:            r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":null}"#;
+2608:        assert_eq!(input.public_url, Some(None));
+2612:            r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":""}"#;
+2614:        assert_eq!(input.public_url, Some(Some(String::new())));
+2617:        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":"https://example.com"}"#;
+2619:        assert_eq!(input.public_url, Some(Some("https://example.com".into())));
+2628:            public_url: Some("https://homebox.example.com".into()),
+2631:            transforms: vec![],
+2633:        let view = ConnectionView::from(&conn);
+2636:            ConnectionView {
+2641:                public_url: Some("https://homebox.example.com".into()),
+2644:                transforms: vec![],
+2653:            public_url: None,
+2656:            transforms: vec![],
+2658:        let view2 = ConnectionView::from(&conn_no_cred);
+2660:        assert_eq!(view2.public_url, None);
+2662:        assert!(view2.transforms.is_empty());
+
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'nl -ba openspec/changes/issue-169-connection-public-url/design.md' in /home/pfa/projects/labeler/.worktrees/issue-169
+ succeeded in 0ms:
+     1	## Context
+     2	
+     3	See `proposal.md` for motivation and `specs/connections/spec.md` for the contract. The relevant
+     4	current state, on this branch after merging `main` at `c37f80e`:
+     5	
+     6	- The server already stores and honours `public_url`. `src/store.rs:52` carries it on `Connection`,
+     7	  the migration `ALTER TABLE connections ADD COLUMN public_url TEXT` is shipped (`src/store.rs:167`),
+     8	  and `UpdateConnection` carries it as an `UpdateField<String>` so a `PUT` can keep, clear, or set it
+     9	  (`src/store.rs:73`, applied in `update_connection` at `src/store.rs:699`).
+    10	- `src/api.rs:1073` exposes it on `ConnectionView`; `ConnectionInput` models the three input forms as
+    11	  `Option<Option<String>>` (`src/api.rs:1101`) via the shared `deserialize_optional_field`
+    12	  (`src/api.rs:1110`), and the handlers translate that into `UpdateField`.
+    13	- `src/connector/homebox.rs:128` resolves the link base with `external_base_url`, falling back to
+    14	  `base_url` when `public_url` is absent or whitespace, and threads it through `browse` and
+    15	  `materialize`. Upstream fetches go through `base(conn)` (`src/connector/homebox.rs:123`), which
+    16	  reads `base_url` only.
+    17	- `ui/src/api/connectors.ts:15` and `:24` already declare `public_url` on `Connection` and
+    18	  `ConnectionInput`. `ConnectionsSection.tsx` mentions it nowhere: the form has no input for it
+    19	  (fields end at the enabled checkbox), the submit payload omits it (`ConnectionsSection.tsx:52-59`),
+    20	  and the table has no column for it (`:254-259`, row cells at `:204-210`). That is the whole gap.
+    21	- `validate_and_normalize_url` (`src/api.rs:1122`) takes a field name for the message but hardcodes
+    22	  `Reason::BaseUrlInvalid`, so a rejected `public_url` reports the wrong discriminator. It checks
+    23	  scheme, host, query, and fragment, and does not check userinfo.
+    24	- #161 landed just before this change and moved two things this plan depended on. The connection
+    25	  record now also carries `transforms`, and `openspec/specs/connector-field-transforms/spec.md:31-35`
+    26	  already supersedes the frozen §12 record sentence "to the extent of adding `transforms`". And
+    27	  `src/errors.rs:577-600` now scans `openspec/` for backticked reason slugs, so a reason documented in
+    28	  an OpenSpec spec rather than in the frozen §10.1 table already satisfies the reason-documentation
+    29	  test. Neither needs doing here.
+    30	
+    31	## Goals / Non-Goals
+    32	
+    33	**Goals:**
+    34	
+    35	- Make the shipped server capability reachable from Settings > Connections.
+    36	- Record the connection contract in `openspec/specs/`, where only the transform slice of it lives.
+    37	- Make the error discriminator name the field that actually failed.
+    38	
+    39	**Non-Goals:**
+    40	
+    41	- Probing or reachability-checking the public URL. It is by definition an address the server may not
+    42	  be able to resolve, so validation stays syntactic.
+    43	- Per-template or per-render URL overrides. The `qr_base_url` variable already covers that case and is
+    44	  untouched here.
+    45	- Any change to how Labeler fetches from upstream, to cursors, to transforms, or to the connector
+    46	  schema.
+    47	- A second connector. Only Homebox exists; the requirement is written in connector-neutral terms but
+    48	  only Homebox implements it.
+    49	
+    50	## Decisions
+    51	
+    52	**A connection carries two addresses with distinct jobs, and the ADR says so.** `base_url` is the
+    53	address Labeler dials; `public_url` is the address Labeler prints. This change adds
+    54	**ADR-0061, "A connection's public URL is the link base, its base URL is the fetch base"**, plus its
+    55	row in `docs/adr/README.md`. 0059 and 0060 are taken by the changes that merged while this one was
+    56	being planned, so 0061 is the next free number.
+    57	
+    58	It supersedes the **Connections store** decision of
+    59	[ADR-0018](../../../docs/adr/0018-api-integration-spine.md), which records the connection row as
+    60	`(connector, name, base_url, credential, enabled)`
+    61	(`docs/adr/0018-api-integration-spine.md:39-42`) and would otherwise stand as an accepted record
+    62	contradicting the field this change makes reachable. Only that decision is superseded: ADR-0018's
+    63	browse-cursor, connector-schema, and Homebox-endpoint decisions stand, so ADR-0018 keeps the status
+    64	`Accepted` with its row noting the partial supersession. ADR-0060 amended the same record from the
+    65	transform side without superseding ADR-0018; both amendments stand and neither contradicts the other.
+    66	The `public_url` server work itself landed in commits `d18ebad`, `2eafccf`, `78504a3` on 2026-08-17
+    67	with no ADR at all, which is the gap this closes.
+    68	
+    69	*Alternative considered:* one URL plus a rewrite rule (store only `base_url` and a host substitution
+    70	applied at link time). Rejected: it encodes the same information less directly, and an operator
+    71	reasoning about "what does the QR code point at?" would have to apply the rule mentally.
+    72	
+    73	**Clearing is expressed as `null`, and the form always sends the key.** The API distinguishes
+    74	key-absent (keep) from `null`/blank (clear), which exists for API clients doing partial updates. The
+    75	form is not a partial update: it renders every field, so it always sends `public_url`, as `null` when
+    76	the input is blank. That makes "empty the box and save" clear the stored value, which is the only
+    77	behavior an operator would predict from a text input, and it is how the form already treats
+    78	`transforms` (`ConnectionsSection.tsx:57`).
+    79	
+    80	*Alternative considered:* omit the key when blank. Rejected: it makes the field write-once from the
+    81	UI, with no way to undo a public URL short of a hand-written request.
+    82	
+    83	**Field-typed URL validation.** `validate_and_normalize_url` gains a small `UrlField` enum
+    84	(`Base`/`Public`) in place of its `&str` field name, with the wire name and the `Reason` hanging off
+    85	it. One value decides both the message text and the discriminator, so the two cannot drift, and the
+    86	call sites stop passing a bare string that controls neither. `Reason::PublicUrlInvalid =>
+    87	"public_url_invalid"` joins the `reasons!` macro list in `src/reason.rs`; adding a slug is additive
+    88	and breaks no client, since only renames are breaking (`src/reason.rs:3`). No test scaffolding is
+    89	needed for the new slug: `src/errors.rs:577-600` already counts a slug as documented when an OpenSpec
+    90	spec names it in backticks, and `specs/connections/spec.md` names this one.
+    91	
+    92	*Alternative considered:* keep the `&str` parameter and add a `Reason` parameter beside it. Rejected:
+    93	two parameters that must agree is exactly the drift the enum removes.
+    94	
+    95	*Alternative considered:* leave the discriminator as `base_url_invalid`. Rejected as recorded in this
+    96	change: a machine-readable reason that names the wrong field is worse than no distinction at all, and
+    97	the UI's own error text comes from `message`, so nothing else compensates.
+    98	
+    99	**Userinfo is rejected in both URL fields.** A connection URL is printed into QR codes and rendered as
+   100	a browser link, so `https://user:pass@homebox.example.com` would put credentials on a physical label.
+   101	Rejecting it on `public_url` alone would leave two fields with two validation rules and one spec
+   102	carrying the exception, so the rule applies to both. It bites only at write time: a stored `base_url`
+   103	with userinfo keeps working until someone saves that connection.
+   104	
+   105	*Alternative considered:* accept userinfo and document the hazard. Rejected as recorded in this
+   106	change; validation that already checks scheme, host, query, and fragment has no reason to wave through
+   107	the one component that leaks a secret.
+   108	
+   109	**The UI validates the public URL exactly as it validates the base URL, and only when non-blank.**
+   110	`ConnectionForm` already parses `base_url` with `new URL()` and checks the protocol before sending
+   111	(`ConnectionsSection.tsx:47-49`); the public URL reuses that shape so both fields fail the same way,
+   112	in the form, without a round trip. Blank skips validation entirely, because blank is a legal value
+   113	meaning "none".
+   114	
+   115	**The table gets a Public URL column.** The form is per-connection; the column answers "which of these
+   116	print external links?" at a glance, which is the question an operator debugging a scanned QR code
+   117	actually has. An unset value renders `-`, matching the table's habit of rendering a short token
+   118	(`set`/`none`, `yes`/`no`) rather than an empty cell.
+   119	
+   120	**The `connections` capability names `transforms` but owns nothing about it.** Writing the record whole
+   121	is what the first-touch rule asks for, and leaving `transforms` out would make the record wrong the day
+   122	it is archived. Restating its rules would duplicate `connector-field-transforms` and invite the two to
+   123	drift, so the record requirement names the field and points at that capability for every rule.
+   124	
+   125	*Alternative considered:* a `MODIFIED` delta against `connector-field-transforms`. Rejected: that
+   126	capability's requirement is about transforms, not about the connection record or its URLs; widening it
+   127	to carry `public_url` would put two unrelated contracts in one requirement.
+   128	
+   129	**`connector` on `PUT` is documented as inert, not made strict.** The update handler never reads
+   130	`body.connector`, so a payload naming a different or unknown connector is accepted and changes nothing,
+   131	while `POST` rejects an unknown one. The spec records that as the contract rather than tightening it:
+   132	rejecting a mismatched connector on update is a behavior change outside #169's scope, so it is filed as
+   133	[#197](https://github.com/pfa230/labeler/issues/197) and left out of this change.
+   134	
+   135	**Server code is verified against the spec, not rewritten.** Apart from the reason and userinfo
+   136	changes, the tasks read the existing store, API, and connector paths against each requirement and add a
+   137	test only where one is missing. The spec is being written after the implementation here, so the
+   138	verification step is what makes the two match rather than merely appear to.
+   139	
+   140	## Risks / Trade-offs
+   141	
+   142	- **The spec is written from the code it describes, so a bug in the code becomes a bug in the spec.**
+   143	  → The requirements were drafted from the API contract and the issue's intent, then checked against
+   144	  the code path by path; the review artifact judges them against the issue, not against the diff.
+   145	- **A misconfigured `public_url` silently produces unreachable printed links, and a printed label
+   146	  cannot be fixed after the fact.** → Syntactic validation catches typos in scheme and host, and the
+   147	  table column surfaces the effective value. Reachability is out of scope by design (see Non-Goals).
+   148	- **Tightening `base_url` validation can reject a configuration that saves fine today.** → Only a
+   149	  `base_url` carrying userinfo, which Homebox auth never needed (the credential travels as a Bearer
+   150	  header), and only on the next save of that connection. The proposal calls it out as the change's one
+   151	  breaking edge.
+   152	- **Two capabilities now describe the same connection record.** → `connections` owns the record and
+   153	  its CRUD; `connector-field-transforms` owns the transform rules; the record requirement says so in
+   154	  the text, so a later reader is not left choosing.
+   155	- **The connection form is now long: six fields plus a transforms editor.** → The field row already
+   156	  wraps (`flex flex-wrap`, `ConnectionsSection.tsx:71`), and the public url field takes the same
+   157	  `flex-1` sizing as base url, so narrow viewports get another line rather than a squeezed input.
+   158	- **Nothing in the product tells an operator that a stored `public_url` on a disabled or unused
+   159	  connection is stale.** → Out of scope; the column at least makes it visible.
+   160	
+   161	## Migration Plan
+   162	
+   163	No data migration: the `public_url` column shipped with the server work and is already present in every
+   164	deployed database. No config change, no restart semantics change. Deploying this change makes an
+   165	existing column editable; rolling it back hides the field again and leaves stored values in place and
+   166	still honoured by the server.
+
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'nl -ba openspec/changes/issue-169-connection-public-url/specs/connections/spec.md' in /home/pfa/projects/labeler/.worktrees/issue-169
+ succeeded in 0ms:
+     1	## Purpose
+     2	
+     3	Defines the connection record that binds Labeler to an upstream inventory system, its CRUD contract,
+     4	and the two addresses a connection carries: the base URL Labeler fetches from and the optional public
+     5	URL that Labeler puts into the links and QR codes it generates for people.
+     6	
+     7	## ADDED Requirements
+     8	
+     9	### Requirement: Connection record
+    10	
+    11	A connection SHALL be `{ id, connector, name, base_url, public_url, transforms, credential, enabled }`,
+    12	persisted by the server. `public_url` SHALL be optional and default to absent. The credential SHALL
+    13	never be returned by any endpoint; responses SHALL expose it only as the boolean `has_credential`;
+    14	`transforms` SHALL be returned in full.
+    15	
+    16	This requirement supersedes the connection record shape in the frozen `docs/SPEC.md` §12
+    17	("Integrations (connectors)"). Every other part of §12 remains authoritative. `transforms` is named
+    18	here only so the record is stated whole: every rule about what a transform is, when it is accepted,
+    19	and what it derives belongs to `connector-field-transforms`, which this requirement neither restates
+    20	nor alters.
+    21	
+    22	`GET /api/connections` SHALL list every connection ordered by `name`; `GET /api/connections/{id}`
+    23	SHALL return one, or `404` when the id is unknown.
+    24	
+    25	#### Scenario: Reading a connection
+    26	
+    27	- **WHEN** a client reads a connection through `GET /api/connections` or `GET /api/connections/{id}`
+    28	- **THEN** the response contains `id`, `connector`, `name`, `base_url`, `public_url`, `transforms`,
+    29	  `enabled`, and `has_credential`
+    30	- **AND** it contains no credential value
+    31	- **AND** `public_url` is `null` when the connection has none
+    32	
+    33	#### Scenario: Reading a connection that does not exist
+    34	
+    35	- **WHEN** a client requests `GET /api/connections/{id}` for an unknown id
+    36	- **THEN** the response is `404`
+    37	
+    38	### Requirement: Creating a connection
+    39	
+    40	`POST /api/connections` SHALL accept
+    41	`{ connector, name, base_url, public_url?, transforms?, credential, enabled? }` and return `201` with
+    42	the created connection. A missing, `null`, or blank `public_url` SHALL store no
+    43	public URL. A missing `enabled` SHALL default to `true`. An unknown `connector` SHALL be rejected with
+    44	`400` and reason `connector_unknown`; a `credential` that is missing, `null`, or empty SHALL be
+    45	rejected with `400` and reason `credential_required`.
+    46	
+    47	This requirement supersedes the `POST /api/connections` payload description in the frozen
+    48	`docs/SPEC.md` §12, alongside `connector-field-transforms`, which already superseded it to the extent
+    49	of adding `transforms`. The handling of `transforms` on create stays that capability's.
+    50	
+    51	#### Scenario: Created with a public URL
+    52	
+    53	- **WHEN** a client posts a connection whose `public_url` is `https://homebox.example.com`
+    54	- **THEN** the response is `201` and its `public_url` is `https://homebox.example.com`
+    55	
+    56	#### Scenario: Created without a public URL
+    57	
+    58	- **WHEN** a client posts a connection that omits `public_url`, or sends it as `null` or `""`
+    59	- **THEN** the response is `201` and its `public_url` is `null`
+    60	
+    61	#### Scenario: Created without a credential
+    62	
+    63	- **WHEN** a client posts a connection whose `credential` is missing, `null`, or `""`
+    64	- **THEN** the response is `400` with `details.reason` `credential_required`
+    65	
+    66	#### Scenario: Created with an unknown connector
+    67	
+    68	- **WHEN** a client posts a connection whose `connector` is not a registered connector
+    69	- **THEN** the response is `400` with `details.reason` `connector_unknown`
+    70	
+    71	### Requirement: Updating a connection
+    72	
+    73	`PUT /api/connections/{id}` SHALL accept the same payload shape as create and return `200` with the
+    74	updated connection, or `404` when the id is unknown. It SHALL update `name`, `base_url`, `public_url`,
+    75	`enabled`, and, when one is supplied, `credential`. `connector` SHALL remain a required key of the
+    76	payload but SHALL NOT be applied: a connection's connector is fixed at creation, and a payload naming
+    77	a different or unknown connector SHALL neither change it nor fail the request. Omitting `credential`,
+    78	or sending it empty, SHALL keep the stored credential. For `public_url` the three input forms SHALL be
+    79	distinguished: omitting the key keeps the stored value, sending `null` or a blank string clears it,
+    80	and sending a URL replaces it. `transforms` is accepted on update under the rules stated by
+    81	`connector-field-transforms`.
+    82	
+    83	This requirement supersedes the `PUT /api/connections/{id}` description in the frozen
+    84	`docs/SPEC.md` §12, alongside `connector-field-transforms` for the `transforms` key.
+    85	
+    86	#### Scenario: Omitting public_url keeps the stored one
+    87	
+    88	- **WHEN** a client updates a connection that has a public URL, with a payload that omits `public_url`
+    89	- **THEN** the response is `200` and the connection still has its previous `public_url`
+    90	
+    91	#### Scenario: Blanking public_url clears it
+    92	
+    93	- **WHEN** a client updates a connection that has a public URL, sending `public_url` as `null` or `""`
+    94	- **THEN** the response is `200` and the connection's `public_url` is `null`
+    95	
+    96	#### Scenario: Setting a new public_url
+    97	
+    98	- **WHEN** a client updates a connection sending `public_url` as `https://homebox.example.com/`
+    99	- **THEN** the response is `200` and the connection's `public_url` is `https://homebox.example.com`
+   100	
+   101	#### Scenario: Connector in an update payload is ignored
+   102	
+   103	- **WHEN** a client updates a connection sending a `connector` that differs from the stored one
+   104	- **THEN** the response is `200` and the connection's `connector` is unchanged
+   105	
+   106	#### Scenario: Updating a connection that does not exist
+   107	
+   108	- **WHEN** a client updates an unknown id
+   109	- **THEN** the response is `404`
+   110	
+   111	### Requirement: Deleting a connection
+   112	
+   113	`DELETE /api/connections/{id}` SHALL delete the connection and return `204`, or `404` when the id is
+   114	unknown.
+   115	
+   116	This requirement supersedes the `DELETE /api/connections/{id}` row of the frozen `docs/SPEC.md` §12.
+   117	
+   118	#### Scenario: Deleting a connection
+   119	
+   120	- **WHEN** a client deletes an existing connection
+   121	- **THEN** the response is `204` and the connection no longer appears in `GET /api/connections`
+   122	
+   123	#### Scenario: Deleting a connection that does not exist
+   124	
+   125	- **WHEN** a client deletes an unknown id
+   126	- **THEN** the response is `404`
+   127	
+   128	### Requirement: Connection URL validation
+   129	
+   130	`base_url` and `public_url` SHALL each be validated the same way before storage: surrounding
+   131	whitespace trimmed, parseable as an absolute URL, scheme `http` or `https`, a host present, and no
+   132	query string, fragment, or embedded userinfo (`user:pass@`). Userinfo is rejected because a connection
+   133	URL is printed into QR codes and rendered as a link, so credentials carried in it would end up on a
+   134	physical label. Every trailing `/` SHALL be trimmed before storage, so `https://host/sub/path///` and
+   135	`https://host/sub/path` store the same value. A rejected value SHALL produce `400` with
+   136	`details.reason` `base_url_invalid` for `base_url` and `public_url_invalid` for `public_url`, and a
+   137	message naming the rejected field. A save SHALL also be rejected for a bad transform, under the rules
+   138	and the `connection_transform_invalid` reason stated by `connector-field-transforms`.
+   139	
+   140	This requirement supersedes the `base_url_invalid` row of the reason table in the frozen
+   141	`docs/SPEC.md` §10.1 and extends it with `public_url_invalid`. The other rows remain authoritative.
+   142	
+   143	#### Scenario: Rejecting a malformed public URL
+   144	
+   145	- **WHEN** a client sends `public_url` as `not a url`, `ftp://host`, `http://`, `https://host?x=1`,
+   146	  `https://host#f`, or `https://user:pass@host`
+   147	- **THEN** the response is `400` with `details.reason` `public_url_invalid`
+   148	
+   149	#### Scenario: Rejecting a malformed base URL
+   150	
+   151	- **WHEN** a client sends `base_url` as `not a url` or `https://user:pass@host`
+   152	- **THEN** the response is `400` with `details.reason` `base_url_invalid`
+   153	
+   154	#### Scenario: Normalizing a stored URL
+   155	
+   156	- **WHEN** a client sends `base_url` as `  http://homebox.lan:7745/  `
+   157	- **THEN** the stored and returned value is `http://homebox.lan:7745`
+   158	
+   159	### Requirement: Generated links use the public URL
+   160	
+   161	Every URL Labeler generates for a person to open SHALL be built from the connection's `public_url`
+   162	when it has one, and from `base_url` otherwise. This covers the `url` on a browsed row and the
+   163	`item_url` and `location_url` fields materialized into label data, which is what a printed QR code
+   164	encodes. A blank or whitespace-only stored `public_url` SHALL behave as absent. Requests Labeler
+   165	itself makes to the upstream system SHALL always use `base_url`, never `public_url`.
+   166	
+   167	This requirement supersedes nothing in `docs/SPEC.md`, which does not specify how entity links are
+   168	built.
+   169	
+   170	#### Scenario: Public URL set
+   171	
+   172	- **WHEN** a connection has `base_url` `http://homebox:7745` and `public_url`
+   173	  `https://homebox.example.com`, and a client browses or materializes a row for entity `e1`
+   174	- **THEN** the row's `url` and any materialized `item_url` or `location_url` are
+   175	  `https://homebox.example.com/entity/e1`
+   176	- **AND** the upstream request Labeler made went to `http://homebox:7745`
+   177	
+   178	#### Scenario: Public URL absent
+   179	
+   180	- **WHEN** a connection has `base_url` `http://homebox:7745` and no `public_url`, and a client browses
+   181	  or materializes a row for entity `e1`
+   182	- **THEN** the row's `url` and any materialized `item_url` or `location_url` are
+   183	  `http://homebox:7745/entity/e1`
+   184	
+   185	### Requirement: Connections settings UI
+   186	
+   187	Settings > Connections SHALL let an operator set and clear a connection's public URL. The connection
+   188	form SHALL carry an optional **public url** field alongside **base url**, pre-filled from the stored
+   189	value, and SHALL submit `public_url` on every save so that clearing the field clears the stored value.
+   190	A non-blank entry SHALL be rejected in the form, without a request, when it is not a parseable
+   191	`http`/`https` URL. The connections table SHALL show each connection's public URL, and `-` when it has
+   192	none.
+   193	
+   194	This requirement supersedes the "Using a connection (UI)" paragraph of the frozen `docs/SPEC.md` §12
+   195	as far as it describes the connection form's fields. The rest of that paragraph, covering the Connect
+   196	page, remains authoritative.
+   197	
+   198	#### Scenario: Setting a public URL
+   199	
+   200	- **WHEN** the operator edits a connection, types `https://homebox.example.com` into **public url**,
+   201	  and saves
+   202	- **THEN** the request body carries `public_url: "https://homebox.example.com"`
+   203	- **AND** the table row shows that public URL
+   204	
+   205	#### Scenario: Clearing a public URL
+   206	
+   207	- **WHEN** the operator edits a connection that has a public URL, empties the **public url** field,
+   208	  and saves
+   209	- **THEN** the request body carries `public_url: null`
+   210	- **AND** the table row shows `-`
+   211	
+   212	#### Scenario: Rejecting an invalid public URL in the form
+   213	
+   214	- **WHEN** the operator types `homebox.example.com` into **public url** and saves
+   215	- **THEN** the form shows a validation error and sends no request
+   216	
+   217	#### Scenario: Leaving a public URL unset
+   218	
+   219	- **WHEN** the operator adds a connection and leaves **public url** empty
+   220	- **THEN** the request body carries `public_url: null` and the connection is created
+
+codex
+The edited spec now includes `transforms` in the read scenario. I’m checking the exact `ConnectionView` and update handler lines so the re-check can distinguish applied text from factual drift.
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc "nl -ba src/api.rs | sed -n '1060,1325p'" in /home/pfa/projects/labeler/.worktrees/issue-169
+ succeeded in 0ms:
+  1060	        .map_err(|e| AppError::printer_invalid(e.to_string()))?;
+  1061	    Ok(Json(match driver.probe().await {
+  1062	        crate::driver::ProbeOutcome::Ok(c) => ProbeResponse::ok(c),
+  1063	        crate::driver::ProbeOutcome::Unreachable(d) => ProbeResponse::Unreachable { detail: d },
+  1064	    }))
+  1065	}
+  1066	
+  1067	#[derive(serde::Serialize, utoipa::ToSchema, Debug, PartialEq)]
+  1068	pub struct ConnectionView {
+  1069	    pub id: String,
+  1070	    pub connector: String,
+  1071	    pub name: String,
+  1072	    pub base_url: String,
+  1073	    pub public_url: Option<String>,
+  1074	    pub enabled: bool,
+  1075	    pub has_credential: bool,
+  1076	    pub transforms: Vec<crate::connector::FieldTransform>,
+  1077	}
+  1078	
+  1079	impl From<&crate::store::Connection> for ConnectionView {
+  1080	    fn from(c: &crate::store::Connection) -> Self {
+  1081	        Self {
+  1082	            id: c.id.clone(),
+  1083	            connector: c.connector.clone(),
+  1084	            name: c.name.clone(),
+  1085	            base_url: c.base_url.clone(),
+  1086	            public_url: c.public_url.clone(),
+  1087	            enabled: c.enabled,
+  1088	            has_credential: !c.credential.is_empty(),
+  1089	            transforms: c.transforms.clone(),
+  1090	        }
+  1091	    }
+  1092	}
+  1093	
+  1094	#[derive(serde::Deserialize, utoipa::ToSchema)]
+  1095	pub struct ConnectionInput {
+  1096	    pub connector: String,
+  1097	    pub name: String,
+  1098	    pub base_url: String,
+  1099	    #[serde(default, deserialize_with = "deserialize_optional_field")]
+  1100	    #[schema(value_type = Option<String>)]
+  1101	    pub public_url: Option<Option<String>>,
+  1102	    pub credential: Option<String>,
+  1103	    #[serde(default = "default_true")]
+  1104	    pub enabled: bool,
+  1105	    #[serde(default, deserialize_with = "deserialize_optional_field")]
+  1106	    #[schema(value_type = Option<Vec<crate::connector::FieldTransform>>)]
+  1107	    pub transforms: Option<Option<Vec<crate::connector::FieldTransform>>>,
+  1108	}
+  1109	
+  1110	fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+  1111	where
+  1112	    D: serde::Deserializer<'de>,
+  1113	    T: serde::Deserialize<'de>,
+  1114	{
+  1115	    serde::Deserialize::deserialize(deserializer).map(Some)
+  1116	}
+  1117	
+  1118	fn default_true() -> bool {
+  1119	    true
+  1120	}
+  1121	
+  1122	pub(crate) fn validate_and_normalize_url(raw: &str, field_name: &str) -> Result<String, AppError> {
+  1123	    let trimmed = raw.trim();
+  1124	    let parsed = url::Url::parse(trimmed).map_err(|_| {
+  1125	        AppError::invalid_request(Reason::BaseUrlInvalid, format!("invalid {field_name}"))
+  1126	    })?;
+  1127	    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+  1128	        return Err(AppError::invalid_request(
+  1129	            Reason::BaseUrlInvalid,
+  1130	            format!("{field_name} must use http or https scheme"),
+  1131	        ));
+  1132	    }
+  1133	    if parsed.host().is_none() {
+  1134	        return Err(AppError::invalid_request(
+  1135	            Reason::BaseUrlInvalid,
+  1136	            format!("{field_name} must include a host"),
+  1137	        ));
+  1138	    }
+  1139	    if parsed.query().is_some() || parsed.fragment().is_some() {
+  1140	        return Err(AppError::invalid_request(
+  1141	            Reason::BaseUrlInvalid,
+  1142	            format!("{field_name} must not contain query parameters or fragments"),
+  1143	        ));
+  1144	    }
+  1145	    Ok(trimmed.trim_end_matches('/').to_string())
+  1146	}
+  1147	
+  1148	#[utoipa::path(
+  1149	    get,
+  1150	    path = "/connections",
+  1151	    responses(
+  1152	        (status = 200, description = "List connections (credential redacted; only has_credential exposed)", body = [ConnectionView])
+  1153	    )
+  1154	)]
+  1155	pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
+  1156	    let cs = state.store().list_connections().await?;
+  1157	    Ok(Json(cs.iter().map(ConnectionView::from).collect::<Vec<_>>()).into_response())
+  1158	}
+  1159	
+  1160	#[utoipa::path(
+  1161	    post,
+  1162	    path = "/connections",
+  1163	    request_body = ConnectionInput,
+  1164	    responses(
+  1165	        (status = 201, description = "Connection created (credential redacted in response)", body = ConnectionView),
+  1166	        (status = 400, description = "Invalid request", body = ErrorResponse)
+  1167	    )
+  1168	)]
+  1169	pub async fn create_connection(
+  1170	    State(state): State<Arc<AppState>>,
+  1171	    Json(body): Json<ConnectionInput>,
+  1172	) -> Result<Response, AppError> {
+  1173	    let connector = state
+  1174	        .connectors()
+  1175	        .get(&body.connector)
+  1176	        .ok_or_else(|| AppError::invalid_request(Reason::ConnectorUnknown, "unknown connector"))?;
+  1177	    let transforms = match &body.transforms {
+  1178	        Some(Some(t)) => t.as_slice(),
+  1179	        _ => &[],
+  1180	    };
+  1181	    if let Err((idx, msg)) = connector.validate_transforms(transforms) {
+  1182	        return Err(AppError::invalid_request(
+  1183	            Reason::ConnectionTransformInvalid,
+  1184	            format!("rule {idx}: {msg}"),
+  1185	        ));
+  1186	    }
+  1187	    let cred = body.credential.unwrap_or_default();
+  1188	    if cred.is_empty() {
+  1189	        return Err(AppError::invalid_request(
+  1190	            Reason::CredentialRequired,
+  1191	            "credential required",
+  1192	        ));
+  1193	    }
+  1194	    let base_url = validate_and_normalize_url(&body.base_url, "base_url")?;
+  1195	    let pub_url = match &body.public_url {
+  1196	        Some(Some(raw)) => {
+  1197	            let trimmed = raw.trim();
+  1198	            if trimmed.is_empty() {
+  1199	                None
+  1200	            } else {
+  1201	                Some(validate_and_normalize_url(trimmed, "public_url")?)
+  1202	            }
+  1203	        }
+  1204	        _ => None,
+  1205	    };
+  1206	    let _g = state.write_lock.lock().await;
+  1207	    let c = state
+  1208	        .store()
+  1209	        .create_connection(crate::store::NewConnection {
+  1210	            connector: &body.connector,
+  1211	            name: &body.name,
+  1212	            base_url: &base_url,
+  1213	            public_url: pub_url.as_deref(),
+  1214	            credential: &cred,
+  1215	            enabled: body.enabled,
+  1216	            transforms,
+  1217	        })
+  1218	        .await?;
+  1219	    Ok((
+  1220	        axum::http::StatusCode::CREATED,
+  1221	        Json(ConnectionView::from(&c)),
+  1222	    )
+  1223	        .into_response())
+  1224	}
+  1225	
+  1226	#[utoipa::path(
+  1227	    get,
+  1228	    path = "/connections/{id}",
+  1229	    params(("id" = String, Path, description = "Connection ID")),
+  1230	    responses(
+  1231	        (status = 200, description = "Connection (credential redacted)", body = ConnectionView),
+  1232	        (status = 404, description = "Connection not found", body = ErrorResponse)
+  1233	    )
+  1234	)]
+  1235	pub async fn get_connection_h(
+  1236	    State(state): State<Arc<AppState>>,
+  1237	    Path(id): Path<String>,
+  1238	) -> Result<Response, AppError> {
+  1239	    let c = state
+  1240	        .store()
+  1241	        .get_connection(&id)
+  1242	        .await?
+  1243	        .ok_or_else(|| AppError::not_found(&id))?;
+  1244	    Ok(Json(ConnectionView::from(&c)).into_response())
+  1245	}
+  1246	
+  1247	#[utoipa::path(
+  1248	    put,
+  1249	    path = "/connections/{id}",
+  1250	    params(("id" = String, Path, description = "Connection ID")),
+  1251	    request_body = ConnectionInput,
+  1252	    responses(
+  1253	        (status = 200, description = "Connection updated (credential redacted)", body = ConnectionView),
+  1254	        (status = 400, description = "Invalid request", body = ErrorResponse),
+  1255	        (status = 404, description = "Connection not found", body = ErrorResponse)
+  1256	    )
+  1257	)]
+  1258	pub async fn update_connection_h(
+  1259	    State(state): State<Arc<AppState>>,
+  1260	    Path(id): Path<String>,
+  1261	    Json(body): Json<ConnectionInput>,
+  1262	) -> Result<Response, AppError> {
+  1263	    let existing = state
+  1264	        .store()
+  1265	        .get_connection(&id)
+  1266	        .await?
+  1267	        .ok_or_else(|| AppError::not_found(&id))?;
+  1268	    let connector = state.connectors().get(&existing.connector).ok_or_else(|| {
+  1269	        AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
+  1270	    })?;
+  1271	    let base_url = validate_and_normalize_url(&body.base_url, "base_url")?;
+  1272	    let public_url = match &body.public_url {
+  1273	        None => crate::store::UpdateField::Keep,
+  1274	        Some(None) => crate::store::UpdateField::Clear,
+  1275	        Some(Some(raw)) => {
+  1276	            let trimmed = raw.trim();
+  1277	            if trimmed.is_empty() {
+  1278	                crate::store::UpdateField::Clear
+  1279	            } else {
+  1280	                crate::store::UpdateField::Set(validate_and_normalize_url(trimmed, "public_url")?)
+  1281	            }
+  1282	        }
+  1283	    };
+  1284	    let transforms = match &body.transforms {
+  1285	        None => crate::store::UpdateField::Keep,
+  1286	        Some(None) => crate::store::UpdateField::Clear,
+  1287	        Some(Some(rules)) => {
+  1288	            if let Err((idx, msg)) = connector.validate_transforms(rules) {
+  1289	                return Err(AppError::invalid_request(
+  1290	                    Reason::ConnectionTransformInvalid,
+  1291	                    format!("rule {idx}: {msg}"),
+  1292	                ));
+  1293	            }
+  1294	            if rules.is_empty() {
+  1295	                crate::store::UpdateField::Clear
+  1296	            } else {
+  1297	                crate::store::UpdateField::Set(rules.clone())
+  1298	            }
+  1299	        }
+  1300	    };
+  1301	    let _g = state.write_lock.lock().await;
+  1302	    let cred = body.credential.filter(|c| !c.is_empty());
+  1303	    let ok = state
+  1304	        .store()
+  1305	        .update_connection(
+  1306	            &id,
+  1307	            crate::store::UpdateConnection {
+  1308	                name: &body.name,
+  1309	                base_url: &base_url,
+  1310	                public_url,
+  1311	                credential: cred.as_deref(),
+  1312	                enabled: body.enabled,
+  1313	                transforms,
+  1314	            },
+  1315	        )
+  1316	        .await?;
+  1317	    if !ok {
+  1318	        return Err(AppError::not_found(&id));
+  1319	    }
+  1320	    let c = state.store().get_connection(&id).await?.unwrap();
+  1321	    Ok(Json(ConnectionView::from(&c)).into_response())
+  1322	}
+  1323	
+  1324	#[utoipa::path(
+  1325	    delete,
+
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'rg -n "follow|open question|question|out of scope|#197|connector.*update|dangling|TODO" openspec/changes/issue-169-connection-public-url/design.md openspec/changes/issue-169-connection-public-url/specs/connections/spec.md' in /home/pfa/projects/labeler/.worktrees/issue-169
+ succeeded in 0ms:
+openspec/changes/issue-169-connection-public-url/design.md:116:print external links?" at a glance, which is the question an operator debugging a scanned QR code
+openspec/changes/issue-169-connection-public-url/design.md:129:**`connector` on `PUT` is documented as inert, not made strict.** The update handler never reads
+openspec/changes/issue-169-connection-public-url/design.md:132:rejecting a mismatched connector on update is a behavior change outside #169's scope, so it is filed as
+openspec/changes/issue-169-connection-public-url/design.md:133:[#197](https://github.com/pfa230/labeler/issues/197) and left out of this change.
+openspec/changes/issue-169-connection-public-url/design.md:147:  table column surfaces the effective value. Reachability is out of scope by design (see Non-Goals).
+
+web search: 
+web search: https://github.com/pfa230/labeler/issues/197
+web search: 
+web search: site:github.com/pfa230/labeler/issues/197
+codex
+Public web access did not fetch the specific GitHub issue, so I’m checking whether a GitHub connector is available before treating that citation as network-unverified.
+codex
+The exposed GitHub tools here only include mutation helpers, not a read operation, so I won’t use them. I’ll try the local `gh issue view` once; if it cannot reach GitHub, I’ll report that explicitly.
+exec
+/home/linuxbrew/.linuxbrew/bin/zsh -lc 'gh issue view 197 --repo pfa230/labeler --json number,title,state,url,body' in /home/pfa/projects/labeler/.worktrees/issue-169
+ exited 1 in 143ms:
+error connecting to api.github.com
+check your internet connection or https://githubstatus.com
+
+codex
+## Re-check
+
+1. APPLIED. The uncited follow-up/open question is no longer present; the remaining deferred behavior is tied to concrete issue `#197` in [design.md](/home/pfa/projects/labeler/.worktrees/issue-169/openspec/changes/issue-169-connection-public-url/design.md:129). This is factually correct against `src/api.rs`: the update handler reads the stored connector, not `body.connector`, at [src/api.rs](/home/pfa/projects/labeler/.worktrees/issue-169/src/api.rs:1268). I could not reach GitHub issue 197 (`gh issue view` failed connecting to `api.github.com`), so I judge only the citation’s internal consistency; it is a concrete GitHub issue reference.
+
+2. APPLIED. The reading scenario now includes `transforms` in the response fields at [spec.md](/home/pfa/projects/labeler/.worktrees/issue-169/openspec/changes/issue-169-connection-public-url/specs/connections/spec.md:27). This is factually correct against `ConnectionView`, which exposes `transforms` at [src/api.rs](/home/pfa/projects/labeler/.worktrees/issue-169/src/api.rs:1076) and populates it from the store at [src/api.rs](/home/pfa/projects/labeler/.worktrees/issue-169/src/api.rs:1089).
+
+## New defects introduced
+
+none
+
+## Verdict
+
+VERDICT: APPROVE
+tokens used
+40,774
+## Re-check
+
+1. APPLIED. The uncited follow-up/open question is no longer present; the remaining deferred behavior is tied to concrete issue `#197` in [design.md](/home/pfa/projects/labeler/.worktrees/issue-169/openspec/changes/issue-169-connection-public-url/design.md:129). This is factually correct against `src/api.rs`: the update handler reads the stored connector, not `body.connector`, at [src/api.rs](/home/pfa/projects/labeler/.worktrees/issue-169/src/api.rs:1268). I could not reach GitHub issue 197 (`gh issue view` failed connecting to `api.github.com`), so I judge only the citation’s internal consistency; it is a concrete GitHub issue reference.
+
+2. APPLIED. The reading scenario now includes `transforms` in the response fields at [spec.md](/home/pfa/projects/labeler/.worktrees/issue-169/openspec/changes/issue-169-connection-public-url/specs/connections/spec.md:27). This is factually correct against `ConnectionView`, which exposes `transforms` at [src/api.rs](/home/pfa/projects/labeler/.worktrees/issue-169/src/api.rs:1076) and populates it from the store at [src/api.rs](/home/pfa/projects/labeler/.worktrees/issue-169/src/api.rs:1089).
+
+## New defects introduced
+
+none
+
+## Verdict
+
+VERDICT: APPROVE

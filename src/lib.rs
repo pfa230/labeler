@@ -414,7 +414,7 @@ mod http_tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+        assert_eq!(body["error"]["details"]["reason"], "public_url_invalid");
 
         // Query param
         let res = app
@@ -433,7 +433,7 @@ mod http_tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+        assert_eq!(body["error"]["details"]["reason"], "public_url_invalid");
 
         // Fragment
         let res = app
@@ -452,7 +452,26 @@ mod http_tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+        assert_eq!(body["error"]["details"]["reason"], "public_url_invalid");
+
+        // Userinfo
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://user:pass@homebox","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "public_url_invalid");
     }
 
     #[tokio::test]
@@ -578,6 +597,201 @@ mod http_tests {
         assert_eq!(res.status(), StatusCode::OK);
         let v = json_response(res).await;
         assert_eq!(v["public_url"], Value::Null);
+    }
+
+    /// The two URL fields must not share a discriminator. Passing `UrlField::Public` for `base_url`
+    /// would still return 400, so only asserting the status proves nothing: it is the slug that says
+    /// which field the client has to fix.
+    #[tokio::test]
+    async fn invalid_base_url_reports_base_url_invalid_not_public_url_invalid() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"ftp://hb.lan","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+
+        // Same on update, whose call site is separate.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"https://user:pass@hb.lan"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "base_url_invalid");
+    }
+
+    /// `https://:pass@host` carries a password with an empty username. `url::Url` still parses it as
+    /// userinfo, so the username-only check alone would let a secret through onto a printed label.
+    #[tokio::test]
+    async fn create_connection_rejects_password_only_userinfo() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://:pass@homebox","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "public_url_invalid");
+    }
+
+    #[tokio::test]
+    async fn connection_endpoints_report_404_for_an_unknown_id() {
+        let app = build_app();
+        for (method, body) in [
+            ("GET", Body::empty()),
+            (
+                "PUT",
+                Body::from(r#"{"connector":"homebox","name":"x","base_url":"http://hb.lan:7745"}"#),
+            ),
+            ("DELETE", Body::empty()),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri("/api/connections/nope")
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "{method} unknown id");
+        }
+    }
+
+    /// A connection's connector is fixed at creation: an update naming a different one is neither
+    /// applied nor refused (#197).
+    #[tokio::test]
+    async fn update_connection_ignores_the_connector_in_the_payload() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"not-a-connector","name":"home","base_url":"http://hb.lan:7745"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(json_response(res).await["connector"], "homebox");
+    }
+
+    #[tokio::test]
+    async fn deleted_connection_no_longer_appears_in_the_list() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/connections/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/connections")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list = json_response(res).await;
+        assert!(list.as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -3129,6 +3343,92 @@ layout:
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let v: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["rows"][0]["id"]["key"], "e1");
+    }
+
+    #[tokio::test]
+    async fn browse_endpoint_public_url_and_fallback_e2e() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id":"e1","name":"Drill","entityType":{"name":"item"}}], "total": 1
+            })))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: Some("https://public.homebox.domain"),
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+
+        // Browse uses public_url for row links
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v["rows"][0]["url"],
+            "https://public.homebox.domain/entity/e1"
+        );
+
+        // Clear public_url via PUT
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{}", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"connector":"homebox","name":"h","base_url":"{}","public_url":null}}"#,
+                        hb.uri()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Browse falls back to base_url
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let expected_url = format!("{}/entity/e1", hb.uri().trim_end_matches('/'));
+        assert_eq!(v["rows"][0]["url"], expected_url);
     }
 
     #[tokio::test]

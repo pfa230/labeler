@@ -80,6 +80,7 @@ reasons! {
     ConnectionTransformInvalid => "connection_transform_invalid",
     CredentialRequired => "credential_required",
     BaseUrlInvalid => "base_url_invalid",
+    PublicUrlInvalid => "public_url_invalid",
     CsvHeaderInvalid => "csv_header_invalid",
     CsvRowInvalid => "csv_row_invalid",
     CsvEmpty => "csv_empty",

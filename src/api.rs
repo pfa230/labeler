@@ -1186,27 +1186,58 @@ fn default_true() -> bool {
     true
 }
 
-pub(crate) fn validate_and_normalize_url(raw: &str, field_name: &str) -> Result<String, AppError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UrlField {
+    Base,
+    Public,
+}
+
+impl UrlField {
+    pub(crate) fn wire_name(self) -> &'static str {
+        match self {
+            Self::Base => "base_url",
+            Self::Public => "public_url",
+        }
+    }
+
+    pub(crate) fn reason(self) -> Reason {
+        match self {
+            Self::Base => Reason::BaseUrlInvalid,
+            Self::Public => Reason::PublicUrlInvalid,
+        }
+    }
+}
+
+pub(crate) fn validate_and_normalize_url(raw: &str, field: UrlField) -> Result<String, AppError> {
     let trimmed = raw.trim();
     let parsed = url::Url::parse(trimmed).map_err(|_| {
-        AppError::invalid_request(Reason::BaseUrlInvalid, format!("invalid {field_name}"))
+        AppError::invalid_request(field.reason(), format!("invalid {}", field.wire_name()))
     })?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(AppError::invalid_request(
-            Reason::BaseUrlInvalid,
-            format!("{field_name} must use http or https scheme"),
+            field.reason(),
+            format!("{} must use http or https scheme", field.wire_name()),
         ));
     }
     if parsed.host().is_none() {
         return Err(AppError::invalid_request(
-            Reason::BaseUrlInvalid,
-            format!("{field_name} must include a host"),
+            field.reason(),
+            format!("{} must include a host", field.wire_name()),
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(AppError::invalid_request(
+            field.reason(),
+            format!("{} must not contain userinfo", field.wire_name()),
         ));
     }
     if parsed.query().is_some() || parsed.fragment().is_some() {
         return Err(AppError::invalid_request(
-            Reason::BaseUrlInvalid,
-            format!("{field_name} must not contain query parameters or fragments"),
+            field.reason(),
+            format!(
+                "{} must not contain query parameters or fragments",
+                field.wire_name()
+            ),
         ));
     }
     Ok(trimmed.trim_end_matches('/').to_string())
@@ -1258,14 +1289,14 @@ pub async fn create_connection(
             "credential required",
         ));
     }
-    let base_url = validate_and_normalize_url(&body.base_url, "base_url")?;
+    let base_url = validate_and_normalize_url(&body.base_url, UrlField::Base)?;
     let pub_url = match &body.public_url {
         Some(Some(raw)) => {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 None
             } else {
-                Some(validate_and_normalize_url(trimmed, "public_url")?)
+                Some(validate_and_normalize_url(trimmed, UrlField::Public)?)
             }
         }
         _ => None,
@@ -1335,7 +1366,7 @@ pub async fn update_connection_h(
     let connector = state.connectors().get(&existing.connector).ok_or_else(|| {
         AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
     })?;
-    let base_url = validate_and_normalize_url(&body.base_url, "base_url")?;
+    let base_url = validate_and_normalize_url(&body.base_url, UrlField::Base)?;
     let public_url = match &body.public_url {
         None => crate::store::UpdateField::Keep,
         Some(None) => crate::store::UpdateField::Clear,
@@ -1344,7 +1375,10 @@ pub async fn update_connection_h(
             if trimmed.is_empty() {
                 crate::store::UpdateField::Clear
             } else {
-                crate::store::UpdateField::Set(validate_and_normalize_url(trimmed, "public_url")?)
+                crate::store::UpdateField::Set(validate_and_normalize_url(
+                    trimmed,
+                    UrlField::Public,
+                )?)
             }
         }
     };
@@ -2611,20 +2645,20 @@ mod tests {
     #[test]
     fn validate_and_normalize_url_accepts_valid_urls() {
         assert_eq!(
-            validate_and_normalize_url("http://example.com", "base_url").unwrap(),
+            validate_and_normalize_url("http://example.com", UrlField::Base).unwrap(),
             "http://example.com"
         );
         assert_eq!(
-            validate_and_normalize_url("https://example.com/", "base_url").unwrap(),
+            validate_and_normalize_url("https://example.com/", UrlField::Base).unwrap(),
             "https://example.com"
         );
         assert_eq!(
-            validate_and_normalize_url("  https://example.com/sub/path///  ", "public_url")
+            validate_and_normalize_url("  https://example.com/sub/path///  ", UrlField::Public)
                 .unwrap(),
             "https://example.com/sub/path"
         );
         assert_eq!(
-            validate_and_normalize_url("http://hb.lan:7745", "base_url").unwrap(),
+            validate_and_normalize_url("http://hb.lan:7745", UrlField::Base).unwrap(),
             "http://hb.lan:7745"
         );
     }
@@ -2632,33 +2666,50 @@ mod tests {
     #[test]
     fn validate_and_normalize_url_rejects_invalid_urls() {
         // Bad scheme
-        let err = validate_and_normalize_url("ftp://example.com", "public_url").unwrap_err();
-        assert_eq!(err.reason(), Some("base_url_invalid"));
+        let err = validate_and_normalize_url("ftp://example.com", UrlField::Public).unwrap_err();
+        assert_eq!(err.reason(), Some("public_url_invalid"));
         assert!(err.message_text().contains("must use http or https scheme"));
 
         // Missing host
-        let err = validate_and_normalize_url("http://", "base_url").unwrap_err();
+        let err = validate_and_normalize_url("http://", UrlField::Base).unwrap_err();
         assert_eq!(err.reason(), Some("base_url_invalid"));
+
+        // Userinfo with password
+        let err = validate_and_normalize_url("https://user:pass@example.com", UrlField::Public)
+            .unwrap_err();
+        assert_eq!(err.reason(), Some("public_url_invalid"));
+        assert!(err.message_text().contains("must not contain userinfo"));
+
+        // Userinfo without password (username only)
+        let err =
+            validate_and_normalize_url("https://user@example.com", UrlField::Base).unwrap_err();
+        assert_eq!(err.reason(), Some("base_url_invalid"));
+        assert!(err.message_text().contains("must not contain userinfo"));
 
         // Query parameters
         let err =
-            validate_and_normalize_url("http://example.com?query=1", "public_url").unwrap_err();
-        assert_eq!(err.reason(), Some("base_url_invalid"));
+            validate_and_normalize_url("http://example.com?query=1", UrlField::Public).unwrap_err();
+        assert_eq!(err.reason(), Some("public_url_invalid"));
         assert!(err
             .message_text()
             .contains("must not contain query parameters or fragments"));
 
         // Fragments
-        let err = validate_and_normalize_url("http://example.com#section", "base_url").unwrap_err();
+        let err =
+            validate_and_normalize_url("http://example.com#section", UrlField::Base).unwrap_err();
         assert_eq!(err.reason(), Some("base_url_invalid"));
         assert!(err
             .message_text()
             .contains("must not contain query parameters or fragments"));
 
         // Parse failure
-        let err = validate_and_normalize_url("not a url", "base_url").unwrap_err();
+        let err = validate_and_normalize_url("not a url", UrlField::Base).unwrap_err();
         assert_eq!(err.reason(), Some("base_url_invalid"));
         assert_eq!(err.message_text(), "invalid base_url");
+
+        let err = validate_and_normalize_url("not a url", UrlField::Public).unwrap_err();
+        assert_eq!(err.reason(), Some("public_url_invalid"));
+        assert_eq!(err.message_text(), "invalid public_url");
     }
 
     #[test]
