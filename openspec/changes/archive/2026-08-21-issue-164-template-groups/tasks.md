@@ -33,8 +33,8 @@
 
 ## 5. Docs and decisions
 
-- [x] 5.1 Write ADR-0062, "A template's group is a YAML field, not its directory", covering the flat single level and the rollback consequence that an older binary quarantines a file carrying `group:`. Confirm the number against `main` first: 0059 through 0061 are claimed by changes in flight.
-- [x] 5.2 Write ADR-0063, "The service may rewrite one key of a hand-authored template", qualifying ADR-0006 and naming the byte-preservation guarantee its tests enforce.
+- [x] 5.1 Write ADR-0061, "A template's group is a YAML field, not its directory", covering the flat single level and the rollback consequence that an older binary quarantines a file carrying `group:`. Confirm the number against `main` first: 0059 through 0061 were claimed by changes in flight when this was written, and the pair landed as 0061 and 0062.
+- [x] 5.2 Write ADR-0062, "The service may rewrite one key of a hand-authored template", qualifying ADR-0006 and naming the byte-preservation guarantee its tests enforce.
 - [x] 5.3 Add both rows to `docs/adr/README.md`.
 - [x] 5.4 Document `group` in `docs/AUTHORING.md`, including that it is one flat name and that a slash in it is just a character. Do not touch the frozen `docs/SPEC.md`.
 

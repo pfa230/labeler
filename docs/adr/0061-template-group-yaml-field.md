@@ -1,4 +1,4 @@
-# 62. A template's group is a YAML field, not its directory
+# 61. A template's group is a YAML field, not its directory
 
 Date: 2026-08-21
 

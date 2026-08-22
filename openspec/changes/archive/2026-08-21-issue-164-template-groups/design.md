@@ -65,7 +65,7 @@ The YAML field costs one field in each of the three parse-path files and nothing
 loss: reorganizing `/config/templates` by hand with `mv` does not group anything, because the
 directory carries no meaning. Accepted knowingly.
 
-Recorded as **ADR-0062, "A template's group is a YAML field, not its directory"**.
+Recorded as **ADR-0061, "A template's group is a YAML field, not its directory"**.
 
 ### 2. One flat level
 
@@ -76,7 +76,7 @@ Hierarchy was rejected for this change, not forever: it costs a tree control wit
 the Labels view, a decision about whether selecting a parent includes its children, per-segment
 validation, and a depth cap, for a set that is currently a few dozen templates. Widening later is a
 pure loosening of `validate_group_name`, and no existing file or response has to change, so the
-cheap option here does not become the wrong one later. Same ADR-0062.
+cheap option here does not become the wrong one later. Same ADR-0061.
 
 ### 3. Validation lives in one function, shared by the parse path and the move endpoint
 
@@ -141,7 +141,7 @@ being wrong: a duplicated key can round-trip through a parser that takes the las
 scan-versus-parse disagreement has to be caught before the write, not after it. Line endings are preserved by splitting on line
 terminators and keeping each line's own ending, so a CRLF file stays CRLF.
 
-Recorded as **ADR-0063, "The service may rewrite one key of a hand-authored template"**, which
+Recorded as **ADR-0062, "The service may rewrite one key of a hand-authored template"**, which
 qualifies ADR-0006: a targeted single-key patch that preserves every other byte is not the lossy
 round trip that ADR forbids, and the guarantee is enforced by tests that assert byte equality outside
 the patched line.
@@ -196,7 +196,7 @@ mean the same thing, and the API tests are what hold them together.
 - **Rollback quarantines grouped templates.** `deny_unknown_fields` means a binary from before this
   change rejects a file carrying `group:`. Per `template-registry` those files are quarantined and
   reported as broken, not fatal, so an older binary starts and serves everything else. Recovery is to
-  roll forward, or to delete the `group:` lines. Stated in ADR-0062's consequences.
+  roll forward, or to delete the `group:` lines. Stated in ADR-0061's consequences.
 - **Group names drift by case and spelling.** Only the dialog's list of existing names pushes against
   it. Deliberate: enforcement would mean a registry-wide uniqueness rule for a naming preference.
 - **Bulk move is N requests.** At a few dozen templates that is fine; a bulk endpoint is not worth its
@@ -215,7 +215,8 @@ flat versus hierarchical, who rewrites the file) were settled before this docume
 
 ## ADR numbering
 
-ADR-0062 and ADR-0063 are the next free numbers on `main`, which holds through ADR-0058. Numbers
-0059 through 0061 are claimed by changes in flight in other worktrees (#161 and #180 both claim 0059,
-#169 claims 0060 and 0061). Whichever change merges last renumbers; verify against `main` before
-writing the files.
+ADR-0061 and ADR-0062, assigned at merge time. When this was planned the next free numbers looked
+like 0062 and 0063, because #161, #169 and #180 had each claimed one of 0059 through 0061 in their
+own worktrees. By the time this merged, #180 had taken 0059 and #161 had taken 0060, and 0061 was
+free again, so the pair moved down one to keep the sequence dense. That is the rule working, not a
+correction: the number is not real until the change lands.

@@ -5,8 +5,8 @@ const CONTENT_EPSILON: f32 = 1.0e-4;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, DynamicDimension, Extent, Fit, FontSize, LabelInput, Layout, LayoutItem,
-    Placement, Point, Position, Rotation, SizeValue, TemplateFormat,
+    resolve_coord, DynamicDimension, Extent, Fit, FontSize, HorizontalAlign, LabelInput, Layout,
+    LayoutItem, Placement, Point, Position, Rotation, SizeValue, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::TemplateDefinition;
@@ -987,8 +987,9 @@ impl<'a> RenderContext<'a> {
                             Extent::To(to) if to.x().is_sign_negative() => -to.x(),
                             _ => 0.0,
                         };
-                        // The cap binds here, not at render: the rendered box for this item is
-                        // exactly `m.width`, so capping the budget is what caps the width.
+                        // The cap binds here to size the label to the text's capped fit; for
+                        // left alignment the rendered box is also `m.width`, while for center
+                        // and right alignment the render pass applies max_w to the slot.
                         let budget = (budget_w - at.x - inset)
                             .min(placement.max_w.unwrap_or(f32::INFINITY))
                             .max(0.0);
@@ -1385,8 +1386,9 @@ impl<'a> RenderContext<'a> {
                 };
                 let slot_top = self.frame_height_units - point.y - slot_h;
                 // The box width is the resolved extent for a `to` (so a right-edge inset stays a
-                // visible margin), and the content's fitted width for an auto size, matching what
-                // the measure pass pushed.
+                // visible margin). For an auto size, it is the fitted width under left alignment
+                // (preserving today's source byte-for-byte), and the alignment slot spanning the
+                // remaining frame width under center or right alignment (#180).
                 let box_w = match &placement.extent {
                     Extent::To(_) => {
                         self.resolve_size(
@@ -1398,7 +1400,14 @@ impl<'a> RenderContext<'a> {
                         )?
                         .0
                     }
-                    Extent::Size(_) => m.width,
+                    Extent::Size(_) => match alignment.horizontal {
+                        HorizontalAlign::Left => m.width,
+                        HorizontalAlign::Center | HorizontalAlign::Right => {
+                            (self.frame_width_units - left)
+                                .min(placement.max_w.unwrap_or(f32::INFINITY))
+                                .max(m.width)
+                        }
+                    },
                 };
                 self.check_box_bounds(&point, box_w, slot_h)?;
                 let body = trim_blank_edges(&m.lines)
@@ -2129,6 +2138,34 @@ mod tests {
         text: &str,
         vertical: VerticalAlign,
     ) -> String {
+        text_source_h_aligned_weighted(
+            weight,
+            HorizontalAlign::Left,
+            vertical,
+            size_w,
+            font_size,
+            text,
+        )
+    }
+
+    fn text_source_h_aligned(
+        horizontal: HorizontalAlign,
+        vertical: VerticalAlign,
+        size_w: Option<f32>,
+        font_size: FontSize,
+        text: &str,
+    ) -> String {
+        text_source_h_aligned_weighted(None, horizontal, vertical, size_w, font_size, text)
+    }
+
+    fn text_source_h_aligned_weighted(
+        weight: Option<u16>,
+        horizontal: HorizontalAlign,
+        vertical: VerticalAlign,
+        size_w: Option<f32>,
+        font_size: FontSize,
+        text: &str,
+    ) -> String {
         use std::cell::RefCell;
         let data: HashMap<String, super::JsonValue> = HashMap::new();
         let settings = no_settings();
@@ -2154,7 +2191,7 @@ mod tests {
             font_weight: weight.map(Into::into),
             multiline: false,
             alignment: crate::models::Alignment {
-                horizontal: crate::models::HorizontalAlign::Left,
+                horizontal,
                 vertical,
             },
             when: None,
@@ -2239,6 +2276,343 @@ mod tests {
         assert!(
             !centered.contains("#pad"),
             "center must not pad: {centered}"
+        );
+    }
+
+    /// #180: on an auto-length frame, auto-width text with `horizontal: center` or `right`
+    /// emits a box spanning the full alignment slot (the frame remainder), while `left`
+    /// continues to emit the fitted content width.
+    #[test]
+    fn auto_width_text_horizontal_alignment_on_dynamic_frame() {
+        let centered = text_source_h_aligned(
+            HorizontalAlign::Center,
+            VerticalAlign::Top,
+            None,
+            FontSize::Fixed(10.0),
+            "Hi",
+        );
+        assert!(
+            centered.contains("#box(width: 80mm"),
+            "center must emit full slot box (80mm), got: {centered}"
+        );
+        assert!(
+            centered.contains("#align(top + center)"),
+            "expected center alignment in: {centered}"
+        );
+
+        let right = text_source_h_aligned(
+            HorizontalAlign::Right,
+            VerticalAlign::Top,
+            None,
+            FontSize::Fixed(10.0),
+            "Hi",
+        );
+        assert!(
+            right.contains("#box(width: 80mm"),
+            "right must emit full slot box (80mm), got: {right}"
+        );
+        assert!(
+            right.contains("#align(top + right)"),
+            "expected right alignment in: {right}"
+        );
+
+        let left = text_source_h_aligned(
+            HorizontalAlign::Left,
+            VerticalAlign::Top,
+            None,
+            FontSize::Fixed(10.0),
+            "Hi",
+        );
+        assert!(
+            !left.contains("#box(width: 80mm"),
+            "left must keep fitted width box, got: {left}"
+        );
+        assert!(
+            left.contains("#align(top + left)"),
+            "expected left alignment in: {left}"
+        );
+    }
+
+    /// #180: max_w caps the alignment slot at render time for center and right alignment.
+    #[test]
+    fn auto_width_text_max_w_caps_alignment_slot_at_render() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let item = LayoutItem::Text {
+            value: "Hi".to_string(),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: Extent::Size(Size([
+                    SizeValue::Auto(AutoSize::Auto),
+                    SizeValue::fixed(8.0),
+                ])),
+                max_w: Some(30.0),
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            multiline: false,
+            alignment: Alignment {
+                horizontal: HorizontalAlign::Center,
+                vertical: VerticalAlign::Top,
+            },
+            when: None,
+        };
+        let measuring = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let mut measured = Vec::new();
+        measuring
+            .measure(std::slice::from_ref(&item), 80.0, &mut measured)
+            .expect("measure");
+        let cursor = std::cell::Cell::new(0);
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Dynamic(super::AutoLength {
+                texts: &measured,
+                cursor: &cursor,
+            }),
+        );
+        let source = ctx.render_items(&[item]).expect("render");
+        assert!(
+            source.contains("#box(width: 30mm"),
+            "max_w: 30mm must cap the 80mm frame remainder, got: {source}"
+        );
+    }
+
+    /// #180: centred auto-width text inside a padded container on a dynamic frame
+    /// gets the container's padded inner remainder, not the outer label frame.
+    #[test]
+    fn auto_width_text_in_padded_container_on_dynamic_frame() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let child = LayoutItem::Text {
+            value: "Hi".to_string(),
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: Extent::Size(Size([
+                    SizeValue::Auto(AutoSize::Auto),
+                    SizeValue::fixed(8.0),
+                ])),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            multiline: false,
+            alignment: Alignment {
+                horizontal: HorizontalAlign::Center,
+                vertical: VerticalAlign::Top,
+            },
+            when: None,
+        };
+        let container = LayoutItem::Container {
+            placement: Placement {
+                at: Position([0.0, 0.0]),
+                extent: Extent::Size(Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)])),
+                max_w: None,
+                max_h: None,
+                rotate: None,
+            },
+            when: None,
+            frame: None,
+            padding: Padding {
+                top: 0.0,
+                right: 5.0,
+                bottom: 0.0,
+                left: 5.0,
+            },
+            items: vec![child],
+        };
+        let measuring = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Fixed,
+        );
+        let mut measured = Vec::new();
+        measuring
+            .measure(std::slice::from_ref(&container), 80.0, &mut measured)
+            .expect("measure");
+        let cursor = std::cell::Cell::new(0);
+        let ctx = super::RenderContext::new(
+            (80.0, 40.0),
+            "mm",
+            &data,
+            None,
+            &env,
+            &images,
+            super::LengthMode::Dynamic(super::AutoLength {
+                texts: &measured,
+                cursor: &cursor,
+            }),
+        );
+        let source = ctx.render_items(&[container]).expect("render");
+        assert!(
+            source.contains("#box(width: 40mm"),
+            "nested text must span container inner width (40mm), not 80mm or 50mm, got: {source}"
+        );
+    }
+
+    /// #180: dynamic-width template tests end to end for content-fitting (3.3) and min-clamping (3.4).
+    #[test]
+    fn dynamic_width_template_centered_text_end_to_end() {
+        let yaml = r#"
+id: dynamic_centered_e2e
+name: Dynamic Centered E2E
+unit: mm
+dpi: 200
+params:
+  message:
+    type: string
+format:
+  type: single
+  height: 12
+  width:
+    min: 20
+    max: 100
+layout:
+  - type: text
+    value: "{message}"
+    at: [0, 0]
+    size: [auto, 12]
+    font_size: 10
+    alignment:
+      horizontal: center
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+
+        // 3.3: Content between min and max (e.g. ~50mm).
+        // Prove measurement pass is untouched: label is sized to content, not clamped to min or max.
+        let mut data_fit = HashMap::new();
+        data_fit.insert(
+            "message".to_string(),
+            json!("This is a medium length label message"),
+        );
+        let png_fit =
+            render_single_label(&template, &data_fit, None, &BTreeMap::new(), &resolver()).unwrap();
+        let img_fit = image::load_from_memory(&png_fit).unwrap();
+        let min_px = (20.0_f32 / 25.4 * 200.0).round() as u32;
+        let max_px = (100.0_f32 / 25.4 * 200.0).round() as u32;
+        assert!(
+            img_fit.width() > min_px,
+            "fitted text width in px ({}) must be > min_px ({min_px})",
+            img_fit.width()
+        );
+        assert!(
+            img_fit.width() < max_px,
+            "fitted text width in px ({}) must be < max_px ({max_px})",
+            img_fit.width()
+        );
+
+        // 3.4: Content narrower than min (e.g. "Hi", ~3.5mm).
+        // Label is clamped to width.min (20mm).
+        let mut data_short = HashMap::new();
+        data_short.insert("message".to_string(), json!("Hi"));
+        let png_short =
+            render_single_label(&template, &data_short, None, &BTreeMap::new(), &resolver())
+                .unwrap();
+        let img_short = image::load_from_memory(&png_short).unwrap();
+        assert_eq!(
+            img_short.width(),
+            min_px,
+            "short message must render at width.min (20mm = {min_px}px), got {}px",
+            img_short.width()
+        );
+
+        // Also assert that the emitted text box in a 20mm dynamic frame spans the full 20mm slot:
+        let clamped_src = {
+            use std::cell::RefCell;
+            let data: HashMap<String, super::JsonValue> = HashMap::new();
+            let settings = no_settings();
+            let datetime = no_datetime();
+            let env = super::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            let images = RefCell::new(super::ImageCollector::default());
+            let item = LayoutItem::Text {
+                value: "Hi".to_string(),
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: Extent::Size(Size([
+                        SizeValue::Auto(AutoSize::Auto),
+                        SizeValue::fixed(12.0),
+                    ])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: None,
+                },
+                font_size: FontSize::Fixed(10.0),
+                font_weight: None,
+                multiline: false,
+                alignment: Alignment {
+                    horizontal: HorizontalAlign::Center,
+                    vertical: VerticalAlign::Top,
+                },
+                when: None,
+            };
+            let measuring = super::RenderContext::new(
+                (100.0, 12.0),
+                "mm",
+                &data,
+                None,
+                &env,
+                &images,
+                super::LengthMode::Fixed,
+            );
+            let mut measured = Vec::new();
+            measuring
+                .measure(std::slice::from_ref(&item), 100.0, &mut measured)
+                .expect("measure");
+            let cursor = std::cell::Cell::new(0);
+            let ctx = super::RenderContext::new(
+                (20.0, 12.0),
+                "mm",
+                &data,
+                None,
+                &env,
+                &images,
+                super::LengthMode::Dynamic(super::AutoLength {
+                    texts: &measured,
+                    cursor: &cursor,
+                }),
+            );
+            ctx.render_items(&[item]).expect("render")
+        };
+        assert!(
+            clamped_src.contains("#box(width: 20mm"),
+            "clamped 20mm frame must emit full 20mm slot box, got: {clamped_src}"
         );
     }
 
@@ -3090,8 +3464,10 @@ mod tests {
         assert_eq!(pushed, 0, "a fixed-width item must not push a MeasuredText");
     }
 
-    /// A cap on an auto-width text must bind during measurement, since the rendered box is exactly
-    /// what the measure pass recorded.
+    /// A cap on an auto-width text must bind during measurement, since that is what sizes the label.
+    /// Under left alignment (this test's `Alignment::default()`) the rendered box is also exactly
+    /// what the measure pass recorded; under `center`/`right` the render pass applies the cap to the
+    /// alignment slot itself (#180).
     #[test]
     fn max_w_caps_an_auto_width_text_during_measurement() {
         let long = "a string far too long to fit inside twenty millimetres of tape";
