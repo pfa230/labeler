@@ -951,14 +951,15 @@ mod binarize_tests {
 
     #[test]
     fn binarize_rgba_makes_pure_black_or_white() {
-        // grays: 0, 64, 127 (->black), 128, 200, 255 (->white). RGBA, opaque.
+        // grays: 0, 64, 127 (->black), 128, 200, 255 (->white). Pixels 0 and 4 start
+        // non-opaque, so forcing alpha to 255 is something the assertion below can observe.
         let mut data = vec![
-            0, 0, 0, 255, 64, 64, 64, 255, 127, 127, 127, 255, 128, 128, 128, 255, 200, 200, 200,
-            255, 255, 255, 255, 255,
+            0, 0, 0, 0, 64, 64, 64, 255, 127, 127, 127, 255, 128, 128, 128, 255, 200, 200, 200,
+            200, 255, 255, 255, 255,
         ];
         binarize_rgba(&mut data);
         for (i, px) in data.as_chunks::<4>().0.iter().enumerate() {
-            assert!(px[3] == 255, "alpha forced opaque");
+            assert!(px[3] == 255, "pixel {i} alpha not forced opaque: {px:?}");
             assert!(
                 (px[0], px[1], px[2]) == (0, 0, 0) || (px[0], px[1], px[2]) == (255, 255, 255),
                 "pixel {i} not pure B/W: {px:?}"
