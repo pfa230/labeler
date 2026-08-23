@@ -9,6 +9,7 @@ import {
 } from "../api/queries";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
+import { FormatBadge } from "../components/FormatBadge";
 import type { TemplateSummary } from "../api/types";
 
 function compareCodePoints(a: string, b: string): number {
@@ -33,17 +34,6 @@ const ALL_FILTER: GroupFilter = { kind: "all" };
 function sameFilter(a: GroupFilter, b: GroupFilter): boolean {
   if (a.kind !== b.kind) return false;
   return a.kind !== "group" || b.kind !== "group" || a.name === b.name;
-}
-
-function FormatBadge({ type }: { type: string }) {
-  return (
-    <span
-      className="rounded-full px-2 py-0.5 text-xs font-medium"
-      style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-    >
-      {type}
-    </span>
-  );
 }
 
 function TemplateCard({
@@ -74,19 +64,26 @@ function TemplateCard({
         borderColor: selected ? "var(--accent)" : "var(--border)",
       }}
     >
+      {/* The format badge rides the top rail with the group chip: both classify the template, and
+          both then sit at the same place on every card, which is what makes a grid scannable. It
+          also leaves the bottom row's left half to the id chip, which the wider badge (#201) had
+          squeezed to a single character. */}
       <div className="flex items-center justify-between gap-2">
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={onToggleSelect}
-            aria-label={`Select ${template.name}`}
-            className="h-4 w-4 rounded border-gray-300"
-          />
-        </label>
+        <div className="flex shrink-0 items-center gap-2">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onToggleSelect}
+              aria-label={`Select ${template.name}`}
+              className="h-4 w-4 rounded border-gray-300"
+            />
+          </label>
+          <FormatBadge format={template.format} />
+        </div>
         {template.group && (
           <span
-            className="truncate rounded-full px-2 py-0.5 text-xs font-medium border"
+            className="min-w-0 truncate rounded-full px-2 py-0.5 text-xs font-medium border"
             style={{ background: "var(--bg)", color: "var(--muted)", borderColor: "var(--border)" }}
           >
             {template.group}
@@ -122,7 +119,6 @@ function TemplateCard({
       </Link>
       <div className="mt-auto flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          <FormatBadge type={template.format.type} />
           <code
             className="truncate rounded px-1.5 py-0.5 text-xs"
             style={{ background: "var(--bg)", color: "var(--muted)" }}

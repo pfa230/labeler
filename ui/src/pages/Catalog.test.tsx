@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { Catalog } from "./Catalog";
 import { CATALOG_BASE } from "../api/catalog";
+import { noBadgeStyling } from "../setupTests";
 
 const index = [
   {
@@ -105,6 +106,22 @@ describe("Catalog", () => {
     expect(screen.getByText("Avery 5163")).toBeInTheDocument();
     expect(screen.getByLabelText("tape · brother")).toBeInTheDocument();
     expect(screen.getByLabelText("sheet · avery")).toBeInTheDocument();
+  });
+
+  // #201 gave installed templates a format badge and deliberately left the catalog alone: a catalog
+  // entry is not installed yet and CatalogEntry.format is a bare string with no positions, so a badge
+  // here could carry an icon and a colour but never the count that makes the badge worth having.
+  it("states a catalog entry's format as plain prose, with no badge", async () => {
+    vi.stubGlobal("fetch", stubFetch());
+    renderCatalog();
+    await screen.findByText("Avery 5163");
+    const format = screen.getByText("sheet", { selector: "dd" });
+    expect(format.textContent).toBe("sheet");
+    expect(format).not.toHaveAttribute("data-format");
+    expect(format.querySelector("svg")).toBeNull();
+    expect(format.querySelector("[data-format]")).toBeNull();
+    expect(noBadgeStyling(format)).toBe(true);
+    expect(document.querySelector("[data-format]")).toBeNull();
   });
 
   it("marks an entry that is already installed", async () => {
