@@ -4,6 +4,7 @@ import { MemoryRouter, Routes, Route, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { TemplateDetail } from "./TemplateDetail";
+import { SHEET_ICON, SINGLE_ICON, iconGeometry, noBadgeStyling } from "../setupTests";
 
 const detail = {
   id: "brother_24mm_qr",
@@ -119,6 +120,111 @@ function renderPage() {
   );
 }
 
+// A sheet detail, with its own stub and route, so the twenty tests built around the single fixture
+// above are untouched. Without a sheet here the detail page could keep an iconless, countless pill
+// and every suite would still pass, since the grid is the only place a sheet badge was rendered.
+const sheetDetail = {
+  id: "avery5163",
+  name: "Avery 5163",
+  description: "Shipping labels",
+  unit: "in",
+  dpi: 300,
+  format: {
+    type: "sheet",
+    paper_width: 8.5,
+    paper_height: 11,
+    label_width: 4,
+    label_height: 2,
+    positions: [
+      [0, 0],
+      [4.25, 0],
+      [0, 2],
+      [4.25, 2],
+      [0, 4],
+      [4.25, 4],
+    ],
+  },
+  layout: [{ type: "text", value: "{message}" }],
+};
+
+function stubSheetFetch() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/api/templates/avery5163/source")) {
+        return new Response("id: avery5163\n", {
+          status: 200,
+          headers: { "content-type": "text/yaml" },
+        });
+      }
+      if (url.endsWith("/api/templates/avery5163")) {
+        return new Response(JSON.stringify(sheetDetail), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // A sheet preview goes through /batch and comes back as a PDF.
+      if (url.endsWith("/api/batch")) {
+        return new Response(new Blob(["x"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }),
+  );
+}
+
+function renderSheetPage() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <ToastProvider>
+        <MemoryRouter initialEntries={["/templates/avery5163"]}>
+          <Routes>
+            <Route path="/templates/:id" element={<TemplateDetail />} />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
+}
+
+describe("Template detail, sheet format", () => {
+  beforeEach(() => {
+    stubSheetFetch();
+  });
+
+  // The same four assertions Templates.test.tsx makes against the grid card. Both pages must render
+  // one badge (#201), and text alone would pass for a differently-drawn or differently-coloured one.
+  it("renders the sheet badge with its icon geometry and its own colour tokens", async () => {
+    renderSheetPage();
+    await screen.findByText("Avery 5163");
+    const badge = document.querySelector<HTMLElement>('[data-format="sheet"]')!;
+    expect(badge.textContent).toBe("sheet \u00b7 6");
+    expect(badge.style.color).toBe("var(--info)");
+    expect(badge.style.background).toBe("var(--info-soft)");
+    expect(badge.style.borderColor).toBe("var(--info)");
+    expect(iconGeometry(badge)).toEqual(SHEET_ICON);
+    // One badge on the page, not merely one correct badge: a leftover pill would pass the rest.
+    expect(document.querySelectorAll("[data-format]")).toHaveLength(1);
+  });
+
+  // The Dimensions row's sentence ends in the word "sheet". It is prose about size, one row below
+  // the badge, and #201 leaves it alone: badging it would say the same thing twice.
+  it("leaves the Dimensions sentence as prose", async () => {
+    renderSheetPage();
+    await screen.findByText("Avery 5163");
+    const dimensions = screen.getByText(/on 8.5 . 11 in sheet$/);
+    expect(dimensions).not.toHaveAttribute("data-format");
+    expect(dimensions.querySelector("svg")).toBeNull();
+    expect(dimensions.querySelector("[data-format]")).toBeNull();
+    expect(dimensions.textContent).not.toMatch(/\u00b7 6/);
+    expect(noBadgeStyling(dimensions)).toBe(true);
+  });
+});
+
 describe("Template detail", () => {
   // Wrapped, not passed by reference: beforeEach hands the hook a test context, which would land in
   // stubFetch's deleteStatus parameter.
@@ -133,6 +239,14 @@ describe("Template detail", () => {
     expect(screen.getByText("message")).toBeInTheDocument();
     expect(screen.getByText("code")).toBeInTheDocument();
     expect(screen.getByText("single")).toBeInTheDocument();
+    // The same badge the grid renders, not just the same word: without the icon and the tokens this
+    // page could keep an iconless pill and the sheet parity assertions would still pass.
+    const badge = document.querySelector<HTMLElement>('[data-format="single"]')!;
+    expect(badge.style.color).toBe("var(--accent-deep)");
+    expect(badge.style.background).toBe("var(--accent-soft)");
+    expect(badge.style.borderColor).toBe("var(--accent-deep)");
+    expect(iconGeometry(badge)).toEqual(SINGLE_ICON);
+    expect(document.querySelectorAll("[data-format]")).toHaveLength(1);
     const link = screen.getByRole("link", { name: /use to print/i });
     expect(link).toHaveAttribute("href", "/print/brother_24mm_qr");
   });

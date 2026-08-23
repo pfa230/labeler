@@ -6,6 +6,7 @@ import { useTemplatePreview } from "../lib/preview";
 import { referencedFields, referencedVariables } from "../lib/templateFields";
 import type { Dimension, TemplateFormat } from "../api/types";
 import { PreviewPane } from "../components/PreviewPane";
+import { FormatBadge } from "../components/FormatBadge";
 
 function dim(d: Dimension): string {
   if (typeof d === "number") return String(d);
@@ -263,12 +264,7 @@ export function TemplateDetail() {
           <div className="flex justify-between gap-2">
             <dt style={{ color: "var(--muted)" }}>Format</dt>
             <dd>
-              <span
-                className="rounded-full px-2 py-0.5 text-xs font-medium"
-                style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-              >
-                {detail.format.type}
-              </span>
+              <FormatBadge format={detail.format} />
             </dd>
           </div>
           <div className="flex justify-between gap-2">
