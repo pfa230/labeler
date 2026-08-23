@@ -136,10 +136,10 @@ export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChang
       width: 110,
       renderCell: ({ row }: RenderCellProps<LabelGridRow>) => (
         <span className="flex gap-2">
-          <button type="button" aria-label="duplicate row" disabled={disabled} onClick={() => onDuplicate(row.id)}>
+          <button type="button" aria-label="duplicate row" title="Duplicate row" className="rounded focus-visible:outline-none focus-visible:ring-2" disabled={disabled} onClick={() => onDuplicate(row.id)}>
             ⧉
           </button>
-          <button type="button" aria-label="remove row" disabled={disabled} onClick={() => onRemove(row.id)}>
+          <button type="button" aria-label="remove row" title="Remove row" className="rounded focus-visible:outline-none focus-visible:ring-2" disabled={disabled} onClick={() => onRemove(row.id)}>
             ✕
           </button>
         </span>

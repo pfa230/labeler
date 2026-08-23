@@ -1,0 +1,3 @@
+## 2024-05-18 - Added Tooltip to icon-only buttons
+**Learning:** Found that `react-data-grid` rows use icon-only buttons for actions like duplicate and remove. Adding a `title` attribute acts as a native tooltip, improving discoverability without cluttering the UI. Adding `focus-visible` classes improves keyboard navigation accessibility within the grid component.
+**Action:** Always verify if icon-only buttons have descriptive `title` attributes (for sighted users) and `aria-label` (for screen readers), and ensure proper focus styling for keyboard users, especially inside custom data grid components.
