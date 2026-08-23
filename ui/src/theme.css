@@ -19,3 +19,50 @@ body {
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* SVAR grid (issue #170): bounded scroll viewport, its .wx-grid collapses to zero height otherwise.
+   --wx-* maps onto our tokens instead of using the vendor's <Willow> wrapper, which fetches fonts
+   from a CDN we do not load. Scoped to this class so the vendor stylesheet cannot leak elsewhere. */
+.connector-grid-viewport {
+  height: 60vh; min-height: 360px;
+  --wx-background: var(--surface); --wx-background-alt: var(--paper); --wx-background-hover: var(--accent-soft);
+  --wx-border: var(--border); --wx-box-shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 3px 10px rgba(0, 0, 0, .12);
+  --wx-color-font: var(--ink); --wx-color-font-disabled: var(--muted); --wx-color-primary: var(--accent);
+  --wx-header-font-weight: 600; --wx-icon-border-radius: 3px;
+  --wx-input-background: var(--surface); --wx-input-border: 1px solid var(--border);
+  --wx-input-border-focus: 1px solid var(--accent); --wx-input-border-radius: 3px;
+  --wx-input-font-color: var(--ink); --wx-input-font-family: inherit; --wx-input-font-size: 14px;
+  --wx-input-font-weight: 400; --wx-input-height: 32px; --wx-input-icon-color: var(--muted);
+  --wx-input-icon-indent: 6px; --wx-input-icon-size: 20px; --wx-input-line-height: 20px;
+  --wx-input-padding: 5px 8px; --wx-input-placeholder-color: var(--faint); --wx-input-text-align: left;
+  --wx-input-width: 100%;
+  --wx-table-border: 1px solid var(--border); --wx-table-cell-border: 1px solid var(--border);
+  --wx-table-drag-over-background: var(--accent-soft);
+  --wx-table-drag-zone-shadow: 0 1px 2px rgba(0, 0, 0, .16), 0 3px 10px rgba(0, 0, 0, .16);
+  --wx-table-editor-dropdown-border: 1px solid var(--border);
+  --wx-table-editor-dropdown-shadow: 0 4px 16px rgba(0, 0, 0, .16);
+  --wx-table-fixed-column-border: 3px solid var(--border);
+  --wx-table-footer-cell-border: 1px solid var(--border);
+  --wx-table-header-background: var(--paper); --wx-table-header-border: 1px solid var(--border);
+  --wx-table-header-cell-border: 1px solid var(--border);
+  --wx-table-select-background: var(--accent-soft); --wx-table-select-border: inset 3px 0 var(--accent);
+  --wx-table-select-color: var(--ink);
+}
+/* Literal shadows above don't ride the app's token flip; only these need a dark-specific value. */
+.dark .connector-grid-viewport {
+  --wx-box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+  --wx-table-drag-zone-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+  --wx-table-editor-dropdown-shadow: 0 4px 20px rgba(0, 0, 0, .5);
+}
+/* The sort arrow glyph lives in the CDN icon font this app doesn't load; draw it ourselves. Only
+   wxi-arrow-up/-down render in this grid (no tree/richselect columns here). */
+.connector-grid-viewport .wxi-arrow-up, .connector-grid-viewport .wxi-arrow-down {
+  font-style: normal; display: inline-block; font-size: 10px; line-height: 1;
+}
+.connector-grid-viewport .wxi-arrow-up::before { content: "\25B2"; }
+.connector-grid-viewport .wxi-arrow-down::before { content: "\25BC"; }
+/* Vendor default breaks words mid-character on wrapped rows; wrap at word boundaries instead.
+   !important: same selector specificity as the vendor rule, so import order can't win it back. */
+.connector-grid-viewport .wx-row.wx-autoheight .wx-cell {
+  word-break: normal !important; overflow-wrap: anywhere !important;
+}
