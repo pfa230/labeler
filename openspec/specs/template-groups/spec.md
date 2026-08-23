@@ -175,10 +175,15 @@ Responses:
 | `200` | Moved. Body is the updated `TemplateDetail`. |
 | `400` | The path id is invalid, or the body is not `{ "group": string \| null }`. |
 | `404` | The registry holds no template with that id. |
+| `409` | After the write, the id is served from a different file. See the collision clause below. |
 | `422` | The group name fails validation, or the file cannot be patched unambiguously. |
-| `500` | The file could not be written, or the directory could not be re-read afterwards. |
+| `500` | The file could not be written, the directory could not be re-read afterwards, or the post-write confirmation found the patched file gone, renamed, re-identified, or replaced. |
 
 The operation SHALL be idempotent: setting the group a template already has, or clearing an already ungrouped template, SHALL return `200` and leave the file byte-identical.
+
+Before resolving the id to a file, the service SHALL re-read the templates directory, so the file it patches is chosen against the directory as it is rather than against a registry that may predate it.
+
+On the branch that writes, the service SHALL confirm after the reload that the id is served from the file it patched and that the served content is byte-identical to the patched text, and SHALL NOT return `200` describing anything else. A file elsewhere in the directory declaring the same id but sorting after the patched file does not displace it: the patched file still serves the id, the confirmation passes, and the response is `200` while that other file is reported in `broken[]`. When the id is instead served from a different file, and the patched file survives intact and refused, the response SHALL be `409 TemplateIdCollision`, naming the id, the patched file and the file now serving the id, exactly as `PUT /api/templates/{id}` does; the patch stays in the file it was applied to, and that file is reported as broken by `GET /api/templates`. When instead the patched file is gone, renamed, re-identified, or holding content the service did not write, the response SHALL be `500`, reporting the template missing after the write rather than a collision, on the same precedence the `template-registry` capability specifies for every write endpoint. The idempotent branch writes nothing and performs no post-write reload, so it makes no such claim and can return neither.
 
 This endpoint SHALL be the only path by which the service writes a group into a hand-authored file. `PUT /api/templates/{id}` continues to replace the whole file from a submitted body, and a `group:` key typed there is honoured exactly like any other field.
 
@@ -259,6 +264,19 @@ This requirement supersedes the `docs/SPEC.md` §2 endpoint table and §2.0 temp
 #### Scenario: Moving to the group it already has changes nothing
 
 - **WHEN** a template in `Warehouse` is moved to `Warehouse`
+- **THEN** the response is `200`
+- **AND** the stored file is byte-identical to before the call
+
+#### Scenario: A group update whose id moved to another file fails loudly
+
+- **WHEN** the endpoint patches the file the registry held for an id, and the re-read then serves that id from a different file that appeared on disk meanwhile
+- **THEN** the response is `409 TemplateIdCollision`
+- **AND** the response does not describe the other file's template
+- **AND** the patched file is reported as broken by `GET /api/templates`
+
+#### Scenario: An idempotent call is unaffected by a collision elsewhere
+
+- **WHEN** a template is moved to the group it already has while an unrelated file in the directory is refused
 - **THEN** the response is `200`
 - **AND** the stored file is byte-identical to before the call
 
