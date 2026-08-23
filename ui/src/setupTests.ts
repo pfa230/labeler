@@ -123,3 +123,27 @@ if (typeof window !== "undefined" && (!window.localStorage || typeof window.loca
   });
 }
 
+// The sheet badge's icon cells as x/y/width/height (#201). Templates.test.tsx and
+// TemplateDetail.test.tsx both assert against this: the requirement is that the two pages render one
+// badge, so comparing each against the same expectation is what proves they have not diverged.
+export const SHEET_ICON = ["2,0,3,3", "7,0,3,3", "2,4.5,3,3", "7,4.5,3,3", "2,9,3,3", "7,9,3,3"];
+
+// The single icon's one cell, landscape against the sheet's portrait. Compared at both call sites for
+// the same reason: a rect count of 1 says nothing about whether the two pages drew the same shape.
+export const SINGLE_ICON = ["0,3,12,6"];
+
+export function iconGeometry(badge: HTMLElement): string[] {
+  return Array.from(badge.querySelectorAll("rect")).map((r) =>
+    ["x", "y", "width", "height"].map((a) => r.getAttribute(a)).join(","),
+  );
+}
+
+// A prose mention of a format must not acquire the badge's colour treatment (#201). Rejecting only
+// the foreground token was not enough: an --info-soft fill with ink text and no marker would have
+// passed while looking exactly like a badge. All four of the badge's tokens are rejected, foreground
+// and fill alike. This reads the element's own inline style, which is how every badge colour in this
+// app is applied; it does not chase an inherited or class-applied colour.
+export function noBadgeStyling(el: HTMLElement): boolean {
+  const style = el.getAttribute("style") ?? "";
+  return !/--info\b|--info-soft\b|--accent-deep\b|--accent-soft\b/.test(style);
+}
