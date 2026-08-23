@@ -47,7 +47,13 @@ printf '%s started %s (pid %s)\n' "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$
 trap 'rm -f "$lock"' EXIT INT TERM
 
 log="$wt/.agy-apply.log"
-prompt="/openspec-apply-change $change. Do not commit; the change is committed once at the end after archive and verification. $extra"
+# WORKFLOW form, not skill form. OpenSpec writes both for the Antigravity target:
+# .agent/skills/openspec-*/SKILL.md and .agent/workflows/opsx-*.md. Print mode
+# resolves the workflow; opsx-apply.md documents its own invocation as
+# "/opsx-apply add-auth". Sending the skill name silently resolves to nothing and
+# agy answers from its own documentation instead of working, which is what the
+# no-op detection below exists to catch.
+prompt="/opsx-apply $change. Do not commit; the change is committed once at the end after archive and verification. $extra"
 
 # `script` gives agy a pseudo-TTY: bare `agy -p` off a pipe greets or narrates
 # instead of working. util-linux script(1) is `script [options] [file]`, so a
@@ -57,8 +63,22 @@ prompt="/openspec-apply-change $change. Do not commit; the change is committed o
 # that contains quotes of its own, so SHELL pins the interpreter script(1)
 # hands it to: %q emits bash quoting and the operator's login shell need not be
 # bash. sed/tr strip ANSI and carriage returns.
-printf -v agy_cmd 'agy -p --mode accept-edits --effort high %q' "$prompt"
-( cd "$wt" && SHELL="$BASH" script -q -e -c "$agy_cmd" /dev/null ) \
+timeout="${AGY_PRINT_TIMEOUT:-120m}"
+printf -v agy_cmd 'agy -p --mode accept-edits --effort high --print-timeout %q %q' "$timeout" "$prompt"
+
+# script(1) is two incompatible programs with one name. util-linux is
+# `script [options] -c CMD FILE`; BSD/macOS is `script [options] FILE CMD ARGS...`
+# with no -c at all, so each form is an error on the other platform. Detect once
+# rather than assume: this repo is developed on macOS and its CI is ubuntu, so a
+# form that works for whoever wrote it silently breaks for everyone else. -e makes
+# the child's status the wrapper's on both.
+if script -q -e -c true /dev/null >/dev/null 2>&1; then
+  run_pty() { script -q -e -c "$1" /dev/null; }
+else
+  run_pty() { script -q -e /dev/null "${BASH:-/bin/bash}" -c "$1"; }
+fi
+
+( cd "$wt" && run_pty "$agy_cmd" ) \
   2>&1 | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r' > "$log"
 status=$?
 
@@ -70,6 +90,20 @@ fi
 
 echo "log: $log"
 echo "exit: $status"
+
+# A clean exit is not success. agy answering a question about its own flags exits 0
+# having written nothing, and that read as a completed apply. Success is a changed
+# tree, so check the tree. The change folder itself is excluded: it was there before.
+changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agy-apply.log' | wc -l | tr -d ' ')
+echo "files touched: $changed"
 echo "--- last 30 lines ---"
 tail -30 "$log"
+
+if [ "$status" -eq 0 ] && [ "$changed" -eq 0 ]; then
+  echo >&2
+  echo "apply produced no changes despite exiting 0. It did not run." >&2
+  echo "Usual cause: the slash command did not resolve, so agy answered from its own docs." >&2
+  echo "Check the log for agy documentation instead of work: $log" >&2
+  exit 3
+fi
 exit $status
