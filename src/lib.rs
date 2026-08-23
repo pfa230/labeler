@@ -1987,14 +1987,20 @@ mod http_tests {
     }
 
     fn build_app_in(dir: &std::path::Path) -> axum::Router {
+        build_app_in_with_state(dir).0
+    }
+
+    /// The app plus its state, for tests that need to install the between-write-and-reload hook.
+    fn build_app_in_with_state(dir: &std::path::Path) -> (axum::Router, Arc<AppState>) {
         let templates = TemplateRegistry::load_from_dir(dir).expect("load templates");
         let store = Store::open_in_memory().expect("store");
         seed_token(&store);
-        with_auth(app(Arc::new(AppState::new(
-            templates,
-            dir.to_path_buf(),
-            store,
-        ))))
+        let state = Arc::new(AppState::new(templates, dir.to_path_buf(), store));
+        (with_auth(app(state.clone())), state)
+    }
+
+    fn template_yaml_for(id: &str, name: &str) -> String {
+        template_yaml(id).replace(&format!("name: {id}"), &format!("name: {name}"))
     }
 
     fn template_yaml(id: &str) -> String {
@@ -2058,10 +2064,15 @@ layout:
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
     /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
     /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates
-    /// directory out from under a built app reaches the write failure without depending on the test
-    /// user's uid, which a read-only directory would.
+    /// directory out from under a built app reaches one without depending on the test user's uid,
+    /// which a read-only directory would.
+    ///
+    /// The reason is `template_registry_io`, not `template_write_failed`: since #184 a create re-reads
+    /// the directory before it decides anything, so a directory that cannot be read is reported as
+    /// exactly that, before any write is attempted. `template_write_failed` still covers a write that
+    /// fails on a readable directory (a full disk, an I/O fault), which no portable test provokes.
     #[tokio::test]
-    async fn a_failed_template_write_carries_a_reason() {
+    async fn a_failed_templates_directory_read_carries_a_reason() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
         std::fs::remove_dir_all(&dir).expect("remove templates dir");
@@ -2073,7 +2084,27 @@ layout:
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "RenderFailed");
-        assert_eq!(body["error"]["details"]["reason"], "template_write_failed");
+        assert_eq!(body["error"]["details"]["reason"], "template_registry_io");
+    }
+
+    async fn template_ids(app: &axum::Router) -> Vec<String> {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let body = json_response(response).await;
+        body["templates"]
+            .as_array()
+            .expect("templates array")
+            .iter()
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect()
     }
 
     async fn template_count(app: &axum::Router) -> usize {
@@ -2871,6 +2902,601 @@ layout:
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = json_response(resp).await;
         assert_eq!(body["error"]["code"], "TemplateExists");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The filename half of the create guard: an unservable file occupying `{id}.yaml` blocks the
+    /// create by its name alone, since its content claims no id the registry could serve.
+    ///
+    /// This does not exercise the no-replace publish, and passes against the pre-change code too:
+    /// the destination is planted before the request, so the `exists()` check answers first. The
+    /// publish primitive is pinned where the race is actually decidable, in
+    /// `publish_new_template_file_refuses_an_occupied_name` (`api.rs`).
+    #[tokio::test]
+    async fn template_create_is_blocked_by_an_unservable_file_at_its_destination() {
+        let dir = temp_templates_dir();
+        // Content the registry cannot serve, so only the filename half of the guard can catch it.
+        std::fs::write(dir.join("planted.yaml"), "not: a valid template\n").unwrap();
+        let app = build_app_in(&dir);
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates",
+                "POST",
+                template_yaml("planted"),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateExists");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("planted.yaml")).unwrap(),
+            "not: a valid template\n",
+            "the other writer's file is untouched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The registry can be stale relative to disk: templates are installed by copying files in, with
+    /// no reload. The guard has to test the directory, not the in-memory set (#184).
+    #[tokio::test]
+    async fn template_create_sees_a_file_copied_in_since_the_last_reload() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        // After the app is built, so the registry does not hold `late`, and under a filename the
+        // destination check cannot catch either.
+        std::fs::write(dir.join("aaa.yaml"), template_yaml("late")).unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("late")))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateExists");
+        assert!(
+            !dir.join("late.yaml").exists(),
+            "nothing was written for the refused create"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// With the pre-write re-read (#184), a `PUT` for an id whose winner changed on disk edits the
+    /// file that currently serves it, and answers with the caller's own content. The stale-registry
+    /// path that used to return the *other* template's body is gone: the handler no longer resolves
+    /// the id from a set that predates the directory.
+    #[tokio::test]
+    async fn template_replace_writes_the_current_winner_after_a_collider_appears() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("moved")).unwrap();
+        let app = build_app_in(&dir);
+        // Sorts before zzz.yaml, so the next load hands `moved` to this file instead.
+        std::fs::write(dir.join("aaa.yaml"), template_yaml("moved")).unwrap();
+
+        let edited = template_yaml("moved").replace("name: moved", "name: edited by the caller");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/moved", "PUT", edited.clone()))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_response(resp).await;
+        assert_eq!(
+            body["name"], "edited by the caller",
+            "the response describes the caller's own write, never the other file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("aaa.yaml")).unwrap(),
+            edited,
+            "the write went to the file that serves the id now"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zzz.yaml")).unwrap(),
+            template_yaml("moved"),
+            "the file that lost the id is left alone"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A duplicate that sorts *after* the written file never displaces it, so the write succeeds
+    /// normally and the duplicate is just a refused sibling. Returning 409 here would be a lie about
+    /// which file serves the id (#184, round-4 review).
+    ///
+    /// This passed before the change too, since there was no confirmation to get wrong. It guards
+    /// the confirmation against the round-4 defect: keying on "a duplicate exists" rather than on
+    /// the written file having lost the id turns this 200 into a 409.
+    #[tokio::test]
+    async fn template_replace_ignores_a_later_sorting_duplicate() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("aaa.yaml"), template_yaml("kept")).unwrap();
+        let app = build_app_in(&dir);
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("kept")).unwrap();
+
+        let edited = template_yaml("kept").replace("name: kept", "name: still mine");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/kept", "PUT", edited.clone()))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_response(resp).await;
+        assert_eq!(body["name"], "still mine", "the caller's own content");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("aaa.yaml")).unwrap(),
+            edited
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The whole of #184, end to end: a colliding file that sorts earlier lands *between* the write
+    /// and the reload, so the id the caller addressed is served from another file by the time the
+    /// handler answers. Before this change the handler returned `200` with that other file's body.
+    ///
+    /// This is the one interleaving a request cannot produce on its own, so it is staged with the
+    /// test-only mid-write hook. Without it, no endpoint test fails when a handler stops confirming.
+    #[tokio::test]
+    async fn template_replace_returns_409_when_the_id_moves_between_write_and_reload() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("moved")).unwrap();
+        let (app, state) = build_app_in_with_state(&dir);
+
+        let planted = dir.join("aaa.yaml");
+        state.set_mid_write_hook(move || {
+            // Sorts before zzz.yaml, so the reload that follows hands `moved` to this file.
+            std::fs::write(&planted, template_yaml_for("moved", "planted")).unwrap();
+        });
+
+        let edited = template_yaml("moved").replace("name: moved", "name: edited by the caller");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/moved", "PUT", edited.clone()))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateIdCollision");
+        let mut files: Vec<&str> = body["error"]["details"]["files"]
+            .as_array()
+            .expect("files array")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        files.sort_unstable();
+        assert_eq!(files, vec!["aaa.yaml", "zzz.yaml"]);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("zzz.yaml")).unwrap(),
+            edited,
+            "the caller's write is kept in the file it addressed"
+        );
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let listed = json_response(listed).await;
+        let broken: Vec<&str> = listed["broken"]
+            .as_array()
+            .expect("broken array")
+            .iter()
+            .map(|b| b["filename"].as_str().unwrap())
+            .collect();
+        assert_eq!(broken, vec!["zzz.yaml"], "the caller's file is quarantined");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A body without the `group` key is a bad request whatever the directory holds: it is judged
+    /// before the id is resolved, so an unknown id cannot answer `404` in its place
+    /// (`template-groups` spec, response table).
+    #[tokio::test]
+    async fn template_group_update_rejects_a_bodiless_request_before_resolving_the_id() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/does-not-exist/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "the malformed body decides, not the unknown id"
+        );
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The create must publish with the no-replace primitive, not a rename. Staged with the
+    /// pre-publish hook: the destination appears once the guard has already passed, which is the one
+    /// state `exists()` cannot catch and `rename` would silently overwrite (#184).
+    #[tokio::test]
+    async fn template_create_does_not_overwrite_a_destination_that_appears_after_its_guard() {
+        let dir = temp_templates_dir();
+        let (app, state) = build_app_in_with_state(&dir);
+
+        let planted = dir.join("racer.yaml");
+        state.set_pre_publish_hook(move || {
+            std::fs::write(&planted, "someone else's file\n").unwrap();
+        });
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("racer")))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateExists");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("racer.yaml")).unwrap(),
+            "someone else's file\n",
+            "the other writer's file was not overwritten"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The same interleaving through `POST`: the pre-write re-read finds the id free, the collider
+    /// lands while the file is being published, and the create must not answer `201` describing it.
+    #[tokio::test]
+    async fn template_create_returns_409_when_the_id_moves_between_write_and_reload() {
+        let dir = temp_templates_dir();
+        let (app, state) = build_app_in_with_state(&dir);
+
+        let planted = dir.join("aaa.yaml");
+        state.set_mid_write_hook(move || {
+            std::fs::write(&planted, template_yaml_for("late", "planted")).unwrap();
+        });
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates", "POST", template_yaml("late")))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateIdCollision");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("late.yaml")).unwrap(),
+            template_yaml("late"),
+            "the caller's file keeps what it submitted"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// And through the group update, whose writing branch makes the same claim.
+    #[tokio::test]
+    async fn template_group_update_returns_409_when_the_id_moves_between_write_and_reload() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("grouped")).unwrap();
+        let (app, state) = build_app_in_with_state(&dir);
+
+        let planted = dir.join("aaa.yaml");
+        state.set_mid_write_hook(move || {
+            std::fs::write(&planted, template_yaml_for("grouped", "planted")).unwrap();
+        });
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/grouped/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateIdCollision");
+        assert!(
+            std::fs::read_to_string(dir.join("zzz.yaml"))
+                .unwrap()
+                .contains("group: Warehouse"),
+            "the patch stays in the file it was applied to"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The group update shares the write -> reload -> detail shape, so it gets the same pre-write
+    /// re-read and the same post-write confirmation; here that means it patches the file serving the
+    /// id now, and answers for that file (#184).
+    #[tokio::test]
+    async fn template_group_update_writes_the_current_winner() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("grouped")).unwrap();
+        let app = build_app_in(&dir);
+        std::fs::write(dir.join("aaa.yaml"), template_yaml("grouped")).unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/grouped/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json_response(resp).await;
+        assert_eq!(body["group"], "Warehouse");
+        assert!(
+            std::fs::read_to_string(dir.join("aaa.yaml"))
+                .unwrap()
+                .contains("group: Warehouse"),
+            "the file serving the id was the one patched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `PUT` for an id whose file is gone by request time is a `404`, decided by the pre-write
+    /// re-read before anything is written: the registry no longer holds the id.
+    ///
+    /// The write-then-vanish `500` arm is a different case and is not reachable from here, because
+    /// it needs the file to disappear *between* the write and the reload. It is pinned in
+    /// `confirm_written_template_reports_a_renamed_file_as_a_lost_write` (`api.rs`).
+    #[tokio::test]
+    async fn template_replace_for_a_vanished_file_returns_404() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("gone.yaml"), template_yaml("gone")).unwrap();
+        let app = build_app_in(&dir);
+        // Stand in for the file being removed between the write and the reload: the registry then
+        // serves the id from nothing at all.
+        std::fs::remove_file(dir.join("gone.yaml")).unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/gone",
+                "PUT",
+                template_yaml("gone"),
+            ))
+            .await
+            .expect("request");
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "the id is gone from the re-read registry"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Deleting the winner promotes the collider, so the id survives a 204 from different content
+    /// with its favorites already pruned. Refuse instead, naming the file to fix (#183).
+    #[tokio::test]
+    async fn template_delete_is_refused_while_the_id_collides() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("aaa.yaml"), template_yaml("contested")).unwrap();
+        let app = build_app_in(&dir);
+        // Added after the app is built, so the refusal has to read the directory to see it, and so
+        // that reading must not become the served set: `unrelated` is on disk but not yet served,
+        // and a refused delete must leave it that way (#183).
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("contested")).unwrap();
+        std::fs::write(dir.join("unrelated.yaml"), template_yaml("unrelated")).unwrap();
+        let served_before = template_ids(&app).await;
+        assert_eq!(
+            served_before,
+            vec!["contested".to_string()],
+            "the late files are not served yet"
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/favorites/contested")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/contested")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateIdCollision");
+        assert_eq!(body["error"]["details"]["template"], "contested");
+        let mut files: Vec<&str> = body["error"]["details"]["files"]
+            .as_array()
+            .expect("files array")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        files.sort_unstable();
+        assert_eq!(
+            files,
+            vec!["aaa.yaml", "zzz.yaml"],
+            "exactly the files declaring the id, and no others"
+        );
+        assert!(
+            !body["error"]["details"]
+                .as_object()
+                .expect("details object")
+                .contains_key("reason"),
+            "a 409 carries no details.reason key at all (ADR-0052)"
+        );
+        assert!(dir.join("aaa.yaml").exists(), "nothing was unlinked");
+        assert!(dir.join("zzz.yaml").exists(), "nothing was unlinked");
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/favorites")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        let favorites = json_response(resp).await;
+        assert_eq!(
+            favorites,
+            serde_json::json!(["contested"]),
+            "a refused delete prunes no favorites"
+        );
+        assert_eq!(
+            template_ids(&app).await,
+            served_before,
+            "a refused delete leaves the served set unchanged"
+        );
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/contested")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK, "the id is still served");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The live set can outlive the files it names: an earlier delete unlinks the file, its reload
+    /// then fails on an unreadable directory, and the id stays served. A retry must converge, which
+    /// means the reading that proves the id is gone has to become the served set, not just decide
+    /// this one response (#183, round-3 diff review).
+    #[tokio::test]
+    async fn template_delete_of_an_already_unlinked_file_converges() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("ghost.yaml"), template_yaml("ghost")).unwrap();
+        let app = build_app_in(&dir);
+        // Stand in for the earlier delete whose reload failed: the file is gone, the registry is not.
+        std::fs::remove_file(dir.join("ghost.yaml")).unwrap();
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/ghost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/ghost")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "the service stopped serving a template it just called missing"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The refusal is scoped to the id being deleted: a file refused for some *other* id is a
+    /// pre-existing condition of the directory and must not block an unrelated delete (#183).
+    ///
+    /// Passes against the pre-change code as well, where nothing blocked a delete at all; it exists
+    /// to keep the new refusal from over-reaching.
+    #[tokio::test]
+    async fn template_delete_succeeds_beside_an_unrelated_refused_file() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("target.yaml"), template_yaml("target")).unwrap();
+        std::fs::write(dir.join("aaa.yaml"), template_yaml("other")).unwrap();
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("other")).unwrap();
+        let app = build_app_in(&dir);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/target")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!dir.join("target.yaml").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Once the operator removes the collider the delete goes through, so the refusal converges
+    /// instead of stranding the id (#183). Like the test above it also passes pre-change; its job is
+    /// to prove the refusal is not permanent.
+    #[tokio::test]
+    async fn template_delete_succeeds_once_the_collider_is_gone() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("aaa.yaml"), template_yaml("fixable")).unwrap();
+        std::fs::write(dir.join("zzz.yaml"), template_yaml("fixable")).unwrap();
+        let app = build_app_in(&dir);
+
+        std::fs::remove_file(dir.join("zzz.yaml")).unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/templates/fixable")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!dir.join("aaa.yaml").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 

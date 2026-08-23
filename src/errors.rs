@@ -22,6 +22,7 @@ const CODE_UNSUPPORTED_FORMAT: &str = "UnsupportedFormat";
 const CODE_RENDER_FAILED: &str = "RenderFailed";
 const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
 const CODE_TEMPLATE_EXISTS: &str = "TemplateExists";
+const CODE_TEMPLATE_ID_COLLISION: &str = "TemplateIdCollision";
 const CODE_PRINTER_NOT_FOUND: &str = "PrinterNotFound";
 const CODE_PRINTER_EXISTS: &str = "PrinterExists";
 const CODE_PRINTER_INVALID: &str = "PrinterInvalid";
@@ -270,6 +271,21 @@ impl AppError {
             CODE_TEMPLATE_EXISTS,
             format!("A template with id '{id}' already exists"),
             Some(json!({ "template": id })),
+        )
+    }
+
+    /// Two files on disk declare one template id, and the service will not guess which was meant.
+    ///
+    /// `files` are bare filenames from the directory reading the decision was made on, never paths:
+    /// the templates directory's location is server configuration. This code carries no
+    /// `details.reason` on purpose. ADR-0052 scopes `reason` to `RenderFailed`, `InvalidRequest`,
+    /// `UnsupportedLayoutItem` and `TemplateInvalid`, and a `409` is none of them (#183, #184).
+    pub fn template_id_collision(id: &str, files: Vec<String>, message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            CODE_TEMPLATE_ID_COLLISION,
+            message,
+            Some(json!({ "template": id, "files": files })),
         )
     }
 
