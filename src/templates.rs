@@ -63,6 +63,11 @@ pub struct TemplateRegistry {
     /// Files refused by a parse, validation or duplicate-id fault; excluded from the valid set
     /// but not fatal.
     broken: Vec<BrokenTemplate>,
+    // Files refused *specifically* for declaring an id another file already holds, keyed by that id.
+    // `broken` carries the same event as prose written for an operator; the write endpoints need it
+    // as data, to answer "is this id contested, and by which file?" without parsing a message
+    // (#183, #184).
+    duplicates: HashMap<String, Vec<PathBuf>>,
 }
 
 /// Every entry of `dir`, sorted. Loading in sorted order rather than `read_dir` order is what makes
@@ -93,6 +98,7 @@ impl TemplateRegistry {
         let mut hashes = HashMap::new();
         let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
         let mut broken: Vec<BrokenTemplate> = Vec::new();
+        let mut duplicates: HashMap<String, Vec<PathBuf>> = HashMap::new();
 
         for path in sorted_dir_paths(dir)? {
             let ext = path
@@ -150,11 +156,12 @@ impl TemplateRegistry {
                 let error = TemplateRegistryError::DuplicateId {
                     id: template.id.clone(),
                     first: existing_path.clone(),
-                    second: path,
+                    second: path.clone(),
                 }
                 .to_string();
                 tracing::warn!(%error, "skipping broken template");
                 broken.push(BrokenTemplate { filename, error });
+                duplicates.entry(template.id).or_default().push(path);
                 continue;
             }
 
@@ -171,6 +178,7 @@ impl TemplateRegistry {
             hashes,
             paths: seen_paths,
             broken,
+            duplicates,
         })
     }
 
@@ -189,6 +197,15 @@ impl TemplateRegistry {
     /// Lowercase hex SHA-256 of the template's raw YAML, used as a strong ETag.
     pub fn content_hash(&self, id: &str) -> Option<&str> {
         self.hashes.get(id).map(String::as_str)
+    }
+
+    /// Files refused for declaring `id` while another file already held it, in load order.
+    ///
+    /// Empty for an uncontested id. Only files that parsed and validated can appear: one that fails
+    /// either never reaches the id check, so it never claims an id (see the create guard in
+    /// `api.rs`, which covers that case by filename instead).
+    pub fn duplicates(&self, id: &str) -> &[PathBuf] {
+        self.duplicates.get(id).map_or(&[], Vec::as_slice)
     }
 
     /// The file this id was loaded from, or `None` if the registry does not hold the id.
@@ -2552,6 +2569,36 @@ layout: []
 
             fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    /// The refused file is recorded against the id it collided on, not only as prose in `broken`,
+    /// because the write endpoints have to answer "is this id contested, and by which file?" (#183,
+    /// #184). An uncontested id records nothing.
+    #[test]
+    fn duplicates_records_the_refused_file_per_id() {
+        let dir = temp_dir("dup_map");
+        write_template(&dir, "a.yaml", &yaml_with_id("dup"));
+        write_template(&dir, "z.yaml", &yaml_with_id("dup"));
+        write_template(&dir, "solo.yaml", &yaml_with_id("solo"));
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+
+        let refused: Vec<_> = registry
+            .duplicates("dup")
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .collect();
+        assert_eq!(refused, vec!["z.yaml"], "the loser is recorded for 'dup'");
+        assert!(
+            registry.duplicates("solo").is_empty(),
+            "an uncontested id records no duplicate"
+        );
+        assert!(
+            registry.duplicates("absent").is_empty(),
+            "an id the registry does not hold records no duplicate"
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     /// Refusing a collider is scoped to that file: an unrelated template in the same directory is
