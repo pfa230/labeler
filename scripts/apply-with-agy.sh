@@ -63,8 +63,13 @@ prompt="/opsx-apply $change. Do not commit; the change is committed once at the 
 # that contains quotes of its own, so SHELL pins the interpreter script(1)
 # hands it to: %q emits bash quoting and the operator's login shell need not be
 # bash. sed/tr strip ANSI and carriage returns.
+#
+# -p is the short alias for --print, and --print TAKES A VALUE, so the prompt is
+# attached (-p=...) and -p goes last. Written as a bare `agy -p --mode ...` the
+# flag swallows `--mode` as its prompt and the real prompt is left as an ignored
+# positional; agy now refuses that outright instead of running.
 timeout="${AGY_PRINT_TIMEOUT:-120m}"
-printf -v agy_cmd 'agy -p --mode accept-edits --effort high --print-timeout %q %q' "$timeout" "$prompt"
+printf -v agy_cmd 'agy --mode accept-edits --effort high --print-timeout %q -p=%q' "$timeout" "$prompt"
 
 # script(1) is two incompatible programs with one name. util-linux is
 # `script [options] -c CMD FILE`; BSD/macOS is `script [options] FILE CMD ARGS...`
