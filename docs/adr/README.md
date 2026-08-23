@@ -74,6 +74,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0061](0061-template-group-yaml-field.md) | A template's group is a YAML field, not its directory | Accepted |
 | [0062](0062-service-may-rewrite-single-template-key.md) | The service may rewrite one key of a hand-authored template | Accepted |
 | [0063](0063-connection-public-url-is-the-link-base.md) | A connection's public URL is the link base, its base URL is the fetch base | Accepted |
+| [0064](0064-svar-grid-for-the-connector-browser.md) | The connector browse table uses SVAR DataGrid; the ordering rules stay ours | Accepted |
 
 ## Adding an ADR
 
