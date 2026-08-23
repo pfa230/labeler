@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
 import { Templates } from "./Templates";
+import { SHEET_ICON, SINGLE_ICON, iconGeometry } from "../setupTests";
 
 const templates = [
   {
@@ -26,7 +27,14 @@ const templates = [
       paper_height: 11,
       label_width: 4,
       label_height: 2,
-      positions: [[0, 0]],
+      positions: [
+        [0, 0],
+        [4.25, 0],
+        [0, 2],
+        [4.25, 2],
+        [0, 4],
+        [4.25, 4],
+      ],
     },
   },
 ];
@@ -113,7 +121,59 @@ describe("Templates list", () => {
     expect(await screen.findByText("Brother 24mm")).toBeInTheDocument();
     expect(screen.getByText("Avery 5163")).toBeInTheDocument();
     expect(screen.getByText("single")).toBeInTheDocument();
-    expect(screen.getByText("sheet")).toBeInTheDocument();
+    expect(screen.getByText("sheet · 6")).toBeInTheDocument();
+  });
+
+  // The grid and the detail page must render the same badge (#201). Text and a rect count alone
+  // would pass for two six-cell icons of different geometry, or for a pill wearing the wrong
+  // colours, so the geometry and the colour tokens are compared too. TemplateDetail.test.tsx
+  // asserts the same four things against the same shape.
+  it("renders the sheet badge with its icon geometry and its own colour tokens", async () => {
+    renderPage();
+    await screen.findByText("Avery 5163");
+    const badge = document.querySelector<HTMLElement>('[data-format="sheet"]')!;
+    expect(badge.textContent).toBe("sheet · 6");
+    expect(badge.style.color).toBe("var(--info)");
+    expect(badge.style.background).toBe("var(--info-soft)");
+    expect(badge.style.borderColor).toBe("var(--info)");
+    expect(iconGeometry(badge)).toEqual(SHEET_ICON);
+  });
+
+  it("renders the single badge with its icon and its own colour tokens", async () => {
+    renderPage();
+    await screen.findByText("Brother 24mm");
+    const badge = document.querySelector<HTMLElement>('[data-format="single"]')!;
+    expect(badge.textContent).toBe("single");
+    expect(badge.style.color).toBe("var(--accent-deep)");
+    expect(badge.style.background).toBe("var(--accent-soft)");
+    expect(badge.style.borderColor).toBe("var(--accent-deep)");
+    expect(iconGeometry(badge)).toEqual(SINGLE_ICON);
+    expect(badge.closest("div.rounded-lg")!.querySelectorAll("[data-format]")).toHaveLength(1);
+  });
+
+  // The badge rides the top rail with the selection checkbox. Nothing else pins that: moving it back
+  // beside the id chip would collapse the id to a single character again (see the change's tasks.md,
+  // "Browser check outcome") and no other assertion would notice.
+  it("puts the badge on the top rail, beside the selection checkbox", async () => {
+    renderPage();
+    await screen.findByText("Avery 5163");
+    const badge = document.querySelector<HTMLElement>('[data-format="sheet"]')!;
+    const rail = badge.parentElement!;
+    expect(rail.querySelector('input[type="checkbox"]')).not.toBeNull();
+    // and not beside the id chip it used to squeeze
+    expect(rail.querySelector("code")).toBeNull();
+    // Sharing a row with the checkbox is not enough on its own: moving that whole wrapper down into
+    // the button row would still satisfy it. Document order pins the rail to the top of the card.
+    const card = badge.closest("div.rounded-lg")!;
+    // Against the card's main link, which wraps both the thumbnail and the title: preceding the
+    // title alone would still allow the rail to sit under the thumbnail. Not against a
+    // thumbnail-ish selector, which the badge's own aria-hidden icon would match first.
+    const mainLink = card.querySelector('a[aria-label^="Print "]')!;
+    expect(badge.compareDocumentPosition(mainLink) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(badge.compareDocumentPosition(card.querySelector("code")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Exactly one badge on the card: a legacy pill left behind beside the new one would satisfy every
+    // other assertion here, and the spec says each surface renders one badge.
+    expect(card.querySelectorAll("[data-format]")).toHaveLength(1);
   });
 
   it("card main link goes to the print form; details link to the template page", async () => {
