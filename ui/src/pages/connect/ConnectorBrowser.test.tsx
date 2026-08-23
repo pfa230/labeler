@@ -87,17 +87,57 @@ describe("ConnectorBrowser", () => {
   });
 
   it("renders the visible/hidden summary for a non-empty selection", async () => {
+    // Asymmetric counts (2 visible, 1 hidden) so a mistaken swap of the two numbers in the
+    // rendered string cannot pass unnoticed: a symmetric 1/1 fixture renders the same text either
+    // way and would let that bug through.
     vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
       json({ rows: [
         { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
-      ], next_cursor: null, has_more: false, count: 1 })));
+        { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } },
+      ], next_cursor: null, has_more: false, count: 2 })));
     const selected: SelectedRow[] = [
       { resource: "entities", key: "e1", label: "Drill", lastSeen: 1 },
-      { resource: "entities", key: "e9", label: "Ghost", lastSeen: 2 },
+      { resource: "entities", key: "e2", label: "Shelf", lastSeen: 2 },
+      { resource: "entities", key: "e9", label: "Ghost", lastSeen: 3 },
     ];
     render(<ConnectorBrowser connectionId="c1" schema={schema} selected={selected} onSelectedChange={vi.fn()} />);
     await screen.findByText("Drill");
-    expect(screen.getByText("2/200 selected (1 in this view, 1 elsewhere)")).toBeInTheDocument();
+    expect(screen.getByText("3/200 selected (2 in this view, 1 elsewhere)")).toBeInTheDocument();
+  });
+
+  it("Load more appends a second page of rows", async () => {
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (_input, init) => {
+      const body = init?.body ? JSON.parse(init.body as string) : {};
+      if (body.cursor) {
+        return json({
+          rows: [{ id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } }],
+          next_cursor: null,
+          has_more: false,
+          count: 2,
+        });
+      }
+      return json({
+        rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } }],
+        next_cursor: "c2",
+        has_more: true,
+        count: 2,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Harness />);
+    await screen.findByText("Drill");
+    expect(screen.queryByText("Shelf")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+
+    await screen.findByText("Shelf");
+    // The first page's row stays present: Load more appends rather than replaces.
+    expect(screen.getByText("Drill")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const lastCall = fetchMock.mock.calls.at(-1)!;
+    expect(JSON.parse(lastCall[1]!.body as string).cursor).toBe("c2");
+    // The second page reported has_more: false, so the button is gone.
+    expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
   });
 
   it("sends the search filter on Apply", async () => {
