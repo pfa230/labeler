@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Grid, type ICellProps, type IColumnConfig, type IHeaderCellConfig, type IHeaderCellProps } from "@svar-ui/react-grid";
+import "@svar-ui/react-grid/style.css";
 import {
   browseConnection,
   type ConnectorSchema,
@@ -12,6 +14,8 @@ import {
   loadSavedColumnKeys,
   saveColumnKeys,
 } from "./connectorColumns";
+import { compareRowsBy, type SortDirection } from "../../lib/connectorSort";
+import { matchesFilters, type ColumnFilters } from "../../lib/connectorFilter";
 
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
@@ -27,6 +31,33 @@ export interface ConnectorBrowserProps {
 const refKey = (r: { resource: string; key: string }) => `${r.resource}:${r.key}`;
 const MATERIALIZE_CAP = 200;
 
+// The row object the grid holds. `id` is the grid's own row identity (svar keys rows by `id`);
+// `_row` carries the original DisplayRow so cells never have to reconstruct it from flattened
+// cell values. Cell values are also spread in flat (by column key) so the grid's own machinery
+// (auto sizing, etc.) sees ordinary column-keyed data, matching the shape svar expects.
+interface GridRow {
+  id: string;
+  _row: DisplayRow;
+  [key: string]: unknown;
+}
+
+// Shared by every data column: renders the cell's displayed value, and links the name cell to
+// the source system when the row carries a url. Has no dependency on component state, so it
+// keeps one stable identity across renders rather than being recreated per render.
+function NameCell({ row, column }: ICellProps) {
+  const displayRow = row._row as DisplayRow;
+  const key = String(column.id);
+  const value = displayRow.cells[key] ?? "";
+  if (key === "name" && displayRow.url) {
+    return (
+      <a href={displayRow.url} target="_blank" rel="noopener" className="underline" style={{ color: "var(--ink)" }}>
+        {value}
+      </a>
+    );
+  }
+  return <>{value}</>;
+}
+
 export function ConnectorBrowser({ connectionId, schema, selected, onSelectedChange }: ConnectorBrowserProps) {
   const [resourceId, setResourceId] = useState(schema.resources[0]?.id ?? "");
   const resource = useMemo<ResourceSpec | undefined>(() => schema.resources.find((r) => r.id === resourceId), [schema, resourceId]);
@@ -40,6 +71,12 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Ours, not the grid's: see design.md "The grid renders the sort state; it does not own the
+  // ordering". `sortState` cycles unsorted -> asc -> desc -> unsorted per column, one column at a
+  // time; sorting a different column always replaces it.
+  const [sortState, setSortState] = useState<{ key: string; direction: SortDirection } | null>(null);
+  const [columnFilters, setColumnFilters] = useState<ColumnFilters>({});
 
   const [columnOverrides, setColumnOverrides] = useState<Record<string, Set<string>>>({});
   const currentResourceKey = resource ? `${connectionId}:${resource.id}` : "";
@@ -74,6 +111,17 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
     if (!resource) return;
     setColumnOverrides((prev) => ({ ...prev, [currentResourceKey]: next }));
     saveColumnKeys(connectionId, resource.id, next);
+    // Hiding a column CLEARS its filter rather than parking it: re-showing the column must not
+    // silently re-apply a needle the user last typed some columns ago. `activeFilters` already
+    // stops a hidden column narrowing anything, so this is about what comes back on re-show.
+    // Safe in an event handler; the same prune in an effect would trip react-hooks/set-state-in-effect.
+    setColumnFilters((prev) => {
+      const kept: ColumnFilters = {};
+      for (const [key, value] of Object.entries(prev)) {
+        if (next.has(key)) kept[key] = value;
+      }
+      return Object.keys(kept).length === Object.keys(prev).length ? prev : kept;
+    });
   };
 
   const toggleColumn = (key: string) => {
@@ -229,18 +277,163 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   }, [selected, selectedKeys, onSelectedChange]);
 
   const relationshipFrom = (rid: string): RelationshipSpec | undefined => schema.relationships.find((rel) => rel.from === rid);
-  const drill = (row: DisplayRow, rel: RelationshipSpec) => {
+  const drill = useCallback((row: DisplayRow, rel: RelationshipSpec) => {
     setParent({ relationship: rel.id, key: row.id.key, label: String(row.cells.name ?? row.id.key) });
     setResourceId(rel.to);
     setApplied({});
     setFilterDraft({});
     setTags([]);
     setPendingTag("");
-  };
+    setSortState(null);
+    setColumnFilters({});
+  }, []);
 
-  const th = "px-3 py-2 text-left text-xs font-medium";
-  const td = "px-3 py-2 text-sm";
   const rel = resource ? relationshipFrom(resource.id) : undefined;
+
+  // Filters for a column no longer visible are dropped from what's applied (not from `columnFilters`
+  // itself, which is left alone): a hidden column's filter must never keep narrowing the table
+  // invisibly, and deriving this on every render, rather than pruning stored state in an effect,
+  // needs no extra state and can't fall out of sync with the columns picker.
+  const activeFilters = useMemo(() => {
+    const visible = new Set(visibleColumns.map((c) => c.key));
+    const next: ColumnFilters = {};
+    for (const [key, value] of Object.entries(columnFilters)) {
+      if (visible.has(key)) next[key] = value;
+    }
+    return next;
+  }, [columnFilters, visibleColumns]);
+
+  // rows -> filter -> compare -> displayed. `rows` itself is never touched: it stays in connector
+  // order so "unsorted" always has an order to return to (see design.md "The grid renders the sort
+  // state; it does not own the ordering").
+  const filteredRows = useMemo(
+    () => rows.filter((row) => matchesFilters(row, activeFilters)),
+    [rows, activeFilters],
+  );
+  const comparedRows = useMemo(() => {
+    if (!sortState) return filteredRows;
+    const field = resource?.columns.find((c) => c.key === sortState.key);
+    if (!field) return filteredRows;
+    return [...filteredRows].sort(compareRowsBy(field, sortState.direction));
+  }, [filteredRows, sortState, resource]);
+  const displayedRows = comparedRows;
+
+
+  // Scope disclosure (design.md "Disclosure copy is specified, not left to taste"): sorting and
+  // filtering only ever act on `rows`, the loaded set, never on the connector's full result, so the
+  // table says so whenever that scope could otherwise be mistaken for the whole of it. "A filter is
+  // active" means a non-empty needle on a visible column, not merely that a filter row exists.
+  const filterActive = Object.values(activeFilters).some((v) => v.trim() !== "");
+  const loadedCount = rows.length;
+  const shownCount = displayedRows.length;
+  // When a filter hides every loaded row and more remain to load, that fact replaces the "Showing
+  // X of Y" / "more rows loaded so far" pair rather than combining with it: an empty grid alone
+  // reads as "no results", not as "narrow further or load more", which is the actual state.
+  const noMatchWithMore = filterActive && shownCount === 0 && hasMore;
+
+  // Rows and sort marks are derived together, and that pairing is load-bearing rather than tidiness.
+  // `DataStore.init` resets `sortMarks: {}` whenever the data identity changes (grid-store
+  // DataStore.ts, the `!isSame(state.data)` branch) and then will not re-apply a `sortMarks` prop it
+  // considers unchanged by reference. Deriving the marks separately, keyed only on `sortState`, hands
+  // back the same object after a filter edits the row set, so the reset stands: the rows stay
+  // correctly sorted while the header claims `aria-sort="none"`, which misleads rather than merely
+  // omits. Building both in one memo makes a fresh marks object accompany every fresh row array.
+  const { gridRows, sortMarks } = useMemo(() => {
+    const nextRows = displayedRows.map((row): GridRow => ({ ...row.cells, id: refKey(row.id), _row: row }));
+    return {
+      gridRows: nextRows,
+      sortMarks: sortState ? { [sortState.key]: { order: sortState.direction } } : {},
+    };
+  }, [displayedRows, sortState]);
+
+  const SelectCell = useMemo(() => {
+    return function SelectCell({ row }: ICellProps) {
+      const displayRow = row._row as DisplayRow;
+      const id = refKey(displayRow.id);
+      const isSelected = selectedKeys.has(id);
+      return (
+        <input
+          type="checkbox"
+          aria-label={`select ${id}`}
+          checked={isSelected}
+          disabled={!isSelected && selected.length >= MATERIALIZE_CAP}
+          onChange={() => toggle(displayRow)}
+        />
+      );
+    };
+  }, [selectedKeys, selected.length, toggle]);
+
+  const DrillCell = useMemo(() => {
+    if (!rel) return undefined;
+    return function DrillCell({ row }: ICellProps) {
+      const displayRow = row._row as DisplayRow;
+      return (
+        <button type="button" className="underline" onClick={() => drill(displayRow, rel)} style={{ color: "var(--ink)" }}>
+          Drill in
+        </button>
+      );
+    };
+  }, [rel, drill]);
+
+  const setColumnFilter = useCallback((key: string, value: string) => {
+    setColumnFilters((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  // FilterCell keeps one stable identity for the component's whole lifetime (it never depends on
+  // `columnFilters`): recreating it whenever the filter text changes would make React remount the
+  // <input> on every keystroke, dropping focus mid-type. The current value and label instead reach
+  // it as ordinary props, threaded through the header row's own config object below (`filterValue`/
+  // `filterLabel`, cast back out here) - that config object is free to change every render, since
+  // only the `cell` component reference has to stay put for reconciliation to preserve the DOM node.
+  const FilterCell = useMemo(() => {
+    return function FilterCell({ column, cell }: IHeaderCellProps) {
+      const key = String(column.id);
+      const { filterValue, filterLabel } = cell as unknown as { filterValue: string; filterLabel: string };
+      return (
+        <input
+          aria-label={`Filter by ${filterLabel}`}
+          value={filterValue}
+          onChange={(e) => setColumnFilter(key, e.target.value)}
+          className={inputClass}
+          style={inputStyle}
+        />
+      );
+    };
+  }, [setColumnFilter]);
+
+  const columns = useMemo<IColumnConfig[]>(() => {
+    // The utility columns get one header row while data columns get two (text + filter). Verified
+    // directly against @svar-ui/grid-store's DataStore that this mismatch is fine: normalizeColumns
+    // pads a shorter column's header array up to the group's max row count itself, by giving its
+    // last row a rowspan and splicing in a hidden filler row, rather than indexing out of bounds.
+    const utilityHeader = [{ text: "" }];
+    const cols: IColumnConfig[] = [
+      { id: "__select", header: utilityHeader, width: 40, cell: SelectCell },
+      ...visibleColumns.map((c): IColumnConfig => {
+        // Both keys are load-bearing (design.md "Filtering is ours too"): `cell` decides what
+        // renders (our input, never the built-in <Filter>), `filter` decides how the header cell
+        // behaves - not sortable, no Enter-to-sort, out of tab order, aria-sort="none" - so a click
+        // or keypress in the filter box can never sort the column.
+        const filterRow: IHeaderCellConfig & { filterValue: string; filterLabel: string } = {
+          cell: FilterCell,
+          filter: "text",
+          filterValue: columnFilters[c.key] ?? "",
+          filterLabel: c.label,
+        };
+        return {
+          id: c.key,
+          header: [{ text: c.label }, filterRow],
+          flexgrow: 1,
+          sort: true,
+          cell: NameCell,
+        };
+      }),
+    ];
+    if (DrillCell) {
+      cols.push({ id: "__drill", header: utilityHeader, width: 90, cell: DrillCell });
+    }
+    return cols;
+  }, [visibleColumns, SelectCell, DrillCell, FilterCell, columnFilters]);
 
   return (
     <div className="flex flex-col gap-3">
@@ -256,6 +449,8 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
               setFilterDraft({});
               setTags([]);
               setPendingTag("");
+              setSortState(null);
+              setColumnFilters({});
             }}
             className={`${buttonBase} border`}
             style={{ borderColor: "var(--border)", color: r.id === resourceId ? "var(--accent)" : "var(--ink)", background: r.id === resourceId ? "var(--accent-soft)" : "transparent" }}
@@ -266,7 +461,18 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
         {parent && (
           <span className="text-sm" style={{ color: "var(--muted)" }}>
             in {parent.label}{" "}
-            <button type="button" className="underline" onClick={() => setParent(undefined)} style={{ color: "var(--ink)" }}>clear</button>
+            <button
+              type="button"
+              className="underline"
+              onClick={() => {
+                setParent(undefined);
+                setSortState(null);
+                setColumnFilters({});
+              }}
+              style={{ color: "var(--ink)" }}
+            >
+              clear
+            </button>
           </span>
         )}
       </div>
@@ -432,50 +638,45 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
       {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
       {busy && rows.length === 0 && <p className="text-sm" style={{ color: "var(--muted)" }}>Loading...</p>}
 
+      {resource && (noMatchWithMore || filterActive || hasMore) && (
+        <div role="status" className="text-sm flex flex-col gap-0.5" style={{ color: "var(--muted)" }}>
+          {noMatchWithMore ? (
+            <p>No loaded row matches. More rows can be loaded.</p>
+          ) : (
+            <>
+              {filterActive && <p>Showing {shownCount} of {loadedCount} loaded rows</p>}
+              {hasMore && <p>Sorting and filtering cover only the {loadedCount} rows loaded so far</p>}
+            </>
+          )}
+        </div>
+      )}
+
       {resource && (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
-          <thead>
-            <tr>
-              <th className={th} style={{ color: "var(--muted)" }}></th>
-              {visibleColumns.map((c) => (
-                <th key={c.key} className={th} style={{ color: "var(--muted)" }}>{c.label}</th>
-              ))}
-              {rel && <th className={th} style={{ color: "var(--muted)" }}></th>}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr key={refKey(row.id)} style={{ borderTop: "1px solid var(--border)" }}>
-                <td className={td}>
-                  <input
-                    type="checkbox"
-                    aria-label={`select ${refKey(row.id)}`}
-                    checked={selectedKeys.has(refKey(row.id))}
-                    disabled={!selectedKeys.has(refKey(row.id)) && selected.length >= MATERIALIZE_CAP}
-                    onChange={() => toggle(row)}
-                  />
-                </td>
-                {visibleColumns.map((c) => (
-                  <td key={c.key} className={td}>
-                    {c.key === "name" && row.url ? (
-                      <a href={row.url} target="_blank" rel="noopener" className="underline" style={{ color: "var(--ink)" }}>
-                        {row.cells[c.key] ?? ""}
-                      </a>
-                    ) : (
-                      row.cells[c.key] ?? ""
-                    )}
-                  </td>
-                ))}
-                {rel && (
-                  <td className={td}>
-                    <button type="button" className="underline" onClick={() => drill(row, rel)} style={{ color: "var(--ink)" }}>Drill in</button>
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-          </table>
+        <div className="connector-grid-viewport">
+          <Grid
+            data={gridRows}
+            columns={columns}
+            select={false}
+            autoRowHeight
+            sortMarks={sortMarks}
+            init={(api) => {
+              // Cancel the grid's own reorder (see design.md "The grid renders the sort state; it
+              // does not own the ordering"): returning false from an intercept stops the default
+              // sort-rows handler from running, so `data` is never reordered and `sortMarks` is
+              // never set by the grid itself. `ev.add` (set on Ctrl/Meta-click) is deliberately
+              // never read, so such a click cycles the clicked column exactly like a plain click
+              // and can never accumulate a second sorted column.
+              api.intercept("sort-rows", (ev) => {
+                const key = String(ev.key);
+                setSortState((prev) => {
+                  if (!prev || prev.key !== key) return { key, direction: "asc" };
+                  if (prev.direction === "asc") return { key, direction: "desc" };
+                  return null;
+                });
+                return false;
+              });
+            }}
+          />
         </div>
       )}
 
