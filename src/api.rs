@@ -62,6 +62,16 @@ pub struct AppState {
     egress: crate::egress::Egress,
     connectors: crate::connector::ConnectorRegistry,
     cursor_key: crate::connector::cursor::SigningKey,
+    /// Fires between a write and its reload, so a test can stage the mid-request directory change
+    /// the post-write confirmation exists to catch. Compiled out of the shipped binary: the service
+    /// cannot cause that interleaving itself, and without a seam the endpoints' collision handling
+    /// has no regression coverage at all.
+    #[cfg(test)]
+    mid_write_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Fires after the create guard and before the file is published, for the other interleaving a
+    /// request cannot stage: a file arriving at the destination name once the guard has passed.
+    #[cfg(test)]
+    pre_publish_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl AppState {
@@ -77,6 +87,10 @@ impl AppState {
             trust_proxy: std::env::var("LABELER_TRUST_PROXY")
                 .map(|v| v == "true")
                 .unwrap_or(false),
+            #[cfg(test)]
+            mid_write_hook: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            pre_publish_hook: std::sync::Mutex::new(None),
             no_auth: std::env::var("LABELER_NO_AUTH")
                 .map(|v| v == "true")
                 .unwrap_or(false),
@@ -130,11 +144,51 @@ impl AppState {
         self
     }
 
-    // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and
-    // consistent with the synchronous Typst render path; revisit with spawn_blocking if it ever
-    // serves large dirs or remote storage.
-    fn reload(&self) -> Result<(usize, usize), TemplateRegistryError> {
-        let registry = TemplateRegistry::load_from_dir(&self.templates_dir)?;
+    /// Install the between-write-and-reload hook. Test-only; see the field.
+    #[cfg(test)]
+    pub fn set_mid_write_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.mid_write_hook.lock().expect("hook lock") = Some(Box::new(hook));
+    }
+
+    /// Install the guard-passed-but-not-yet-published hook. Test-only; see the field.
+    #[cfg(test)]
+    pub fn set_pre_publish_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.pre_publish_hook.lock().expect("hook lock") = Some(Box::new(hook));
+    }
+
+    /// Called by each write endpoint after its write and before its reload.
+    fn after_write(&self) {
+        #[cfg(test)]
+        {
+            let hook = self.mid_write_hook.lock().expect("hook lock");
+            if let Some(hook) = hook.as_ref() {
+                hook();
+            }
+        }
+    }
+
+    /// Called by the create endpoint after its guard and before it publishes.
+    fn before_publish(&self) {
+        #[cfg(test)]
+        {
+            let hook = self.pre_publish_hook.lock().expect("hook lock");
+            if let Some(hook) = hook.as_ref() {
+                hook();
+            }
+        }
+    }
+
+    /// Read the templates directory without publishing the result.
+    ///
+    /// For a decision that may refuse the request: `reload` swaps the new reading in, so using it to
+    /// decide would change what the service serves even when the request is then refused, which a
+    /// refused delete must not do (#183).
+    fn read_templates(&self) -> Result<TemplateRegistry, TemplateRegistryError> {
+        TemplateRegistry::load_from_dir(&self.templates_dir)
+    }
+
+    /// Make `registry` the served set, logging whatever it refused.
+    fn publish(&self, registry: TemplateRegistry) -> (usize, usize) {
         let count = registry.len();
         let broken_count = registry.broken().len();
         if broken_count > 0 {
@@ -143,7 +197,15 @@ impl AppState {
             }
         }
         self.templates.store(Arc::new(registry));
-        Ok((count, broken_count))
+        (count, broken_count)
+    }
+
+    // Synchronous filesystem I/O. Acceptable for the single-user, local-templates-dir target and
+    // consistent with the synchronous Typst render path; revisit with spawn_blocking if it ever
+    // serves large dirs or remote storage.
+    fn reload(&self) -> Result<(usize, usize), TemplateRegistryError> {
+        let registry = self.read_templates()?;
+        Ok(self.publish(registry))
     }
 }
 
@@ -323,6 +385,10 @@ pub async fn list_templates(
 pub async fn reload_templates(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ReloadResponse>, AppError> {
+    // Under the same lock the write endpoints hold. Swapping the registry mid-write would let this
+    // reload land between a handler's confirmation and the detail it answers with, which is exactly
+    // the substitution the confirmation exists to prevent (#184).
+    let _guard = state.write_lock.lock().await;
     let (count, broken_count) = state.reload()?;
     Ok(Json(ReloadResponse {
         count,
@@ -372,6 +438,30 @@ fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
 }
 
 fn write_template_file(path: &std::path::Path, body: &str) -> Result<(), AppError> {
+    let (tmp, _) = stage_template_file(path, body)?;
+    if let Err(err) = std::fs::rename(&tmp, path) {
+        // The rename can fail on a destination another writer turned into a directory, and the
+        // staging file would otherwise sit in the templates dir forever.
+        if let Err(err) = std::fs::remove_file(&tmp) {
+            tracing::warn!(path = %tmp.display(), %err, "failed to remove template staging file");
+        }
+        return Err(AppError::render_failed(
+            Reason::TemplateWriteFailed,
+            format!("failed to persist template: {err}"),
+        ));
+    }
+    Ok(())
+}
+
+/// Write `body` to a fresh staging file beside `path`, and return it with the destination's parent.
+///
+/// The staging file is created with `create_new`, not `std::fs::write`: that truncates whatever the
+/// name already holds and follows a symlink planted under it, so an external writer that guesses the
+/// staging name gets our bytes written through it. `create_new` fails instead, and a fresh nonce is
+/// tried, which also makes the name collision recoverable rather than fatal (#184).
+fn stage_template_file(path: &std::path::Path, body: &str) -> Result<(PathBuf, PathBuf), AppError> {
+    use std::io::Write;
+
     let dir = path.parent().ok_or_else(|| {
         AppError::render_failed(Reason::TemplatePathInvalid, "invalid template path")
     })?;
@@ -381,24 +471,169 @@ fn write_template_file(path: &std::path::Path, body: &str) -> Result<(), AppErro
         .ok_or_else(|| {
             AppError::render_failed(Reason::TemplatePathInvalid, "invalid template path")
         })?;
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let tmp = dir.join(format!(".{file_name}.{nonce}.tmp"));
-    std::fs::write(&tmp, body).map_err(|err| {
-        AppError::render_failed(
-            Reason::TemplateWriteFailed,
-            format!("failed to write template: {err}"),
-        )
-    })?;
-    std::fs::rename(&tmp, path).map_err(|err| {
-        AppError::render_failed(
+
+    let mut last_err = None;
+    for attempt in 0..8 {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+            .wrapping_add(attempt);
+        let tmp = dir.join(format!(".{file_name}.{nonce}.tmp"));
+        match open_staging_exclusive(&tmp) {
+            Ok(mut file) => {
+                file.write_all(body.as_bytes())
+                    .and_then(|()| file.sync_all())
+                    .map_err(|err| {
+                        if let Err(err) = std::fs::remove_file(&tmp) {
+                            tracing::warn!(
+                                path = %tmp.display(),
+                                %err,
+                                "failed to remove template staging file"
+                            );
+                        }
+                        AppError::render_failed(
+                            Reason::TemplateWriteFailed,
+                            format!("failed to write template: {err}"),
+                        )
+                    })?;
+                return Ok((tmp, dir.to_path_buf()));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(err),
+            Err(err) => {
+                return Err(AppError::render_failed(
+                    Reason::TemplateWriteFailed,
+                    format!("failed to write template: {err}"),
+                ))
+            }
+        }
+    }
+    Err(AppError::render_failed(
+        Reason::TemplateWriteFailed,
+        format!(
+            "failed to write template: no free staging name beside {}: {}",
+            path.display(),
+            last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "unknown".into())
+        ),
+    ))
+}
+
+/// Open `tmp` for writing, but only if nothing holds that name.
+///
+/// `create_new` is the whole point: `File::create` and `std::fs::write` truncate an existing file and
+/// follow a symlink planted under the name, so an external writer who guesses a staging name gets the
+/// caller's template written through it, possibly outside the templates directory (#184).
+fn open_staging_exclusive(tmp: &std::path::Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)
+}
+
+/// Publish `body` at `path`, but only if nothing holds that name yet.
+///
+/// `rename` cannot express this: it replaces its destination silently, so the create path's
+/// `exists()`-then-write could overwrite a file another writer landed in between and report `201`
+/// (#184). `hard_link` fails with `AlreadyExists` instead, in one operation, while keeping the
+/// fully-written-before-visible property `rename` gave us. The staging name is unlinked afterwards
+/// either way; failing to unlink it does not change the answer, since a `.tmp` file is not a
+/// template the registry would load.
+fn publish_new_template_file(path: &std::path::Path, body: &str) -> Result<(), AppError> {
+    let (tmp, _) = stage_template_file(path, body)?;
+    let published = std::fs::hard_link(&tmp, path);
+    if let Err(err) = std::fs::remove_file(&tmp) {
+        tracing::warn!(path = %tmp.display(), %err, "failed to remove template staging file");
+    }
+    match published {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(
+            AppError::template_exists(path.file_stem().and_then(|s| s.to_str()).unwrap_or("")),
+        ),
+        Err(err) => Err(AppError::render_failed(
             Reason::TemplateWriteFailed,
             format!("failed to persist template: {err}"),
+        )),
+    }
+}
+
+/// Bare filename of `path`, for an error body. Never the path: see `AppError::template_id_collision`.
+fn file_label(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Confirm the registry serves `id` from `path` with exactly `body`, or say why it does not.
+///
+/// The pathname alone cannot carry this: `hard_link`/`rename` publish onto a name and report no file
+/// identity, so a writer replacing that name leaves a path comparison passing while the response
+/// would describe content the caller never sent. The content hash the registry already keeps for its
+/// ETag closes that.
+///
+/// A `409` asserts three things at once - two files claim the id, the caller's write is intact, and
+/// it is the one being refused - so it is returned only when all of them hold. Anything else (our
+/// file gone, renamed, re-identified, or holding somebody else's bytes) is a `500`: there would be no
+/// second file to name and no intact write to point at (#184).
+fn confirm_written_template(
+    registry: &TemplateRegistry,
+    id: &str,
+    path: &std::path::Path,
+    body: &str,
+) -> Result<(), AppError> {
+    use sha2::Sha256;
+
+    let want = hex::encode(Sha256::digest(body.as_bytes()));
+    let served = registry.path(id);
+    if served == Some(path) && registry.content_hash(id) == Some(want.as_str()) {
+        return Ok(());
+    }
+
+    let missing = || {
+        AppError::render_failed(
+            Reason::TemplateMissingAfterWrite,
+            format!(
+                "template '{id}' is missing after the write to {}",
+                file_label(path)
+            ),
         )
-    })?;
-    Ok(())
+    };
+
+    // The id must have gone to some *other* file; nothing else can be a collision.
+    let Some(winner) = served.filter(|served| *served != path) else {
+        return Err(missing());
+    };
+    // And that same reading must have refused *our* file for this id. Asking the snapshot, not the
+    // filesystem, is what keeps the two halves of the answer consistent: a file that was absent or
+    // declaring another id when the directory was read is not a collider, however it looks by the
+    // time we get here, and the error would otherwise name it as one.
+    let refused = registry.duplicates(id);
+    if !refused.iter().any(|refused| refused == path) {
+        return Err(missing());
+    }
+    // Finally it must still hold what we wrote, or the write is lost rather than refused. Read it
+    // back rather than asking the registry: `load_from_dir` records a hash only for the winner, so a
+    // refused file has none.
+    match std::fs::read_to_string(path) {
+        Ok(on_disk) if on_disk == body => {
+            // Every file the reading found declaring this id, not just ours: with three claimants an
+            // operator fixing only the one we happened to write would still not converge.
+            let mut files = vec![file_label(winner)];
+            files.extend(refused.iter().map(|p| file_label(p)));
+            Err(AppError::template_id_collision(
+                id,
+                files,
+                format!(
+                    "template id '{id}' is declared by both {} and {}; {} is served and the file just written is refused",
+                    file_label(winner),
+                    file_label(path),
+                    file_label(winner)
+                ),
+            ))
+        }
+        _ => Err(missing()),
+    }
 }
 
 #[utoipa::path(
@@ -407,8 +642,9 @@ fn write_template_file(path: &std::path::Path, body: &str) -> Result<(), AppErro
     request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
     responses(
         (status = 201, description = "Template created", body = TemplateDetail),
-        (status = 409, description = "Template id already exists", body = ErrorResponse),
-        (status = 422, description = "Invalid template", body = ErrorResponse)
+        (status = 409, description = "Template id already exists, or the id is served from another file after the write", body = ErrorResponse),
+        (status = 422, description = "Invalid template", body = ErrorResponse),
+        (status = 500, description = "The write failed, the directory could not be re-read, or the written template is missing afterwards", body = ErrorResponse)
     )
 )]
 pub async fn create_template(
@@ -419,17 +655,28 @@ pub async fn create_template(
     let id = template.id.clone();
     let path = template_file_path(&state.templates_dir, &id)?;
     let _guard = state.write_lock.lock().await;
-    // Registry first: the id may already be held by a file under a different name, which
-    // `path.exists()` misses. The path check still covers a file the registry has not loaded. Since
-    // #181 the reload below no longer fails on a duplicate id, so this guard is the only thing
-    // standing between a write and a silent collision, and it misses a file added to the directory
-    // since the last reload (#184).
+    // Decide against disk, not against a registry that may predate it: files reach this directory by
+    // hand (`cp catalog/*.yaml`), and the guard below used to test a stale in-memory set (#184).
+    state.reload()?;
+    // Two independent blocks, neither covering the other: the registry holds the id under some
+    // filename, or the destination name is taken by anything at all, including a file that fails to
+    // parse or declares another id. A file that does not parse never claims an id, so only the
+    // filename half can catch it.
     if state.templates.load_full().get(&id).is_some() || path.exists() {
         return Err(AppError::template_exists(&id));
     }
-    write_template_file(&path, &body)?;
+    // Not `write_template_file`: that renames onto the destination, and rename replaces silently, so
+    // a file landing here since the check above would be overwritten and the request would still
+    // report success (#184).
+    state.before_publish();
+    publish_new_template_file(&path, &body)?;
+    state.after_write();
     state.reload()?;
-    let detail = state.templates.load_full().detail(&id).ok_or_else(|| {
+    // One snapshot for both: confirming against one registry and answering from another would let a
+    // concurrent reload put back the very content the confirmation exists to keep out.
+    let registry = state.templates.load_full();
+    confirm_written_template(&registry, &id, &path, &body)?;
+    let detail = registry.detail(&id).ok_or_else(|| {
         AppError::render_failed(
             Reason::TemplateMissingAfterWrite,
             "template missing after write",
@@ -447,7 +694,9 @@ pub async fn create_template(
         (status = 200, description = "Template replaced", body = TemplateDetail),
         (status = 400, description = "Body id does not match path id", body = ErrorResponse),
         (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 422, description = "Invalid template", body = ErrorResponse)
+        (status = 409, description = "After the write, the id is served from a different file", body = ErrorResponse),
+        (status = 422, description = "Invalid template", body = ErrorResponse),
+        (status = 500, description = "The write failed, the directory could not be re-read, or the written template is missing afterwards", body = ErrorResponse)
     )
 )]
 pub async fn replace_template(
@@ -465,14 +714,21 @@ pub async fn replace_template(
             ),
         ));
     }
+    // Called for its id validation: a malformed id is a bad request, and answering that before
+    // touching the filesystem keeps an unreadable directory from masking it as a 500.
+    template_file_path(&state.templates_dir, &id)?;
     // Resolved under the lock, not before it: an in-flight delete would otherwise unlink the file
     // between the resolve and the write, and this handler would recreate the template it removed.
     let _guard = state.write_lock.lock().await;
+    state.reload()?;
     let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
     write_template_file(&path, &body)?;
+    state.after_write();
     state.reload()?;
-    let detail = state.templates.load_full().detail(&id).ok_or_else(|| {
+    let registry = state.templates.load_full();
+    confirm_written_template(&registry, &id, &path, &body)?;
+    let detail = registry.detail(&id).ok_or_else(|| {
         AppError::render_failed(
             Reason::TemplateMissingAfterWrite,
             "template missing after write",
@@ -490,8 +746,9 @@ pub async fn replace_template(
         (status = 200, description = "Template group updated", body = TemplateDetail),
         (status = 400, description = "Invalid id or request body", body = ErrorResponse),
         (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 409, description = "After the write, the id is served from a different file", body = ErrorResponse),
         (status = 422, description = "Invalid group name or unpatchable template", body = ErrorResponse),
-        (status = 500, description = "File write or registry reload failed", body = ErrorResponse)
+        (status = 500, description = "File write or registry reload failed, or the patched template is missing afterwards", body = ErrorResponse)
     )
 )]
 pub async fn update_template_group(
@@ -500,23 +757,36 @@ pub async fn update_template_group(
     payload: Result<Json<TemplateGroupUpdate>, JsonRejection>,
 ) -> Result<Response, AppError> {
     let Json(update) = payload.map_err(AppError::from)?;
-    let _guard = state.write_lock.lock().await;
-    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let yaml = std::fs::read_to_string(&path)
-        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
+    // Request syntax first, before the id and before any filesystem work: a body that does not carry
+    // the key is a bad request whatever the directory holds, and deciding it here keeps an unknown
+    // id or an unreadable directory from answering 404 or 500 in its place.
     let group = update.group().ok_or_else(|| {
         AppError::invalid_request(
             Reason::RequestBodyInvalid,
             "body must carry a 'group' key; use null to clear the group",
         )
     })?;
+    template_file_path(&state.templates_dir, &id)?;
+    let _guard = state.write_lock.lock().await;
+    state.reload()?;
+    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+    let yaml = std::fs::read_to_string(&path)
+        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
     let patched = patch_template_group(&yaml, group)?;
-    if patched != yaml {
+    // Only the writing branch makes a claim about a file it touched; the idempotent branch writes
+    // nothing, performs no post-write reload, and so has nothing to confirm.
+    let wrote = patched != yaml;
+    if wrote {
         write_template_file(&path, &patched)?;
+        state.after_write();
         state.reload()?;
     }
-    let detail = state.templates.load_full().detail(&id).ok_or_else(|| {
+    let registry = state.templates.load_full();
+    if wrote {
+        confirm_written_template(&registry, &id, &path, &patched)?;
+    }
+    let detail = registry.detail(&id).ok_or_else(|| {
         AppError::render_failed(
             Reason::TemplateMissingAfterWrite,
             "template missing after write",
@@ -533,6 +803,7 @@ pub async fn update_template_group(
         (status = 204, description = "Template deleted"),
         (status = 400, description = "Invalid id", body = ErrorResponse),
         (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 409, description = "More than one file on disk declares this id", body = ErrorResponse),
         (status = 500, description = "File removal, the favorites prune, or the directory re-read failed", body = ErrorResponse)
     )
 )]
@@ -540,9 +811,40 @@ pub async fn delete_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
+    template_file_path(&state.templates_dir, &id)?;
     let _guard = state.write_lock.lock().await;
-    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+    // Decided on a reading that is *not* published: a refused delete must leave the served set
+    // exactly as it was, and `reload()` would swap in whatever else the directory has gained since
+    // the last load before we get to the refusal below (#183).
+    let registry = state.read_templates()?;
+    let path = match existing_template_file(&registry, &state.templates_dir, &id)? {
+        Some(path) => path,
+        None => {
+            // Publish before answering. The live set can outlive the files it names, when an earlier
+            // delete unlinked one and its reload then failed on an unreadable directory; this reading
+            // is the proof the id is gone, and dropping it would leave `GET` still serving a template
+            // this request just called missing, with no retry able to converge.
+            state.publish(registry);
+            return Err(AppError::template_not_found(id));
+        }
+    };
+    // Refuse before touching anything. Unlinking the served file would promote a refused collider at
+    // the next load, so the id would still be served right after a 204, from content the caller did
+    // not ask to keep, with its favorites already pruned (#183).
+    let refused = registry.duplicates(&id);
+    if !refused.is_empty() {
+        let mut files = vec![file_label(&path)];
+        files.extend(refused.iter().map(|p| file_label(p)));
+        let named = files.join(", ");
+        return Err(AppError::template_id_collision(
+            &id,
+            files,
+            format!(
+                "template id '{id}' is declared by more than one file ({named}); remove or re-id the extra file before deleting"
+            ),
+        ));
+    }
+    drop(registry);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
         // The registry can outlive the file: if a previous delete unlinked it but its `reload()`
@@ -2641,6 +2943,265 @@ impl FromRequestParts<Arc<AppState>> for HttpsHint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `rename` replaces its destination silently, so the create path's `exists()`-then-write could
+    /// overwrite a file another writer landed in between and still report success. The publish must
+    /// refuse the name instead, in one operation (#184, round-4 review). The `exists()` guard cannot
+    /// stand in for this: the file it must catch appears *after* the guard has run.
+    #[tokio::test]
+    async fn publish_new_template_file_refuses_an_occupied_name() {
+        let dir = confirm_dir("publish_taken");
+        let dest = dir.join("t.yaml");
+        std::fs::write(&dest, "someone else's file\n").unwrap();
+
+        let err = publish_new_template_file(&dest, &confirm_yaml("t", "mine"))
+            .expect_err("the name is taken");
+        let (status, value) = error_response(err).await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT);
+        assert_eq!(value["error"]["code"], "TemplateExists");
+        assert_eq!(
+            std::fs::read_to_string(&dest).unwrap(),
+            "someone else's file\n",
+            "the other writer's content is untouched"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The happy path publishes the bytes and leaves no staging file behind for the registry to trip
+    /// over or the operator to wonder about.
+    #[test]
+    fn publish_new_template_file_writes_and_cleans_up_its_staging_file() {
+        let dir = confirm_dir("publish_ok");
+        let dest = dir.join("t.yaml");
+        let body = confirm_yaml("t", "mine");
+
+        publish_new_template_file(&dest, &body).expect("publish");
+
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), body);
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "t.yaml")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging files left behind: {leftovers:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A failed publish must not leave its staging file behind. A destination another writer turned
+    /// into a directory is the concrete way `rename` fails here.
+    #[test]
+    fn write_template_file_removes_its_staging_file_when_the_rename_fails() {
+        let dir = confirm_dir("rename_fail");
+        let dest = dir.join("t.yaml");
+        std::fs::create_dir(&dest).unwrap();
+
+        write_template_file(&dest, &confirm_yaml("t", "mine"))
+            .expect_err("rename onto a directory");
+
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "t.yaml")
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging files left behind: {leftovers:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The staging open refuses a name it did not create, and in particular does not follow a symlink
+    /// planted under one: `std::fs::write`/`File::create` would truncate the target and write the
+    /// caller's template through it, possibly outside the templates directory (#184, round-4 review).
+    #[test]
+    fn open_staging_exclusive_refuses_a_planted_name() {
+        let dir = confirm_dir("stage_excl");
+        let victim = dir.join("victim.txt");
+        std::fs::write(&victim, "untouched\n").unwrap();
+        let tmp = dir.join(".t.yaml.planted.tmp");
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+
+        let err = open_staging_exclusive(&tmp).expect_err("the name is taken");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "untouched\n",
+            "wrote through a planted staging name"
+        );
+
+        // A free name still works, which is what the retry loop above relies on.
+        let free = dir.join(".t.yaml.free.tmp");
+        open_staging_exclusive(&free).expect("a free staging name opens");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn confirm_dir(label: &str) -> PathBuf {
+        let mut dir = std::env::temp_dir();
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        dir.push(format!("labeler_confirm_{label}_{n}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn confirm_yaml(id: &str, name: &str) -> String {
+        format!(
+            "id: {id}\nname: {name}\ndescription: d\nunit: mm\ndpi: 300\nformat:\n  type: single\n  width: 20.0\n  height: 10.0\nlayout:\n  - type: text\n    value: hi\n    at: [0.0, 0.0]\n    size: [20.0, 5.0]\n    font_size: 3.0\n"
+        )
+    }
+
+    /// The confirmation is what stands between a write and a response describing somebody else's
+    /// file. Its three outcomes are the contract: pass, collision, or lost write (#183, #184).
+    ///
+    /// These are unit tests because the arms need the directory to change *between* a handler's
+    /// write and its reload, which no request can stage on its own: everything reachable from
+    /// outside stops earlier, at the pre-write re-read. The classification is decided here; the
+    /// handlers' wiring is held by the HTTP tests that drive a real post-write collision through the
+    /// `cfg(test)` mid-write hook, so a handler that stops confirming fails a test.
+    #[test]
+    fn confirm_written_template_passes_when_the_id_is_served_from_our_file() {
+        let dir = confirm_dir("pass");
+        let body = confirm_yaml("t", "mine");
+        let path = dir.join("t.yaml");
+        std::fs::write(&path, &body).unwrap();
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
+
+        assert!(confirm_written_template(&registry, "t", &path, &body).is_ok());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    async fn error_response(err: AppError) -> (axum::http::StatusCode, serde_json::Value) {
+        use axum::response::IntoResponse;
+        use http_body_util::BodyExt;
+        let response = err.into_response();
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        (status, serde_json::from_slice(&bytes).expect("json"))
+    }
+
+    #[tokio::test]
+    async fn confirm_written_template_reports_a_collision_naming_every_claimant() {
+        let dir = confirm_dir("collide");
+        let body = confirm_yaml("t", "mine");
+        // Ours is written, but a file sorting earlier claims the id, so the load refuses ours. A
+        // third claimant is present too: an operator told about only two of three would fix one file
+        // and still not converge.
+        let ours = dir.join("zzz.yaml");
+        std::fs::write(&ours, &body).unwrap();
+        std::fs::write(dir.join("aaa.yaml"), confirm_yaml("t", "theirs")).unwrap();
+        std::fs::write(dir.join("mmm.yaml"), confirm_yaml("t", "third")).unwrap();
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
+
+        let err = confirm_written_template(&registry, "t", &ours, &body)
+            .expect_err("the id is served from another file");
+        let (status, value) = error_response(err).await;
+        assert_eq!(status, axum::http::StatusCode::CONFLICT);
+        assert_eq!(value["error"]["code"], "TemplateIdCollision");
+        assert_eq!(value["error"]["details"]["template"], "t");
+        let mut files: Vec<&str> = value["error"]["details"]["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        files.sort_unstable();
+        assert_eq!(
+            files,
+            vec!["aaa.yaml", "mmm.yaml", "zzz.yaml"],
+            "every file declaring the id, and nothing else"
+        );
+        assert!(
+            files.iter().all(|f| !f.contains(std::path::MAIN_SEPARATOR)),
+            "bare filenames only: {files:?}"
+        );
+        assert!(
+            !value["error"]["details"]
+                .as_object()
+                .expect("details object")
+                .contains_key("reason"),
+            "a 409 carries no details.reason key at all (ADR-0052)"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A file the reading never refused is not a collider, however it looks by the time the error is
+    /// built. Without the `duplicates` check the live read below would see our own bytes at our own
+    /// path and report a `409` naming a file the snapshot never listed as claiming the id.
+    #[tokio::test]
+    async fn confirm_written_template_requires_the_snapshot_to_have_refused_our_file() {
+        let dir = confirm_dir("not_refused");
+        let body = confirm_yaml("t", "mine");
+        // The reading happens while only the winner exists...
+        std::fs::write(dir.join("aaa.yaml"), confirm_yaml("t", "theirs")).unwrap();
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
+        // ...and our file appears afterwards, so it is on disk with our bytes but was never refused.
+        let ours = dir.join("zzz.yaml");
+        std::fs::write(&ours, &body).unwrap();
+
+        let err = confirm_written_template(&registry, "t", &ours, &body)
+            .expect_err("the reading did not refuse our file");
+        assert_eq!(err.reason(), Some("template_missing_after_write"));
+        let (status, _) = error_response(err).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "not a collision: the snapshot never listed our file as claiming the id"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An external rename leaves the id served by a path we did not write while our own path is
+    /// gone. There is no colliding file to name and no intact copy of the write, so this is the lost
+    /// write, not a collision (round-4 review).
+    #[tokio::test]
+    async fn confirm_written_template_reports_a_renamed_file_as_a_lost_write() {
+        let dir = confirm_dir("renamed");
+        let body = confirm_yaml("t", "mine");
+        std::fs::write(dir.join("aaa.yaml"), &body).unwrap();
+        let ours = dir.join("zzz.yaml"); // the name we wrote, since renamed away
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
+
+        let err =
+            confirm_written_template(&registry, "t", &ours, &body).expect_err("our file is gone");
+        assert_eq!(err.reason(), Some("template_missing_after_write"));
+        let (status, value) = error_response(err).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "a vanished write is a 500, not a 409"
+        );
+        assert_eq!(value["error"]["code"], "RenderFailed");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Our filename survives but holds another writer's bytes: the path comparison alone would pass
+    /// and the handler would present their content as the caller's (round-4 review).
+    #[tokio::test]
+    async fn confirm_written_template_reports_replaced_content_as_a_lost_write() {
+        let dir = confirm_dir("replaced");
+        let path = dir.join("t.yaml");
+        std::fs::write(&path, confirm_yaml("t", "theirs")).unwrap();
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
+
+        let err = confirm_written_template(&registry, "t", &path, &confirm_yaml("t", "mine"))
+            .expect_err("the file no longer holds what we wrote");
+        assert_eq!(err.reason(), Some("template_missing_after_write"));
+        let (status, _) = error_response(err).await;
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn validate_and_normalize_url_accepts_valid_urls() {
