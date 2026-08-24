@@ -65,6 +65,13 @@ because the review gates implementation and archive rewrites the main specs *aft
    it puts the implementation and its review on different models. That script keeps agy's transcript
    in a log rather than in this context. Two different reviews: step 3
    judged the plan, this one judges the code. Do not skip it because tasks are checked.
+
+   **Apply ends at implementation.** It does not commit, archive, sync deltas into
+   `openspec/specs/`, or move the change folder: steps 5 and 6 exist because a human reads this diff
+   before archive rewrites the main specs. A checked box is a claim the next reader trusts instead
+   of redoing the work, so check one only after performing it, and never over a render-and-look step
+   satisfied by a test that merely returned bytes. `openspec/config.yaml`
+   (`operations.apply.guidance`) says the same to every agent.
    The gate is `scripts/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
    to every agent equally: it judges files, not which tool produced them. It refuses a commit touching
    `src/` or `ui/src/` while the change's verdict has not passed, and refuses a review whose `AUTHOR:`
