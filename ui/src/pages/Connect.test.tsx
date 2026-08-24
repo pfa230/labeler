@@ -353,10 +353,16 @@ describe("Connect: datetime parameters", () => {
 
   // The grid renders the datetime column as a plain text cell, so an edit goes through the same
   // double-click editor every other data field uses.
+  // The first double-click can land before the grid has finished wiring its cell handlers after the
+  // materialized rows commit, and is then swallowed with no editor opened. Retry it until the editor
+  // is up: re-dispatching on an already-open editor is a no-op, so this waits without masking a real
+  // failure to open.
   const editPrintedOn = async (value: string) => {
     const grid = screen.getByRole("grid", { name: /label rows/i });
-    fireEvent.doubleClick(within(grid).getAllByRole("gridcell")[2]);
-    const input = (await screen.findByLabelText("edit printed_on")) as HTMLInputElement;
+    const input = await waitFor(() => {
+      fireEvent.doubleClick(within(grid).getAllByRole("gridcell")[2]);
+      return screen.getByLabelText("edit printed_on") as HTMLInputElement;
+    });
     fireEvent.change(input, { target: { value } });
     fireEvent.blur(input);
   };
