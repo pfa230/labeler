@@ -9,7 +9,7 @@ Run the apply stage for `$ARGUMENTS` on agy.
 **Superseded by `/apply agy <reviewer> <change>`**, which pairs the implementer with a reviewer
 instead of leaving the review to whoever remembers. Prefer that.
 
-1. Run `scripts/apply-with-agy.sh $ARGUMENTS` in the background; it can take many minutes.
+1. Run `.workflow/apply-with-agy.sh $ARGUMENTS` in the background; it can take many minutes.
 2. Report only the exit status and the tail it prints. Do NOT read
    `.worktrees/<issue>/.agy-apply.log` in full: it runs to thousands of lines and pulling it
    into this context is exactly what the script exists to avoid. Read a targeted range only if

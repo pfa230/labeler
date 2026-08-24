@@ -61,7 +61,7 @@ because the review gates implementation and archive rewrites the main specs *aft
    rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
    artifacts, and wait. On the converging path the loop runs unattended through to the merge.
 4. **Apply and review the diff**, as a named pair: `/apply <implementer> <reviewer> <change>`, which
-   dispatches `scripts/run-stage.sh` for each role. Prefer it over `/opsx:apply`: implementing here
+   dispatches `.workflow/run-stage.sh` for each role. Prefer it over `/opsx:apply`: implementing here
    means this session would have to review its own diff, and the pairing exists precisely so that
    separation does not depend on remembering. Findings return to the implementer, which resumes its
    session; the reviewer re-checks and never edits. Transcripts stay in logs, not in this context. Two different reviews: step 3
@@ -73,11 +73,11 @@ because the review gates implementation and archive rewrites the main specs *aft
    of redoing the work, so check one only after performing it, and never over a render-and-look step
    satisfied by a test that merely returned bytes. `openspec/config.yaml`
    (`operations.apply.guidance`) says the same to every agent.
-   The gate is `scripts/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
+   The gate is `.workflow/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
    to every agent equally: it judges files, not which tool produced them. It refuses a commit touching
    `src/` or `ui/src/` while the change's verdict has not passed, and refuses a review whose `AUTHOR:`
    and `REVIEWER:` match. `.claude/hooks/review-gate.sh` calls the same script at edit time as an
-   early signal for Claude Code only. Enable the hooks once per clone with `./scripts/setup-hooks.sh`.
+   early signal for Claude Code only. Enable the hooks once per clone with `.workflow/setup-hooks.sh`.
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.

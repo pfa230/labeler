@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the apply stage on agy, from Claude, without a human cd-ing anywhere.
 #
-#   scripts/apply-with-agy.sh <change-name> [extra prompt...]
+#   .workflow/apply-with-agy.sh <change-name> [extra prompt...]
 #
 # Claude orchestrates, agy implements, Claude reviews the resulting diff: the
 # implementer and the reviewer are different models by construction.
@@ -32,9 +32,9 @@ command -v agy >/dev/null 2>&1 || { echo "agy is not on PATH; nothing would run.
 
 # Refuse to start if the gate would refuse the commit anyway. Failing here beats
 # letting an agent write code that cannot land.
-if ! "$root/scripts/review-gate-check.sh" "$wt" src/_apply_probe >/dev/null 2>&1; then
+if ! "$root/.workflow/review-gate-check.sh" "$wt" src/_apply_probe >/dev/null 2>&1; then
   echo "review gate refuses this change; not starting apply:" >&2
-  "$root/scripts/review-gate-check.sh" "$wt" src/_apply_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
+  "$root/.workflow/review-gate-check.sh" "$wt" src/_apply_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
   exit 1
 fi
 

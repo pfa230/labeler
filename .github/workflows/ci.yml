@@ -137,7 +137,7 @@ jobs:
           fi
           mapfile -t files < <(git diff --name-only "$base" HEAD)
           [ "${#files[@]}" -gt 0 ] || exit 0
-          ./scripts/review-gate-check.sh "$PWD" "${files[@]}"
+          .workflow/review-gate-check.sh "$PWD" "${files[@]}"
 
   build:
     needs: [rust, ui]
