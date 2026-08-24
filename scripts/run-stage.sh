@@ -29,7 +29,6 @@ root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" 
 
 agent_known "$agent" || { echo "unknown agent: $agent" >&2; exit 2; }
 command -v "$agent" >/dev/null 2>&1 || { echo "$agent is not on PATH; nothing would run." >&2; exit 2; }
-agent_verified "$agent" || echo "note: $agent's invocation has not been verified by running it here." >&2
 
 issue=$(printf '%s' "$change" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
 [ -n "$issue" ] || { echo "change name must start with issue-<N>-: $change" >&2; exit 2; }
