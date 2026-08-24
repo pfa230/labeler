@@ -107,8 +107,16 @@ regeneration alone.
 
 After implementation, spin up a **separate adversarial code reviewer** briefed to find real problems,
 not to rubber-stamp. It audits the diff against the issue's acceptance criteria, correctness, edge
-cases, tests, and this file. Address every meaningful finding or justify with file:line evidence why
-it is not one. Re-review. Repeat until a pass surfaces no meaningful fixes.
+cases, tests, and this file.
+
+**The reviewer never edits.** Its only output is findings, exactly as in the plan review. They go back
+to whoever implemented, which fixes them; the reviewer then re-checks. That is what terminates the
+loop: every edit has an author and a different reviewer, and a re-check is not an edit. A reviewer
+that fixes what it found has produced a delta nobody reviewed, and the loop then ends only when
+someone silently accepts unreviewed work.
+
+The implementer addresses every meaningful finding, or justifies with file:line evidence why it is not
+one. Re-review. Repeat until a pass surfaces no meaningful fixes.
 
 Fluent code is not correct code: verify each finding against the actual code before accepting *or*
 dismissing it. When the reviewer is **codex**, cap at **5** passes absent an unresolved blocking
