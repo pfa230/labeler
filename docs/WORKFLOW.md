@@ -71,10 +71,21 @@ every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` 
 | `codex` | none needed | Used for reviews via `codex exec`, with the instructions piped in. |
 | `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Unverified. |
 
-Implementation runs on a second agent, so the model that writes the code is not the model that
-reviews it. That happens without arrangement: the stage is dispatched to `agy` and the diff comes back
-here to be reviewed. The transcript stays in a log rather than being read back, since a full agent
+Implementation and its review run on two named agents, given when the stage is started rather than
+decided later:
+
+```
+/apply agy codex issue-186-pin-rust-toolchain
+```
+
+The first implements, the second reviews, and the same pair being named twice is refused. Findings go
+back to the implementer, which keeps the session it built in, and the reviewer re-checks; the reviewer
+never fixes what it found. Transcripts stay in logs rather than being read back, since a full agent
 transcript is thousands of lines of no interest to anyone.
+
+Verified pairs today are `agy` and `codex`. `claude` and `opencode` are in the registry but their
+invocations have not been run here, and the tooling says so out loud rather than pretending
+otherwise.
 
 Its commits are gated the same as anyone's — `core.hooksPath` resolves inside a worktree, so
 `.githooks/pre-commit` runs. What it cannot see is the Claude Code edit-time hook, so its only gate is
