@@ -74,11 +74,15 @@ every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` 
 Implementation and its review run on two named agents, given when the stage is started rather than
 decided later:
 
-```
-/apply agy codex issue-186-pin-rust-toolchain
+```bash
+.workflow/apply.sh issue-186-pin-rust-toolchain agy codex
 ```
 
-The first implements, the second reviews, and the same pair being named twice is refused. Findings go
+The first agent implements, the second reviews, and naming the same one twice is refused. The script
+owns the loop: findings return to the implementer, which resumes its session, and the reviewer
+re-checks, for up to three rounds. A change that has not converged by then stops for a person rather
+than looping; the reviewer's verdict is a `VERDICT:` line, so the decision to loop is read rather than
+inferred from prose. Findings go
 back to the implementer, which keeps the session it built in, and the reviewer re-checks; the reviewer
 never fixes what it found. Transcripts stay in logs rather than being read back, since a full agent
 transcript is thousands of lines of no interest to anyone.

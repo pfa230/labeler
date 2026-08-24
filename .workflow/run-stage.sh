@@ -57,7 +57,10 @@ if [ "$role" = "implement" ]; then
   base="/opsx-apply $change. Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it, including the ones that say to render a label and look at it."
   [ "$resume_requested" -eq 1 ] && base="Review findings on your implementation of $change. Fix each one, then stop. The same limits still hold: do not commit, archive, sync specs, move the change folder or edit docs/SPEC.md."
 else
-  base="Adversarially review the implementation diff for $change against its proposal, specs, design and tasks, and against AGENTS.md. Find real problems; do not rubber-stamp. Cite file:line evidence and verify each finding against the actual code before raising it. Report findings only: you must not edit any file."
+  # The verdict line is what lets apply.sh decide whether to loop. Without a
+  # machine-readable answer the caller has to interpret prose, which is how a
+  # review that found problems gets read as one that passed.
+  base="Adversarially review the implementation diff for $change against its proposal, specs, design and tasks, and against AGENTS.md. Find real problems; do not rubber-stamp. Cite file:line evidence and verify each finding against the actual code before raising it. Report findings only: you must not edit any file. End your output with exactly one line, on its own line, reading either VERDICT: APPROVE or VERDICT: REVISE. Use REVISE if any finding must be fixed before this can land; any blocking finding forbids APPROVE."
 fi
 prompt="$base $extra"
 
