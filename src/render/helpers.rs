@@ -37,6 +37,7 @@ pub(super) fn value_to_string(value: &JsonValue) -> String {
 /// Substitution-only interpolation (ADR-0010).
 ///
 /// Resolution precedence: `{datetime}` / `{datetime.NAME}` from the resolver first, then
+/// declared `datetime` parameter namespaces `{<p>}` / `{<p>.<name>}` from `instants`, then
 /// `{vars.<key>}` from `variables`, then `{field}` from `data` via `value_to_string`.
 /// `{{`/`}}` emit literal braces. An unresolved token or an unmatched brace is an error.
 pub(super) fn interpolate(
@@ -44,6 +45,7 @@ pub(super) fn interpolate(
     data: &HashMap<String, JsonValue>,
     variables: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
+    instants: Option<&BTreeMap<String, chrono::DateTime<chrono::Local>>>,
 ) -> Result<String, AppError> {
     let mut out = String::with_capacity(template.len());
     let mut chars = template.chars().peekable();
@@ -72,6 +74,10 @@ pub(super) fn interpolate(
                 }
                 let resolved = if let Some(dt) = datetime.resolve(&token) {
                     dt?
+                } else if let Some(param_dt) =
+                    instants.and_then(|inst| datetime.resolve_param(&token, inst))
+                {
+                    param_dt?
                 } else if let Some(key) = token.strip_prefix("vars.") {
                     variables
                         .get(key)
@@ -1285,6 +1291,7 @@ mod interpolate_tests {
             &data(),
             &variables(),
             &no_datetime(),
+            None,
         )
         .unwrap();
         assert_eq!(out, "https://h/i/A1");
@@ -1293,7 +1300,7 @@ mod interpolate_tests {
     #[test]
     fn stringifies_non_string_field() {
         assert_eq!(
-            interpolate("n={count}", &data(), &variables(), &no_datetime()).unwrap(),
+            interpolate("n={count}", &data(), &variables(), &no_datetime(), None).unwrap(),
             "n=3"
         );
     }
@@ -1301,24 +1308,24 @@ mod interpolate_tests {
     #[test]
     fn literal_braces() {
         assert_eq!(
-            interpolate("{{x}}", &data(), &variables(), &no_datetime()).unwrap(),
+            interpolate("{{x}}", &data(), &variables(), &no_datetime(), None).unwrap(),
             "{x}"
         );
     }
 
     #[test]
     fn missing_field_errors() {
-        assert!(interpolate("{nope}", &data(), &variables(), &no_datetime()).is_err());
+        assert!(interpolate("{nope}", &data(), &variables(), &no_datetime(), None).is_err());
     }
 
     #[test]
     fn missing_variable_errors() {
-        assert!(interpolate("{vars.nope}", &data(), &variables(), &no_datetime()).is_err());
+        assert!(interpolate("{vars.nope}", &data(), &variables(), &no_datetime(), None).is_err());
     }
 
     #[test]
     fn unmatched_brace_errors() {
-        assert!(interpolate("a{id", &data(), &variables(), &no_datetime()).is_err());
+        assert!(interpolate("a{id", &data(), &variables(), &no_datetime(), None).is_err());
     }
 }
 

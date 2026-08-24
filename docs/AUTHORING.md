@@ -535,7 +535,41 @@ Missing-field validation is lazy: only the active branch requires its parameter 
 branch's `{tokens}` may be absent from the request without causing a `422 MissingField`.
 
 If an optional parameter is omitted from the request, it automatically resolves to its declared `default`
-(or `false` for booleans, or the first allowed value for enums).
+(or `false` for booleans, or the first allowed value for enums, or the current render instant for datetime).
+
+### Datetime parameters and formatting
+
+A template can declare parameters of `type: datetime` with an optional `time: true` boolean modifier:
+
+```yaml
+params:
+  printed_on:
+    type: datetime
+    description: "Print Date"
+  expiry_timestamp:
+    type: datetime
+    time: true
+    description: "Expiration Timestamp"
+```
+
+What to know:
+- **Default value is the render instant.** An explicit `default` property is not supported on datetime parameters;
+  when omitted or left blank in requests, datetime parameters automatically default to the render instant (`now`).
+- **Formatting via interpolation tokens.** In text and QR values:
+  - Bare `{param_name}` outputs the ISO 8601 date (`%Y-%m-%d`).
+  - Dotted `{param_name.<format_name>}` formats the date/time using the named pattern configured in the server's
+    `datetime_formats` app setting (e.g. `{printed_on.short_date}`, `{expiry_timestamp.time}`).
+- **UI controls.** The web UI renders a date picker (`<input type="date">`) when `time: false` (or omitted), and
+  a date-and-time picker (`<input type="datetime-local">`) when `time: true`. The print form pre-fills with the
+  browser's current local date/time.
+- **Overrides in batches and CSV imports.** Requests can provide ISO date strings (`YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`,
+  `YYYY-MM-DDTHH:MM:SS`, or RFC 3339 timestamps with timezone offsets) to override specific labels.
+- **`time:` picks the control, not the output.** Nothing stops a template from declaring `time: false` and then
+  printing `{printed_on.time}`; the date picker has no time to give, so that prints `00:00`. Pair a token that
+  shows a time with `time: true`, and check the result the way you check any other template: render it and look.
+- **Which one to reach for.** Use `{datetime}` / `{datetime.<name>}` when the label should always say when it was
+  printed and the caller has no say in it. Declare a `datetime` parameter when the caller must be able to choose
+  the instant, which is what reprinting an earlier run needs. Both use the same `datetime_formats` patterns.
 
 ### Rotation
 

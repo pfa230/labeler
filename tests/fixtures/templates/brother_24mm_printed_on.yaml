@@ -1,0 +1,44 @@
+id: brother_24mm_printed_on
+name: Brother 24mm Continuous Label (print date)
+description: Continuous tape, 24mm nominal (18.1mm printable at 180 dpi), a message over a print date
+unit: mm
+dpi: 180
+params:
+  message:
+    type: string
+  printed_on:
+    type: datetime
+    description: Print date
+layout:
+  - type: container
+    at: [0.0, 0.0]
+    size: [auto, 18.1]
+    padding: 1.0
+    items:
+      - type: text
+        value: "{message}"
+        at: [0.0, 8.1]
+        size: [auto, 8.0]
+        font_size:
+          min: 10.0
+          max: 24.0
+        alignment:
+          horizontal: center
+          vertical: center
+      - type: text
+        value: "Printed {printed_on.short_date}"
+        at: [0.0, 0.0]
+        size: [auto, 8.0]
+        font_size:
+          min: 7.0
+          max: 14.0
+        alignment:
+          horizontal: center
+          vertical: center
+format:
+  type: single
+  width:
+    min: 10.0
+    max: 120.0
+  height: 18.1
+  media_width: 24

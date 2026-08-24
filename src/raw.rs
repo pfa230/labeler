@@ -14,25 +14,40 @@ pub enum RawParamType {
     Number,
     Boolean,
     Enum,
+    Datetime,
 }
 
+/// Every attribute a `datetime` parameter forbids is `Option<Option<T>>`: the outer layer is
+/// presence (`None` = the key is absent) and the inner is the value (`Some(None)` = the key is
+/// written and empty). Presence is what the datetime rules key off, and the inner type is what
+/// keeps a malformed value a load-time error rather than a silently dropped field.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct RawParamSpec {
     #[serde(rename = "type")]
     pub param_type: RawParamType,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present")]
     pub default: Option<serde_yaml_ng::Value>,
-    #[serde(default)]
-    pub min: Option<f32>,
-    #[serde(default)]
-    pub max: Option<f32>,
-    #[serde(default)]
-    pub multiline: Option<bool>,
-    #[serde(default)]
-    pub values: Option<Vec<String>>,
-    #[serde(default, rename = "enum")]
-    pub choices: Option<Vec<serde_yaml_ng::Value>>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub min: Option<Option<f32>>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub max: Option<Option<f32>>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub multiline: Option<Option<bool>>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub values: Option<Option<Vec<String>>>,
+    #[serde(
+        default,
+        rename = "enum",
+        deserialize_with = "deserialize_present_typed"
+    )]
+    pub choices: Option<Option<Vec<serde_yaml_ng::Value>>>,
+    /// Untyped on purpose: `format` is rejected on every parameter type, so any value at all must
+    /// reach the pointed error message rather than a serde type error.
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub format: Option<serde_yaml_ng::Value>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub time: Option<Option<bool>>,
     #[serde(default)]
     pub description: Option<String>,
 }
@@ -42,6 +57,16 @@ where
     D: serde::Deserializer<'de>,
 {
     serde_yaml_ng::Value::deserialize(deserializer).map(Some)
+}
+
+/// Presence-preserving and still typed: absent stays `None` via `#[serde(default)]`, an explicit
+/// null becomes `Some(None)`, and a value of the wrong type is a deserialization error.
+fn deserialize_present_typed<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 pub type Dynamic<T> = DynamicValue<T>;

@@ -897,6 +897,7 @@ fn check_param_ref(
         ParamType::String { .. } => allowed_types.contains(&"string"),
         ParamType::Boolean => allowed_types.contains(&"boolean"),
         ParamType::Enum { .. } => allowed_types.contains(&"enum"),
+        ParamType::Datetime { .. } => allowed_types.contains(&"datetime"),
     };
     if !matches_type {
         return Err(format!(
@@ -3308,6 +3309,60 @@ layout:
         assert!(
             res.is_err(),
             "should reject string parameter in font_weight"
+        );
+    }
+
+    /// A `datetime` parameter names an instant, so it can never stand in for a number. Every
+    /// numeric context refuses it at load rather than at render.
+    #[test]
+    fn reject_datetime_parameter_in_numeric_contexts() {
+        let font_weight = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 18
+  width: 50
+layout:
+  - type: text
+    value: "{printed_on}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+    font_weight: "{printed_on}"
+"#;
+        assert!(
+            parse_and_validate(font_weight).is_err(),
+            "should reject datetime parameter in font_weight"
+        );
+
+        let width = r#"
+id: t
+name: T
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 18
+  width: "{printed_on}"
+layout:
+  - type: text
+    value: "{printed_on}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+"#;
+        assert!(
+            parse_and_validate(width).is_err(),
+            "should reject datetime parameter as a format width"
         );
     }
 

@@ -10,6 +10,7 @@ use crate::models::{
 };
 use crate::reason::Reason;
 use crate::templates::TemplateDefinition;
+use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, fit_text_auto_length,
     fit_text_to_box, format_length, interpolate, parse_image_data_uri, resolve_dimension,
@@ -23,13 +24,21 @@ use std::fmt::Write;
 use typst_as_lib::TypstEngine;
 use typst_layout::PagedDocument;
 
+#[derive(Debug, Clone)]
+pub struct ResolvedParams {
+    pub data: HashMap<String, JsonValue>,
+    pub instants: BTreeMap<String, DateTime<Local>>,
+}
+
 /// Resolve parameters by merging request data, explicit option selections, and template parameter defaults.
 pub fn resolve_parameters(
     template: &TemplateDefinition,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
-) -> Result<HashMap<String, JsonValue>, AppError> {
+    now: DateTime<Local>,
+) -> Result<ResolvedParams, AppError> {
     let mut resolved = data.clone();
+    let mut instants = BTreeMap::new();
 
     if let Some(opt) = option {
         for (k, v) in opt {
@@ -40,144 +49,204 @@ pub fn resolve_parameters(
     }
 
     for (name, spec) in &template.params {
-        match resolved.get(name) {
-            Some(val) => match &spec.param_type {
-                crate::models::ParamType::Enum { values } => {
-                    let s = match val {
-                        JsonValue::String(s) => s.clone(),
-                        other => value_to_string(other),
-                    };
-                    if !values.contains(&s) {
-                        let mut selection = BTreeMap::new();
-                        selection.insert(name.clone(), s);
-                        let mut allowed = BTreeMap::new();
-                        allowed.insert(name.clone(), values.clone());
-                        return Err(AppError::invalid_option_value(&selection, &allowed));
+        match &spec.param_type {
+            crate::models::ParamType::Datetime { .. } => {
+                let raw_val = resolved.get(name);
+                match raw_val {
+                    None | Some(JsonValue::Null) => {
+                        instants.insert(name.clone(), now);
+                        resolved.insert(
+                            name.clone(),
+                            JsonValue::String(crate::datetime_fmt::format_now(
+                                crate::datetime_fmt::BARE_DATETIME_FORMAT,
+                                now,
+                            )),
+                        );
                     }
-                    resolved.insert(name.clone(), JsonValue::String(s));
+                    Some(JsonValue::String(s)) => {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() {
+                            instants.insert(name.clone(), now);
+                            resolved.insert(
+                                name.clone(),
+                                JsonValue::String(crate::datetime_fmt::format_now(
+                                    crate::datetime_fmt::BARE_DATETIME_FORMAT,
+                                    now,
+                                )),
+                            );
+                        } else {
+                            let dt = crate::datetime_fmt::parse_datetime_override(trimmed)
+                                .map_err(|_| {
+                                    AppError::invalid_request(
+                                        Reason::DatetimeParamInvalid,
+                                        format!(
+                                            "Invalid value for datetime parameter '{name}': {trimmed}"
+                                        ),
+                                    )
+                                })?;
+                            instants.insert(name.clone(), dt);
+                            resolved.insert(
+                                name.clone(),
+                                JsonValue::String(crate::datetime_fmt::format_now(
+                                    crate::datetime_fmt::BARE_DATETIME_FORMAT,
+                                    dt,
+                                )),
+                            );
+                        }
+                    }
+                    Some(_) => {
+                        return Err(AppError::invalid_request(
+                            Reason::DatetimeParamInvalid,
+                            format!("Invalid value for datetime parameter '{name}'"),
+                        ));
+                    }
                 }
-                crate::models::ParamType::Boolean => {
-                    let b = match val {
-                        JsonValue::Bool(b) => *b,
-                        JsonValue::String(s) => {
-                            let trimmed = s.trim();
-                            if trimmed == "true" || trimmed == "1" {
-                                true
-                            } else if trimmed == "false" || trimmed == "0" {
-                                false
-                            } else {
+            }
+            _ => match resolved.get(name) {
+                Some(val) => match &spec.param_type {
+                    crate::models::ParamType::Enum { values } => {
+                        let s = match val {
+                            JsonValue::String(s) => s.clone(),
+                            other => value_to_string(other),
+                        };
+                        if !values.contains(&s) {
+                            let mut selection = BTreeMap::new();
+                            selection.insert(name.clone(), s);
+                            let mut allowed = BTreeMap::new();
+                            allowed.insert(name.clone(), values.clone());
+                            return Err(AppError::invalid_option_value(&selection, &allowed));
+                        }
+                        resolved.insert(name.clone(), JsonValue::String(s));
+                    }
+                    crate::models::ParamType::Boolean => {
+                        let b = match val {
+                            JsonValue::Bool(b) => *b,
+                            JsonValue::String(s) => {
+                                let trimmed = s.trim();
+                                if trimmed == "true" || trimmed == "1" {
+                                    true
+                                } else if trimmed == "false" || trimmed == "0" {
+                                    false
+                                } else {
+                                    return Err(AppError::invalid_request(
+                                        Reason::RequestBodyInvalid,
+                                        format!("parameter '{name}' is not a valid boolean"),
+                                    ));
+                                }
+                            }
+                            JsonValue::Number(n) => {
+                                if n.as_i64() == Some(1) {
+                                    true
+                                } else if n.as_i64() == Some(0) {
+                                    false
+                                } else {
+                                    return Err(AppError::invalid_request(
+                                        Reason::RequestBodyInvalid,
+                                        format!("parameter '{name}' is not a valid boolean"),
+                                    ));
+                                }
+                            }
+                            _ => {
                                 return Err(AppError::invalid_request(
                                     Reason::RequestBodyInvalid,
                                     format!("parameter '{name}' is not a valid boolean"),
                                 ));
                             }
-                        }
-                        JsonValue::Number(n) => {
-                            if n.as_i64() == Some(1) {
-                                true
-                            } else if n.as_i64() == Some(0) {
-                                false
-                            } else {
-                                return Err(AppError::invalid_request(
-                                    Reason::RequestBodyInvalid,
-                                    format!("parameter '{name}' is not a valid boolean"),
-                                ));
-                            }
-                        }
-                        _ => {
-                            return Err(AppError::invalid_request(
-                                Reason::RequestBodyInvalid,
-                                format!("parameter '{name}' is not a valid boolean"),
-                            ));
-                        }
-                    };
-                    resolved.insert(name.clone(), JsonValue::Bool(b));
-                }
-                crate::models::ParamType::Integer => {
-                    let i = match val {
-                        JsonValue::Number(n) => n
-                            .as_i64()
-                            .or_else(|| n.as_f64().map(|f| f.round() as i64))
-                            .ok_or_else(|| {
+                        };
+                        resolved.insert(name.clone(), JsonValue::Bool(b));
+                    }
+                    crate::models::ParamType::Integer => {
+                        let i = match val {
+                            JsonValue::Number(n) => n
+                                .as_i64()
+                                .or_else(|| n.as_f64().map(|f| f.round() as i64))
+                                .ok_or_else(|| {
+                                    AppError::invalid_request(
+                                        Reason::RequestBodyInvalid,
+                                        format!("parameter '{name}' is not a valid integer"),
+                                    )
+                                })?,
+                            JsonValue::String(s) => s.trim().parse::<i64>().map_err(|_| {
                                 AppError::invalid_request(
                                     Reason::RequestBodyInvalid,
                                     format!("parameter '{name}' is not a valid integer"),
                                 )
                             })?,
-                        JsonValue::String(s) => s.trim().parse::<i64>().map_err(|_| {
-                            AppError::invalid_request(
-                                Reason::RequestBodyInvalid,
-                                format!("parameter '{name}' is not a valid integer"),
-                            )
-                        })?,
-                        _ => {
-                            return Err(AppError::invalid_request(
-                                Reason::RequestBodyInvalid,
-                                format!("parameter '{name}' is not a valid integer"),
-                            ));
-                        }
-                    };
-                    resolved.insert(name.clone(), serde_json::json!(i));
-                }
-                crate::models::ParamType::Length | crate::models::ParamType::Number => {
-                    let f = match val {
-                        JsonValue::Number(n) => n.as_f64().map(|f| f as f32).ok_or_else(|| {
-                            AppError::invalid_request(
-                                Reason::RequestBodyInvalid,
-                                format!("parameter '{name}' is not a valid number"),
-                            )
-                        })?,
-                        JsonValue::String(s) => {
-                            let trimmed = s.trim();
-                            let num_str = trimmed
-                                .strip_suffix("mm")
-                                .or_else(|| trimmed.strip_suffix("in"))
-                                .unwrap_or(trimmed);
-                            num_str.trim().parse::<f32>().map_err(|_| {
-                                AppError::invalid_request(
+                            _ => {
+                                return Err(AppError::invalid_request(
+                                    Reason::RequestBodyInvalid,
+                                    format!("parameter '{name}' is not a valid integer"),
+                                ));
+                            }
+                        };
+                        resolved.insert(name.clone(), serde_json::json!(i));
+                    }
+                    crate::models::ParamType::Length | crate::models::ParamType::Number => {
+                        let f = match val {
+                            JsonValue::Number(n) => {
+                                n.as_f64().map(|f| f as f32).ok_or_else(|| {
+                                    AppError::invalid_request(
+                                        Reason::RequestBodyInvalid,
+                                        format!("parameter '{name}' is not a valid number"),
+                                    )
+                                })?
+                            }
+                            JsonValue::String(s) => {
+                                let trimmed = s.trim();
+                                let num_str = trimmed
+                                    .strip_suffix("mm")
+                                    .or_else(|| trimmed.strip_suffix("in"))
+                                    .unwrap_or(trimmed);
+                                num_str.trim().parse::<f32>().map_err(|_| {
+                                    AppError::invalid_request(
+                                        Reason::RequestBodyInvalid,
+                                        format!("parameter '{name}' is not a valid number"),
+                                    )
+                                })?
+                            }
+                            _ => {
+                                return Err(AppError::invalid_request(
                                     Reason::RequestBodyInvalid,
                                     format!("parameter '{name}' is not a valid number"),
-                                )
-                            })?
-                        }
-                        _ => {
-                            return Err(AppError::invalid_request(
-                                Reason::RequestBodyInvalid,
-                                format!("parameter '{name}' is not a valid number"),
-                            ));
-                        }
-                    };
-                    resolved.insert(name.clone(), serde_json::json!(f));
-                }
-                crate::models::ParamType::String { .. } => {}
-            },
-            None => {
-                if let Some(default_val) = &spec.default {
-                    let json_val = match default_val {
-                        crate::models::ParamValue::String(s) => JsonValue::String(s.clone()),
-                        crate::models::ParamValue::Float(f) => serde_json::json!(f),
-                        crate::models::ParamValue::Integer(i) => serde_json::json!(i),
-                        crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
-                    };
-                    resolved.insert(name.clone(), json_val);
-                } else {
-                    match &spec.param_type {
-                        crate::models::ParamType::Boolean => {
-                            resolved.insert(name.clone(), JsonValue::Bool(false));
-                        }
-                        crate::models::ParamType::Enum { values } => {
-                            if let Some(first) = values.first() {
-                                resolved.insert(name.clone(), JsonValue::String(first.clone()));
+                                ));
                             }
+                        };
+                        resolved.insert(name.clone(), serde_json::json!(f));
+                    }
+                    crate::models::ParamType::String { .. } => {}
+                    crate::models::ParamType::Datetime { .. } => unreachable!(),
+                },
+                None => {
+                    if let Some(default_val) = &spec.default {
+                        let json_val = match default_val {
+                            crate::models::ParamValue::String(s) => JsonValue::String(s.clone()),
+                            crate::models::ParamValue::Float(f) => serde_json::json!(f),
+                            crate::models::ParamValue::Integer(i) => serde_json::json!(i),
+                            crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
+                        };
+                        resolved.insert(name.clone(), json_val);
+                    } else {
+                        match &spec.param_type {
+                            crate::models::ParamType::Boolean => {
+                                resolved.insert(name.clone(), JsonValue::Bool(false));
+                            }
+                            crate::models::ParamType::Enum { values } => {
+                                if let Some(first) = values.first() {
+                                    resolved.insert(name.clone(), JsonValue::String(first.clone()));
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
-            }
+            },
         }
     }
 
-    Ok(resolved)
+    Ok(ResolvedParams {
+        data: resolved,
+        instants,
+    })
 }
 
 fn check_dimension_limit(
@@ -278,7 +347,8 @@ fn compile_label_doc(
 ) -> Result<PagedDocument, AppError> {
     let unit = &template.unit;
     let selected_option = normalize_option(template, option)?;
-    let resolved_data = resolve_parameters(template, data, selected_option)?;
+    let resolved = resolve_parameters(template, data, selected_option, env.datetime.now)?;
+    let resolved_data = &resolved.data;
     let items = select_layout_items(template)?;
     let images = RefCell::new(ImageCollector::default());
 
@@ -292,8 +362,8 @@ fn compile_label_doc(
     // Resolve initial width/height; Dynamic single may be overridden after measurement.
     let (mut width_units, height_units) = match &template.format {
         TemplateFormat::Single { width, height, .. } => (
-            resolve_dimension(width, &resolved_data)?,
-            resolve_dimension(height, &resolved_data)?,
+            resolve_dimension(width, resolved_data)?,
+            resolve_dimension(height, resolved_data)?,
         ),
         TemplateFormat::Sheet {
             label_width,
@@ -315,12 +385,12 @@ fn compile_label_doc(
     {
         let max_w = max
             .as_ref()
-            .map(|v| resolve_dynamic_value_f32(v, &resolved_data))
+            .map(|v| resolve_dynamic_value_f32(v, resolved_data))
             .transpose()?
             .ok_or_else(|| AppError::unsupported_format("dynamic single width requires max"))?;
         let min_w = min
             .as_ref()
-            .map(|v| resolve_dynamic_value_f32(v, &resolved_data))
+            .map(|v| resolve_dynamic_value_f32(v, resolved_data))
             .transpose()?
             .ok_or_else(|| AppError::unsupported_format("dynamic single width requires min"))?;
 
@@ -332,12 +402,13 @@ fn compile_label_doc(
             let probe = RenderContext::new(
                 (max_w, height_units),
                 unit,
-                &resolved_data,
+                resolved_data,
                 selected_option,
                 env,
                 &images,
                 LengthMode::Fixed,
-            );
+            )
+            .with_instants(&resolved.instants);
             let content_extent = probe.measure(items, max_w, &mut m)?;
             width_units = content_extent.clamp(min_w, max_w);
         }
@@ -388,12 +459,13 @@ fn compile_label_doc(
     let context = RenderContext::new(
         (width_units, height_units),
         unit,
-        &resolved_data,
+        resolved_data,
         selected_option,
         env,
         &images,
         mode,
-    );
+    )
+    .with_instants(&resolved.instants);
     source.push_str(&context.render_items(items)?);
     // Assert we consumed exactly the texts we measured.
     if cursor_cell.get() != measured.len() {
@@ -571,7 +643,7 @@ pub fn render_sheet_pages(
     let mut rendered: Vec<String> = Vec::with_capacity(labels.len());
     let mut failures: Vec<crate::errors::BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
-        let resolved_data = match resolve_parameters(template, &lbl.data, None) {
+        let resolved = match resolve_parameters(template, &lbl.data, None, env.datetime.now) {
             Ok(data) => data,
             Err(err) => {
                 failures.push(crate::errors::BatchFailure {
@@ -587,12 +659,13 @@ pub fn render_sheet_pages(
         let context = RenderContext::new(
             (*label_width, *label_height),
             unit,
-            &resolved_data,
+            &resolved.data,
             None,
             &env,
             &images,
             LengthMode::Fixed,
-        );
+        )
+        .with_instants(&resolved.instants);
         match context.render_items(items) {
             Ok(content) => rendered.push(content),
             Err(err) => {
@@ -795,6 +868,7 @@ struct RenderContext<'a> {
     env: &'a RenderEnv<'a>,
     images: &'a RefCell<ImageCollector>,
     mode: LengthMode<'a>,
+    instants: Option<&'a BTreeMap<String, DateTime<Local>>>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -816,6 +890,26 @@ impl<'a> RenderContext<'a> {
             env,
             images,
             mode,
+            instants: None,
+        }
+    }
+
+    fn with_instants(mut self, instants: &'a BTreeMap<String, DateTime<Local>>) -> Self {
+        self.instants = Some(instants);
+        self
+    }
+
+    fn child_context(&self, frame: (f32, f32), mode: LengthMode<'a>) -> Self {
+        Self {
+            frame_width_units: frame.0,
+            frame_height_units: frame.1,
+            unit: self.unit,
+            data: self.data,
+            selected_option: self.selected_option,
+            env: self.env,
+            images: self.images,
+            mode,
+            instants: self.instants,
         }
     }
 
@@ -1109,15 +1203,7 @@ impl<'a> RenderContext<'a> {
                                 "container padding leaves no room for content",
                             ));
                         }
-                        let ctx = RenderContext::new(
-                            (inner_budget, inner_h),
-                            self.unit,
-                            self.data,
-                            self.selected_option,
-                            self.env,
-                            self.images,
-                            LengthMode::Fixed,
-                        );
+                        let ctx = self.child_context((inner_budget, inner_h), LengthMode::Fixed);
                         let child_extent = ctx.measure(items, inner_budget, out)?;
                         // Child measurement is bounded by `inner_budget` (which is
                         // `(outer_budget - padding.left - padding.right).max(0.0)`), so for any
@@ -1222,15 +1308,7 @@ impl<'a> RenderContext<'a> {
                     "container padding leaves no room for content",
                 ));
             }
-            let ctx = RenderContext::new(
-                (inner_w, inner_h),
-                self.unit,
-                self.data,
-                self.selected_option,
-                self.env,
-                self.images,
-                LengthMode::Fixed,
-            );
+            let ctx = self.child_context((inner_w, inner_h), LengthMode::Fixed);
             ctx.measure(children, inner_w, out)?;
         }
         Ok((explicit_w, explicit_h))
@@ -1313,7 +1391,13 @@ impl<'a> RenderContext<'a> {
     }
 
     fn resolve_item_text(&self, value: &str) -> Result<String, AppError> {
-        interpolate(value, self.data, self.env.settings, self.env.datetime)
+        interpolate(
+            value,
+            self.data,
+            self.env.settings,
+            self.env.datetime,
+            self.instants,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1562,8 +1646,13 @@ impl<'a> RenderContext<'a> {
     ) -> Result<(), AppError> {
         let (bytes, fmt) = match (src, name) {
             (Some(src), _) => {
-                let resolved_src =
-                    interpolate(src, self.data, self.env.settings, self.env.datetime)?;
+                let resolved_src = interpolate(
+                    src,
+                    self.data,
+                    self.env.settings,
+                    self.env.datetime,
+                    self.instants,
+                )?;
                 resolve_image_asset(&assets_root(), &resolved_src)?
             }
             (_, Some(name)) => {
@@ -1735,15 +1824,7 @@ impl<'a> RenderContext<'a> {
                 }),
                 LengthMode::Fixed => LengthMode::Fixed,
             };
-            let context = RenderContext::new(
-                (inner_width, inner_height),
-                self.unit,
-                self.data,
-                self.selected_option,
-                self.env,
-                self.images,
-                child_mode,
-            );
+            let context = self.child_context((inner_width, inner_height), child_mode);
             let child_source = context.render_items(items)?;
             let content = if padding == &crate::models::Padding::ZERO {
                 child_source
@@ -1832,15 +1913,7 @@ impl<'a> RenderContext<'a> {
         let content_h = canvas_h - padding.top - padding.bottom;
 
         // No dynamic width under rotation (validation forbids auto descendants).
-        let context = RenderContext::new(
-            (content_w, content_h),
-            self.unit,
-            self.data,
-            self.selected_option,
-            self.env,
-            self.images,
-            LengthMode::Fixed,
-        );
+        let context = self.child_context((content_w, content_h), LengthMode::Fixed);
         let child_source = context.render_items(items)?;
 
         let canvas_w_len = format_length(canvas_w, self.unit)?;
@@ -2055,34 +2128,60 @@ fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Ve
 ///
 /// Shares the walker behind `placeholder_data`, so it inherits the rule that `{vars.*}` and
 /// `{datetime[.*]}` are NOT request fields — they resolve from the variables store and the datetime
-/// resolver. The catalog index lists this so an entry advertises only what the caller must supply
+/// resolver. Declared `datetime` parameter namespaces `{<p>}` / `{<p>.*}` are likewise excluded.
+/// The catalog index lists this so an entry advertises only what the caller must supply
 /// (#137); `homebox-qr` would otherwise appear to demand `vars.qr_base_url`.
 pub fn template_fields(template: &TemplateDefinition) -> Vec<String> {
     let Layout::Items(items) = &template.layout;
     let mut text = Vec::new();
     let mut image = Vec::new();
     walk_placeholder(items, &mut text, &mut image);
-    let mut all: Vec<String> = text.into_iter().chain(image).collect();
+    let is_datetime_param = |token: &str| -> bool {
+        let head = token.split('.').next().unwrap_or(token);
+        template
+            .params
+            .get(head)
+            .map(|spec| matches!(spec.param_type, crate::models::ParamType::Datetime { .. }))
+            .unwrap_or(false)
+    };
+    let mut all: Vec<String> = text
+        .into_iter()
+        .chain(image)
+        .filter(|t| !is_datetime_param(t))
+        .collect();
     all.sort();
     all.dedup();
     all
 }
 
 /// Build non-empty placeholder data for every referenced data field. Image fields get a 1×1 PNG;
-/// other fields get their own name as a stand-in. `{vars.*}` is excluded (resolved from the store).
+/// other fields get their own name as a stand-in. `{vars.*}` and declared `datetime` parameters are
+/// excluded (resolved from the store / clock).
 pub fn placeholder_data(template: &TemplateDefinition) -> HashMap<String, JsonValue> {
     let Layout::Items(items) = &template.layout;
     let mut text = Vec::new();
     let mut image = Vec::new();
     walk_placeholder(items, &mut text, &mut image);
+    let is_datetime_param = |token: &str| -> bool {
+        let head = token.split('.').next().unwrap_or(token);
+        template
+            .params
+            .get(head)
+            .map(|spec| matches!(spec.param_type, crate::models::ParamType::Datetime { .. }))
+            .unwrap_or(false)
+    };
     let mut data = HashMap::new();
     for f in text {
-        data.entry(f.clone())
-            .or_insert_with(|| JsonValue::String(f));
+        if !is_datetime_param(&f) {
+            data.entry(f.clone())
+                .or_insert_with(|| JsonValue::String(f));
+        }
     }
     for f in image {
-        // image wins over a same-named text guess
-        data.insert(f, JsonValue::String(SAMPLE_PNG_DATA_URI.to_string()));
+        if !is_datetime_param(&f) {
+            // image wins over a same-named text guess
+            data.insert(f, JsonValue::String(SAMPLE_PNG_DATA_URI.to_string()));
+        }
     }
     data
 }
@@ -5105,6 +5204,7 @@ layout:
             "brother_24mm_lines_divider",
             "brother_24mm_max_w_cap",
             "brother_24mm_multiline",
+            "brother_24mm_printed_on",
             "brother_24mm_qr",
             "brother_24mm_weights",
             "brother_9mm",
@@ -5114,11 +5214,15 @@ layout:
             found, expected,
             "template roots do not hold the expected set"
         );
-        // homebox-qr interpolates {vars.qr_base_url} and {datetime.iso_date}; supply both so the
-        // demo entry is covered rather than skipped.
+        // homebox-qr interpolates {vars.qr_base_url} and {datetime.iso_date}; brother_24mm_printed_on
+        // interpolates {printed_on.short_date} off a `datetime` parameter. Supply all of them so the
+        // demo entries are covered rather than skipped.
         let settings =
             BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
-        let formats = BTreeMap::from([("iso_date".to_string(), "%Y-%m-%d".to_string())]);
+        let formats = BTreeMap::from([
+            ("iso_date".to_string(), "%Y-%m-%d".to_string()),
+            ("short_date".to_string(), "%m/%d/%Y".to_string()),
+        ]);
         let dt = crate::datetime_fmt::DateTimeResolver {
             formats: &formats,
             now: chrono::Local::now(),
@@ -5509,25 +5613,25 @@ layout:
         // bare datetime => ISO date
         let mut data: HashMap<String, serde_json::Value> = HashMap::new();
         assert_eq!(
-            super::helpers::interpolate("d={datetime}", &data, &vars, &dt).unwrap(),
+            super::helpers::interpolate("d={datetime}", &data, &vars, &dt, None).unwrap(),
             "d=2026-06-25"
         );
         // named format
         assert_eq!(
-            super::helpers::interpolate("{datetime.short_date}", &data, &vars, &dt).unwrap(),
+            super::helpers::interpolate("{datetime.short_date}", &data, &vars, &dt, None).unwrap(),
             "06/25/2026"
         );
         // unknown named format => error
-        assert!(super::helpers::interpolate("{datetime.nope}", &data, &vars, &dt).is_err());
+        assert!(super::helpers::interpolate("{datetime.nope}", &data, &vars, &dt, None).is_err());
         // a data field named `datetime` is shadowed by the token
         data.insert("datetime".to_string(), serde_json::json!("SHADOWED"));
         assert_eq!(
-            super::helpers::interpolate("{datetime}", &data, &vars, &dt).unwrap(),
+            super::helpers::interpolate("{datetime}", &data, &vars, &dt, None).unwrap(),
             "2026-06-25"
         );
         // literal braces unaffected
         assert_eq!(
-            super::helpers::interpolate("{{datetime}}", &data, &vars, &dt).unwrap(),
+            super::helpers::interpolate("{{datetime}}", &data, &vars, &dt, None).unwrap(),
             "{datetime}"
         );
     }
@@ -6583,6 +6687,406 @@ layout:
         assert!(
             res.is_ok(),
             "inactive child item should not trigger container_padding_no_room"
+        );
+    }
+
+    #[test]
+    fn datetime_param_render_and_override() {
+        use chrono::TimeZone;
+
+        let yaml = r#"
+id: test_dt_param
+name: Test DateTime Param
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{printed_on} / {printed_on.short_date} / {datetime}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 6, 25, 14, 30, 0)
+            .single()
+            .unwrap();
+        let formats = BTreeMap::from([("short_date".to_string(), "%m/%d/%Y".to_string())]);
+        let resolver = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now,
+        };
+
+        // 1. Without override: every token resolves against the request instant.
+        assert_eq!(
+            interpolated(&template, &HashMap::new(), &resolver).unwrap(),
+            "2026-06-25 / 06/25/2026 / 2026-06-25"
+        );
+
+        // 2. With an override: the parameter's tokens move, `{datetime}` does not.
+        let mut data = HashMap::new();
+        data.insert("printed_on".to_string(), json!("2026-08-19"));
+        assert_eq!(
+            interpolated(&template, &data, &resolver).unwrap(),
+            "2026-08-19 / 08/19/2026 / 2026-06-25"
+        );
+
+        // 3. The same template still compiles all the way to a PNG.
+        assert!(
+            !render_single_label(&template, &data, None, &BTreeMap::new(), &resolver)
+                .unwrap()
+                .is_empty()
+        );
+
+        // 4. A blank string and an explicit null both mean "use the request instant".
+        for omitted in [json!(""), json!("   "), json!(null)] {
+            let mut blank = HashMap::new();
+            blank.insert("printed_on".to_string(), omitted.clone());
+            assert_eq!(
+                interpolated(&template, &blank, &resolver).unwrap(),
+                "2026-06-25 / 06/25/2026 / 2026-06-25",
+                "{omitted} should resolve to the request instant"
+            );
+        }
+
+        // 5. An unparseable string and a non-string value are both refused.
+        for bad in [
+            json!("not-a-date"),
+            json!("yesterday"),
+            json!(20260819),
+            json!(true),
+        ] {
+            let mut bad_data = HashMap::new();
+            bad_data.insert("printed_on".to_string(), bad.clone());
+            let err = interpolated(&template, &bad_data, &resolver).unwrap_err();
+            assert_eq!(
+                err.reason(),
+                Some("datetime_param_invalid"),
+                "{bad} should be refused"
+            );
+            assert!(err.message_text().contains("printed_on"));
+        }
+    }
+
+    /// Resolve a label's parameters and interpolate the template's first text item through the
+    /// real chain: `resolve_parameters` builds the instants, `interpolate` reads them. Everything
+    /// below `interpolate` is Typst, which a byte-length assertion cannot inspect.
+    fn interpolated(
+        template: &TemplateDefinition,
+        data: &HashMap<String, serde_json::Value>,
+        resolver: &crate::datetime_fmt::DateTimeResolver,
+    ) -> Result<String, AppError> {
+        let Layout::Items(items) = &template.layout;
+        let value = items
+            .iter()
+            .find_map(|i| match i {
+                LayoutItem::Text { value, .. } => Some(value.clone()),
+                _ => None,
+            })
+            .expect("template needs a text item");
+        let resolved = super::resolve_parameters(template, data, None, resolver.now)?;
+        super::helpers::interpolate(
+            &value,
+            &resolved.data,
+            &BTreeMap::new(),
+            resolver,
+            Some(&resolved.instants),
+        )
+    }
+
+    #[test]
+    fn datetime_param_unknown_format_errors_at_render() {
+        let yaml = r#"
+id: test_dt_unknown_fmt
+name: Test DateTime Unknown Format
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{printed_on.no_such_format}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let err = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "MissingField");
+        assert!(err.message_text().contains("printed_on.no_such_format"));
+    }
+
+    #[test]
+    fn datetime_param_dynamic_width_auto_length_renders() {
+        use chrono::TimeZone;
+
+        let yaml = r#"
+id: test_dt_dynamic_width
+name: Test DateTime Dynamic Width
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width:
+    min: 20
+    max: 100
+layout:
+  - type: text
+    value: "Date: {printed_on.short_date}"
+    at: [0, 0]
+    size: [auto, 20]
+    font_size: { min: 8, max: 14 }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let now = chrono::Local
+            .with_ymd_and_hms(2026, 6, 25, 14, 30, 0)
+            .single()
+            .unwrap();
+        let formats = BTreeMap::from([("short_date".to_string(), "%m/%d/%Y".to_string())]);
+        let resolver = crate::datetime_fmt::DateTimeResolver {
+            formats: &formats,
+            now,
+        };
+
+        let doc = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver,
+        )
+        .unwrap();
+        assert!(!doc.is_empty());
+    }
+
+    #[test]
+    fn datetime_param_excluded_from_fields_and_placeholders() {
+        let yaml = r#"
+id: test_dt_fields
+name: Test DateTime Fields
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{title} {printed_on} {printed_on.short_date}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let fields = template_fields(&template);
+        assert_eq!(fields, vec!["title".to_string()]);
+
+        let ph = placeholder_data(&template);
+        assert!(ph.contains_key("title"));
+        assert!(!ph.contains_key("printed_on"));
+        assert!(!ph.contains_key("printed_on.short_date"));
+    }
+
+    fn dt_param_template(value: &str) -> TemplateDefinition {
+        let yaml = format!(
+            r#"
+id: test_dt
+name: Test DateTime
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{value}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#
+        );
+        parse_and_validate(&yaml).unwrap()
+    }
+
+    fn dt_resolver(
+        formats: &BTreeMap<String, String>,
+        now: chrono::DateTime<chrono::Local>,
+    ) -> crate::datetime_fmt::DateTimeResolver<'_> {
+        crate::datetime_fmt::DateTimeResolver { formats, now }
+    }
+
+    fn fixed_instant() -> chrono::DateTime<chrono::Local> {
+        use chrono::TimeZone;
+        chrono::Local
+            .with_ymd_and_hms(2026, 6, 25, 14, 30, 0)
+            .single()
+            .unwrap()
+    }
+
+    fn short_date_formats() -> BTreeMap<String, String> {
+        BTreeMap::from([("short_date".to_string(), "%m/%d/%Y".to_string())])
+    }
+
+    /// A request key spelled like a namespace token is data, and data never reaches a declared
+    /// `datetime` parameter's namespace.
+    #[test]
+    fn datetime_param_namespace_cannot_be_shadowed_by_request_data() {
+        let template = dt_param_template("{printed_on} {printed_on.short_date}");
+        let formats = short_date_formats();
+        let resolver = dt_resolver(&formats, fixed_instant());
+
+        let mut data = HashMap::new();
+        data.insert(
+            "printed_on.short_date".to_string(),
+            json!("SHADOWED BY REQUEST"),
+        );
+        assert_eq!(
+            interpolated(&template, &data, &resolver).unwrap(),
+            "2026-06-25 06/25/2026"
+        );
+    }
+
+    /// `resolve_parameters` must resolve against the instant it is handed and never read the clock
+    /// itself: a second clock read is what makes a sheet that crosses midnight print two dates.
+    /// The instant here is years in the past, so any hidden `Local::now()` shows up immediately.
+    #[test]
+    fn datetime_param_uses_the_passed_instant_not_the_clock() {
+        use chrono::TimeZone;
+        let template = dt_param_template("{printed_on}");
+        let long_ago = chrono::Local
+            .with_ymd_and_hms(2020, 1, 2, 3, 4, 5)
+            .single()
+            .unwrap();
+
+        // Two labels of one batch, resolved separately, sharing the request's instant.
+        let first = super::resolve_parameters(&template, &HashMap::new(), None, long_ago).unwrap();
+        let second = super::resolve_parameters(&template, &HashMap::new(), None, long_ago).unwrap();
+
+        assert_eq!(first.instants["printed_on"], long_ago);
+        assert_eq!(second.instants["printed_on"], long_ago);
+        assert_eq!(first.data["printed_on"], json!("2020-01-02"));
+        assert_eq!(second.data["printed_on"], json!("2020-01-02"));
+    }
+
+    /// A thumbnail substitutes placeholder text for request fields. A `datetime` parameter is not
+    /// one, so it prints a real date rather than its own name.
+    #[test]
+    fn datetime_param_renders_a_real_date_in_a_thumbnail() {
+        let template = dt_param_template("{printed_on.short_date}");
+        let formats = short_date_formats();
+        let resolver = dt_resolver(&formats, fixed_instant());
+
+        let data = placeholder_data(&template);
+        assert_eq!(
+            interpolated(&template, &data, &resolver).unwrap(),
+            "06/25/2026"
+        );
+
+        assert!(
+            !render_thumbnail_png(&template, &data, None, &BTreeMap::new(), &resolver)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// `when:` sees the parameter through the resolved data map, where the instant is written as
+    /// the bare ISO date. That is what a predicate compares against.
+    #[test]
+    fn datetime_param_when_compares_the_bare_iso_date() {
+        let yaml = r#"
+id: test_dt_when
+name: Test DateTime When
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    when:
+      printed_on: "2026-08-19"
+    items: []
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let formats = short_date_formats();
+        let resolver = dt_resolver(&formats, fixed_instant());
+        let Layout::Items(items) = &template.layout;
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+
+        let active_for = |data: HashMap<String, serde_json::Value>| {
+            let resolved = super::resolve_parameters(&template, &data, None, resolver.now).unwrap();
+            let empty_settings = BTreeMap::new();
+            let env = super::RenderEnv {
+                settings: &empty_settings,
+                datetime: &resolver,
+            };
+            super::RenderContext::new(
+                (50.0, 20.0),
+                "mm",
+                &resolved.data,
+                None,
+                &env,
+                &images,
+                super::LengthMode::Fixed,
+            )
+            .with_instants(&resolved.instants)
+            .is_item_active(&items[0])
+        };
+
+        let mut matching = HashMap::new();
+        matching.insert("printed_on".to_string(), json!("2026-08-19"));
+        assert!(active_for(matching));
+
+        // A different instant, and the request instant, both fail the predicate.
+        let mut other = HashMap::new();
+        other.insert("printed_on".to_string(), json!("2026-08-20"));
+        assert!(!active_for(other));
+        assert!(!active_for(HashMap::new()));
+
+        // An RFC 3339 override on the same day still compares as that day's bare ISO date.
+        let mut rfc = HashMap::new();
+        rfc.insert("printed_on".to_string(), json!("2026-08-19T23:15:00Z"));
+        assert_eq!(
+            super::resolve_parameters(&template, &rfc, None, resolver.now)
+                .unwrap()
+                .data["printed_on"],
+            json!("2026-08-19")
         );
     }
 }

@@ -3,7 +3,7 @@ import { useConnections, useConnectorSchema, materializeConnection, type Connect
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
-import { referencedFields, defaultOptions, defaultParamValues } from "../lib/templateFields";
+import { datetimeCellError, defaultOptions, defaultParamValues, hasServerDefault, referencedFields } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
 import {
   MAX_BATCH_LABELS, expandedCount, resolveLabels, sourceRowForExpandedIndex,
@@ -135,23 +135,26 @@ function Composer({
 
   const paramKeys = detail.params ? Object.keys(detail.params) : [];
   const requiredForRow = (row: LabelGridRow): string[] => [
-    ...new Set([...referencedFields(detail.layout, { ...manualOptions, ...row.option }), ...paramKeys]),
+    ...new Set([...referencedFields(detail.layout, { ...manualOptions, ...row.option }, detail.params), ...paramKeys]),
   ];
   const requiredUnion = new Set<string>();
   for (const row of rows) for (const f of requiredForRow(row)) requiredUnion.add(f);
   const displayedFields = rows.length
     ? [...requiredUnion]
-    : [...new Set([...referencedFields(detail.layout, manualOptions), ...paramKeys])];
+    : [...new Set([...referencedFields(detail.layout, manualOptions, detail.params), ...paramKeys])];
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
     const field: Record<string, string> = {};
     for (const f of requiredForRow(row)) {
       const spec = detail.params?.[f];
-      const hasDefault =
-        spec?.default !== undefined ||
-        spec?.type === "boolean" ||
-        (spec?.type === "enum" && (spec.values?.length ?? 0) > 0);
-      if (!hasDefault && (row.data[f] !== undefined ? String(row.data[f]) : "").length === 0) field[f] = "required";
+      const valStr = row.data[f] !== undefined ? String(row.data[f]) : "";
+      if (spec?.type === "datetime") {
+        const dtErr = datetimeCellError(valStr);
+        if (dtErr) field[f] = dtErr;
+      } else {
+        const hasDefault = spec ? hasServerDefault(spec) : false;
+        if (!hasDefault && valStr.length === 0) field[f] = "required";
+      }
     }
     return Object.keys(field).length ? { field } : {};
   };

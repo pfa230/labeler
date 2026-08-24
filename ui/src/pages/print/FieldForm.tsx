@@ -1,5 +1,6 @@
 import { usePrinters } from "../../api/queries";
 import {
+  hasServerDefault,
   imageFields,
   multilineFields,
   referencedFields,
@@ -32,14 +33,14 @@ export function FieldForm({
   value: FormValue;
   onChange: (v: FormValue) => void;
 }) {
-  const fields = referencedFields(detail.layout, value.option);
+  const fields = referencedFields(detail.layout, value.option, detail.params);
   const imgs = new Set(imageFields(detail.layout, value.option));
-  const multiline = new Set(multilineFields(detail.layout, value.option));
+  const multiline = new Set(multilineFields(detail.layout, value.option, detail.params));
   // Ungated on both sides: `value.data` survives an option switch, so a value typed where the field
   // is multiline is submitted where it may not be.
-  const singleLineAnywhere = new Set(singleLineTextFields(detail.layout, {}));
+  const singleLineAnywhere = new Set(singleLineTextFields(detail.layout, {}, detail.params));
   const truncatedSomewhere = new Set(
-    multilineFields(detail.layout, {}).filter((f) => singleLineAnywhere.has(f)),
+    multilineFields(detail.layout, {}, detail.params).filter((f) => singleLineAnywhere.has(f)),
   );
   const { data: printers } = usePrinters();
   const allPrinters = printers ?? [];
@@ -67,10 +68,7 @@ export function FieldForm({
       {hasDeclaredParams &&
         Object.entries(declaredParams).map(([name, spec], i) => {
           const current = value.data[name];
-          const hasDefault =
-            spec.default !== undefined ||
-            spec.type === "boolean" ||
-            (spec.type === "enum" && (spec.values?.length ?? 0) > 0);
+          const hasDefault = hasServerDefault(spec);
           const invalid = !hasDefault && (current === undefined || current === "");
           const noteId = truncatedSomewhere.has(name) ? `multiline-note-${i}` : undefined;
 

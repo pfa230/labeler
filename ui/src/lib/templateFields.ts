@@ -20,6 +20,51 @@ function tokens(s: string): string[] {
   return out;
 }
 
+export function hasServerDefault(spec: ParamSpec): boolean {
+  return (
+    spec.type === "datetime" ||
+    spec.type === "boolean" ||
+    (spec.type === "enum" && (spec.values?.length ?? 0) > 0) ||
+    spec.default !== undefined
+  );
+}
+
+export function formatLocalDate(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export function formatLocalDateTime(d: Date = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const h = String(d.getHours()).padStart(2, "0");
+  const min = String(d.getMinutes()).padStart(2, "0");
+  return `${y}-${m}-${day}T${h}:${min}`;
+}
+
+export function initialParamValues(
+  params?: Record<string, ParamSpec>,
+  now: Date = new Date(),
+): Record<string, ParamValue> {
+  const data: Record<string, ParamValue> = {};
+  if (!params) return data;
+  for (const [name, spec] of Object.entries(params)) {
+    if (spec.type === "datetime") {
+      data[name] = spec.time ? formatLocalDateTime(now) : formatLocalDate(now);
+    } else if (spec.default !== undefined && spec.default !== null) {
+      data[name] = spec.default;
+    } else if (spec.type === "enum" && spec.values && spec.values.length > 0) {
+      data[name] = spec.values[0];
+    } else if (spec.type === "boolean") {
+      data[name] = false;
+    }
+  }
+  return data;
+}
+
 export function defaultParamValues(params?: Record<string, ParamSpec>): Record<string, ParamValue> {
   const data: Record<string, ParamValue> = {};
   if (!params) return data;
@@ -33,6 +78,87 @@ export function defaultParamValues(params?: Record<string, ParamSpec>): Record<s
     }
   }
   return data;
+}
+
+export function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+export function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  if ([4, 6, 9, 11].includes(month)) return 30;
+  return 31;
+}
+
+export function datetimeCellError(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+
+  // 1. Date only: YYYY-MM-DD
+  const dateRegex = /^(\d{4})-(\d{2})-(\d{2})$/;
+  // 2. Local date-time: YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS
+  const dateTimeRegex = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/;
+  // 3. RFC 3339: YYYY-MM-DDTHH:MM:SS(.sss)?(Z|[+-]HH:MM)
+  const rfc3339Regex = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+  let y: number, m: number, d: number;
+  let h = 0, min = 0, s = 0;
+
+  const m1 = dateRegex.exec(trimmed);
+  if (m1) {
+    y = parseInt(m1[1], 10);
+    m = parseInt(m1[2], 10);
+    d = parseInt(m1[3], 10);
+  } else {
+    const m2 = dateTimeRegex.exec(trimmed);
+    if (m2) {
+      y = parseInt(m2[1], 10);
+      m = parseInt(m2[2], 10);
+      d = parseInt(m2[3], 10);
+      h = parseInt(m2[4], 10);
+      min = parseInt(m2[5], 10);
+      if (m2[6]) s = parseInt(m2[6], 10);
+    } else {
+      const m3 = rfc3339Regex.exec(trimmed);
+      if (m3) {
+        y = parseInt(m3[1], 10);
+        m = parseInt(m3[2], 10);
+        d = parseInt(m3[3], 10);
+        h = parseInt(m3[4], 10);
+        min = parseInt(m3[5], 10);
+        s = parseInt(m3[6], 10);
+        const tz = m3[7];
+        if (tz !== "Z") {
+          const tzH = parseInt(tz.slice(1, 3), 10);
+          const tzM = parseInt(tz.slice(4, 6), 10);
+          if (tzH > 23 || tzM > 59) {
+            return "Invalid timezone offset";
+          }
+        }
+      } else {
+        return "Invalid datetime; use YYYY-MM-DD or YYYY-MM-DDTHH:MM";
+      }
+    }
+  }
+
+  if (m < 1 || m > 12) {
+    return `Invalid month ${m}; must be 01-12`;
+  }
+  const maxDays = daysInMonth(y, m);
+  if (d < 1 || d > maxDays) {
+    return `Invalid day ${d} for month ${m}`;
+  }
+  if (h < 0 || h > 23) {
+    return `Invalid hour ${h}; must be 00-23`;
+  }
+  if (min < 0 || min > 59) {
+    return `Invalid minute ${min}; must be 00-59`;
+  }
+  if (s < 0 || s > 59) {
+    return `Invalid second ${s}; must be 00-59`;
+  }
+
+  return null;
 }
 
 export function defaultOptions(options?: Options): Record<string, string> {
@@ -79,13 +205,29 @@ function walk(
 }
 
 // {vars.*}, {datetime} and {datetime.*} resolve server-side; they are never request data fields.
-const isDataField = (t: string) => !t.startsWith("vars.") && t !== "datetime" && !t.startsWith("datetime.");
+// Declared datetime parameter tokens ({<p>} and {<p>.*}) are likewise excluded from data fields.
+const isDataField = (t: string, params?: Record<string, ParamSpec>) => {
+  if (t.startsWith("vars.") || t === "datetime" || t.startsWith("datetime.")) {
+    return false;
+  }
+  if (params) {
+    const head = t.split(".")[0];
+    if (params[head]?.type === "datetime") {
+      return false;
+    }
+  }
+  return true;
+};
 
 // Data fields the (option-selected) layout references: text/qr value tokens
-// (excluding vars.*, datetime, and datetime.*).
-export function referencedFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
+// (excluding vars.*, datetime, datetime.*, and datetime parameters).
+export function referencedFields(
+  layout: LayoutItem[],
+  selected: Record<string, string>,
+  params?: Record<string, ParamSpec>,
+): string[] {
   const set = new Set<string>();
-  walk(layout, selected, (t) => { if (isDataField(t)) set.add(t); }, () => {});
+  walk(layout, selected, (t) => { if (isDataField(t, params)) set.add(t); }, () => {});
   return [...set];
 }
 
@@ -99,19 +241,27 @@ export function imageFields(layout: LayoutItem[], selected: Record<string, strin
 // Data fields whose text item is multiline. Pass the live selection to choose a control; pass `{}` to ask
 // "anywhere in this template", which is how the shared-field warning is computed: the form keeps one `data`
 // object across option switches, so a value typed under one branch is submitted under another.
-export function multilineFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
+export function multilineFields(
+  layout: LayoutItem[],
+  selected: Record<string, string>,
+  params?: Record<string, ParamSpec>,
+): string[] {
   const set = new Set<string>();
   walk(layout, selected, () => {}, () => {}, (t, multiline) => {
-    if (multiline && isDataField(t)) set.add(t);
+    if (multiline && isDataField(t, params)) set.add(t);
   });
   return [...set];
 }
 
 // The complement: data fields rendered by a single-line text item (a qr payload is neither).
-export function singleLineTextFields(layout: LayoutItem[], selected: Record<string, string>): string[] {
+export function singleLineTextFields(
+  layout: LayoutItem[],
+  selected: Record<string, string>,
+  params?: Record<string, ParamSpec>,
+): string[] {
   const set = new Set<string>();
   walk(layout, selected, () => {}, () => {}, (t, multiline) => {
-    if (!multiline && isDataField(t)) set.add(t);
+    if (!multiline && isDataField(t, params)) set.add(t);
   });
   return [...set];
 }

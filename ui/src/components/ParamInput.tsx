@@ -213,6 +213,23 @@ export function ParamInput({
     );
   }
 
+  if (spec.type === "datetime") {
+    const inputType = spec.time ? "datetime-local" : "date";
+    return (
+      <input
+        type={inputType}
+        aria-label={label}
+        aria-invalid={invalid}
+        aria-describedby={noteId}
+        disabled={disabled}
+        value={value !== undefined ? String(value) : ""}
+        onChange={(e) => onChange(e.target.value)}
+        className={inputClass}
+        style={inputStyle}
+      />
+    );
+  }
+
   return (
     <input
       type="text"

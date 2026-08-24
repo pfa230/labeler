@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { defaultOptions, defaultParamValues, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
+import { defaultOptions, hasServerDefault, initialParamValues, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { usePrinters } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
@@ -21,7 +21,7 @@ const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Mat
 export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
   const [value, setValue] = useState<FormValue>(() => ({
     data: {
-      ...defaultParamValues(detail.params),
+      ...initialParamValues(detail.params),
     },
     option: defaultOptions(detail.options),
     printer: undefined,
@@ -54,15 +54,11 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
 
   const isSheet = detail.format.type === "sheet";
   const reconciledOption = reconcileRowOptions(value.option, detail.options);
-  const fields = referencedFields(detail.layout, reconciledOption);
+  const fields = referencedFields(detail.layout, reconciledOption, detail.params);
   const hasParams = !!detail.params && Object.keys(detail.params).length > 0;
   const valid = hasParams
     ? Object.entries(detail.params!).every(([name, spec]) => {
-        const hasDefault =
-          spec.default !== undefined ||
-          spec.type === "boolean" ||
-          (spec.type === "enum" && (spec.values?.length ?? 0) > 0);
-        if (hasDefault) return true;
+        if (hasServerDefault(spec)) return true;
         const current = value.data[name];
         return current !== undefined && current !== "";
       }) &&

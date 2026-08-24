@@ -77,6 +77,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0064](0064-svar-grid-for-the-connector-browser.md) | The connector browse table uses SVAR DataGrid; the ordering rules stay ours | Accepted |
 | [0065](0065-template-writes-verify-the-id-they-wrote.md) | A template write verifies the id it wrote, and a contested id refuses the delete | Accepted |
 | [0066](0066-format-badge-carries-icon-colour-and-count.md) | The format badge carries an icon, its own colour and a position count, and is delineated by a border | Accepted |
+| [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted |
 
 ## Adding an ADR
 
