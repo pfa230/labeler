@@ -7,6 +7,7 @@ import {
   type ConnectionInput,
   type FieldTransform,
 } from "../../api/connectors";
+import { useSettings, useUpdateSetting, useResetSetting } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 
 const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
@@ -240,9 +241,43 @@ function ConnectionRow({ conn, onEdit, onDeleted }: { conn: Connection; onEdit: 
 
 export function ConnectionsSection() {
   const { data: connections, isPending, isError } = useConnections();
+  const { data: settings } = useSettings();
+  const updateSetting = useUpdateSetting();
+  const resetSetting = useResetSetting();
+  const { push } = useToast();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
   const th = "px-3 py-2 text-left text-xs font-medium";
   const onDeleted = (id: string) => { if (editing !== null && editing !== "new" && editing.id === id) setEditing(null); };
+
+  const storedDefault = settings?.default_connection_id;
+  const storedDefaultId = typeof storedDefault?.value === "string" ? storedDefault.value : null;
+  const isDefault = storedDefault?.is_default ?? true;
+  const matchingConn = storedDefaultId ? (connections ?? []).find((c) => c.id === storedDefaultId) : null;
+  // "Unavailable" means the stored id names no connection, which is only knowable once the
+  // connections list has actually loaded. While it is pending or failed, `matchingConn` is absent
+  // because we do not know yet, not because the connection is gone: reporting a valid default as
+  // unavailable invites the operator to "fix" it by clearing a setting that was never broken.
+  const connectionsKnown = !isPending && !isError;
+  const isDangling = connectionsKnown && storedDefaultId !== null && !matchingConn && !isDefault;
+
+  const handleDefaultChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (!val) {
+      resetSetting.mutate("default_connection_id", {
+        onSuccess: () => push({ kind: "ok", message: "Default connection reset to default" }),
+        onError: (err) => push({ kind: "error", message: err instanceof Error ? err.message : "Failed to clear default connection" }),
+      });
+    } else {
+      updateSetting.mutate(
+        { key: "default_connection_id", value: val },
+        {
+          onSuccess: () => push({ kind: "ok", message: "Default connection saved" }),
+          onError: (err) => push({ kind: "error", message: err instanceof Error ? err.message : "Failed to save default connection" }),
+        },
+      );
+    }
+  };
+
   return (
     <section className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -280,6 +315,38 @@ export function ConnectionsSection() {
           </table>
         </div>
       )}
+
+      <div className="flex flex-col gap-1 max-w-md pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+        <label className="flex flex-col gap-1">
+          <span className="text-sm font-medium">Default connection</span>
+          <select
+            aria-label="default connection"
+            value={isDefault || !storedDefaultId ? "" : storedDefaultId}
+            disabled={updateSetting.isPending || resetSetting.isPending || !connectionsKnown}
+            onChange={handleDefaultChange}
+            className={inputClass}
+            style={inputStyle}
+          >
+            <option value="">(no default)</option>
+            {isDangling && (
+              <option value={storedDefaultId}>
+                {storedDefaultId} (unavailable)
+              </option>
+            )}
+            {!connectionsKnown && storedDefaultId !== null && !isDefault && (
+              <option value={storedDefaultId}>{storedDefaultId}</option>
+            )}
+            {(connections ?? []).map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.id}){c.enabled ? "" : " (disabled)"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="text-xs" style={{ color: "var(--muted)" }}>
+          The default connection applies to everyone on this instance.
+        </p>
+      </div>
     </section>
   );
 }

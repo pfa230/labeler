@@ -5342,6 +5342,13 @@ mod auth_http_tests {
         app(Arc::new(AppState::new(templates, templates_dir, store)))
     }
 
+    fn test_app_with_state() -> (axum::Router, Arc<AppState>) {
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
+        let store = Store::open_in_memory().expect("store");
+        let state = Arc::new(AppState::new(templates, templates_dir, store));
+        (app(state.clone()), state)
+    }
+
     fn test_app_no_auth() -> axum::Router {
         let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
@@ -6095,6 +6102,222 @@ mod auth_http_tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         assert_eq!(body_json(res).await["error"]["code"], "SettingNotFound");
+    }
+
+    #[tokio::test]
+    async fn settings_default_connection_id_endpoints() {
+        let (app, state) = test_app_with_state();
+        let cookie = setup_login_cookie(&app).await;
+
+        // 1. Initial GET reports default_connection_id: null, is_default: true
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(
+            body["default_connection_id"]["value"],
+            serde_json::Value::Null
+        );
+        assert_eq!(body["default_connection_id"]["is_default"], true);
+
+        // Create connection 1 (enabled)
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/connections",
+                r#"{"connector":"homebox","name":"conn1","base_url":"http://hb1.lan","credential":"sec"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let conn1_id = body_json(res).await["id"].as_str().unwrap().to_string();
+
+        // Create connection 2 (disabled)
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/connections",
+                r#"{"connector":"homebox","name":"conn2","base_url":"http://hb2.lan","credential":"sec","enabled":false}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let conn2_id = body_json(res).await["id"].as_str().unwrap().to_string();
+
+        // 2. PUT with whitespace: stores and reflects trimmed id
+        let put_body = format!(r#"{{"value":"  {}  "}}"#, conn1_id);
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/settings/default_connection_id",
+                &put_body,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["value"], conn1_id);
+        assert_eq!(body["is_default"], false);
+
+        // GET confirms stored
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["default_connection_id"]["value"], conn1_id);
+        assert_eq!(body["default_connection_id"]["is_default"], false);
+
+        // 3. PUT with invalid values: unknown id, "", "   ", null, number, object each give 400
+        let invalid_payloads = [
+            r#"{"value":"unknown-connection-id"}"#,
+            r#"{"value":""}"#,
+            r#"{"value":"   "}"#,
+            r#"{"value":null}"#,
+            r#"{"value":123}"#,
+            r#"{"value":{}}"#,
+        ];
+        for bad in invalid_payloads {
+            let res = app
+                .clone()
+                .oneshot(req_put_json_cookie(
+                    "/api/settings/default_connection_id",
+                    bad,
+                    &cookie,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "payload {bad}");
+            let err = body_json(res).await;
+            assert_eq!(err["error"]["code"], "InvalidRequest");
+            assert_eq!(err["error"]["details"]["reason"], "setting_value_invalid");
+        }
+
+        // 4. PUT accepts a disabled connection's id
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/settings/default_connection_id",
+                &format!(r#"{{"value":"{}"}}"#, conn2_id),
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["value"], conn2_id);
+        assert_eq!(body["is_default"], false);
+
+        // 5. DELETE resets to null / is_default: true
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(
+                "/api/settings/default_connection_id",
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        assert_eq!(
+            body["default_connection_id"]["value"],
+            serde_json::Value::Null
+        );
+        assert_eq!(body["default_connection_id"]["is_default"], true);
+
+        // 6. GET reports a dangling stored id without erroring
+        state
+            .store()
+            .set_setting(
+                crate::settings::DEFAULT_CONNECTION_ID,
+                "dangling-connection-id",
+            )
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(
+            body["default_connection_id"]["value"],
+            "dangling-connection-id"
+        );
+        assert_eq!(body["default_connection_id"]["is_default"], false);
+
+        // 7. Deleting the default connection clears the setting and deleting a different one does not
+        // Set default to conn1_id
+        let res = app
+            .clone()
+            .oneshot(req_put_json_cookie(
+                "/api/settings/default_connection_id",
+                &format!(r#"{{"value":"{}"}}"#, conn1_id),
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Delete conn2 (not default)
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(
+                &format!("/api/connections/{}", conn2_id),
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        // Setting still names conn1
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        assert_eq!(body["default_connection_id"]["value"], conn1_id);
+        assert_eq!(body["default_connection_id"]["is_default"], false);
+
+        // Delete conn1 (the default)
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(
+                &format!("/api/connections/{}", conn1_id),
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+
+        // Setting is now cleared
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/settings", &cookie))
+            .await
+            .unwrap();
+        let body = body_json(res).await;
+        assert_eq!(
+            body["default_connection_id"]["value"],
+            serde_json::Value::Null
+        );
+        assert_eq!(body["default_connection_id"]["is_default"], true);
     }
 
     #[tokio::test]
