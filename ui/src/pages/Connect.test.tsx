@@ -130,29 +130,43 @@ describe("Connect: datetime parameters", () => {
     layout: [{ type: "text", value: "{name} {printed_on.short_date}" }],
   };
 
+  // The datetime template, plus a connector that offers a `printed_on` field so the default mapping
+  // carries `value` into every materialized row.
+  const withPrintedOn = (value?: string) => {
+    const base = stub();
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/templates/tpl") return json(dtDetail);
+      if (url === "/api/connections/c1/schema")
+        return json({
+          ...schema,
+          resources: [
+            {
+              ...schema.resources[0],
+              columns: [
+                ...schema.resources[0].columns,
+                { key: "printed_on", label: "Printed", ty: "text", tier: "cheap" },
+              ],
+            },
+          ],
+        });
+      if (url === "/api/connections/c1/materialize")
+        return json([
+          { source: { resource: "entities", key: "e1" }, data: { name: "Drill", ...(value !== undefined ? { printed_on: value } : {}) } },
+          { source: { resource: "entities", key: "e2" }, data: { name: "Hammer", ...(value !== undefined ? { printed_on: value } : {}) } },
+        ]);
+      return base(input, init);
+    }) as ReturnType<typeof stub>;
+  };
+
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
     vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
-    const base = stub();
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url === "/api/templates/tpl") return json(dtDetail);
-      return base(input, init);
-    }) as ReturnType<typeof stub>;
+    fetchMock = withPrintedOn();
     vi.stubGlobal("fetch", fetchMock);
   });
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
-
-  // The grid renders the datetime column as a plain text cell, so an edit goes through the same
-  // double-click editor every other data field uses.
-  const editPrintedOn = async (value: string) => {
-    const grid = screen.getByRole("grid", { name: /label rows/i });
-    fireEvent.doubleClick(within(grid).getAllByRole("gridcell")[2]);
-    const input = (await screen.findByLabelText("edit printed_on")) as HTMLInputElement;
-    fireEvent.change(input, { target: { value } });
-    fireEvent.blur(input);
-  };
 
   it("materializes rows with a blank datetime and leaves the run enabled", async () => {
     renderConnect();
@@ -160,16 +174,27 @@ describe("Connect: datetime parameters", () => {
     expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
   });
 
-  it("blocks the run when a datetime cell cannot be parsed, and unblocks when corrected", async () => {
+  // The value arrives the way a connector row's values actually arrive, through materialize and the
+  // field mapping, rather than by driving react-data-grid's editor: the editor is LabelGrid's
+  // contract and is covered there. What this asserts is Connect's own validateRow, which is the part
+  // #209 changed.
+  it("blocks the run when a materialized datetime value cannot be parsed", async () => {
+    fetchMock = withPrintedOn("not a date");
+    vi.stubGlobal("fetch", fetchMock);
+
     renderConnect();
     await browseSelectMaterialize();
-
-    await editPrintedOn("not a date");
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
     );
+  });
 
-    await editPrintedOn("2026-08-19");
+  it("leaves the run enabled when the materialized datetime value parses", async () => {
+    fetchMock = withPrintedOn("2026-08-19");
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled(),
     );
