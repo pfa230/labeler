@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type SelectedRow } from "../api/connectors";
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
-import { useTemplates, useTemplate, usePrinters } from "../api/queries";
+import { useTemplates, useTemplate, usePrinters, useSettings } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { datetimeCellError, defaultOptions, defaultParamValues, hasServerDefault, referencedFields } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
@@ -23,11 +23,33 @@ const inputStyle = { background: "var(--surface)", borderColor: "var(--border)",
 const MATERIALIZE_CAP = 200; // backend /materialize rejects more than this in one call (400 BudgetExceeded)
 
 export function Connect() {
-  const { data: connections } = useConnections();
+  const { data: connections, isError: connectionsFailed } = useConnections();
+  const { data: settings, isError: settingsFailed } = useSettings();
   const { data: templates, isError: templatesFailed } = useTemplates();
   const { data: printers } = usePrinters();
 
-  const [connectionId, setConnectionId] = useState("");
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  const [latchedConnectionId, setLatchedConnectionId] = useState<string | null>(null);
+
+  if (latchedConnectionId === null) {
+    if (connectionsFailed) {
+      setLatchedConnectionId("");
+    } else if (connections !== undefined && (settings !== undefined || settingsFailed)) {
+      const defaultId =
+        typeof settings?.default_connection_id?.value === "string"
+          ? settings.default_connection_id.value
+          : null;
+      const defaultConn = defaultId
+        ? connections.find((c) => c.id === defaultId && c.enabled)
+        : null;
+      const fallbackConn = connections.find((c) => c.enabled);
+      const resolved = (defaultConn ?? fallbackConn)?.id ?? "";
+      setLatchedConnectionId(resolved);
+    }
+  }
+
+  const connectionId =
+    selectedConnectionId !== null ? selectedConnectionId : (latchedConnectionId ?? "");
   const { data: schema } = useConnectorSchema(connectionId);
   const [templateId, setTemplateId] = useState("");
   const { data: detail, isPlaceholderData } = useTemplate(templateId);
@@ -41,7 +63,7 @@ export function Connect() {
       <div className="flex flex-wrap gap-3">
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium">Connection</span>
-          <select aria-label="connection" value={connectionId} onChange={(e) => { setConnectionId(e.target.value); setSelected([]); }} className={inputClass} style={inputStyle}>
+          <select aria-label="connection" value={connectionId} onChange={(e) => { setSelectedConnectionId(e.target.value); setSelected([]); }} className={inputClass} style={inputStyle}>
             <option value="">choose a connection</option>
             {(connections ?? []).filter((c) => c.enabled).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
           </select>

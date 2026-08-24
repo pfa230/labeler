@@ -14,6 +14,9 @@ pub const DATETIME_FORMATS: &str = "datetime_formats";
 pub const MAX_LABEL_DIMENSION_MM: &str = "max_label_dimension_mm";
 pub const DEFAULT_MAX_LABEL_DIMENSION_MM: f32 = 1000.0;
 
+/// Setting key for the default connection id on the Connect page (issue #203).
+pub const DEFAULT_CONNECTION_ID: &str = "default_connection_id";
+
 /// Seeded default named formats. Overridable; nothing hardcoded in the renderer.
 pub fn default_datetime_formats() -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -54,7 +57,10 @@ impl From<StoreError> for SettingError {
 
 /// Whether `key` is a setting this build knows about.
 pub fn is_known(key: &str) -> bool {
-    key == JOB_LOG_RETENTION_DAYS || key == DATETIME_FORMATS || key == MAX_LABEL_DIMENSION_MM
+    key == JOB_LOG_RETENTION_DAYS
+        || key == DATETIME_FORMATS
+        || key == MAX_LABEL_DIMENSION_MM
+        || key == DEFAULT_CONNECTION_ID
 }
 
 /// Validate a JSON value for `key`, returning the canonical text to store, or a client-facing message
@@ -105,6 +111,16 @@ pub fn validate(key: &str, value: &serde_json::Value) -> Result<String, String> 
                     format!("'{MAX_LABEL_DIMENSION_MM}' must be a positive finite number")
                 })?;
             Ok(n.to_string())
+        }
+        DEFAULT_CONNECTION_ID => {
+            let s = value
+                .as_str()
+                .ok_or_else(|| format!("'{DEFAULT_CONNECTION_ID}' must be a string"))?;
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(format!("'{DEFAULT_CONNECTION_ID}' must be non-empty"));
+            }
+            Ok(trimmed.to_string())
         }
         _ => Err(format!("unknown setting '{key}'")),
     }
@@ -167,6 +183,32 @@ pub fn resolve_max_label_dimension_mm_from(stored: Option<String>) -> Result<f32
 pub async fn resolve_max_label_dimension_mm(store: &Store) -> Result<f32, SettingError> {
     let stored = store.get_setting(MAX_LABEL_DIMENSION_MM).await?;
     resolve_max_label_dimension_mm_from(stored)
+}
+
+/// Pure resolution: in-code default (None) when there is no override, else the stored id.
+/// Empty or whitespace-only stored text is corrupt (ADR-0024).
+pub fn resolve_default_connection_id_from(
+    stored: Option<String>,
+) -> Result<Option<String>, SettingError> {
+    match stored {
+        None => Ok(None),
+        Some(s) => {
+            if s.trim().is_empty() {
+                Err(SettingError::Corrupt {
+                    key: DEFAULT_CONNECTION_ID.to_string(),
+                    value: s,
+                })
+            } else {
+                Ok(Some(s))
+            }
+        }
+    }
+}
+
+/// Resolve the effective `default_connection_id` from the store.
+pub async fn resolve_default_connection_id(store: &Store) -> Result<Option<String>, SettingError> {
+    let stored = store.get_setting(DEFAULT_CONNECTION_ID).await?;
+    resolve_default_connection_id_from(stored)
 }
 
 /// Resolve the live retention and prune the job log once. `0` is a no-op (handled by `prune_jobs`).
@@ -277,5 +319,46 @@ mod tests {
         assert!(validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!(0.0)).is_err());
         assert!(validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!(-10.0)).is_err());
         assert!(validate(MAX_LABEL_DIMENSION_MM, &serde_json::json!("abc")).is_err());
+    }
+
+    #[test]
+    fn validate_default_connection_id_accepts_non_empty_string_and_trims() {
+        assert_eq!(
+            validate(DEFAULT_CONNECTION_ID, &json!("  conn-1  ")).unwrap(),
+            "conn-1"
+        );
+        assert_eq!(
+            validate(DEFAULT_CONNECTION_ID, &json!("conn-1")).unwrap(),
+            "conn-1"
+        );
+    }
+
+    #[test]
+    fn validate_default_connection_id_rejects_bad_values() {
+        assert!(validate(DEFAULT_CONNECTION_ID, &json!("")).is_err());
+        assert!(validate(DEFAULT_CONNECTION_ID, &json!("   ")).is_err());
+        assert!(validate(DEFAULT_CONNECTION_ID, &json!(null)).is_err());
+        assert!(validate(DEFAULT_CONNECTION_ID, &json!(123)).is_err());
+        assert!(validate(DEFAULT_CONNECTION_ID, &json!({})).is_err());
+        assert!(validate(DEFAULT_CONNECTION_ID, &json!([])).is_err());
+    }
+
+    #[test]
+    fn resolve_default_connection_id_defaults_when_absent() {
+        assert_eq!(resolve_default_connection_id_from(None).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_default_connection_id_uses_override_including_dangling() {
+        assert_eq!(
+            resolve_default_connection_id_from(Some("dangling-id".to_string())).unwrap(),
+            Some("dangling-id".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_default_connection_id_rejects_corrupt() {
+        assert!(resolve_default_connection_id_from(Some("".to_string())).is_err());
+        assert!(resolve_default_connection_id_from(Some("   ".to_string())).is_err());
     }
 }

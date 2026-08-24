@@ -1173,6 +1173,20 @@ pub async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Response
             is_default: max_dim_is_default,
         },
     );
+    let def_conn_stored = state
+        .store()
+        .get_setting(crate::settings::DEFAULT_CONNECTION_ID)
+        .await?;
+    let def_conn_is_default = def_conn_stored.is_none();
+    let def_conn_id = crate::settings::resolve_default_connection_id_from(def_conn_stored)
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    out.insert(
+        crate::settings::DEFAULT_CONNECTION_ID.to_string(),
+        ResolvedSetting {
+            value: serde_json::json!(def_conn_id),
+            is_default: def_conn_is_default,
+        },
+    );
     Ok(Json(out).into_response())
 }
 
@@ -1199,12 +1213,25 @@ pub async fn put_setting(
     let canonical = crate::settings::validate(&key, &body.value)
         .map_err(|err| AppError::invalid_request(Reason::SettingValueInvalid, err))?;
     let _guard = state.write_lock.lock().await;
+    if key == crate::settings::DEFAULT_CONNECTION_ID {
+        let exists = state.store().get_connection(&canonical).await?.is_some();
+        if !exists {
+            return Err(AppError::invalid_request(
+                Reason::SettingValueInvalid,
+                format!("connection '{canonical}' does not exist"),
+            ));
+        }
+    }
     state.store().set_setting(&key, &canonical).await?;
-    // canonical is the validated integer text; reflect it back as a JSON number
-    let value: serde_json::Value = canonical
-        .parse::<u32>()
-        .map(serde_json::Value::from)
-        .unwrap_or(body.value);
+    let value: serde_json::Value = if key == crate::settings::DEFAULT_CONNECTION_ID {
+        serde_json::Value::String(canonical)
+    } else {
+        // canonical is the validated integer text; reflect it back as a JSON number
+        canonical
+            .parse::<u32>()
+            .map(serde_json::Value::from)
+            .unwrap_or(body.value)
+    };
     Ok(Json(ResolvedSetting {
         value,
         is_default: false,
@@ -1738,7 +1765,7 @@ pub async fn delete_connection_h(
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let _g = state.write_lock.lock().await;
-    if !state.store().delete_connection(&id).await? {
+    if !state.store().delete_connection_and_default(&id).await? {
         return Err(AppError::not_found(&id));
     }
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())

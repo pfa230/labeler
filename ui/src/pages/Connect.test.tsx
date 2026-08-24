@@ -22,16 +22,31 @@ const templateDetail = {
 
 type StubOptions = {
   renderLabel?: () => Response;
+  connections?: Array<{ id: string; connector: string; name: string; base_url: string; enabled: boolean; has_credential: boolean }>;
+  connectionsError?: boolean;
+  settings?: Record<string, { value: unknown; is_default: boolean }>;
+  settingsError?: boolean;
 };
 
 function stub(opts: StubOptions = {}) {
-  return vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input, init) => {
+  let currentSettings = opts.settings ?? {
+    default_connection_id: { value: null, is_default: true },
+  };
+
+  const fn = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input, init) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = (init?.method ?? "GET").toUpperCase();
-    if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
-    if (url === "/api/connections/c1/schema") return json(schema);
-    if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
-    if (url === "/api/connections/c1/materialize") return json([
+    if (url === "/api/connections") {
+      if (opts.connectionsError) return json({ error: "Failed" }, 500);
+      return json(opts.connections ?? [{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+    }
+    if (url === "/api/settings") {
+      if (opts.settingsError) return json({ error: "Failed" }, 500);
+      return json(currentSettings);
+    }
+    if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
+    if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
+    if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([
       { source: { resource: "entities", key: "e1" }, data: { name: "Drill" } },
       { source: { resource: "entities", key: "e2" }, data: { name: "Hammer" } },
     ]);
@@ -45,17 +60,22 @@ function stub(opts: StubOptions = {}) {
     if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="tpl.zip"' } });
     throw new Error(`unexpected fetch: ${url} ${method}`);
   });
+
+  return Object.assign(fn, {
+    setSettings: (s: Record<string, { value: unknown; is_default: boolean }>) => { currentSettings = s; },
+  });
 }
 
-function renderConnect() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+function renderConnect(client?: QueryClient) {
+  const qc = client ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
         <MemoryRouter><Connect /></MemoryRouter>
       </ToastProvider>
     </QueryClientProvider>,
   );
+  return { ...view, queryClient: qc };
 }
 
 let fetchMock: ReturnType<typeof stub>;
@@ -118,6 +138,193 @@ describe("Connect", () => {
 
     // Download stays enabled even though the preview endpoint errored.
     expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
+  });
+
+  it("selects the stored default connection on open and loads its browse rows without a click", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: "c2", is_default: false },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c2"));
+    await waitFor(() => expect(countCalls("/api/connections/c2/browse")).toBeGreaterThan(0));
+  });
+
+  it("falls back to the first enabled connection when no default is stored", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: null, is_default: true },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
+  });
+
+  it("falls back to the first enabled connection when the stored default is disabled", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: "c1", is_default: false },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c2"));
+  });
+
+  it("falls back to the first enabled connection when the stored default names no connection", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: "nonexistent", is_default: false },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
+  });
+
+  it("selects nothing when no connection is enabled", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: false, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: null, is_default: true },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
+    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("grid")).not.toBeInTheDocument();
+  });
+
+  it("falls back to first enabled connection when settings query errors", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      ],
+      settingsError: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
+  });
+
+  it("resolves equal-name connections in list (id) order", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "a", connector: "homebox", name: "Home", base_url: "http://hba", enabled: true, has_credential: true },
+        { id: "b", connector: "homebox", name: "Home", base_url: "http://hbb", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: null, is_default: true },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("a"));
+  });
+
+  it("does not move the selection or drop row selection when settings query refetches with a new default", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: "c1", is_default: false },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { queryClient } = renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
+
+    // Select a row in the browser
+    const checkbox = await screen.findByLabelText("select entities:e1");
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+    // Stored setting changes in background to c2
+    fetchMock.setSettings({
+      default_connection_id: { value: "c2", is_default: false },
+    });
+    await queryClient.invalidateQueries({ queryKey: ["settings"] });
+
+    // Selection remains c1 and selected row checkbox remains checked
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
+    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+  });
+
+  it("clears row selection and writes no setting on manual pick", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: "c1", is_default: false },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const select = await screen.findByLabelText(/connection/i);
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
+
+    // Select a row
+    const checkbox = await screen.findByLabelText("select entities:e1");
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+    // Manually switch connection to c2
+    fireEvent.change(select, { target: { value: "c2" } });
+    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c2"));
+
+    // Wait for new connection browser to mount and verify checkbox is unchecked
+    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).not.toBeChecked());
+
+    // Verify no settings mutation (PUT/POST/DELETE to /api/settings) was made
+    const settingsMutations = fetchMock.mock.calls.filter(([u, init]) => {
+      const url = String(u);
+      const method = (init?.method ?? "GET").toUpperCase();
+      return url.startsWith("/api/settings") && method !== "GET";
+    });
+    expect(settingsMutations).toHaveLength(0);
   });
 });
 

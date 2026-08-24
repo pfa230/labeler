@@ -690,7 +690,7 @@ impl Store {
     pub async fn list_connections(&self) -> Result<Vec<Connection>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare(
-            "SELECT id, connector, name, base_url, credential, enabled, public_url, transforms FROM connections ORDER BY name",
+            "SELECT id, connector, name, base_url, credential, enabled, public_url, transforms FROM connections ORDER BY name, id",
         )?;
         let rows = stmt.query_map([], row_to_connection)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -754,9 +754,22 @@ impl Store {
         Ok(n > 0)
     }
 
-    pub async fn delete_connection(&self, id: &str) -> Result<bool, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
-        Ok(conn.execute("DELETE FROM connections WHERE id = ?1", [id])? > 0)
+    /// Delete a connection and, in the same transaction, the `default_connection_id` setting when it
+    /// named that connection. There is deliberately no plain `delete_connection`: a delete that does
+    /// not clear the setting would leave a default naming a connection that no longer exists, and
+    /// `GET /api/settings` takes no lock, so a second statement is a window a reader can land in.
+    pub async fn delete_connection_and_default(&self, id: &str) -> Result<bool, StoreError> {
+        let mut conn = self.conn.lock().expect("store lock");
+        let tx = conn.transaction()?;
+        let existed = tx.execute("DELETE FROM connections WHERE id = ?1", [id])? > 0;
+        if existed {
+            tx.execute(
+                "DELETE FROM app_settings WHERE key = ?1 AND value = ?2",
+                rusqlite::params![crate::settings::DEFAULT_CONNECTION_ID, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(existed)
     }
 }
 
@@ -1210,7 +1223,7 @@ mod connection_tests {
             s.get_connection(&c.id).await.unwrap().unwrap().credential,
             "hb_new"
         );
-        assert!(s.delete_connection(&c.id).await.unwrap());
+        assert!(s.delete_connection_and_default(&c.id).await.unwrap());
         assert!(s.get_connection(&c.id).await.unwrap().is_none());
     }
 
@@ -1465,5 +1478,82 @@ mod auth_tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn list_connections_orders_by_name_then_id() {
+        let s = store();
+        {
+            let conn = s.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO connections (id, connector, name, base_url, credential, enabled) VALUES ('b', 'homebox', 'Homebox', 'http://b.lan', 'sec', 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO connections (id, connector, name, base_url, credential, enabled) VALUES ('a', 'homebox', 'Homebox', 'http://a.lan', 'sec', 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let list = s.list_connections().await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "a");
+        assert_eq!(list[1].id, "b");
+    }
+
+    #[tokio::test]
+    async fn delete_connection_and_default_cascade() {
+        let s = store();
+        let c1 = s
+            .create_connection(NewConnection {
+                connector: "homebox",
+                name: "c1",
+                base_url: "http://c1.lan",
+                public_url: None,
+                credential: "sec",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+        let c2 = s
+            .create_connection(NewConnection {
+                connector: "homebox",
+                name: "c2",
+                base_url: "http://c2.lan",
+                public_url: None,
+                credential: "sec",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        s.set_setting("default_connection_id", &c1.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.get_setting("default_connection_id").await.unwrap(),
+            Some(c1.id.clone())
+        );
+
+        // Deleting unknown id returns false and clears nothing
+        assert!(!s.delete_connection_and_default("unknown-id").await.unwrap());
+        assert_eq!(
+            s.get_setting("default_connection_id").await.unwrap(),
+            Some(c1.id.clone())
+        );
+
+        // Deleting non-default connection c2 returns true and leaves default_connection_id intact
+        assert!(s.delete_connection_and_default(&c2.id).await.unwrap());
+        assert_eq!(
+            s.get_setting("default_connection_id").await.unwrap(),
+            Some(c1.id.clone())
+        );
+
+        // Deleting default connection c1 returns true and clears default_connection_id
+        assert!(s.delete_connection_and_default(&c1.id).await.unwrap());
+        assert_eq!(s.get_setting("default_connection_id").await.unwrap(), None);
     }
 }
