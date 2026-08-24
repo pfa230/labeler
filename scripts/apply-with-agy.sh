@@ -53,8 +53,17 @@ log="$wt/.agy-apply.log"
 # "/opsx-apply add-auth". Sending the skill name silently resolves to nothing and
 # agy answers from its own documentation instead of working, which is what the
 # no-op detection below exists to catch.
-prompt="/opsx-apply $change. Do not commit; the change is committed once at the end after archive and verification. $extra"
+prompt="/opsx-apply $change. Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it, including the ones that say to render a label and look at it. $extra"
 
+# The prompt names the stage boundary in the imperative, and bluntly. `openspec/config.yaml`
+# already carried "Do not commit here" when agy, on 2026-08-24, committed, archived, synced the
+# deltas into `openspec/specs/`, edited the frozen `docs/SPEC.md` and checked three tasks it had
+# not performed. Guidance an agent has to infer a boundary from is guidance it argues itself past,
+# so the boundary is spelled out here too, at the point of invocation, in the fewest words that
+# leave nothing to infer. Do not soften this into a description of the workflow: the previous
+# wording mentioned archive ("committed once at the end after archive and verification") and got
+# an archive.
+#
 # `script` gives agy a pseudo-TTY: bare `agy -p` off a pipe greets or narrates
 # instead of working. util-linux script(1) is `script [options] [file]`, so a
 # trailing command is read as script's own options and the run dies on

@@ -98,8 +98,34 @@ operations:
         When that reviewer is codex, the cap is 5 passes absent an unresolved blocking issue.
         Converging on "no MAJOR issues" is the goal, not an empty findings list.
       - >-
-        Do not commit here. The commit happens after archive and the final verification pass. See the
-        archive guidance for the full order.
+        This stage ends at implementation. Do not commit, do not run archive, do not sync deltas into
+        `openspec/specs/`, and do not move or delete the change folder. Archive rewrites the main
+        specs, and the operator reads this diff before that happens; doing it here skips that read.
+        The commit happens after archive and the final verification pass. See the archive guidance
+        for the full order.
+      - >-
+        Check a task only after performing it. A checked box is a claim the next reader trusts
+        instead of redoing the work, so a box checked over an unperformed step is worse than an
+        unchecked one. A task saying to render a label and open the image is not satisfied by a test
+        that renders bytes, and a task saying to add an HTTP test is not satisfied by a unit test one
+        layer below the status code.
+      - >-
+        A test that cannot fail is worse than no test. Assert on the value under test, not on the
+        fact that a call returned: after `.unwrap()`, `assert!(!png.is_empty())` proves only that the
+        function returned Ok. Before accepting a test, name what would have to break for it to fail.
+      - >-
+        Never edit `docs/SPEC.md`. It is frozen (ADR-0057) and the archive step cannot represent an
+        edit to it. A new `details.reason` slug, a new field, a new row: its published home is this
+        change's delta under `openspec/specs/`, which the reason-completeness test in `src/errors.rs`
+        already accepts as documentation.
+      - >-
+        Use the ADR number `design.md` names, and confirm it is still free against `docs/adr/` on the
+        current `main` before writing the file. Other changes in flight claim numbers, so the next
+        free number when the plan was written may not be free now.
+      - >-
+        Stay inside the change's diff. Widening a shared parser, loosening a type, or changing
+        behavior for inputs the issue never mentions is out of scope even when it makes the new code
+        simpler. Keep the existing behavior and pin it with a test.
 
   archive:
     guidance:
