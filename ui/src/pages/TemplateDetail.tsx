@@ -188,7 +188,7 @@ export function TemplateDetail() {
 
   // Reference view: show the union of fields across all option branches (empty selection = ungated),
   // consistent with referencedVariables which is also ungated.
-  const fields = referencedFields(detail.layout, {});
+  const fields = referencedFields(detail.layout, {}, detail.params);
   const variables = referencedVariables(detail.layout);
 
   return (

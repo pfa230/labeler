@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
-import { defaultParamValues, reconcileRowOptions, referencedFields } from "../lib/templateFields";
+import { datetimeCellError, defaultParamValues, hasServerDefault, reconcileRowOptions, referencedFields } from "../lib/templateFields";
 import {
   MAX_BATCH_LABELS,
   expandedCount,
@@ -132,7 +132,7 @@ function CsvEditor({
   // vary per row and gate different containers), so this is computed per row. With no template, no fields.
   const paramKeys = detail?.params ? Object.keys(detail.params) : [];
   const requiredForRow = (row: LabelGridRow): string[] =>
-    detail ? [...new Set([...referencedFields(detail.layout, effectiveOption(row)), ...paramKeys])] : [];
+    detail ? [...new Set([...referencedFields(detail.layout, effectiveOption(row), detail.params), ...paramKeys])] : [];
   // Grid columns: CSV columns plus any required field (across all row variants) the CSV omits.
   const requiredUnion = new Set<string>();
   for (const row of rows) for (const f of requiredForRow(row)) requiredUnion.add(f);
@@ -140,7 +140,7 @@ function CsvEditor({
     ? []
     : rows.length
       ? [...requiredUnion]
-      : [...new Set([...referencedFields(detail.layout, reconcileRowOptions({}, declaredOptions)), ...paramKeys])];
+      : [...new Set([...referencedFields(detail.layout, reconcileRowOptions({}, declaredOptions), detail.params), ...paramKeys])];
   const displayedFields = [...csvFields, ...baseRequired.filter((f) => !csvFields.includes(f))];
 
   // One validation function, used both for render (viewRows) and as the run() submit guard, so a value
@@ -149,11 +149,14 @@ function CsvEditor({
     const field: Record<string, string> = {};
     for (const f of requiredForRow(row)) {
       const spec = detail?.params?.[f];
-      const hasDefault =
-        spec?.default !== undefined ||
-        spec?.type === "boolean" ||
-        (spec?.type === "enum" && (spec.values?.length ?? 0) > 0);
-      if (!hasDefault && (row.data[f] !== undefined ? String(row.data[f]) : "").length === 0) field[f] = "required";
+      const valStr = row.data[f] !== undefined ? String(row.data[f]) : "";
+      if (spec?.type === "datetime") {
+        const dtErr = datetimeCellError(valStr);
+        if (dtErr) field[f] = dtErr;
+      } else {
+        const hasDefault = spec ? hasServerDefault(spec) : false;
+        if (!hasDefault && valStr.length === 0) field[f] = "required";
+      }
     }
     const eff = effectiveOption(row);
     const option: Record<string, string> = {};

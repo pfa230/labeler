@@ -160,4 +160,32 @@ describe("ParamInput", () => {
     const input = screen.getByRole("textbox", { name: "Disabled Field" });
     expect(input).toBeDisabled();
   });
+
+  it("renders a date input for datetime parameter without time", () => {
+    const onChange = vi.fn();
+    const spec: ParamSpec = { type: "datetime", description: "Printed Date" };
+    render(<ParamInput name="printed_on" spec={spec} value="2026-08-19" onChange={onChange} />);
+
+    const input = screen.getByLabelText("Printed Date") as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    expect(input.type).toBe("date");
+    expect(input.value).toBe("2026-08-19");
+
+    fireEvent.change(input, { target: { value: "2026-08-20" } });
+    expect(onChange).toHaveBeenCalledWith("2026-08-20");
+  });
+
+  it("renders a datetime-local input for datetime parameter with time", () => {
+    const onChange = vi.fn();
+    const spec: ParamSpec = { type: "datetime", time: true, description: "Printed Timestamp" };
+    render(<ParamInput name="printed_on" spec={spec} value="2026-08-19T14:30" onChange={onChange} />);
+
+    const input = screen.getByLabelText("Printed Timestamp") as HTMLInputElement;
+    expect(input).toBeInTheDocument();
+    expect(input.type).toBe("datetime-local");
+    expect(input.value).toBe("2026-08-19T14:30");
+
+    fireEvent.change(input, { target: { value: "2026-08-19T16:45" } });
+    expect(onChange).toHaveBeenCalledWith("2026-08-19T16:45");
+  });
 });

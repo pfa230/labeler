@@ -25,7 +25,7 @@ export function useTemplatePreview(detail: TemplateDetail | undefined): { url?: 
     const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
     const option = hasOptions ? defaultOptions(detail.options) : undefined; // omit `option` for no-option templates
     const sel = option ?? {};
-    const data = sampleData(referencedFields(detail.layout, sel), imageFields(detail.layout, sel));
+    const data = sampleData(referencedFields(detail.layout, sel, detail.params), imageFields(detail.layout, sel));
     const label: Record<string, unknown> = option ? { data, option } : { data };
     (async () => {
       setState({ loading: true });

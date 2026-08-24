@@ -389,3 +389,91 @@ describe("CSV Import screen", () => {
     expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
   });
 });
+
+// #209: a `datetime` parameter is optional (blank means the server's render instant) but a value
+// that cannot be parsed must stop the run before it is submitted.
+describe("CSV Import screen: datetime parameters", () => {
+  const dtDetail = {
+    ...detail,
+    options: {},
+    params: { printed_on: { type: "datetime", description: "Print date" } },
+    layout: [{ type: "text", value: "{sku} {printed_on.short_date}" }],
+  };
+  const dtList = { templates: [{ ...list.templates[0], options: {}, params: dtDetail.params }] };
+
+  function stubDatetimeFetch() {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/templates/t1")) return json(dtDetail);
+      if (url.startsWith("/api/templates")) return json(dtList);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label"))
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) {
+        const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, unknown>;
+        if (body.mode === "download")
+          return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+        return json(summary);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    fetchMock = stubDatetimeFetch();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function loadCsv(printedOn: string) {
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: `sku,printed_on\n1,${printedOn}\n` } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+  }
+
+  it("leaves a blank datetime cell valid and submits it without a value", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    renderPage();
+    await loadCsv("");
+
+    const download = await screen.findByRole("button", { name: /download/i });
+    expect(download).not.toBeDisabled();
+
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    expect(body.labels[0].data.printed_on).toBe("");
+  });
+
+  it("accepts a well-formed datetime cell", async () => {
+    renderPage();
+    await loadCsv("2026-08-19");
+    expect(await screen.findByRole("button", { name: /download/i })).not.toBeDisabled();
+  });
+
+  it("flags an unparseable datetime cell and blocks the run", async () => {
+    renderPage();
+    await loadCsv("not a date");
+
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).toBeDisabled());
+    fireEvent.click(download);
+    expect(countCalls("/api/batch")).toBe(0);
+  });
+
+  it("flags a datetime cell that is well-shaped but not a real date", async () => {
+    renderPage();
+    await loadCsv("2026-02-30");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
+    );
+  });
+});

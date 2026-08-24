@@ -1,5 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { referencedFields, referencedVariables, defaultOptions, imageFields, multilineFields, singleLineTextFields, reconcileRowOptions } from "./templateFields";
+import {
+  referencedFields,
+  referencedVariables,
+  defaultOptions,
+  imageFields,
+  multilineFields,
+  singleLineTextFields,
+  reconcileRowOptions,
+  hasServerDefault,
+  datetimeCellError,
+  initialParamValues,
+} from "./templateFields";
 import type { LayoutItem, Options } from "../api/types";
 
 const layout: LayoutItem[] = [
@@ -131,5 +142,78 @@ describe("referencedFields datetime exclusion", () => {
     expect(f).not.toContain("short_date");
     expect(f).toContain("datetimefoo"); // only exact "datetime" and the "datetime." prefix are excluded
     expect(f).toContain("product_id");
+  });
+
+  it("excludes declared datetime parameter namespaces ({p} and {p.*})", () => {
+    const items: LayoutItem[] = [
+      { type: "text", value: "{printed_on} {printed_on.short_date} {title}" },
+    ];
+    const params = {
+      printed_on: { type: "datetime" as const },
+    };
+    const f = referencedFields(items, {}, params);
+    expect(f).toEqual(["title"]);
+    expect(f).not.toContain("printed_on");
+    expect(f).not.toContain("printed_on.short_date");
+  });
+});
+
+describe("hasServerDefault", () => {
+  it("returns true for datetime, boolean, enum with values, and spec with default", () => {
+    expect(hasServerDefault({ type: "datetime" })).toBe(true);
+    expect(hasServerDefault({ type: "datetime", time: true })).toBe(true);
+    expect(hasServerDefault({ type: "boolean" })).toBe(true);
+    expect(hasServerDefault({ type: "enum", values: ["a", "b"] })).toBe(true);
+    expect(hasServerDefault({ type: "string", default: "hello" })).toBe(true);
+    expect(hasServerDefault({ type: "string" })).toBe(false);
+    expect(hasServerDefault({ type: "integer" })).toBe(false);
+  });
+});
+
+describe("datetimeCellError", () => {
+  it("accepts blank values", () => {
+    expect(datetimeCellError("")).toBeNull();
+    expect(datetimeCellError("   ")).toBeNull();
+  });
+
+  it("accepts valid date and date-time formats", () => {
+    expect(datetimeCellError("2026-08-19")).toBeNull();
+    expect(datetimeCellError("2026-08-19T14:30")).toBeNull();
+    expect(datetimeCellError("2026-08-19T14:30:45")).toBeNull();
+    expect(datetimeCellError("2026-08-19T14:30:00Z")).toBeNull();
+    expect(datetimeCellError("2026-08-19T14:30:00+02:00")).toBeNull();
+    expect(datetimeCellError("2026-08-19T14:30:00-05:00")).toBeNull();
+  });
+
+  it("rejects non-matching formats", () => {
+    expect(datetimeCellError("yesterday")).not.toBeNull();
+    expect(datetimeCellError("08/19/2026")).not.toBeNull();
+    expect(datetimeCellError("2026-8-19")).not.toBeNull();
+  });
+
+  it("rejects invalid calendar values", () => {
+    expect(datetimeCellError("2026-02-29")).not.toBeNull(); // 2026 is not a leap year
+    expect(datetimeCellError("2024-02-29")).toBeNull();    // 2024 is a leap year
+    expect(datetimeCellError("2026-04-31")).not.toBeNull(); // April has 30 days
+    expect(datetimeCellError("2026-13-01")).not.toBeNull(); // Month 13
+    expect(datetimeCellError("2026-08-19T25:00")).not.toBeNull(); // Hour 25
+    expect(datetimeCellError("2026-08-19T14:60")).not.toBeNull(); // Min 60
+  });
+});
+
+describe("initialParamValues", () => {
+  it("seeds browser-local date/time strings for datetime params", () => {
+    const fixedNow = new Date(2026, 7, 19, 14, 30, 0); // month 7 is August (0-indexed)
+    const params = {
+      p_date: { type: "datetime" as const },
+      p_datetime: { type: "datetime" as const, time: true },
+      p_str: { type: "string" as const, default: "foo" },
+      p_bool: { type: "boolean" as const },
+    };
+    const values = initialParamValues(params, fixedNow);
+    expect(values.p_date).toBe("2026-08-19");
+    expect(values.p_datetime).toBe("2026-08-19T14:30");
+    expect(values.p_str).toBe("foo");
+    expect(values.p_bool).toBe(false);
   });
 });

@@ -120,6 +120,9 @@ pub enum ParamType {
     Enum {
         values: Vec<String>,
     },
+    Datetime {
+        time: bool,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]

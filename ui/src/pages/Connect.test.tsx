@@ -120,3 +120,58 @@ describe("Connect", () => {
     expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
   });
 });
+
+// #209: the connector grid applies the same datetime cell rule as the CSV grid. A materialized row
+// leaves the parameter blank, which is valid; an edited cell that cannot be parsed blocks the run.
+describe("Connect: datetime parameters", () => {
+  const dtDetail = {
+    ...templateDetail,
+    params: { printed_on: { type: "datetime", description: "Print date" } },
+    layout: [{ type: "text", value: "{name} {printed_on.short_date}" }],
+  };
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+    const base = stub();
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url === "/api/templates/tpl") return json(dtDetail);
+      return base(input, init);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+  // The grid renders the datetime column as a plain text cell, so an edit goes through the same
+  // double-click editor every other data field uses.
+  const editPrintedOn = async (value: string) => {
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    fireEvent.doubleClick(within(grid).getAllByRole("gridcell")[2]);
+    const input = (await screen.findByLabelText("edit printed_on")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value } });
+    fireEvent.blur(input);
+  };
+
+  it("materializes rows with a blank datetime and leaves the run enabled", async () => {
+    renderConnect();
+    await browseSelectMaterialize();
+    expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
+  });
+
+  it("blocks the run when a datetime cell cannot be parsed, and unblocks when corrected", async () => {
+    renderConnect();
+    await browseSelectMaterialize();
+
+    await editPrintedOn("not a date");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
+    );
+
+    await editPrintedOn("2026-08-19");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled(),
+    );
+  });
+});

@@ -1334,6 +1334,132 @@ mod http_tests {
         assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n", "expected PNG magic bytes");
     }
 
+    /// #209: the datetime parameter's HTTP contract. A render-level test cannot see the status
+    /// code or `details.reason`, and those are what a caller switches on.
+    #[tokio::test]
+    async fn render_label_datetime_param_defaults_and_overrides() {
+        for data in [
+            json!({ "message": "Hi" }),
+            json!({ "message": "Hi", "printed_on": "" }),
+            json!({ "message": "Hi", "printed_on": null }),
+            json!({ "message": "Hi", "printed_on": "2026-08-19" }),
+            json!({ "message": "Hi", "printed_on": "2026-08-19T14:30" }),
+            json!({ "message": "Hi", "printed_on": "2026-08-19T14:30:00" }),
+            json!({ "message": "Hi", "printed_on": "2026-08-19T23:15:00+02:00" }),
+            json!({ "message": "Hi", "printed_on": "2026-08-19T23:15:00Z" }),
+        ] {
+            let payload = json!({ "template": "brother_24mm_printed_on", "data": data });
+            let response = build_app()
+                .oneshot(json_req(
+                    "POST",
+                    "/api/render/label?format=png",
+                    payload.to_string(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "{data} should render; got {:?}",
+                json_response(response).await
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn render_label_datetime_param_rejects_unparseable_values() {
+        for bad in [
+            json!("yesterday"),
+            json!("19-08-2026"),
+            json!("2026-02-30"),
+            json!(20260819),
+            json!(true),
+            json!(["2026-08-19"]),
+        ] {
+            let payload = json!({
+                "template": "brother_24mm_printed_on",
+                "data": { "message": "Hi", "printed_on": bad }
+            });
+            let response = build_app()
+                .oneshot(json_req(
+                    "POST",
+                    "/api/render/label?format=png",
+                    payload.to_string(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "{bad} should be refused"
+            );
+            let body = json_response(response).await;
+            assert_eq!(body["error"]["code"], "InvalidRequest");
+            assert_eq!(body["error"]["details"]["reason"], "datetime_param_invalid");
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("printed_on"),
+                "message should name the parameter: {body}"
+            );
+        }
+    }
+
+    /// A batch is all-or-nothing: the bad label is named by index and no ZIP comes back.
+    #[tokio::test]
+    async fn batch_datetime_param_failure_names_its_label_and_returns_no_artifact() {
+        let payload = json!({
+            "template": "brother_24mm_printed_on",
+            "mode": "download",
+            "labels": [
+                { "data": { "message": "one" } },
+                { "data": { "message": "two", "printed_on": "not a date" } },
+                { "data": { "message": "three", "printed_on": "2026-08-19" } }
+            ]
+        });
+        let response = build_app()
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"]
+            .as_array()
+            .expect("failures array");
+        assert_eq!(
+            failures.len(),
+            1,
+            "only the second label is invalid: {body}"
+        );
+        assert_eq!(failures[0]["index"], 1);
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(failures[0]["reason"], "datetime_param_invalid");
+    }
+
+    /// The template advertises `message` and not the datetime parameter or its namespace: the
+    /// caller supplies the first and never has to supply the second.
+    #[tokio::test]
+    async fn template_detail_reports_a_datetime_param_and_not_its_namespace() {
+        let response = build_app()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/brother_24mm_printed_on")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+        assert_eq!(body["params"]["printed_on"]["type"], "datetime");
+        assert_eq!(
+            body["params"]["printed_on"]["time"], false,
+            "time is always published, so the form never has to guess: {body}"
+        );
+    }
+
     #[tokio::test]
     async fn batch_single_download_returns_zip() {
         let app = build_app();

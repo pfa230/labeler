@@ -75,6 +75,7 @@ reasons! {
     VariableKeyInvalid => "variable_key_invalid",
     SettingValueInvalid => "setting_value_invalid",
     DatetimePatternInvalid => "datetime_pattern_invalid",
+    DatetimeParamInvalid => "datetime_param_invalid",
     ConnectorUnknown => "connector_unknown",
     ConnectionConnectorMissing => "connection_connector_missing",
     ConnectionTransformInvalid => "connection_transform_invalid",

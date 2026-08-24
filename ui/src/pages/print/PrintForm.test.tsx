@@ -244,4 +244,22 @@ describe("PrintForm printer preselect", () => {
     await waitFor(() => expect(countCalls("/api/printers")).toBeGreaterThan(1));
     expect(select.value).toBe("");
   });
+
+  it("seeds datetime parameters and allows submission without manual entry", async () => {
+    fetchMock = stubFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    const dtTemplate: TemplateDetail = {
+      ...tape,
+      params: {
+        printed_on: { type: "datetime", description: "Print Date" },
+      },
+      layout: [{ type: "text", value: "{printed_on}" }],
+    };
+    renderForm(dtTemplate);
+    const input = (await screen.findByLabelText("Print Date")) as HTMLInputElement;
+    expect(input.value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+
+    const downloadBtn = screen.getByRole("button", { name: /^download$/i });
+    expect(downloadBtn).not.toBeDisabled();
+  });
 });

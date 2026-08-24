@@ -179,4 +179,17 @@ describe("FieldForm", () => {
     await screen.findByLabelText("body");
     expect(screen.queryByText(/shows only the first line/i)).not.toBeInTheDocument();
   });
+
+  it("renders a date input for declared datetime parameter", async () => {
+    const detail: TemplateDetail = {
+      ...single,
+      params: {
+        printed_on: { type: "datetime", description: "Print Date" },
+      },
+      layout: [{ type: "text", value: "{printed_on}" }],
+    };
+    renderForm(detail, singleValue);
+    const input = (await screen.findByLabelText("Print Date")) as HTMLInputElement;
+    expect(input.type).toBe("date");
+  });
 });

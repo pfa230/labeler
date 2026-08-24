@@ -12,7 +12,8 @@ export type ParamType =
   | "integer"
   | "number"
   | "boolean"
-  | "enum";
+  | "enum"
+  | "datetime";
 
 export type ParamValue = string | number | boolean;
 
@@ -23,6 +24,7 @@ export interface ParamSpec {
   default?: ParamValue;
   min?: number;
   max?: number;
+  time?: boolean;
   description?: string;
 }
 
