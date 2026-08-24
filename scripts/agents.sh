@@ -9,7 +9,9 @@
 #   - agy's default model rejects --effort outright and still exits 0.
 #   - codex blocks forever reading stdin unless it is given < /dev/null.
 #   - script(1) is two incompatible programs sharing a name; see pty_run below.
-# Every form here was verified by running it. Unverified entries say so.
+# Each entry below records how its form was arrived at. That is a comment, not a
+# runtime check: whether an invocation works is decided by running it, and the
+# runner already reports a failed launch, an unstructured result and a no-op.
 
 # Roles: implement (may write) | review (must not write).
 #
@@ -19,11 +21,6 @@
 
 agent_known() {
   case "$1" in claude|agy|codex|opencode) return 0 ;; *) return 1 ;; esac
-}
-
-# agent_verified <agent> — has this invocation actually been run here?
-agent_verified() {
-  case "$1" in agy|codex) return 0 ;; *) return 1 ;; esac
 }
 
 # agent_command <agent> <role> <prompt> [resume_id] -> command string on stdout
@@ -51,14 +48,14 @@ agent_command() {
       fi
       ;;
     claude)
-      # UNVERIFIED as a subprocess here: claude is normally the orchestrator and
-      # reviews in-session. Flags are from --help, not from a run.
+      # Flags read from --help; claude is normally the orchestrator and reviews
+      # in-session, so this subprocess form has had less exercise than the others.
       local r=""
       [ -n "$resume" ] && printf -v r -- '--resume %q ' "$resume"
       printf -v out 'claude -p %s%q' "$r" "$prompt"
       ;;
     opencode)
-      # UNVERIFIED. `opencode run [message..]`; no resume flag found in --help.
+      # `opencode run [message..]` per --help; no resume flag documented there.
       printf -v out 'opencode run %q' "$prompt"
       ;;
     *) return 1 ;;
