@@ -96,7 +96,7 @@ The gate applies to all of them equally. It is a committed git pre-commit hook p
 CI, judging files rather than which agent produced them. Enable it once per clone:
 
 ```bash
-./scripts/setup-hooks.sh
+.workflow/setup-hooks.sh
 ```
 
 ### Checking on a change

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Run one stage of a change on a named agent (#224).
 #
-#   scripts/run-stage.sh <role> <agent> <change> [--resume] [extra prompt...]
+#   .workflow/run-stage.sh <role> <agent> <change> [--resume] [extra prompt...]
 #
 #   role   implement | review
-#   agent  see scripts/agents.sh
+#   agent  see .workflow/agents.sh
 #
 # The pairing is the point: an implementer and a reviewer that are different agents,
 # expressed at dispatch rather than left to whoever remembers. /apply drives both.
@@ -25,7 +25,7 @@ extra="$*"
 case "$role" in implement|review) ;; *) echo "role must be implement or review: $role" >&2; exit 2 ;; esac
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
-. "$root/scripts/agents.sh"
+. "$root/.workflow/agents.sh"
 
 agent_known "$agent" || { echo "unknown agent: $agent" >&2; exit 2; }
 command -v "$agent" >/dev/null 2>&1 || { echo "$agent is not on PATH; nothing would run." >&2; exit 2; }
@@ -37,9 +37,9 @@ wt="$root/.worktrees/$issue"
 [ -d "$wt/openspec/changes/$change" ] || { echo "no change '$change' in $wt" >&2; exit 2; }
 
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
-if [ "$role" = "implement" ] && ! "$root/scripts/review-gate-check.sh" "$wt" src/_probe >/dev/null 2>&1; then
+if [ "$role" = "implement" ] && ! "$root/.workflow/review-gate-check.sh" "$wt" src/_probe >/dev/null 2>&1; then
   echo "review gate refuses this change; not starting:" >&2
-  "$root/scripts/review-gate-check.sh" "$wt" src/_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
+  "$root/.workflow/review-gate-check.sh" "$wt" src/_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
   exit 1
 fi
 

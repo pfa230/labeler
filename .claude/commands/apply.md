@@ -12,7 +12,7 @@ and that is the entire reason this command takes two names.
 
 1. Implement:
 
-       scripts/run-stage.sh implement <implementer> <change>
+       .workflow/run-stage.sh implement <implementer> <change>
 
    Run it in the background; it takes many minutes. Report only the status line, the files-touched
    count and the tail it prints. Do NOT read the log in full: it runs to thousands of lines and
@@ -24,7 +24,7 @@ and that is the entire reason this command takes two names.
 
 2. Review:
 
-       scripts/run-stage.sh review <reviewer> <change>
+       .workflow/run-stage.sh review <reviewer> <change>
 
    Same output discipline. Exit 5 means the reviewer edited files, which invalidates the review;
    report it rather than accepting the result.
@@ -32,7 +32,7 @@ and that is the entire reason this command takes two names.
 3. Loop. If the review raises meaningful findings, send them back to the **implementer**, resuming
    its session so it keeps what it built:
 
-       scripts/run-stage.sh implement <implementer> <change> --resume "<the findings>"
+       .workflow/run-stage.sh implement <implementer> <change> --resume "<the findings>"
 
    Then re-review. Repeat until a pass surfaces nothing meaningful. The reviewer never fixes what it
    found: that would produce a delta nobody reviewed, and the loop would end only by silently
