@@ -77,7 +77,7 @@ describe("FormatBadge", () => {
   // assertion would still pass.
   it("binds a single to the accent tokens", () => {
     const el = badge(SINGLE);
-    expect(el.style.color).toBe("var(--accent-deep)");
+    expect(el.style.color).toBe("var(--accent)");
     expect(el.style.background).toBe("var(--accent-soft)");
   });
 

@@ -365,7 +365,7 @@ function Composer({
           <PreviewPane name={detail.name} format={isSheet ? "sheet" : "single"} preview={preview} />
 
           <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t py-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
-            <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer || stale} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>Print</button>
+            <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer || stale} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Print</button>
             <button type="button" onClick={() => run("download")} disabled={busy || overCap || hasErrors || stale} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Download</button>
             <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
             {overCap && <span style={{ color: "var(--bad)" }}>over the {MAX_BATCH_LABELS}-label limit</span>}

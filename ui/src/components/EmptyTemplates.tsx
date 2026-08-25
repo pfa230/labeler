@@ -25,7 +25,7 @@ export function EmptyTemplates({ context }: { context?: string }) {
         <Link
           to="/templates/catalog"
           className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
-          style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+          style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
         >
           Browse the catalog
         </Link>

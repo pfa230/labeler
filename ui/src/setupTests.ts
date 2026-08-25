@@ -145,5 +145,5 @@ export function iconGeometry(badge: HTMLElement): string[] {
 // app is applied; it does not chase an inherited or class-applied colour.
 export function noBadgeStyling(el: HTMLElement): boolean {
   const style = el.getAttribute("style") ?? "";
-  return !/--info\b|--info-soft\b|--accent-deep\b|--accent-soft\b/.test(style);
+  return !/--info\b|--info-soft\b|--accent\b|--accent-soft\b/.test(style);
 }

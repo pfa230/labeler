@@ -556,7 +556,7 @@ function CsvEditor({
               onClick={() => run("print")}
               disabled={busy || overCap || hasErrors || !printer || stale}
               className={buttonBase}
-              style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+              style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
             >
               Print
             </button>
