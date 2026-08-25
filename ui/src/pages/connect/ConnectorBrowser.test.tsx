@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { ConnectorBrowser } from "./ConnectorBrowser";
 import type { ConnectorSchema, SelectedRow } from "../../api/connectors";
@@ -206,13 +206,229 @@ describe("ConnectorBrowser", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove tag cables" }));
     expect(screen.queryByText("cables")).not.toBeInTheDocument();
 
-    // Clear filters
-    fireEvent.click(screen.getByRole("button", { name: /clear filters/i }));
+    // Clear all filters
+    fireEvent.click(screen.getByRole("button", { name: /clear all filters/i }));
     await waitFor(() => {
       const last = fetchMock.mock.calls.at(-1)!;
       expect(JSON.parse((last[1]!.body) as string).filters).toBeUndefined();
     });
     expect(screen.queryByText("tools")).not.toBeInTheDocument();
+  });
+
+  describe("Filter Scope Split and Clear All Filters", () => {
+    it("presents source filter group with legend and scope description, and refine group caption and description", async () => {
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [
+          { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
+        ], next_cursor: null, has_more: false, count: 1 })));
+
+      render(<Harness />);
+      await screen.findByText("Drill");
+
+      // Source group fieldset, legend, and description
+      const fieldset = screen.getByRole("group", { name: "Source filters" });
+      expect(fieldset.tagName.toLowerCase()).toBe("fieldset");
+      const legend = within(fieldset).getByText("Source filters");
+      expect(legend.tagName.toLowerCase()).toBe("legend");
+      expect(within(fieldset).getByLabelText("Search")).toBeInTheDocument();
+      expect(within(fieldset).getByText("Queries the connection and restricts the whole result. Takes effect on Apply.")).toBeInTheDocument();
+
+      // Refine group caption and description
+      expect(screen.getByText("Refine loaded rows")).toBeInTheDocument();
+      expect(screen.getByText("Narrow the rows already loaded, as you type.")).toBeInTheDocument();
+    });
+
+    it("leaves Clear all filters hidden after typing and deleting in a source filter input", async () => {
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [
+          { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
+        ], next_cursor: null, has_more: false, count: 1 })));
+
+      render(<Harness />);
+      await screen.findByText("Drill");
+
+      expect(screen.queryByRole("button", { name: "Clear all filters" })).not.toBeInTheDocument();
+
+      // Type into Search draft -> Clear all filters appears
+      fireEvent.change(screen.getByLabelText("Search"), { target: { value: "a" } });
+      expect(screen.getByRole("button", { name: "Clear all filters" })).toBeInTheDocument();
+
+      // Delete the character -> filterDraft becomes { q: "" }, Clear all filters hides
+      fireEvent.change(screen.getByLabelText("Search"), { target: { value: "" } });
+      expect(screen.queryByRole("button", { name: "Clear all filters" })).not.toBeInTheDocument();
+    });
+
+    it("associates each source filter input and column filter input with its group scope description via accessible description", async () => {
+      const schemaWithTags: ConnectorSchema = {
+        version: "homebox-1",
+        resources: [
+          {
+            id: "entities",
+            label: "Items",
+            view: "table",
+            columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap" }],
+            filters: [
+              { key: "q", label: "Search", ty: "search" },
+              { key: "tag", label: "Tags", ty: "label_id" },
+            ],
+          },
+        ],
+        relationships: [],
+      };
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [
+          { id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } },
+        ], next_cursor: null, has_more: false, count: 1 })));
+
+      render(<ConnectorBrowser connectionId="c1" schema={schemaWithTags} selected={[]} onSelectedChange={vi.fn()} />);
+      await screen.findByText("Drill");
+
+      const searchInput = screen.getByLabelText("Search");
+      const tagInput = screen.getByLabelText("Tags");
+      const nameFilter = screen.getByLabelText("Filter by Name");
+
+      expect(searchInput).toHaveAccessibleDescription("Queries the connection and restricts the whole result. Takes effect on Apply.");
+      expect(tagInput).toHaveAccessibleDescription("Queries the connection and restricts the whole result. Takes effect on Apply.");
+      expect(nameFilter).toHaveAccessibleDescription("Narrow the rows already loaded, as you type.");
+    });
+
+    it("renders no source filter group and no source description for filterless resources", async () => {
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [
+          { id: { resource: "locations", key: "l1" }, cells: { name: "Garage", itemCount: 5 } },
+        ], next_cursor: null, has_more: false, count: 1 })));
+
+      render(<Harness />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "Locations" })).toBeInTheDocument());
+      fireEvent.click(screen.getByRole("button", { name: "Locations" }));
+      await screen.findByText("Garage");
+
+      expect(screen.queryByText("Source filters")).not.toBeInTheDocument();
+      expect(screen.queryByText("Queries the connection and restricts the whole result. Takes effect on Apply.")).not.toBeInTheDocument();
+      // Refine group is still present
+      expect(screen.getByText("Refine loaded rows")).toBeInTheDocument();
+    });
+
+    it("clears both source and column filters with Clear all filters", async () => {
+      const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (_input, init) => {
+        const body = init?.body ? JSON.parse(init.body as string) : {};
+        if (body.filters?.q) {
+          return json({
+            rows: [
+              { id: { resource: "entities", key: "e1" }, cells: { name: "Drill 1", assetId: "000-001" } },
+              { id: { resource: "entities", key: "e2" }, cells: { name: "Drill 2", assetId: "000-002" } },
+            ],
+            next_cursor: null,
+            has_more: false,
+            count: 2,
+          });
+        }
+        return json({
+          rows: [
+            { id: { resource: "entities", key: "e1" }, cells: { name: "Drill 1", assetId: "000-001" } },
+            { id: { resource: "entities", key: "e2" }, cells: { name: "Drill 2", assetId: "000-002" } },
+            { id: { resource: "entities", key: "e3" }, cells: { name: "Saw", assetId: "000-003" } },
+          ],
+          next_cursor: null,
+          has_more: false,
+          count: 3,
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<Harness />);
+      await screen.findByText("Drill 1");
+
+      // Apply source filter
+      fireEvent.change(screen.getByLabelText("Search"), { target: { value: "Drill" } });
+      fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+      await screen.findByText("Drill 2");
+      expect(screen.queryByText("Saw")).not.toBeInTheDocument();
+
+      // Type column filter to narrow to Drill 1
+      fireEvent.change(screen.getByLabelText("Filter by Name"), { target: { value: "1" } });
+      await waitFor(() => expect(screen.queryByText("Drill 2")).not.toBeInTheDocument());
+      expect(screen.getByText("Drill 1")).toBeInTheDocument();
+
+      // Clear all filters button should be visible in utility cluster
+      const clearBtn = screen.getByRole("button", { name: "Clear all filters" });
+      expect(clearBtn).toBeInTheDocument();
+      fireEvent.click(clearBtn);
+
+      // Both filters cleared, full list restored
+      await screen.findByText("Saw");
+      expect(screen.getByText("Drill 1")).toBeInTheDocument();
+      expect(screen.getByText("Drill 2")).toBeInTheDocument();
+      expect(screen.getByLabelText("Search")).toHaveValue("");
+      expect(screen.getByLabelText("Filter by Name")).toHaveValue("");
+    });
+
+    it("offers Clear all filters when only column filters are set", async () => {
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [
+          { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
+          { id: { resource: "entities", key: "e2" }, cells: { name: "Saw", assetId: "000-002" } },
+        ], next_cursor: null, has_more: false, count: 2 })));
+
+      render(<Harness />);
+      await screen.findByText("Drill");
+
+      expect(screen.queryByRole("button", { name: "Clear all filters" })).not.toBeInTheDocument();
+
+      fireEvent.change(screen.getByLabelText("Filter by Name"), { target: { value: "Saw" } });
+      await waitFor(() => expect(screen.queryByText("Drill")).not.toBeInTheDocument());
+
+      const clearBtn = screen.getByRole("button", { name: "Clear all filters" });
+      expect(clearBtn).toBeInTheDocument();
+      fireEvent.click(clearBtn);
+
+      await screen.findByText("Drill");
+      expect(screen.getByLabelText("Filter by Name")).toHaveValue("");
+      expect(screen.queryByRole("button", { name: "Clear all filters" })).not.toBeInTheDocument();
+    });
+
+    it("chains server-side filter and column filter", async () => {
+      const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (_input, init) => {
+        const body = init?.body ? JSON.parse(init.body as string) : {};
+        if (body.filters?.q === "power") {
+          return json({
+            rows: [
+              { id: { resource: "entities", key: "e1" }, cells: { name: "Power Drill", assetId: "A1" } },
+              { id: { resource: "entities", key: "e2" }, cells: { name: "Power Saw", assetId: "A2" } },
+            ],
+            next_cursor: null,
+            has_more: false,
+            count: 2,
+          });
+        }
+        return json({
+          rows: [
+            { id: { resource: "entities", key: "e1" }, cells: { name: "Power Drill", assetId: "A1" } },
+            { id: { resource: "entities", key: "e2" }, cells: { name: "Power Saw", assetId: "A2" } },
+            { id: { resource: "entities", key: "e3" }, cells: { name: "Hand Saw", assetId: "A3" } },
+          ],
+          next_cursor: null,
+          has_more: false,
+          count: 3,
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<Harness />);
+      await screen.findByText("Hand Saw");
+
+      // 1. Source filter "power"
+      fireEvent.change(screen.getByLabelText("Search"), { target: { value: "power" } });
+      fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+      await screen.findByText("Power Drill");
+      expect(screen.queryByText("Hand Saw")).not.toBeInTheDocument();
+      expect(screen.getByText("Power Saw")).toBeInTheDocument();
+
+      // 2. Column filter "Drill"
+      fireEvent.change(screen.getByLabelText("Filter by Name"), { target: { value: "Drill" } });
+      await waitFor(() => expect(screen.queryByText("Power Saw")).not.toBeInTheDocument());
+      expect(screen.getByText("Power Drill")).toBeInTheDocument();
+    });
   });
 
   describe("Column Visibility Picker", () => {
