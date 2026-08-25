@@ -9,7 +9,7 @@ import type { TemplateFormat } from "../api/types";
 // (pages/Templates.tsx:63), which is exactly what the single chip is filled with, so a fill-only
 // chip vanishes the moment a card is selected. See ADR-0066.
 const TOKENS = {
-  single: { fg: "var(--accent-deep)", fill: "var(--accent-soft)" },
+  single: { fg: "var(--accent)", fill: "var(--accent-soft)" },
   sheet: { fg: "var(--info)", fill: "var(--info-soft)" },
 } as const;
 

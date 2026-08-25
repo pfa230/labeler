@@ -59,7 +59,7 @@ export function Login() {
           type="submit"
           disabled={login.isPending}
           className={buttonBase}
-          style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+          style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
         >
           Sign in
         </button>

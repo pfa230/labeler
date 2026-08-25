@@ -242,9 +242,9 @@ describe("Template detail", () => {
     // The same badge the grid renders, not just the same word: without the icon and the tokens this
     // page could keep an iconless pill and the sheet parity assertions would still pass.
     const badge = document.querySelector<HTMLElement>('[data-format="single"]')!;
-    expect(badge.style.color).toBe("var(--accent-deep)");
+    expect(badge.style.color).toBe("var(--accent)");
     expect(badge.style.background).toBe("var(--accent-soft)");
-    expect(badge.style.borderColor).toBe("var(--accent-deep)");
+    expect(badge.style.borderColor).toBe("var(--accent)");
     expect(iconGeometry(badge)).toEqual(SINGLE_ICON);
     expect(document.querySelectorAll("[data-format]")).toHaveLength(1);
     const link = screen.getByRole("link", { name: /use to print/i });

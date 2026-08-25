@@ -4,13 +4,13 @@
 
 :root {
   --paper: #faf8f3; --surface: #ffffff; --ink: #1c1a17; --muted: #6f6a60; --faint: #a39e92;
-  --border: #e7e2d8; --accent: #e4572e; --accent-soft: #fbe9e2; --good: #3f7d3a; --bad: #c2401c;
-  --accent-deep: #b8420f; --info: #2f6f7d; --info-soft: #dfeef1;
+  --border: #e7e2d8; --accent: #b8420f; --accent-soft: #fbe9e2; --accent-ink: #ffffff; --good: #3f7d3a; --bad: #c2401c;
+  --info: #2f6f7d; --info-soft: #dfeef1;
 }
 .dark {
   --paper: #16140f; --surface: #1f1c16; --ink: #f2efe7; --muted: #b8b2a4; --faint: #8a8478;
-  --border: #2c2820; --accent: #f0784f; --accent-soft: #3a241c; --good: #7fb074; --bad: #e6855f;
-  --accent-deep: #f0784f; --info: #6fb3c4; --info-soft: #17313a;
+  --border: #2c2820; --accent: #f0784f; --accent-soft: #3a241c; --accent-ink: #16140f; --good: #7fb074; --bad: #e6855f;
+  --info: #6fb3c4; --info-soft: #17313a;
 }
 html, body, #root { height: 100%; }
 body {
@@ -24,7 +24,25 @@ body {
 
 /* SVAR grid (issue #170): bounded scroll viewport, its .wx-grid collapses to zero height otherwise.
    --wx-* maps onto our tokens instead of using the vendor's <Willow> wrapper, which fetches fonts
-   from a CDN we do not load. Scoped to this class so the vendor stylesheet cannot leak elsewhere. */
+   from a CDN we do not load. The vendor stylesheet itself is imported globally
+   (ConnectorBrowser.tsx:3); what this class scopes is our token mapping, so those values resolve
+   only inside the grid and cannot bleed into the rest of the app.
+
+   This is a complete mapping of the vendor's tokens, so some entries below are inert in this app,
+   including four that name an accent token (#210). --wx-table-select-background and
+   --wx-table-select-border style .wx-selected, which the grid only sets when its own row selection
+   is on; ConnectorBrowser passes select={false} (selection here is our own checkbox column), so that
+   class never appears. --wx-table-drag-over-background styles .wx-inactive. --wx-background-hover
+   styles only .wx-icon.wxi-close:hover, and no column configured here mounts that icon; the imported
+   stylesheet has no .wx-row:hover rule, so rows never tint on hover. Verified against the rendered
+   DOM with the grid populated, the column picker open, a filter typed and rows clicked. They are kept
+   rather than deleted so that enabling a vendor feature later inherits our palette instead of
+   silently falling back to the vendor's greys.
+
+   --wx-color-primary IS live: the vendor paints the focused cell's 1px outline and the column-resize
+   grip with it, so those two follow --accent. A focused body cell sits over --surface, which
+   theme.test.ts asserts at 3:1; a focused header cell and the grip sit over --paper (the header
+   background below), where the accent is already held to 4.5:1 as a text foreground. */
 .connector-grid-viewport {
   height: 60vh; min-height: 360px;
   --wx-background: var(--surface); --wx-background-alt: var(--paper); --wx-background-hover: var(--accent-soft);

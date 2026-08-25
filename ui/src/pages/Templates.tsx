@@ -327,7 +327,7 @@ function MoveDialog({
                 type="submit"
                 disabled={submitting || !groupInput.trim()}
                 className="rounded-md px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2 disabled:opacity-50"
-                style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+                style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
               >
                 {submitting ? "Moving…" : "Move"}
               </button>
@@ -449,7 +449,7 @@ export function Templates() {
           <Link
             to="/templates/new"
             className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
-            style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+            style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
           >
             New template
           </Link>
@@ -464,7 +464,7 @@ export function Templates() {
           className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
           style={{
             background: selectedGroup.kind === "all" ? "var(--accent)" : "var(--surface)",
-            color: selectedGroup.kind === "all" ? "var(--accent-ink, #fff)" : "var(--ink)",
+            color: selectedGroup.kind === "all" ? "var(--accent-ink)" : "var(--ink)",
             border: "1px solid",
             borderColor: selectedGroup.kind === "all" ? "var(--accent)" : "var(--border)",
           }}
@@ -483,7 +483,7 @@ export function Templates() {
                 ? "var(--accent)"
                 : "var(--surface)",
               color: sameFilter(selectedGroup, { kind: "group", name: g })
-                ? "var(--accent-ink, #fff)"
+                ? "var(--accent-ink)"
                 : "var(--ink)",
               border: "1px solid",
               borderColor: sameFilter(selectedGroup, { kind: "group", name: g })
@@ -502,7 +502,7 @@ export function Templates() {
             className="rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2"
             style={{
               background: selectedGroup.kind === "ungrouped" ? "var(--accent)" : "var(--surface)",
-              color: selectedGroup.kind === "ungrouped" ? "var(--accent-ink, #fff)" : "var(--ink)",
+              color: selectedGroup.kind === "ungrouped" ? "var(--accent-ink)" : "var(--ink)",
               border: "1px solid",
               borderColor: selectedGroup.kind === "ungrouped" ? "var(--accent)" : "var(--border)",
             }}
@@ -588,7 +588,7 @@ export function Templates() {
             type="button"
             onClick={() => setMovingTemplateIds(Array.from(selectedIds))}
             className="rounded-md px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
-            style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+            style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
           >
             Move to…
           </button>
