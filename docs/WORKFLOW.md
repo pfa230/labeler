@@ -71,9 +71,20 @@ every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` 
 | `codex` | none needed | Used for reviews via `codex exec`, with the instructions piped in. |
 | `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Unverified. |
 
-Implementation runs on a second agent, so the model that writes the code is not the model that
-reviews it. That happens without arrangement: the stage is dispatched to `agy` and the diff comes back
-here to be reviewed. The transcript stays in a log rather than being read back, since a full agent
+Implementation and its review run on two named agents, given when the stage is started rather than
+decided later:
+
+```bash
+.workflow/apply.sh issue-186-pin-rust-toolchain agy codex
+```
+
+The first agent implements, the second reviews, and naming the same one twice is refused. The script
+owns the loop: findings return to the implementer, which resumes its session, and the reviewer
+re-checks, for up to three rounds. A change that has not converged by then stops for a person rather
+than looping; the reviewer's verdict is a `VERDICT:` line, so the decision to loop is read rather than
+inferred from prose. Findings go
+back to the implementer, which keeps the session it built in, and the reviewer re-checks; the reviewer
+never fixes what it found. Transcripts stay in logs rather than being read back, since a full agent
 transcript is thousands of lines of no interest to anyone.
 
 Its commits are gated the same as anyone's — `core.hooksPath` resolves inside a worktree, so
@@ -89,7 +100,7 @@ The gate applies to all of them equally. It is a committed git pre-commit hook p
 CI, judging files rather than which agent produced them. Enable it once per clone:
 
 ```bash
-./scripts/setup-hooks.sh
+.workflow/setup-hooks.sh
 ```
 
 ### Checking on a change

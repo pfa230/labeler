@@ -220,7 +220,7 @@ artifacts:
       invent a verdict. Drop to option 2. If that is also unavailable, STOP and tell
       the human. An unreviewed change does not proceed.
 
-      REVIEWER CONSTRAINTS:
+      REVIEWER CONSTRAINTS (these hold for the diff review too, see AGENTS.md):
       - Its only write is its own analysis. It MUST NOT edit the artifacts under
         review, source code, or anything else. Read-only inspection tools only.
       - It reads artifacts from disk (proposal.md, specs/, design.md) and relevant

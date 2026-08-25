@@ -60,10 +60,12 @@ because the review gates implementation and archive rewrites the main specs *aft
    **This is the only place a human enters the loop, and only on failure.** Two consecutive `REVISE`
    rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
    artifacts, and wait. On the converging path the loop runs unattended through to the merge.
-4. **Apply**, then the adversarial review of the *diff* below. `/opsx:apply` implements it here;
-   `scripts/apply-with-agy.sh issue-<N>-<slug>` hands it to agy instead, which is preferable because
-   it puts the implementation and its review on different models. That script keeps agy's transcript
-   in a log rather than in this context. Two different reviews: step 3
+4. **Apply and review the diff**, as a named pair:
+   `.workflow/apply.sh <change> <implementer> <reviewer>`, or `/apply` with the same arguments. It
+   runs both roles and the fix loop between them; `.workflow/run-stage.sh` runs a single stage. Prefer it over `/opsx:apply`: implementing here
+   means this session would have to review its own diff, and the pairing exists precisely so that
+   separation does not depend on remembering. Findings return to the implementer, which resumes its
+   session; the reviewer re-checks and never edits. Transcripts stay in logs, not in this context. Two different reviews: step 3
    judged the plan, this one judges the code. Do not skip it because tasks are checked.
 
    **Apply ends at implementation.** It does not commit, archive, sync deltas into
@@ -72,11 +74,11 @@ because the review gates implementation and archive rewrites the main specs *aft
    of redoing the work, so check one only after performing it, and never over a render-and-look step
    satisfied by a test that merely returned bytes. `openspec/config.yaml`
    (`operations.apply.guidance`) says the same to every agent.
-   The gate is `scripts/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
+   The gate is `.workflow/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
    to every agent equally: it judges files, not which tool produced them. It refuses a commit touching
    `src/` or `ui/src/` while the change's verdict has not passed, and refuses a review whose `AUTHOR:`
    and `REVIEWER:` match. `.claude/hooks/review-gate.sh` calls the same script at edit time as an
-   early signal for Claude Code only. Enable the hooks once per clone with `./scripts/setup-hooks.sh`.
+   early signal for Claude Code only. Enable the hooks once per clone with `.workflow/setup-hooks.sh`.
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
@@ -107,8 +109,16 @@ regeneration alone.
 
 After implementation, spin up a **separate adversarial code reviewer** briefed to find real problems,
 not to rubber-stamp. It audits the diff against the issue's acceptance criteria, correctness, edge
-cases, tests, and this file. Address every meaningful finding or justify with file:line evidence why
-it is not one. Re-review. Repeat until a pass surfaces no meaningful fixes.
+cases, tests, and this file.
+
+**The reviewer never edits.** Its only output is findings, exactly as in the plan review. They go back
+to whoever implemented, which fixes them; the reviewer then re-checks. That is what terminates the
+loop: every edit has an author and a different reviewer, and a re-check is not an edit. A reviewer
+that fixes what it found has produced a delta nobody reviewed, and the loop then ends only when
+someone silently accepts unreviewed work.
+
+The implementer addresses every meaningful finding, or justifies with file:line evidence why it is not
+one. Re-review. Repeat until a pass surfaces no meaningful fixes.
 
 Fluent code is not correct code: verify each finding against the actual code before accepting *or*
 dismissing it. When the reviewer is **codex**, cap at **5** passes absent an unresolved blocking

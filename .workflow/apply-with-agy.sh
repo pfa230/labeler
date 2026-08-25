@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the apply stage on agy, from Claude, without a human cd-ing anywhere.
 #
-#   scripts/apply-with-agy.sh <change-name> [extra prompt...]
+#   .workflow/apply-with-agy.sh <change-name> [extra prompt...]
 #
 # Claude orchestrates, agy implements, Claude reviews the resulting diff: the
 # implementer and the reviewer are different models by construction.
@@ -13,6 +13,12 @@
 set -uo pipefail
 
 change="${1:?change name required, e.g. issue-186-pin-rust-toolchain}"; shift || true
+
+# --fix resumes the conversation from the apply instead of starting a new one. A
+# review round corrects work agy still remembers; a fresh prompt makes it rebuild
+# that understanding from the diff, losing why it chose what it chose.
+resume_requested=0
+if [ "${1:-}" = "--fix" ]; then shift; resume_requested=1; fi
 extra="$*"
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
@@ -26,9 +32,9 @@ command -v agy >/dev/null 2>&1 || { echo "agy is not on PATH; nothing would run.
 
 # Refuse to start if the gate would refuse the commit anyway. Failing here beats
 # letting an agent write code that cannot land.
-if ! "$root/scripts/review-gate-check.sh" "$wt" src/_apply_probe >/dev/null 2>&1; then
+if ! "$root/.workflow/review-gate-check.sh" "$wt" src/_apply_probe >/dev/null 2>&1; then
   echo "review gate refuses this change; not starting apply:" >&2
-  "$root/scripts/review-gate-check.sh" "$wt" src/_apply_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
+  "$root/.workflow/review-gate-check.sh" "$wt" src/_apply_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
   exit 1
 fi
 
@@ -47,13 +53,23 @@ printf '%s started %s (pid %s)\n' "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$
 trap 'rm -f "$lock"' EXIT INT TERM
 
 log="$wt/.agy-apply.log"
+conv_file="$wt/.agy-conversation"
+resume=""
+if [ "$resume_requested" -eq 1 ]; then
+  [ -s "$conv_file" ] || { echo "--fix needs a previous apply; no conversation id at $conv_file" >&2; exit 2; }
+  printf -v resume -- '--conversation=%q' "$(cat "$conv_file")"
+fi
 # WORKFLOW form, not skill form. OpenSpec writes both for the Antigravity target:
 # .agent/skills/openspec-*/SKILL.md and .agent/workflows/opsx-*.md. Print mode
 # resolves the workflow; opsx-apply.md documents its own invocation as
 # "/opsx-apply add-auth". Sending the skill name silently resolves to nothing and
 # agy answers from its own documentation instead of working, which is what the
 # no-op detection below exists to catch.
-prompt="/opsx-apply $change. Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it, including the ones that say to render a label and look at it. $extra"
+if [ "$resume_requested" -eq 1 ]; then
+  prompt="Review findings on your implementation of $change. Fix each one, then stop. The same limits still hold: do not commit, do not archive, do not sync specs into openspec/specs/, do not move or delete the change folder, do not edit docs/SPEC.md. $extra"
+else
+  prompt="/opsx-apply $change. Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it, including the ones that say to render a label and look at it. $extra"
+fi
 
 # The prompt names the stage boundary in the imperative, and bluntly. `openspec/config.yaml`
 # already carried "Do not commit here" when agy, on 2026-08-24, committed, archived, synced the
@@ -78,7 +94,21 @@ prompt="/opsx-apply $change. Stop when the tasks are implemented. Do not commit.
 # flag swallows `--mode` as its prompt and the real prompt is left as an ignored
 # positional; agy now refuses that outright instead of running.
 timeout="${AGY_PRINT_TIMEOUT:-120m}"
-printf -v agy_cmd 'agy --mode accept-edits --effort high --print-timeout %q -p=%q' "$timeout" "$prompt"
+
+# --effort is deliberately absent. The default model rejects it outright:
+#   Error: invalid model selection (--model "" --effort "high"): --effort is not
+#   supported for the current model
+# and agy still exits 0 while doing nothing, so it fails as a silent no-op.
+#
+# --output-format json buys two things a prose transcript cannot: a `status` field,
+# so success stops being inferred from an exit code that is 0 even on that error,
+# and a `conversation_id`, which is what lets a fix round resume instead of starting
+# over.
+#
+# On a fix round $resume pins that conversation. agy keeps what it just built and
+# why it chose it; a fresh prompt would make it re-derive both from the diff.
+printf -v agy_cmd 'agy --mode accept-edits --print-timeout %q --output-format json %s -p=%q' \
+  "$timeout" "$resume" "$prompt"
 
 # script(1) is two incompatible programs with one name. util-linux is
 # `script [options] -c CMD FILE`; BSD/macOS is `script [options] FILE CMD ARGS...`
@@ -92,9 +122,23 @@ else
   run_pty() { script -q -e /dev/null "${BASH:-/bin/bash}" -c "$1"; }
 fi
 
+raw="$wt/.agy-apply.json"
 ( cd "$wt" && run_pty "$agy_cmd" ) \
-  2>&1 | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r' > "$log"
+  2>&1 | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r' > "$raw"
 status=$?
+
+# Pull the result object out of whatever the pty wrapper wrapped around it, then
+# keep the prose in the log the operator reads and the id where the next round
+# looks for it.
+json=$(grep -o '{"conversation_id".*}' "$raw" | tail -1 || true)
+if [ -n "$json" ]; then
+  printf '%s' "$json" | jq -r '.response // ""' > "$log"
+  printf '%s' "$json" | jq -r '.conversation_id // empty' > "$conv_file"
+  agy_status=$(printf '%s' "$json" | jq -r '.status // "UNKNOWN"')
+else
+  cp "$raw" "$log"
+  agy_status="NO_RESULT"
+fi
 
 # 127 is the pty shell failing to exec agy. Say so, because the tail below is
 # then the wrapper's own error and reads exactly like agy refusing the task.
@@ -104,6 +148,7 @@ fi
 
 echo "log: $log"
 echo "exit: $status"
+echo "agy status: $agy_status"
 
 # A clean exit is not success. agy answering a question about its own flags exits 0
 # having written nothing, and that read as a completed apply. Success is a changed
@@ -112,6 +157,12 @@ changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agy-a
 echo "files touched: $changed"
 echo "--- last 30 lines ---"
 tail -30 "$log"
+
+if [ "$agy_status" != "SUCCESS" ]; then
+  echo >&2
+  echo "agy did not report success (status: $agy_status). Raw result: $raw" >&2
+  exit 4
+fi
 
 if [ "$status" -eq 0 ] && [ "$changed" -eq 0 ]; then
   echo >&2
