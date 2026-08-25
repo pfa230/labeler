@@ -1,6 +1,6 @@
 ## Review Metadata
 
-- **Round**: <!-- 1, 2, ... After 2 consecutive REVISE rounds, escalate to the human. -->
+- **Round**: <!-- 1, 2, ... After 3 consecutive REVISE rounds, escalate to the human. -->
 - **Prior round**: <!-- none | one-line summary of the previous round's verdict -->
 <!-- CANONICAL FIELDS - machine-readable, each on its own line, exactly this format. -->
 <!-- Which agent wrote the artifacts under review, and which wrote this review. -->

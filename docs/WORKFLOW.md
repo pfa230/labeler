@@ -166,7 +166,7 @@ Four things the process refuses to let slide:
 ## Where it stops
 
 Stages are started by hand, but only one thing stops the work and needs a *decision*: a plan revised
-twice that still has not passed review.
+three times that still has not passed review.
 
 The change halts with nothing implemented, and the review and artifacts are surfaced for a decision.
 
