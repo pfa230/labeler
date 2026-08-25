@@ -118,7 +118,7 @@ function RawYamlSection({ id }: { id: string }) {
                   )
                 }
                 className="rounded-md px-3 py-2 text-sm font-medium"
-                style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+                style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
               >
                 Save
               </button>
@@ -202,7 +202,7 @@ export function TemplateDetail() {
           <Link
             to={`/print/${encodeURIComponent(detail.id)}`}
             className="rounded-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2"
-            style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+            style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
           >
             Use to print
           </Link>

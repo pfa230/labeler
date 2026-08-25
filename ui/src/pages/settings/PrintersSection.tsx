@@ -217,7 +217,7 @@ function PrinterForm({ initial, onClose }: { initial: Printer | null; onClose: (
 
       {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
       <div className="flex gap-3">
-        <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}>
+        <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
           Save
         </button>
         <button type="button" onClick={onClose} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>

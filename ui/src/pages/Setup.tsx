@@ -59,7 +59,7 @@ export function Setup() {
           type="submit"
           disabled={setup.isPending}
           className={buttonBase}
-          style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+          style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
         >
           Create account
         </button>

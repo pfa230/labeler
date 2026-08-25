@@ -144,9 +144,9 @@ describe("Templates list", () => {
     await screen.findByText("Brother 24mm");
     const badge = document.querySelector<HTMLElement>('[data-format="single"]')!;
     expect(badge.textContent).toBe("single");
-    expect(badge.style.color).toBe("var(--accent-deep)");
+    expect(badge.style.color).toBe("var(--accent)");
     expect(badge.style.background).toBe("var(--accent-soft)");
-    expect(badge.style.borderColor).toBe("var(--accent-deep)");
+    expect(badge.style.borderColor).toBe("var(--accent)");
     expect(iconGeometry(badge)).toEqual(SINGLE_ICON);
     expect(badge.closest("div.rounded-lg")!.querySelectorAll("[data-format]")).toHaveLength(1);
   });

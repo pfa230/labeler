@@ -64,7 +64,7 @@ export function NewTemplate() {
           type="submit"
           disabled={create.isPending || yaml.trim() === ""}
           className="rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
-          style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+          style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
         >
           {create.isPending ? "Creating…" : "Create"}
         </button>

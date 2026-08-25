@@ -72,7 +72,7 @@ function CatalogCard({
           onClick={onInstall}
           disabled={busy}
           className={buttonBase}
-          style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+          style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
         >
           {installed ? "Reinstall" : "Install"}
         </button>
@@ -259,7 +259,7 @@ export function Catalog() {
               type="button"
               onClick={() => void confirmReplace()}
               className={buttonBase}
-              style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+              style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
             >
               Replace
             </button>
