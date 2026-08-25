@@ -20,6 +20,8 @@ import { matchesFilters, type ColumnFilters } from "../../lib/connectorFilter";
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
+const SOURCE_DESC_ID = "source-filter-scope-desc";
+const REFINE_DESC_ID = "refine-filter-scope-desc";
 
 export interface ConnectorBrowserProps {
   connectionId: string;
@@ -190,6 +192,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
     setTags([]);
     setPendingTag("");
     setApplied({});
+    setColumnFilters({});
   };
 
   const selectedKeys = useMemo(() => new Set(selected.map(refKey)), [selected]);
@@ -324,6 +327,12 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   // table says so whenever that scope could otherwise be mistaken for the whole of it. "A filter is
   // active" means a non-empty needle on a visible column, not merely that a filter row exists.
   const filterActive = Object.values(activeFilters).some((v) => v.trim() !== "");
+  const hasAnyFilters =
+    Object.keys(applied).length > 0 ||
+    Object.values(filterDraft).some((v) => v.trim() !== "") ||
+    tags.length > 0 ||
+    pendingTag.trim() !== "" ||
+    Object.values(columnFilters).some((v) => v.trim() !== "");
   const loadedCount = rows.length;
   const shownCount = displayedRows.length;
   // When a filter hides every loaded row and more remain to load, that fact replaces the "Showing
@@ -392,6 +401,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
       return (
         <input
           aria-label={`Filter by ${filterLabel}`}
+          aria-describedby={REFINE_DESC_ID}
           value={filterValue}
           onChange={(e) => setColumnFilter(key, e.target.value)}
           className={inputClass}
@@ -477,177 +487,184 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
         )}
       </div>
 
-      {resource && (
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          {resource.filters.length > 0 ? (
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-wrap items-end gap-2">
-                {resource.filters.map((f) => {
-                  if (f.key === "tag") {
-                    return (
-                      <div key={f.key} className="flex flex-col gap-1">
-                        <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
-                        <div className="flex items-center gap-1">
-                          <input
-                            aria-label={f.label}
-                            placeholder="Add tag..."
-                            value={pendingTag}
-                            onChange={(e) => setPendingTag(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                e.preventDefault();
-                                addTag(pendingTag);
-                              }
-                            }}
-                            className={inputClass}
-                            style={inputStyle}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => addTag(pendingTag)}
-                            className={`${buttonBase} border`}
-                            style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-                          >
-                            Add
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
-                  return (
-                    <label key={f.key} className="flex flex-col gap-1">
-                      <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
+      {resource && resource.filters.length > 0 && (
+        <fieldset
+          className="flex flex-col gap-2 rounded-md border p-3"
+          style={{ borderColor: "var(--border)" }}
+        >
+          <legend className="text-xs font-semibold px-1" style={{ color: "var(--muted)" }}>
+            Source filters
+          </legend>
+          <p id={SOURCE_DESC_ID} className="text-xs" style={{ color: "var(--muted)" }}>
+            Queries the connection and restricts the whole result. Takes effect on Apply.
+          </p>
+          <div className="flex flex-wrap items-end gap-2">
+            {resource.filters.map((f) => {
+              if (f.key === "tag") {
+                return (
+                  <div key={f.key} className="flex flex-col gap-1">
+                    <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
+                    <div className="flex items-center gap-1">
                       <input
                         aria-label={f.label}
-                        value={filterDraft[f.key] ?? ""}
-                        onChange={(e) => setFilterDraft({ ...filterDraft, [f.key]: e.target.value })}
+                        aria-describedby={SOURCE_DESC_ID}
+                        placeholder="Add tag..."
+                        value={pendingTag}
+                        onChange={(e) => setPendingTag(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            addTag(pendingTag);
+                          }
+                        }}
                         className={inputClass}
                         style={inputStyle}
                       />
-                    </label>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={handleApply}
-                  className={`${buttonBase} border`}
-                  style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-                >
-                  Apply
-                </button>
-                {(Object.keys(applied).length > 0 || Object.keys(filterDraft).length > 0 || tags.length > 0 || pendingTag !== "") && (
-                  <button
-                    type="button"
-                    onClick={handleClearFilters}
-                    className={`${buttonBase} border`}
-                    style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-                  >
-                    Clear filters
-                  </button>
-                )}
-              </div>
-              {tags.length > 0 && (
-                <div className="flex flex-wrap gap-1">
-                  {tags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
-                      style={{ borderColor: "var(--border)" }}
-                    >
-                      {tag}
                       <button
                         type="button"
-                        aria-label={`Remove tag ${tag}`}
-                        onClick={() => removeTag(tag)}
-                        style={{ color: "var(--muted)" }}
+                        onClick={() => addTag(pendingTag)}
+                        className={`${buttonBase} border`}
+                        style={{ borderColor: "var(--border)", color: "var(--ink)" }}
                       >
-                        ×
+                        Add
                       </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          ) : <div />}
-
-          <div ref={pickerRef} className="relative">
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <label key={f.key} className="flex flex-col gap-1">
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>{f.label}</span>
+                  <input
+                    aria-label={f.label}
+                    aria-describedby={SOURCE_DESC_ID}
+                    value={filterDraft[f.key] ?? ""}
+                    onChange={(e) => setFilterDraft({ ...filterDraft, [f.key]: e.target.value })}
+                    className={inputClass}
+                    style={inputStyle}
+                  />
+                </label>
+              );
+            })}
             <button
               type="button"
-              onClick={() => setColumnsOpen((prev) => !prev)}
-              aria-haspopup="true"
-              aria-expanded={columnsOpen}
-              aria-label="Customize visible columns"
-              className={`${buttonBase} border flex items-center gap-1.5`}
-              style={{ borderColor: "var(--border)", color: "var(--ink)", background: "var(--surface)" }}
+              onClick={handleApply}
+              className={`${buttonBase} border`}
+              style={{ borderColor: "var(--border)", color: "var(--ink)" }}
             >
-              <span>Columns ({visibleColumns.length}/{resource.columns.length})</span>
+              Apply
             </button>
-
-            {columnsOpen && (
-              <div
-                className="absolute right-0 top-full mt-1 z-30 min-w-[220px] max-w-[320px] rounded-md border shadow-lg flex flex-col gap-1 p-2"
-                style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
-              >
-                <div className="flex items-center justify-between border-b pb-1.5 mb-1" style={{ borderColor: "var(--border)" }}>
-                  <span className="text-xs font-semibold" style={{ color: "var(--muted)" }}>Visible Columns</span>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={showAllColumns}
-                      className="text-xs underline hover:opacity-80"
-                      style={{ color: "var(--accent)" }}
-                    >
-                      All
-                    </button>
-                    <button
-                      type="button"
-                      onClick={resetDefaultColumns}
-                      className="text-xs underline hover:opacity-80"
-                      style={{ color: "var(--muted)" }}
-                    >
-                      Reset
-                    </button>
-                  </div>
-                </div>
-                <div className="max-h-64 overflow-y-auto flex flex-col gap-0.5">
-                  {resource.columns.map((c) => {
-                    const isChecked = visibleKeys.has(c.key);
-                    const isOnly = isChecked && visibleKeys.size === 1;
-                    return (
-                      <label
-                        key={c.key}
-                        className="flex items-center gap-2 px-2 py-1 rounded text-xs cursor-pointer hover:bg-[var(--accent-soft)]"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isChecked}
-                          disabled={isOnly}
-                          onChange={() => toggleColumn(c.key)}
-                        />
-                        <span className="truncate">{c.label}</span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </div>
-        </div>
+          {tags.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  {tag}
+                  <button
+                    type="button"
+                    aria-label={`Remove tag ${tag}`}
+                    onClick={() => removeTag(tag)}
+                    style={{ color: "var(--muted)" }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </fieldset>
       )}
 
       {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
       {busy && rows.length === 0 && <p className="text-sm" style={{ color: "var(--muted)" }}>Loading...</p>}
 
-      {resource && (noMatchWithMore || filterActive || hasMore) && (
-        <div role="status" className="text-sm flex flex-col gap-0.5" style={{ color: "var(--muted)" }}>
-          {noMatchWithMore ? (
-            <p>No loaded row matches. More rows can be loaded.</p>
-          ) : (
-            <>
-              {filterActive && <p>Showing {shownCount} of {loadedCount} loaded rows</p>}
-              {hasMore && <p>Sorting and filtering cover only the {loadedCount} rows loaded so far</p>}
-            </>
-          )}
+      {resource && (
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs font-semibold" style={{ color: "var(--muted)" }}>Refine loaded rows</span>
+            <p id={REFINE_DESC_ID} className="text-xs" style={{ color: "var(--muted)" }}>
+              Narrow the rows already loaded, as you type.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 self-end">
+            {hasAnyFilters && (
+              <button
+                type="button"
+                onClick={handleClearFilters}
+                className={`${buttonBase} border`}
+                style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+              >
+                Clear all filters
+              </button>
+            )}
+            <div ref={pickerRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setColumnsOpen((prev) => !prev)}
+                aria-haspopup="true"
+                aria-expanded={columnsOpen}
+                aria-label="Customize visible columns"
+                className={`${buttonBase} border flex items-center gap-1.5`}
+                style={{ borderColor: "var(--border)", color: "var(--ink)", background: "var(--surface)" }}
+              >
+                <span>Columns ({visibleColumns.length}/{resource.columns.length})</span>
+              </button>
+
+              {columnsOpen && (
+                <div
+                  className="absolute right-0 top-full mt-1 z-30 min-w-[220px] max-w-[320px] rounded-md border shadow-lg flex flex-col gap-1 p-2"
+                  style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
+                >
+                  <div className="flex items-center justify-between border-b pb-1.5 mb-1" style={{ borderColor: "var(--border)" }}>
+                    <span className="text-xs font-semibold" style={{ color: "var(--muted)" }}>Visible Columns</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={showAllColumns}
+                        className="text-xs underline hover:opacity-80"
+                        style={{ color: "var(--accent)" }}
+                      >
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetDefaultColumns}
+                        className="text-xs underline hover:opacity-80"
+                        style={{ color: "var(--muted)" }}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto flex flex-col gap-0.5">
+                    {resource.columns.map((c) => {
+                      const isChecked = visibleKeys.has(c.key);
+                      const isOnly = isChecked && visibleKeys.size === 1;
+                      return (
+                        <label
+                          key={c.key}
+                          className="flex items-center gap-2 px-2 py-1 rounded text-xs cursor-pointer hover:bg-[var(--accent-soft)]"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={isOnly}
+                            onChange={() => toggleColumn(c.key)}
+                          />
+                          <span className="truncate">{c.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
@@ -680,11 +697,26 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
         </div>
       )}
 
-      <div className="flex items-center gap-3">
-        {hasMore && (
-          <button type="button" disabled={busy} onClick={() => void loadMore()} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
-            Load more
-          </button>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          {hasMore && (
+            <button type="button" disabled={busy} onClick={() => void loadMore()} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
+              Load more
+            </button>
+          )}
+        </div>
+
+        {resource && (noMatchWithMore || filterActive || hasMore) && (
+          <div role="status" className="text-sm flex flex-col gap-0.5" style={{ color: "var(--muted)" }}>
+            {noMatchWithMore ? (
+              <p>No loaded row matches. More rows can be loaded.</p>
+            ) : (
+              <>
+                {filterActive && <p>Showing {shownCount} of {loadedCount} loaded rows</p>}
+                {hasMore && <p>Sorting and refining cover only the {loadedCount} rows loaded so far</p>}
+              </>
+            )}
+          </div>
         )}
       </div>
 
