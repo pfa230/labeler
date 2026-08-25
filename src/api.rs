@@ -1,7 +1,12 @@
+//! API routes and handler functions.
+//!
+//! Handlers in this module import `Json` and `Path` from `crate::extract` rather than
+//! `axum::extract` so that request extraction failures automatically produce the standard
+//! JSON error envelope with `AppError` rather than axum's plain text rejections (ADR-0075).
+
 use arc_swap::ArcSwap;
 use axum::{
-    extract::rejection::JsonRejection,
-    extract::{DefaultBodyLimit, FromRequestParts, Json, Path, Query, State},
+    extract::{DefaultBodyLimit, FromRequestParts, Query, State},
     response::{IntoResponse, Response},
     routing::{get, post, put},
     Router,
@@ -18,6 +23,7 @@ use utoipa_swagger_ui::SwaggerUi;
 use crate::{
     connector::{BrowsePage, BrowseRequest, ConnectorSchema, LabelRow, MaterializeRequest},
     errors::AppError,
+    extract::{Json, Path},
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, PrintRequest,
         ReloadResponse, RenderLabelRequest, TemplateDetail, TemplateGroupUpdate, TemplateList,
@@ -754,9 +760,8 @@ pub async fn replace_template(
 pub async fn update_template_group(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    payload: Result<Json<TemplateGroupUpdate>, JsonRejection>,
+    Json(update): Json<TemplateGroupUpdate>,
 ) -> Result<Response, AppError> {
-    let Json(update) = payload.map_err(AppError::from)?;
     // Request syntax first, before the id and before any filesystem work: a body that does not carry
     // the key is a bad request whatever the directory holds, and deciding it here keeps an unknown
     // id or an unreadable directory from answering 404 or 500 in its place.
@@ -2139,9 +2144,8 @@ async fn run_batch(
 pub async fn batch(
     State(state): State<Arc<AppState>>,
     axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
-    payload: Result<Json<BatchRequest>, JsonRejection>,
+    Json(req): Json<BatchRequest>,
 ) -> Result<Response, AppError> {
-    let Json(req) = payload.map_err(AppError::from)?;
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
@@ -2178,9 +2182,8 @@ pub async fn batch(
 pub async fn print_label(
     State(state): State<Arc<AppState>>,
     axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
-    payload: Result<Json<PrintRequest>, JsonRejection>,
+    Json(req): Json<PrintRequest>,
 ) -> Result<Response, AppError> {
-    let Json(req) = payload.map_err(AppError::from)?;
     if !(1..=MAX_PRINT_COPIES).contains(&req.copies) {
         return Err(AppError::invalid_request(
             Reason::CopiesInvalid,
@@ -2230,9 +2233,8 @@ pub async fn print_label(
 pub async fn render_label(
     State(state): State<Arc<AppState>>,
     Query(query): Query<RenderQuery>,
-    payload: Result<Json<RenderLabelRequest>, JsonRejection>,
+    Json(req): Json<RenderLabelRequest>,
 ) -> Result<Response, AppError> {
-    let Json(req) = payload.map_err(AppError::from)?;
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
