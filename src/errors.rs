@@ -605,9 +605,22 @@ mod tests {
         // not a published contract, and accepting one lets a reason ship documented nowhere a client
         // reads (#164 diff review). The phantom half below still runs off the §10.1 table alone, so
         // widening the undocumented half does not weaken it.
-        let specs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("openspec")
-            .join("specs");
+        // Active deltas count too, otherwise a change that adds a reason cannot pass this
+        // test until archive publishes its delta, and the workflow demands clean gates
+        // before archiving (#217). A delta is not a plan: it is the text archive publishes
+        // verbatim, so a slug documented there is documented in the contract a step early.
+        // `changes/archive/` stays excluded, per the reasoning above.
+        let openspec_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("openspec");
+        let specs_dir = openspec_dir.join("specs");
+        let mut delta_dirs: Vec<std::path::PathBuf> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(openspec_dir.join("changes")) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() && path.file_name().and_then(|n| n.to_str()) != Some("archive") {
+                    delta_dirs.push(path.join("specs"));
+                }
+            }
+        }
         fn scan_specs(dir: &std::path::Path, declared: &HashSet<&str>, out: &mut HashSet<String>) {
             let Ok(entries) = std::fs::read_dir(dir) else {
                 return;
@@ -631,6 +644,9 @@ mod tests {
         let mut documented: HashSet<String> =
             spec_table.iter().map(|slug| (*slug).to_string()).collect();
         scan_specs(&specs_dir, &declared, &mut documented);
+        for delta in &delta_dirs {
+            scan_specs(delta, &declared, &mut documented);
+        }
         let documented_refs: HashSet<&str> = documented.iter().map(String::as_str).collect();
 
         let mut undocumented: Vec<_> = declared.difference(&documented_refs).collect();
