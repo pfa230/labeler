@@ -57,7 +57,7 @@ because the review gates implementation and archive rewrites the main specs *aft
    `APPROVE_WITH_CHANGES` → apply the listed edits, reviewer re-checks only those, then set
    `CHANGES_APPLIED: yes`. Editing the specs or design afterwards voids the verdict.
 
-   **This is the only place a human enters the loop, and only on failure.** Two consecutive `REVISE`
+   **This is the only place a human enters the loop, and only on failure.** Three consecutive `REVISE`
    rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
    artifacts, and wait. On the converging path the loop runs unattended through to the merge.
 4. **Apply and review the diff**, as a named pair:

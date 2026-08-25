@@ -270,7 +270,7 @@ artifacts:
       Any later edit to proposal.md, specs/ or design.md, other than applying the
       listed Required Changes, VOIDS the verdict and requires a new round.
 
-      ROUNDS: record the round number. After 2 consecutive REVISE rounds, stop and
+      ROUNDS: record the round number. After 3 consecutive REVISE rounds, stop and
       escalate to the human rather than looping. Separately, when the reviewer is
       codex, cap it at 5 passes within a round absent an unresolved blocking issue;
       converging on "no blocking issues" is the goal, not an empty findings list.
