@@ -9,7 +9,7 @@ import type { ConnectorSchema, SelectedRow } from "../../api/connectors";
 // so". They are asserted verbatim throughout this file rather than via substring/regex, so a
 // wording drift in either the copy or the numbers fails loudly.
 const SHOWING = (shown: number, loaded: number) => `Showing ${shown} of ${loaded} loaded rows`;
-const LOADED_SO_FAR = (loaded: number) => `Sorting and filtering cover only the ${loaded} rows loaded so far`;
+const LOADED_SO_FAR = (loaded: number) => `Sorting and refining cover only the ${loaded} rows loaded so far`;
 const NO_MATCH_WITH_MORE = "No loaded row matches. More rows can be loaded.";
 
 const schema: ConnectorSchema = {
@@ -164,5 +164,51 @@ describe("scope disclosure", () => {
     // absent rather than reappearing with a "Showing 0 of 6" (or similar) line.
     await waitFor(() => expect(screen.getByText("Drill")).toBeInTheDocument());
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("renders the disclosure container after the grid in DOM order", async () => {
+    stubBrowse(true);
+    const { container } = render(<H />);
+    await waitFor(() => expect(screen.getByText("Drill")).toBeInTheDocument());
+
+    const grid = container.querySelector(".connector-grid-viewport")!;
+    const status = screen.getByRole("status");
+    expect(grid).toBeInTheDocument();
+    expect(status).toBeInTheDocument();
+    // Grid must come before the status/disclosure element in document order
+    expect(grid.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("still shows the partial-load statement when a source filter is applied and has_more is true", async () => {
+    const schemaWithFilter: ConnectorSchema = {
+      version: "h1",
+      resources: [
+        {
+          id: "entities",
+          label: "Items",
+          view: "table",
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap" }],
+          filters: [{ key: "q", label: "Search", ty: "search" }],
+        },
+      ],
+      relationships: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({ rows, next_cursor: "cur-1", has_more: true, count: rows.length }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+    render(<ConnectorBrowser connectionId="c1" schema={schemaWithFilter} selected={[]} onSelectedChange={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Drill")).toBeInTheDocument());
+
+    // Apply a source filter
+    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "drill" } });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+
+    await waitFor(() => expect(screen.getByText(LOADED_SO_FAR(6))).toBeInTheDocument());
   });
 });
