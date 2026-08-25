@@ -231,7 +231,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
             onClick={onPrint}
             disabled={busy || !effectivePrinter || !valid || stale}
             className={`${buttonBase} h-11 min-w-32 flex-1 lg:flex-none`}
-            style={{ background: "var(--accent)", color: "var(--accent-ink, #fff)" }}
+            style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
           >
             Print
           </button>
