@@ -12,8 +12,9 @@ implements exactly one open issue: scope is agreed there, before anything else h
 
 From there the work runs in three stages — plan, implement, archive — each started by one command and
 each running to completion without supervision: isolating the work, writing the spec and design,
-getting them reviewed, implementing, reviewing the implementation, updating the specs of record, and
-merging. The merge commit closes the issue.
+getting them reviewed, implementing, reviewing the implementation, and updating the specs of record.
+Nothing is committed while they run. The commit comes after the last of them, and closes the issue
+when the branch merges.
 
 The stage boundaries are deliberate. Planning stops before implementation so the spec and design are
 settled, and reviewed, while changing them is still cheap.
@@ -43,14 +44,19 @@ The adversarial review of that plan runs next, on a different model, and gates w
 /opsx:apply
 ```
 
-Refused until the review passes. Runs the task list, then the implementation is reviewed in turn.
+Refused until the review passes. Runs the task list, then the implementation is reviewed in turn. It
+commits nothing: an approved diff is not a landed one.
 
 ```
 /opsx:archive
 ```
 
-Folds the delta specs into `openspec/specs/`, archives the planning record, and the change is
-committed and merged.
+Folds the delta specs into `openspec/specs/`, archives the planning record, and stops short of the
+commit.
+
+That is where the commit belongs, and only there. Archive rewrote `openspec/specs/` after the last
+review pass, which makes that diff the one thing on the branch nobody has read yet; it is read, the
+verification gates run, and then the whole change lands as a single commit and the branch merges.
 
 Also available: `/opsx:explore` for thinking something through before an issue exists, and
 `/opsx:update` for revising a change's plan in place after a review asks for edits.
