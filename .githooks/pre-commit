@@ -19,4 +19,27 @@ fi
 root=$(git rev-parse --show-toplevel)
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
 [ "${#staged[@]}" -gt 0 ] || exit 0
-exec "$root/.workflow/review-gate-check.sh" "$root" "${staged[@]}"
+
+# The checks read file contents from the working tree, not from the index. That is
+# only sound while the two agree for the files they read: an unstaged fix to a spec,
+# or an unstaged review artifact, would otherwise be judged in place of what is
+# actually being committed, and CI would then refuse what this hook allowed. Refuse
+# the divergence rather than emulate the index.
+# .workflow and .githooks are in the list because this hook EXECUTES them from the
+# working tree: a half-staged gate script would judge this commit with code the
+# commit does not contain.
+mapfile -t dirty < <(
+  git diff --name-only -- openspec src ui/src .workflow .githooks
+  git ls-files --others --exclude-standard -- openspec .workflow .githooks
+)
+if [ "${#dirty[@]}" -gt 0 ]; then
+  echo "review gate: these files are not staged as they are on disk, and the gate reads disk:" >&2
+  printf '  %s
+' "${dirty[@]}" >&2
+  echo "review gate: stage or stash them, so the checks judge what you are committing." >&2
+  exit 1
+fi
+
+# GATE_BASE_REF defaults to HEAD, which is what the staged tree is measured against here.
+"$root/.workflow/review-gate-check.sh" "$root" "${staged[@]}"
+exec "$root/.workflow/archive-merge-check.sh" "$root" "${staged[@]}"

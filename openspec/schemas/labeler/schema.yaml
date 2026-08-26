@@ -266,9 +266,15 @@ artifacts:
       SEVERITY-VERDICT CONSISTENCY: any open Critical finding forbids APPROVE. A
       review listing Critical findings with VERDICT: APPROVE is itself invalid.
 
-      STALENESS: a verdict covers only the artifact contents reviewed in that round.
-      Any later edit to proposal.md, specs/ or design.md, other than applying the
-      listed Required Changes, VOIDS the verdict and requires a new round.
+      STALENESS: a verdict covers the contract it read, which is specs/. Any later
+      edit to specs/, other than applying the listed Required Changes, VOIDS the
+      verdict and requires a new round. Correcting proposal.md or design.md does not:
+      they are context, and charging a full re-review for a factual fix teaches the
+      author to leave the plan wrong.
+
+      Record the digest with `.workflow/specs-digest.sh <change-dir> --write` once
+      this review has a verdict. It writes the SPECS_SHA256 line the commit gate
+      recomputes, which is what makes staleness detectable rather than self-reported.
 
       ROUNDS: record the round number. After 3 consecutive REVISE rounds, stop and
       escalate to the human rather than looping. Separately, when the reviewer is
@@ -328,8 +334,9 @@ apply:
     `VERDICT: REVISE`, or APPROVE_WITH_CHANGES not yet marked applied, or a missing
     or unparseable review.md, STOP and say why. Do not implement past a failed gate.
 
-    The verdict is also stale if proposal.md, specs/ or design.md changed after the
-    review round, other than to apply its listed Required Changes. Re-review instead.
+    The verdict is also stale if specs/ changed after the review round, other than to
+    apply its listed Required Changes: that is the contract it read. Re-review instead.
+    A correction to proposal.md or design.md does not make it stale.
 
     Then read the context files, work through pending tasks, and mark them complete
     as you go. Pause if you hit blockers or need clarification.
