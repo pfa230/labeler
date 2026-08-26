@@ -105,9 +105,9 @@ operations:
       - >-
         Check a task only after performing it. A checked box is a claim the next reader trusts
         instead of redoing the work, so a box checked over an unperformed step is worse than an
-        unchecked one. A task saying to render a label and open the image is not satisfied by a test
-        that renders bytes, and a task saying to add an HTTP test is not satisfied by a unit test one
-        layer below the status code.
+        unchecked one. A task saying to add an HTTP test is not satisfied by a unit test one layer
+        below the status code. Do not write a task whose completion nothing can show, such as
+        opening a rendered image: that is a claim, not a step.
       - >-
         A test that cannot fail is worse than no test. Assert on the value under test, not on the
         fact that a call returned: after `.unwrap()`, `assert!(!png.is_empty())` proves only that the
