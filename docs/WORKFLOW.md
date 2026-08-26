@@ -10,6 +10,12 @@ The mechanics — commands, tooling, enforcement — are in [`AGENTS.md`](../AGE
 A change starts as a GitHub issue. Issues and milestones are the only backlog, and one change
 implements exactly one open issue: scope is agreed there, before anything else happens.
 
+Not every commit is a change in this sense. The path below is for behavior changes, which are exactly
+the ones that write a spec delta. A documentation fix, a tooling script or a dependency bump still
+starts as an issue and still ends as one commit that closes it, but none of the stages apply to it.
+Nothing declares which kind a piece of work is, and size has no say: writing the delta is what makes
+it a change, and needing one is discovered rather than decided.
+
 From there the work runs in three stages — plan, implement, archive — each started by one command and
 each running to completion without supervision: isolating the work, writing the spec and design,
 getting them reviewed, implementing, reviewing the implementation, and updating the specs of record.

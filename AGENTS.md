@@ -43,9 +43,32 @@ exists; its scratch stays under `docs/superpowers/` (gitignored).
 
 ## OpenSpec workflow
 
-Behavior changes go through OpenSpec (CLI 1.9.0) on this project's own schema,
-`openspec/schemas/labeler/`: `proposal → specs → design → review → tasks → apply`. Order matters,
-because the review gates implementation and archive rewrites the main specs *after* it:
+### Which changes go through it
+
+Behavior changes, and nothing else. The discriminator is the **spec delta**, and it needs no
+declaring: a behavior change always produces one, because the first-touch rule makes the first change
+to any documented behavior write the complete post-change contract as an `ADDED` requirement. A change
+with no delta has no contract to review, and the loop below has nothing to gate.
+
+So a documentation fix, a workflow script, a CI change, a dependency bump or a refactor that keeps
+behavior identical goes: issue, worktree, the three gates, one commit with `Fixes #N`, push, merge. No
+change folder, no plan review, no `diff-review.md`. Nothing else relaxes: it still starts as an issue
+and still ends as one commit that closes it.
+
+Size decides nothing. A nine-line handler check that alters behavior is a full change; a five-hundred
+line documentation rewrite is not. There is no lane to declare, no criteria to qualify under and no
+step that promotes one to the other. Writing a delta is what makes a change one, and
+`review-gate-check.sh` demands a passing `review.md` from the moment a change folder exists, so
+discovering mid-work that you need a delta costs the review and nothing else.
+
+What no gate can decide is whether a diff *should* have carried a delta. A commit with no change
+folder is checked by nobody, which `docs/WORKFLOW.md` records under what is not guaranteed.
+
+### The loop
+
+OpenSpec (CLI 1.9.0) on this project's own schema, `openspec/schemas/labeler/`:
+`proposal → specs → design → review → tasks → apply`. Order matters, because the review gates
+implementation and archive rewrites the main specs *after* it:
 
 1. **Issue**, then a worktree: `git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>`.
 2. **`/opsx:propose`** writes `openspec/changes/issue-<N>-<slug>/`. Planning only; it must not touch
@@ -172,9 +195,11 @@ issue. Converging on "no MAJOR issues" is the goal, not an empty findings list.
 
 ## Isolation: one change, one worktree, one issue
 
-Every change gets its own git **worktree**, not just a branch. A branch shares one working directory,
-so two sessions collide, and an OpenSpec change folder is untracked until the final commit, which
-means it follows you across `git checkout` and makes "is a change in progress here?" unanswerable.
+Every piece of work gets its own git **worktree**, not just a branch, and this one does not care
+whether the work is an OpenSpec change: a branch shares one working directory, so two sessions
+collide, and sessions here do run concurrently. An OpenSpec change adds a second reason, which is why
+the rule started with them: its change folder is untracked until the final commit, so it follows you
+across `git checkout` and makes "is a change in progress here?" unanswerable.
 
 ```bash
 git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>   # start
