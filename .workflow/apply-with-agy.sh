@@ -129,6 +129,15 @@ fi
 # attached (-p=...) and -p goes last. Written as a bare `agy -p --mode ...` the
 # flag swallows `--mode` as its prompt and the real prompt is left as an ignored
 # positional; agy now refuses that outright instead of running.
+# Cap cargo's parallelism for everything the agent runs. Unset, cargo takes one
+# codegen job per core and holds a rustc, and finally a linker, for each; on this
+# project that means building Typst's dependency graph several times over for
+# `cargo test && cargo clippy --all-targets --all-features`. With an agent, an
+# orchestrator and a reviewer all resident, three applies in a row died to the OOM
+# killer mid-build: user.slice showed oom_kill 3, peak 15.2GB against 15GB of RAM,
+# and 4GB of swap fully consumed. Overridable for a machine with room to spare.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+
 timeout="${AGY_PRINT_TIMEOUT:-120m}"
 
 # --effort is deliberately absent. The default model rejects it outright:
