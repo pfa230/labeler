@@ -35,6 +35,8 @@ done
 [ -n "$root" ] || exit 0
 
 rel="${target#"$root"/}"
-reason=$("$root/.workflow/review-gate-check.sh" "$root" "$rel" 2>&1 >/dev/null) && exit 0
+# --plan-only: this fires while implementation is in progress, when no diff review
+# can exist. The commit-time gate checks that one.
+reason=$("$root/.workflow/review-gate-check.sh" --plan-only "$root" "$rel" 2>&1 >/dev/null) && exit 0
 jq -n --arg r "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
 exit 0

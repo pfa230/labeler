@@ -55,7 +55,8 @@ because the review gates implementation and archive rewrites the main specs *aft
    subagent. **Never** self-review inside the authoring context. It writes `review.md` ending in a
    `VERDICT:` line. `REVISE` → fix the artifacts and re-run the *full* review in a fresh context;
    `APPROVE_WITH_CHANGES` → apply the listed edits, reviewer re-checks only those, then set
-   `CHANGES_APPLIED: yes`. Editing the specs or design afterwards voids the verdict.
+   `CHANGES_APPLIED: yes`. Editing `specs/` afterwards voids the verdict, and the gate detects it;
+   editing `proposal.md` or `design.md` does not, because they are context and not the contract.
 
    **This is the only place a human enters the loop, and only on failure.** Three consecutive `REVISE`
    rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
@@ -68,22 +69,67 @@ because the review gates implementation and archive rewrites the main specs *aft
    session; the reviewer re-checks and never edits. Transcripts stay in logs, not in this context. Two different reviews: step 3
    judged the plan, this one judges the code. Do not skip it because tasks are checked.
 
+   `apply.sh` records the outcome as `diff-review.md` in the change folder, carrying `AUTHOR:`,
+   `REVIEWER:` and `VERDICT:`, with each round kept alongside as `diff-review-<n>.md`. That file is
+   what the gate reads, so a verdict living only in a transcript is a verdict nothing can check.
+
    **Apply ends at implementation.** It does not commit, archive, sync deltas into
-   `openspec/specs/`, or move the change folder: steps 5 and 6 exist because a human reads this diff
-   before archive rewrites the main specs. A checked box is a claim the next reader trusts instead
-   of redoing the work, so check one only after performing it, and never over a render-and-look step
-   satisfied by a test that merely returned bytes. `openspec/config.yaml`
+   `openspec/specs/`, or move the change folder. A checked box is a claim the next reader trusts
+   instead of redoing the work, so check one only after performing it, and never over a
+   render-and-look step satisfied by a test that merely returned bytes. `openspec/config.yaml`
    (`operations.apply.guidance`) says the same to every agent.
-   The gate is `.workflow/review-gate-check.sh`, run by `.githooks/pre-commit` and by CI, so it applies
-   to every agent equally: it judges files, not which tool produced them. It refuses a commit touching
-   `src/` or `ui/src/` while the change's verdict has not passed, and refuses a review whose `AUTHOR:`
-   and `REVIEWER:` match. `.claude/hooks/review-gate.sh` calls the same script at edit time as an
-   early signal for Claude Code only. Enable the hooks once per clone with `.workflow/setup-hooks.sh`.
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
-6. **Review the archive diff.** It rewrote `openspec/specs/` after your last review pass.
-7. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
+6. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
+
+## What the gates check
+
+Two scripts, run by `.githooks/pre-commit` and by CI, so no agent is judged differently from another.
+They inspect files, never which tool produced them. Enable them once per clone with
+`.workflow/setup-hooks.sh`.
+
+They read file contents from the working tree rather than the index, so the hook first refuses a
+commit whose `openspec/`, `src/` or `ui/src/` files differ between disk and what is staged. Otherwise
+an unstaged fix would be judged in place of what is being committed, and CI, which sees only what
+landed, would refuse what the hook allowed.
+
+`.workflow/review-gate-check.sh` judges a change at two different points.
+
+**Landing**, meaning the commit that carries the change's folder into
+`openspec/changes/archive/`. Checked whatever the commit touches, because there is no later moment:
+the plan verdict must pass with `AUTHOR:` and `REVIEWER:` differing, `specs/` must still match the
+digest that verdict recorded, and `diff-review.md` must pass with its own two roles differing.
+
+**In flight**, meaning a live folder under `openspec/changes/`. The plan checks apply, but only when
+the commit touches `src/` or `ui/src/`, so the planning and review loop itself stays writable.
+
+The digest is `SPECS_SHA256:`, written by `.workflow/specs-digest.sh <change-dir> --write` once the
+review has a verdict, and recomputed by the gate. Only `specs/` is hashed: `proposal.md` and
+`design.md` are context, and correcting a wrong sentence in them is free on purpose, because a rule
+that charges a full re-review for a factual fix teaches you to leave the plan wrong. Re-running the
+tool to launder a stale verdict is possible, and leaves a visible edit to `review.md` that a silent
+edit to `specs/` never did.
+
+`.workflow/archive-merge-check.sh` checks that `openspec/specs/` is the delta applied to the previous
+commit: every requirement the delta names landed verbatim or is gone, and every requirement it does
+not name is untouched. That second half is the point. Archive resolves `MODIFIED` by locating a
+requirement *by name*, so a drifted name rewrites the wrong requirement silently, and the plan review
+never saw `openspec/specs/` at all. It also refuses a commit archiving a delta for a capability it
+never synced, which is the same rule read from the other side. This replaced a step asking whoever
+archived to review the diff it had just produced (#218), which is a self-review, and could not fail.
+
+`--plan-only` drops the diff-review check for callers that fire mid-implementation, when no diff
+review can exist yet: `run-stage.sh`'s pre-flight probe and `.claude/hooks/review-gate.sh`, the
+edit-time signal for Claude Code.
+
+`.workflow/gate-tests.sh` asserts both scripts against a throwaway repo, mostly on the refusals: a
+gate that stops firing looks exactly like a gate that passes, and both of these did that once during
+development. CI runs it. Change either script and run it.
+
+The gates bound what they can see. A commit that skips OpenSpec entirely has no change folder, so
+nothing is checked; `--no-verify` skips the hook. Both are recorded in `docs/WORKFLOW.md` under what
+is not guaranteed.
 
 [`docs/WORKFLOW.md`](docs/WORKFLOW.md) describes this loop for a human reader: what it guarantees
 and when it stops for them. It carries no commands. Mechanics belong here, not there.
