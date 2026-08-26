@@ -45,6 +45,7 @@ pub struct AppError {
     message: String,
     details: Option<Value>,
     reason: Option<Reason>,
+    response_only_detail_keys: Vec<&'static str>,
 }
 
 /// One label's validation failure within a batch (its 0-based index + the error code/reason/message).
@@ -72,6 +73,7 @@ impl AppError {
             message: message.into(),
             details,
             reason: None,
+            response_only_detail_keys: Vec::new(),
         }
     }
 
@@ -94,6 +96,7 @@ impl AppError {
             message: message.into(),
             details: Some(Value::Object(details)),
             reason: Some(reason),
+            response_only_detail_keys: Vec::new(),
         }
     }
 
@@ -110,13 +113,15 @@ impl AppError {
     pub fn malformed_json(parser_error: String) -> Self {
         let mut extra = serde_json::Map::new();
         extra.insert("error".to_string(), Value::from(parser_error));
-        Self::reasoned(
+        let mut err = Self::reasoned(
             StatusCode::BAD_REQUEST,
             CODE_INVALID_REQUEST,
             Reason::JsonMalformed,
             "Malformed JSON body",
             Some(extra),
-        )
+        );
+        err.response_only_detail_keys.push("error");
+        err
     }
 
     pub fn batch_invalid(failures: Vec<BatchFailure>) -> Self {
@@ -368,12 +373,28 @@ impl AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status;
+        let log_details = match &self.details {
+            Some(Value::Object(map)) if !self.response_only_detail_keys.is_empty() => {
+                let filtered: serde_json::Map<String, Value> = map
+                    .iter()
+                    .filter(|(k, _)| !self.response_only_detail_keys.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                if filtered.is_empty() {
+                    None
+                } else {
+                    Some(Value::Object(filtered))
+                }
+            }
+            other => other.clone(),
+        };
+
         if status.is_server_error() {
             tracing::error!(
                 status = %status,
                 code = self.code,
                 message = %self.message,
-                details = ?self.details,
+                details = ?log_details,
                 "request failed"
             );
         } else {
@@ -381,7 +402,7 @@ impl IntoResponse for AppError {
                 status = %status,
                 code = self.code,
                 message = %self.message,
-                details = ?self.details,
+                details = ?log_details,
                 "request rejected"
             );
         }
@@ -403,7 +424,6 @@ impl From<JsonRejection> for AppError {
             return AppError::payload_too_large("Request body too large");
         }
         let message = rejection.body_text();
-        tracing::warn!(message = %message, "json request rejected");
         match rejection {
             JsonRejection::MissingJsonContentType(_) => {
                 AppError::unsupported_media_type("Content-Type must be application/json")
@@ -420,8 +440,12 @@ impl From<JsonRejection> for AppError {
 }
 
 impl From<PathRejection> for AppError {
-    fn from(_rejection: PathRejection) -> Self {
-        AppError::invalid_request(Reason::PathParamInvalid, "Invalid path parameter")
+    fn from(rejection: PathRejection) -> Self {
+        if rejection.status().is_server_error() {
+            AppError::internal(rejection.body_text())
+        } else {
+            AppError::invalid_request(Reason::PathParamInvalid, "Invalid path parameter")
+        }
     }
 }
 
@@ -748,5 +772,35 @@ mod tests {
             assert_eq!(app_err.status, status, "status for {code}");
             assert_eq!(app_err.code(), code);
         }
+    }
+
+    #[tokio::test]
+    async fn path_rejection_server_error_stays_internal() {
+        use axum::extract::FromRequestParts;
+        // MissingPathParams produces a 500-classified PathRejection
+        let req = axum::http::Request::builder()
+            .uri("/")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+        let res = axum::extract::Path::<String>::from_request_parts(&mut parts, &()).await;
+        let rejection = res.expect_err("should reject");
+        assert!(rejection.status().is_server_error());
+        let app_err = AppError::from(rejection);
+        assert_eq!(app_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(app_err.code(), "Internal");
+        assert_eq!(app_err.reason(), None);
+    }
+
+    #[test]
+    fn malformed_json_response_only_keys_preserved_on_wire() {
+        let err = AppError::malformed_json("syntax error at line 1".into());
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("json_malformed"));
+        assert!(err.response_only_detail_keys.contains(&"error"));
+        let details = err.details.as_ref().unwrap();
+        assert_eq!(details["error"], "syntax error at line 1");
+        assert_eq!(details["reason"], "json_malformed");
     }
 }

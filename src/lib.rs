@@ -7,6 +7,7 @@ pub mod datetime_fmt;
 pub mod driver;
 pub mod egress;
 pub mod errors;
+pub mod extract;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
@@ -5321,6 +5322,482 @@ layout:
             print_resp(&app, "homebox-qr", "nomw").await.status(),
             StatusCode::OK
         );
+    }
+
+    use std::cell::RefCell;
+    use std::sync::Once;
+
+    thread_local! {
+        static TEST_LOG_BUFFER: RefCell<Option<Arc<std::sync::Mutex<Vec<u8>>>>> = const { RefCell::new(None) };
+    }
+
+    struct TestLogWriter;
+
+    impl std::io::Write for TestLogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            TEST_LOG_BUFFER.with(|cell| {
+                if let Some(target) = cell.borrow().as_ref() {
+                    target.lock().unwrap().extend_from_slice(buf);
+                }
+            });
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TestLogWriter {
+        type Writer = TestLogWriter;
+        fn make_writer(&'a self) -> Self::Writer {
+            TestLogWriter
+        }
+    }
+
+    static INIT_TEST_TRACING: Once = Once::new();
+
+    fn init_test_tracing() {
+        INIT_TEST_TRACING.call_once(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_writer(TestLogWriter)
+                .with_max_level(tracing::Level::TRACE)
+                .with_ansi(false)
+                .try_init();
+        });
+    }
+
+    #[tokio::test]
+    async fn auth_login_malformed_password_not_in_logs() {
+        init_test_tracing();
+        let buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+        TEST_LOG_BUFFER.with(|cell| {
+            *cell.borrow_mut() = Some(buf.clone());
+        });
+
+        let app = build_app();
+        let body_str = r#"{"username":"admin","password":12345}"#;
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("origin", "http://localhost")
+            .body(Body::from(body_str))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+        assert!(
+            body["error"]["details"]["error"].is_string(),
+            "details.error must carry the parser message, got {body}"
+        );
+
+        TEST_LOG_BUFFER.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+
+        let log_str = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            !log_str.contains("12345"),
+            "log must not contain password value 12345, got: {log_str}"
+        );
+        assert!(
+            log_str.contains("json_malformed"),
+            "log must contain reason slug json_malformed, got: {log_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn all_nineteen_json_endpoints_reject_malformed_body_identically() {
+        let endpoints = [
+            ("POST", "/api/printers"),
+            ("POST", "/api/printers/probe"),
+            ("PUT", "/api/printers/test-printer"),
+            ("PUT", "/api/variables/test-var"),
+            ("PUT", "/api/settings/default_printer"),
+            ("POST", "/api/datetime-formats/preview"),
+            ("POST", "/api/connections"),
+            ("PUT", "/api/connections/conn-1"),
+            ("POST", "/api/connections/conn-1/browse"),
+            ("POST", "/api/connections/conn-1/materialize"),
+            ("POST", "/api/auth/setup"),
+            ("POST", "/api/auth/login"),
+            ("POST", "/api/auth/password"),
+            ("POST", "/api/users"),
+            ("POST", "/api/tokens"),
+            ("PUT", "/api/templates/brother_12mm/group"),
+            ("POST", "/api/batch"),
+            ("POST", "/api/print"),
+            ("POST", "/api/render/label"),
+        ];
+
+        assert_eq!(endpoints.len(), 19);
+
+        for (method, uri) in endpoints {
+            let app = build_app();
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("host", "localhost")
+                .header("origin", "http://localhost")
+                .body(Body::from("{ not valid json"))
+                .unwrap();
+
+            let resp = app.oneshot(req).await.expect(uri);
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "status for {method} {uri}"
+            );
+            let ct = resp
+                .headers()
+                .get("content-type")
+                .expect("content-type")
+                .to_str()
+                .unwrap();
+            assert!(
+                ct.starts_with("application/json"),
+                "content-type for {method} {uri} must be application/json, got {ct}"
+            );
+
+            let body = json_response(resp).await;
+            assert_eq!(
+                body["error"]["code"], "InvalidRequest",
+                "code for {method} {uri}"
+            );
+            assert_eq!(
+                body["error"]["details"]["reason"], "json_malformed",
+                "reason for {method} {uri}"
+            );
+            assert!(
+                body["error"]["details"]["error"].is_string()
+                    && !body["error"]["details"]["error"]
+                        .as_str()
+                        .unwrap()
+                        .is_empty(),
+                "details.error for {method} {uri} must be a non-empty string, got {body}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn put_connection_wrong_shape_and_missing_key_are_both_400_json_malformed() {
+        let app = build_app();
+        // Wrong-shape body: connector is integer instead of string
+        let req1 = Request::builder()
+            .method("PUT")
+            .uri("/api/connections/conn-1")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"connector":42,"name":"home","base_url":"http://hb.lan:7745"}"#,
+            ))
+            .unwrap();
+        let resp1 = app.oneshot(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::BAD_REQUEST);
+        let body1 = json_response(resp1).await;
+        assert_eq!(body1["error"]["code"], "InvalidRequest");
+        assert_eq!(body1["error"]["details"]["reason"], "json_malformed");
+
+        let app = build_app();
+        // Missing required key 'name'
+        let req2 = Request::builder()
+            .method("PUT")
+            .uri("/api/connections/conn-1")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"connector":"nope","base_url":"http://hb.lan:7745"}"#,
+            ))
+            .unwrap();
+        let resp2 = app.oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+        let body2 = json_response(resp2).await;
+        assert_eq!(body2["error"]["code"], "InvalidRequest");
+        assert_eq!(body2["error"]["details"]["reason"], "json_malformed");
+    }
+
+    #[tokio::test]
+    async fn content_type_scenarios() {
+        // 1. Content-Type absent -> 415 UnsupportedMediaType
+        let app = build_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/print")
+            .body(Body::from(r#"{"template":"brother_12mm","copies":1}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "UnsupportedMediaType");
+
+        // 2. Non-JSON Content-Type text/plain -> 415 UnsupportedMediaType
+        let app = build_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/print")
+            .header("content-type", "text/plain")
+            .body(Body::from(r#"{"template":"brother_12mm","copies":1}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "UnsupportedMediaType");
+
+        // 3. Suffixed JSON Content-Type application/problem+json -> not 415, body deserialized
+        let app = build_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/print")
+            .header("content-type", "application/problem+json")
+            .body(Body::from(
+                r#"{"template":"non_existent_template","printer":"some-printer","copies":1}"#,
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        // Request reached handler and returned 404 TemplateNotFound
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn oversized_body_post_print_returns_413() {
+        let app = build_app();
+        // DefaultBodyLimit on print is 64 KiB (65536 bytes)
+        let large_string = "a".repeat(70 * 1024);
+        let payload = serde_json::json!({
+            "template": "brother_12mm",
+            "copies": 1,
+            "data": { "key": large_string }
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/print")
+            .header("content-type", "application/json")
+            .body(Body::from(payload.to_string()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "PayloadTooLarge");
+    }
+
+    #[tokio::test]
+    async fn four_already_enveloped_endpoints_have_error_envelope() {
+        let endpoints = [
+            ("PUT", "/api/templates/brother_12mm/group"),
+            ("POST", "/api/batch"),
+            ("POST", "/api/print"),
+            ("POST", "/api/render/label"),
+        ];
+        for (method, uri) in endpoints {
+            let app = build_app();
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from("{ not valid json"))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+            let body = json_response(resp).await;
+            assert_eq!(body["error"]["code"], "InvalidRequest");
+            assert_eq!(body["error"]["message"], "Malformed JSON body");
+            assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+            assert!(body["error"]["details"]["error"].is_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn path_param_invalid_utf8_on_template_source() {
+        let app = build_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/templates/%FF/source")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("content-type")
+            .to_str()
+            .unwrap();
+        assert!(ct.starts_with("application/json"));
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "path_param_invalid");
+    }
+
+    #[tokio::test]
+    async fn path_param_type_mismatch_returns_400_path_param_invalid() {
+        use axum::response::IntoResponse;
+        async fn dummy_numeric_handler(
+            crate::extract::Path(_id): crate::extract::Path<u32>,
+        ) -> axum::response::Response {
+            StatusCode::OK.into_response()
+        }
+        let router =
+            axum::Router::new().route("/items/{id}", axum::routing::get(dummy_numeric_handler));
+        let req = Request::builder()
+            .uri("/items/not-a-number")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "path_param_invalid");
+    }
+
+    #[tokio::test]
+    async fn path_param_server_classified_cases_return_500_internal() {
+        use axum::response::IntoResponse;
+        // Case 1: Route / handler arity disagreement (handler expects 2 params, route defines 1)
+        async fn arity_mismatch_handler(
+            crate::extract::Path((_a, _b)): crate::extract::Path<(u32, u32)>,
+        ) -> axum::response::Response {
+            StatusCode::OK.into_response()
+        }
+        let router =
+            axum::Router::new().route("/items/{id}", axum::routing::get(arity_mismatch_handler));
+        let req = Request::builder()
+            .uri("/items/123")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "Internal");
+        assert_ne!(body["error"]["details"]["reason"], "path_param_invalid");
+
+        // Case 2: Path parameters absent from the request (MissingPathParams)
+        use axum::extract::FromRequestParts;
+        let req = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let (mut parts, _) = req.into_parts();
+        let res = crate::extract::Path::<String>::from_request_parts(&mut parts, &()).await;
+        let err = res.expect_err("should reject missing path params");
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "Internal");
+        assert_ne!(body["error"]["details"]["reason"], "path_param_invalid");
+    }
+
+    #[tokio::test]
+    async fn admission_precedence_with_malformed_body() {
+        // 1. Unauthenticated request with malformed body -> 401 Unauthorized
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
+        let store = Store::open_in_memory().expect("store");
+        let unauthed_app = app(Arc::new(AppState::new(templates, templates_dir, store)));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/printers")
+            .header("content-type", "application/json")
+            .body(Body::from("{ not valid json"))
+            .unwrap();
+        let resp = unauthed_app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "Unauthorized");
+        assert_ne!(body["error"]["details"]["reason"], "json_malformed");
+
+        // 2. Mismatched origin on state-changing request with cookie -> 403 Forbidden
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
+        let store = Store::open_in_memory().expect("store");
+        let state = Arc::new(AppState::new(templates, templates_dir, store));
+        let cookie_app = app(state.clone());
+        let user = state.store().create_user("admin", "hash").await.unwrap();
+        let session_secret = "test-session-secret-for-csrf";
+        state
+            .store()
+            .create_session(
+                &crate::auth::sha256_hex(session_secret),
+                &user.id,
+                "+30 days",
+            )
+            .await
+            .unwrap();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/connections")
+            .header("content-type", "application/json")
+            .header("cookie", format!("labeler_session={session_secret}"))
+            .header("host", "localhost")
+            .header("origin", "http://evil.example.com")
+            .body(Body::from("{ not valid json"))
+            .unwrap();
+        let resp = cookie_app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "Forbidden");
+        assert_ne!(body["error"]["details"]["reason"], "json_malformed");
+
+        // 3. Auth-managed route under LABELER_NO_AUTH=true with malformed body -> 403 Forbidden
+        let (templates, templates_dir) = crate::templates::load_all_for_tests();
+        let store = Store::open_in_memory().expect("store");
+        let no_auth_app = app(Arc::new(
+            AppState::new(templates, templates_dir, store).with_no_auth(true),
+        ));
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/auth/password")
+            .header("content-type", "application/json")
+            .body(Body::from("{ not valid json"))
+            .unwrap();
+        let resp = no_auth_app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "Forbidden");
+        assert_ne!(body["error"]["details"]["reason"], "json_malformed");
+    }
+
+    #[test]
+    fn src_api_binds_json_and_path_from_crate_extract() {
+        let api_src = include_str!("api.rs");
+        assert!(
+            api_src.contains("use crate::extract::{Json, Path}")
+                || (api_src.contains("crate::extract")
+                    && api_src.contains("Json")
+                    && api_src.contains("Path")),
+            "src/api.rs must import Json and Path from crate::extract"
+        );
+
+        let start = api_src
+            .find("use axum::{")
+            .expect("src/api.rs must contain `use axum::{` import block");
+        let rest = &api_src[start..];
+        let end = rest
+            .find("};")
+            .expect("src/api.rs `use axum::{` block must terminate with `};`");
+        let axum_tree = &rest[..end + 2];
+
+        assert!(
+            !axum_tree.contains("Json"),
+            "src/api.rs should not import Json from axum: {axum_tree}"
+        );
+        assert!(
+            !axum_tree.contains("Path"),
+            "src/api.rs should not import Path from axum: {axum_tree}"
+        );
+
+        for line in api_src.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("use axum::") {
+                assert!(
+                    !trimmed.contains("Json"),
+                    "src/api.rs should not import Json from axum: {trimmed}"
+                );
+                assert!(
+                    !trimmed.contains("Path"),
+                    "src/api.rs should not import Path from axum: {trimmed}"
+                );
+            }
+        }
     }
 }
 
