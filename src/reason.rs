@@ -34,7 +34,8 @@ reasons! {
     TemplateValidationFailed => "template_validation_failed",
     TemplateDuplicateId => "template_duplicate_id",
     TemplateGroupInvalid => "template_group_invalid",
-    TemplateGroupUnpatchable => "template_group_unpatchable",
+    TemplateGroupCaseConflict => "template_group_case_conflict",
+    TemplateGroupUnsafePath => "template_group_unsafe_path",
 
     // UnsupportedLayoutItem
     CoordOutOfFrame => "coord_out_of_frame",
@@ -70,6 +71,8 @@ reasons! {
     InterpolationSyntax => "interpolation_syntax",
     TemplateIdInvalid => "template_id_invalid",
     TemplateIdMismatch => "template_id_mismatch",
+    TemplateGroupMismatch => "template_group_mismatch",
+    UnsupportedPrecondition => "unsupported_precondition",
     PrinterIdInvalid => "printer_id_invalid",
     PrinterIdMismatch => "printer_id_mismatch",
     VariableKeyInvalid => "variable_key_invalid",

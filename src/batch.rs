@@ -186,36 +186,39 @@ mod tests {
     use crate::models::{
         Alignment, Dimension, FontSize, Layout, LayoutItem, Placement, Position, Size, SizeValue,
     };
+    use crate::templates::TemplateContent;
     use serde_json::json;
     use std::collections::HashMap;
 
     fn single_tpl() -> TemplateDefinition {
         TemplateDefinition {
             id: "s".to_string(),
-            name: "S".to_string(),
-            description: String::new(),
             group: None,
-            unit: "mm".to_string(),
-            dpi: 200,
-            format: TemplateFormat::Single {
-                width: Dimension::Fixed(20.0).into(),
-                height: Dimension::Fixed(10.0).into(),
-                media_width: None,
+            content: TemplateContent {
+                name: "S".to_string(),
+                description: String::new(),
+                unit: "mm".to_string(),
+                dpi: 200,
+                format: TemplateFormat::Single {
+                    width: Dimension::Fixed(20.0).into(),
+                    height: Dimension::Fixed(10.0).into(),
+                    media_width: None,
+                },
+                params: std::collections::BTreeMap::new(),
+                layout: Layout::Items(vec![LayoutItem::Text {
+                    value: "{message}".to_string(),
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
+                    ),
+                    font_size: FontSize::Fixed(8.0),
+                    font_weight: None,
+                    multiline: false,
+                    alignment: Alignment::default(),
+                    when: None,
+                }]),
+                version: None,
             },
-            params: std::collections::BTreeMap::new(),
-            layout: Layout::Items(vec![LayoutItem::Text {
-                value: "{message}".to_string(),
-                placement: Placement::sized(
-                    Position([0.0, 0.0]),
-                    Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
-                ),
-                font_size: FontSize::Fixed(8.0),
-                font_weight: None,
-                multiline: false,
-                alignment: Alignment::default(),
-                when: None,
-            }]),
-            version: None,
         }
     }
 

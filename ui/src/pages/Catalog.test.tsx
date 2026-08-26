@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../app/toast";
@@ -64,13 +64,13 @@ function stubFetch({ installed = [], createStatus = 200, indexFails = false }: S
     if (url === "/api/templates" && method === "GET") {
       return json({ templates: installed.map((id) => ({ id, name: id, format: { type: "single" } })) });
     }
-    if (url === "/api/templates" && method === "POST") {
+    if (url.startsWith("/api/templates/") && method === "PUT" && !url.endsWith("/source")) {
       if (createStatus === 200) return json({ id: "brother_12mm", name: "Brother 12mm" });
-      const code = createStatus === 409 ? "TemplateExists" : "TemplateInvalid";
+      const code = createStatus === 412 ? "PreconditionFailed" : "TemplateInvalid";
       return json({ error: { code, message: `failed with ${createStatus}` } }, createStatus);
     }
     if (url.endsWith("/source")) {
-      return new Response("id: brother_12mm\nname: Edited locally\n", { status: 200 });
+      return new Response("name: Edited locally\n", { status: 200 });
     }
     if (method === "PUT") return json({ id: "brother_12mm", name: "Brother 12mm" });
     throw new Error(`unexpected fetch ${method} ${url}`);
@@ -132,20 +132,22 @@ describe("Catalog", () => {
     expect(screen.getByRole("button", { name: /reinstall/i })).toBeInTheDocument();
   });
 
-  it("installs by downloading the YAML and POSTing it", async () => {
+  it("installs by downloading the YAML and PUTing it with If-None-Match", async () => {
     vi.stubGlobal("fetch", stubFetch());
     renderCatalog();
-    const install = (await screen.findAllByRole("button", { name: /^install$/i }))[0];
+    await screen.findByText("Brother 12mm");
+    const brotherCard = screen.getByText("Brother 12mm").closest("div.rounded-lg") as HTMLElement;
+    const install = within(brotherCard).getByRole("button", { name: /^install$/i });
     fireEvent.click(install);
     await waitFor(() =>
-      expect(calls.some((c) => c.method === "POST" && c.url === "/api/templates")).toBe(true),
+      expect(calls.some((c) => c.method === "PUT" && c.url.startsWith("/api/templates/brother_12mm"))).toBe(true),
     );
-    const post = calls.find((c) => c.method === "POST")!;
-    expect(post.body).toBe(YAML);
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(put.body).toBe(YAML);
   });
 
-  it("offers replace with a diff when the template already exists (409)", async () => {
-    vi.stubGlobal("fetch", stubFetch({ installed: ["brother_12mm"], createStatus: 409 }));
+  it("offers replace with a diff when the template already exists (412)", async () => {
+    vi.stubGlobal("fetch", stubFetch({ installed: ["brother_12mm"], createStatus: 412 }));
     renderCatalog();
     fireEvent.click((await screen.findAllByRole("button", { name: /reinstall/i }))[0]);
     const dialog = await screen.findByRole("dialog", { name: /replace brother_12mm/i });

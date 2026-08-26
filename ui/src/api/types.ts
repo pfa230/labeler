@@ -36,6 +36,12 @@ export type LayoutItem =
   | { type: "line"; when?: Record<string, string> }
   | { type: "container"; option?: Record<string, string>; when?: Record<string, string>; items: LayoutItem[] };
 
+export interface BrokenTemplate {
+  path: string;
+  reason: string;
+  error?: string;
+}
+
 export interface TemplateSummary {
   id: string;
   name: string;
@@ -47,6 +53,12 @@ export interface TemplateSummary {
   params?: Record<string, ParamSpec>;
   options?: Options;
 }
+
+export interface TemplateListResponse {
+  templates: TemplateSummary[];
+  broken?: BrokenTemplate[];
+}
+
 export interface TemplateDetail {
   id: string;
   name: string;
