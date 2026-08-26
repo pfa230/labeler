@@ -127,8 +127,14 @@ jobs:
       - name: Validate archived changes
         run: openspec validate --archived --no-interactive
 
-      # Same script the pre-commit hook runs, so local and CI cannot disagree.
-      # Tool-agnostic: judges files, never which agent produced them (#191).
+      # The gates are the only check on the review process, so a gate that quietly
+      # stops firing has to fail loudly somewhere. That is what these assert. The
+      # pre-commit hook does not run them; changing a gate script does.
+      - name: Gate tests
+        run: .workflow/gate-tests.sh
+
+      # The same scripts the pre-commit hook runs, on what actually landed.
+      # Tool-agnostic: they judge files, never which agent produced them (#191).
       - name: Review gate
         run: |
           base='${{ github.event.pull_request.base.sha || github.event.before }}'
@@ -137,7 +143,11 @@ jobs:
           fi
           mapfile -t files < <(git diff --name-only "$base" HEAD)
           [ "${#files[@]}" -gt 0 ] || exit 0
+          # Here HEAD IS the commit under test, so the checks must measure against the
+          # base rather than their HEAD default, or they compare a file to itself.
+          export GATE_BASE_REF="$base"
           .workflow/review-gate-check.sh "$PWD" "${files[@]}"
+          .workflow/archive-merge-check.sh "$PWD" "${files[@]}"
 
   build:
     needs: [rust, ui]

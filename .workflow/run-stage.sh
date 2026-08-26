@@ -37,9 +37,11 @@ wt="$root/.worktrees/$issue"
 [ -d "$wt/openspec/changes/$change" ] || { echo "no change '$change' in $wt" >&2; exit 2; }
 
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
-if [ "$role" = "implement" ] && ! "$root/.workflow/review-gate-check.sh" "$wt" src/_probe >/dev/null 2>&1; then
+# --plan-only because this fires before the diff review exists: demanding one here
+# would refuse to start the very run that produces it.
+if [ "$role" = "implement" ] && ! "$root/.workflow/review-gate-check.sh" --plan-only "$wt" src/_probe >/dev/null 2>&1; then
   echo "review gate refuses this change; not starting:" >&2
-  "$root/.workflow/review-gate-check.sh" "$wt" src/_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
+  "$root/.workflow/review-gate-check.sh" --plan-only "$wt" src/_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
   exit 1
 fi
 

@@ -47,9 +47,26 @@ while :; do
   # that gate decides whether code may be committed, this only decides whether to
   # loop again.
   verdict=$(grep -o '^VERDICT:[[:space:]]*[A-Z_]*' "$review_log" 2>/dev/null | tail -1 | sed 's/^VERDICT:[[:space:]]*//')
+  # Every round is preserved, the approving one included. The gate reads
+  # diff-review.md, so a verdict that exists only in an untracked log is a verdict
+  # nothing can check (#223).
+  cp "$review_log" "$wt/openspec/changes/$change/diff-review-$round.md" 2>/dev/null || true
+
   case "$verdict" in
     APPROVE)
+      dr="$wt/openspec/changes/$change/diff-review.md"
+      {
+        printf '# Diff review\n\n'
+        printf 'AUTHOR: %s\n' "$implementer"
+        printf 'REVIEWER: %s\n' "$reviewer"
+        printf 'VERDICT: APPROVE\n'
+        printf 'ROUNDS: %s\n\n' "$round"
+        # The body's own verdict line is dropped: the canonical one is above, and the
+        # gate refuses a file carrying two.
+        grep -v '^VERDICT:' "$review_log"
+      } > "$dr"
       say "APPROVE after $round round(s)"
+      echo "Recorded in openspec/changes/$change/diff-review.md."
       echo "Not committed, not archived, not merged: those are separate steps."
       exit 0 ;;
     REVISE) ;;
@@ -65,9 +82,6 @@ while :; do
     echo "converge in $max_rounds rounds wants a human, not another round." >&2
     exit 6
   fi
-
-  # Preserve this round's review before the next one overwrites the log.
-  cp "$review_log" "$wt/openspec/changes/$change/diff-review-$round.md" 2>/dev/null || true
 
   say "fix round $round: $implementer"
   "$stage" implement "$implementer" "$change" --resume "$(cat "$review_log")" \
