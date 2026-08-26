@@ -1,7 +1,7 @@
 use crate::errors::TemplateError;
 use crate::models::LayoutItem;
 use crate::raw::{LayoutItemRaw, TemplateDefinitionRaw};
-use crate::templates::TemplateDefinition;
+use crate::templates::TemplateContent;
 
 pub fn parse_nodes(src: &str) -> Result<Vec<LayoutItem>, TemplateError> {
     let deserializer = serde_yaml_ng::Deserializer::from_str(src);
@@ -22,7 +22,7 @@ pub fn parse_nodes(src: &str) -> Result<Vec<LayoutItem>, TemplateError> {
         .collect()
 }
 
-pub fn parse_template(src: &str) -> Result<TemplateDefinition, TemplateError> {
+pub fn parse_template(src: &str) -> Result<TemplateContent, TemplateError> {
     let deserializer = serde_yaml_ng::Deserializer::from_str(src);
     let raw: TemplateDefinitionRaw =
         serde_path_to_error::deserialize(deserializer).map_err(|err| TemplateError::Yaml {
@@ -30,7 +30,7 @@ pub fn parse_template(src: &str) -> Result<TemplateDefinition, TemplateError> {
             msg: err.to_string(),
         })?;
 
-    TemplateDefinition::try_from(raw)
+    TemplateContent::try_from(raw)
 }
 
 #[cfg(test)]

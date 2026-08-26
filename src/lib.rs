@@ -8,6 +8,7 @@ pub mod driver;
 pub mod egress;
 pub mod errors;
 pub mod extract;
+pub mod fs_safe;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
@@ -946,7 +947,10 @@ mod http_tests {
         );
         let body = bytes_response(response).await;
         let body = String::from_utf8(body).expect("utf8 body");
-        assert!(body.contains("id: brother_24mm_qr"), "body: {body}");
+        assert!(
+            body.contains("name: Brother 24mm Continuous Label (QR + text)"),
+            "body: {body}"
+        );
     }
 
     #[tokio::test]
@@ -2126,14 +2130,13 @@ mod http_tests {
         (with_auth(app(state.clone())), state)
     }
 
-    fn template_yaml_for(id: &str, name: &str) -> String {
-        template_yaml(id).replace(&format!("name: {id}"), &format!("name: {name}"))
+    fn template_yaml_for(name: &str, alt_name: &str) -> String {
+        template_yaml(name).replace(&format!("name: {name}"), &format!("name: {alt_name}"))
     }
 
-    fn template_yaml(id: &str) -> String {
+    fn template_yaml(name: &str) -> String {
         format!(
-            r#"id: {id}
-name: {id}
+            r#"name: {name}
 description: d
 unit: mm
 dpi: 300
@@ -2157,9 +2160,9 @@ layout:
         let app = build_app_in(&dir);
         let response = app
             .oneshot(yaml_post(
-                "/api/templates",
-                "POST",
-                "id: [not a string".to_string(),
+                "/api/templates/bad",
+                "PUT",
+                "name: [not a string".to_string(),
             ))
             .await
             .expect("request");
@@ -2174,9 +2177,9 @@ layout:
     async fn unvalidatable_template_carries_a_different_reason() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
-        let yaml = template_yaml("v1").replace("id: v1", r#"id: """#);
+        let yaml = template_yaml("v1").replace("size: [20.0, 5.0]", "size: [40.0, 5.0]");
         let response = app
-            .oneshot(yaml_post("/api/templates", "POST", yaml))
+            .oneshot(yaml_post("/api/templates/v1", "PUT", yaml))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -2205,7 +2208,7 @@ layout:
         std::fs::remove_dir_all(&dir).expect("remove templates dir");
 
         let response = app
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("wf1")))
+            .oneshot(yaml_post("/api/templates/wf1", "PUT", template_yaml("wf1")))
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -2284,7 +2287,7 @@ layout:
         assert_eq!(template_count(&app).await, 1);
 
         // Write a bad file alongside the good one.
-        std::fs::write(dir.join("bad.yaml"), "id: bad\nunit: nope\n").unwrap();
+        std::fs::write(dir.join("bad.yaml"), "unit: nope\n").unwrap();
         let response = app
             .clone()
             .oneshot(
@@ -2310,7 +2313,7 @@ layout:
         assert_eq!(list["templates"].as_array().unwrap().len(), 1);
         let broken = list["broken"].as_array().unwrap();
         assert_eq!(broken.len(), 1);
-        assert_eq!(broken[0]["filename"], "bad.yaml");
+        assert_eq!(broken[0]["path"], "bad.yaml");
         assert!(broken[0]["error"].as_str().unwrap().contains("bad.yaml"));
 
         std::fs::remove_dir_all(&dir).ok();
@@ -2337,11 +2340,12 @@ layout:
     #[tokio::test]
     async fn reload_with_duplicate_id_succeeds_and_quarantines_the_collider() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("a.yaml"), template_yaml("dup")).unwrap();
+        std::fs::write(dir.join("dup.yaml"), template_yaml("dup")).unwrap();
         let app = build_app_in(&dir);
         assert_eq!(template_count(&app).await, 1);
 
-        std::fs::write(dir.join("z.yaml"), template_yaml("dup")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/dup.yaml"), template_yaml("dup")).unwrap();
         let body = reload(&app).await;
         assert_eq!(body["count"], 1);
         assert_eq!(body["broken_count"], 1);
@@ -2352,10 +2356,10 @@ layout:
         assert_eq!(templates[0]["id"], "dup");
         let broken = list["broken"].as_array().unwrap();
         assert_eq!(broken.len(), 1);
-        assert_eq!(broken[0]["filename"], "z.yaml");
+        assert_eq!(broken[0]["path"], "sub/dup.yaml");
         let error = broken[0]["error"].as_str().unwrap();
         assert!(
-            error.contains("dup") && error.contains("a.yaml"),
+            error.contains("dup") && error.contains("dup.yaml"),
             "broken entry names the id and the file it collides with: {error}"
         );
 
@@ -2367,14 +2371,15 @@ layout:
     #[tokio::test]
     async fn removing_the_colliding_file_clears_the_broken_entry() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("a.yaml"), template_yaml("dup")).unwrap();
-        std::fs::write(dir.join("z.yaml"), template_yaml("dup")).unwrap();
+        std::fs::write(dir.join("dup.yaml"), template_yaml("dup")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/dup.yaml"), template_yaml("dup")).unwrap();
         // The app builds at all only because a duplicate id no longer fails the load.
         let app = build_app_in(&dir);
         let (_, list) = get_json(&app, "/api/templates").await;
         assert_eq!(list["broken"].as_array().unwrap().len(), 1);
 
-        std::fs::remove_file(dir.join("z.yaml")).unwrap();
+        std::fs::remove_file(dir.join("sub/dup.yaml")).unwrap();
         let body = reload(&app).await;
         assert_eq!(body["count"], 1);
         assert_eq!(body["broken_count"], 0);
@@ -2425,25 +2430,27 @@ layout:
     #[tokio::test]
     async fn template_list_group_filtering_and_exposure() {
         let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("Warehouse")).unwrap();
+        std::fs::create_dir_all(dir.join("Shipping")).unwrap();
         // 1. Grouped template "t_wh1" in "Warehouse"
         std::fs::write(
-            dir.join("t_wh1.yaml"),
-            "id: t_wh1\nname: Warehouse 1\ngroup: Warehouse\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+            dir.join("Warehouse/t_wh1.yaml"),
+            "name: Warehouse 1\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
         ).unwrap();
         // 2. Grouped template "t_wh2" in "Warehouse"
         std::fs::write(
-            dir.join("t_wh2.yaml"),
-            "id: t_wh2\nname: Warehouse 2\ngroup: Warehouse\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+            dir.join("Warehouse/t_wh2.yaml"),
+            "name: Warehouse 2\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
         ).unwrap();
         // 3. Grouped template "t_ship" in "Shipping"
         std::fs::write(
-            dir.join("t_ship.yaml"),
-            "id: t_ship\nname: Shipping\ngroup: Shipping\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+            dir.join("Shipping/t_ship.yaml"),
+            "name: Shipping\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
         ).unwrap();
         // 4. Ungrouped template "t_ungrouped"
         std::fs::write(
             dir.join("t_ungrouped.yaml"),
-            "id: t_ungrouped\nname: Ungrouped\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
+            "name: Ungrouped\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n",
         ).unwrap();
         // 5. Broken template "bad.yaml"
         std::fs::write(dir.join("bad.yaml"), "not valid yaml : [").unwrap();
@@ -2507,7 +2514,7 @@ layout:
     #[tokio::test]
     async fn template_move_group_http_endpoint() {
         let dir = temp_templates_dir();
-        let t1_yaml = "# Template 1 comment\nid: t1\nname: Template 1\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 18\nlayout: []\n";
+        let t1_yaml = "# Template 1 comment\nname: Template 1\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 18\nlayout: []\n";
         let t1_path = dir.join("t1.yaml");
         std::fs::write(&t1_path, t1_yaml).unwrap();
 
@@ -2530,13 +2537,16 @@ layout:
         let detail = json_response(res).await;
         assert_eq!(detail["id"], "t1");
         assert_eq!(detail["group"], "Warehouse");
-        let source_after = std::fs::read_to_string(&t1_path).unwrap();
-        assert!(source_after.contains("group: Warehouse"));
-        assert!(source_after.starts_with(
-            "# Template 1 comment\nid: t1\nname: Template 1\ngroup: Warehouse\nunit: mm"
-        ));
+        assert!(!t1_path.exists(), "original ungrouped file was moved");
+        let moved_path = dir.join("Warehouse/t1.yaml");
+        assert!(moved_path.exists(), "file now in Warehouse/t1.yaml");
+        let source_after = std::fs::read_to_string(&moved_path).unwrap();
+        assert_eq!(
+            source_after, t1_yaml,
+            "file content is unmodified (no group injected in YAML)"
+        );
 
-        // 2. Idempotent set to "Warehouse" -> 200 OK, byte-identical file
+        // 2. Idempotent set to "Warehouse" -> 200 OK, file remains
         let res = app
             .clone()
             .oneshot(
@@ -2552,8 +2562,7 @@ layout:
         assert_eq!(res.status(), StatusCode::OK);
         let detail = json_response(res).await;
         assert_eq!(detail["group"], "Warehouse");
-        let source_idem = std::fs::read_to_string(&t1_path).unwrap();
-        assert_eq!(source_idem, source_after);
+        assert!(moved_path.exists());
 
         // 3. Move to "Shipping" -> 200 OK
         let res = app
@@ -2571,6 +2580,13 @@ layout:
         assert_eq!(res.status(), StatusCode::OK);
         let detail = json_response(res).await;
         assert_eq!(detail["group"], "Shipping");
+        assert!(!moved_path.exists());
+        let shipping_path = dir.join("Shipping/t1.yaml");
+        assert!(shipping_path.exists());
+        assert!(
+            dir.join("Warehouse").exists(),
+            "source directory is left in place"
+        );
 
         // 4. Clear group with null -> 200 OK
         let res = app
@@ -2588,10 +2604,14 @@ layout:
         assert_eq!(res.status(), StatusCode::OK);
         let detail = json_response(res).await;
         assert!(detail.get("group").is_none());
-        let source_cleared = std::fs::read_to_string(&t1_path).unwrap();
-        assert_eq!(source_cleared, t1_yaml);
+        assert!(t1_path.exists());
+        assert!(!shipping_path.exists());
+        assert!(
+            dir.join("Shipping").exists(),
+            "source directory is left in place"
+        );
 
-        // 5. Idempotent clear -> 200 OK, byte-identical
+        // 5. Idempotent clear -> 200 OK
         let res = app
             .clone()
             .oneshot(
@@ -2607,7 +2627,7 @@ layout:
         assert_eq!(res.status(), StatusCode::OK);
         let detail = json_response(res).await;
         assert!(detail.get("group").is_none());
-        assert_eq!(std::fs::read_to_string(&t1_path).unwrap(), t1_yaml);
+        assert!(t1_path.exists());
 
         // 6. Unknown id -> 404
         let res = app
@@ -2639,23 +2659,7 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
 
-        // 7b. A body omitting the key entirely is malformed, not a clear. Before #164's diff review
-        // `group` carried a serde default, so `{}` returned 200 and silently ungrouped the
-        // template: a destructive edit from a body the contract rejects.
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri("/api/templates/t1/group")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"group":"Warehouse"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let grouped_source = std::fs::read_to_string(&t1_path).unwrap();
+        // 7b. Body omitting group key -> 400 Bad Request
         let res = app
             .clone()
             .oneshot(
@@ -2669,14 +2673,8 @@ layout:
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(
-            std::fs::read_to_string(&t1_path).unwrap(),
-            grouped_source,
-            "a body without the group key must not touch the file"
-        );
 
         // 8. Invalid group name (empty) -> 422 Unprocessable Entity, file unchanged
-        let pre_invalid = std::fs::read_to_string(&t1_path).unwrap();
         let res = app
             .clone()
             .oneshot(
@@ -2692,43 +2690,161 @@ layout:
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let err = json_response(res).await;
         assert_eq!(err["error"]["details"]["reason"], "template_group_invalid");
-        assert_eq!(std::fs::read_to_string(&t1_path).unwrap(), pre_invalid);
+        assert!(t1_path.exists());
 
-        // 9. Unpatchable template (flow mapping) -> 422 Unprocessable Entity, file unchanged
-        let flow_yaml = "{id: flow_t, name: Flow, unit: mm, dpi: 200, format: {type: single, width: 50, height: 18}, layout: []}\n";
-        let flow_path = dir.join("flow_t.yaml");
-        std::fs::write(&flow_path, flow_yaml).unwrap();
-        let _ = app
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_groups_list_and_delete_endpoint() {
+        let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("Shipping/Pallets/Euro")).unwrap();
+        std::fs::create_dir_all(dir.join("Warehouse")).unwrap();
+        std::fs::create_dir_all(dir.join(".hidden/Sub")).unwrap();
+        std::fs::create_dir_all(dir.join("invalid:group")).unwrap();
+        std::fs::write(
+            dir.join("Shipping/Pallets/Euro/t1.yaml"),
+            template_yaml("t1"),
+        )
+        .unwrap();
+        let app = build_app_in(&dir);
+
+        // 1. GET /api/template-groups
+        let resp = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .method("POST")
-                    .uri("/api/templates/reload")
+                    .uri("/api/template-groups")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let groups: Vec<String> = serde_json::from_value(json_response(resp).await).unwrap();
+        assert_eq!(
+            groups,
+            vec![
+                "Shipping".to_string(),
+                "Shipping/Pallets".to_string(),
+                "Shipping/Pallets/Euro".to_string(),
+                "Warehouse".to_string()
+            ]
+        );
 
-        let res = app
+        // 2. DELETE non-empty group -> 409
+        let resp = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .method("PUT")
-                    .uri("/api/templates/flow_t/group")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"group":"Warehouse"}"#))
+                    .method("DELETE")
+                    .uri("/api/template-groups/Shipping")
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let err = json_response(res).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        // 3. DELETE with malformed percent sequence -> 400
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/template-groups/Shipping%ZZ")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 4. DELETE non-existent / case-mismatched group -> 404
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/template-groups/warehouse")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // 5. DELETE empty group -> 204
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/template-groups/Warehouse")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert!(!dir.join("Warehouse").exists());
+
+        // 6. GET /api/template-groups after deletion
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/template-groups")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let groups: Vec<String> = serde_json::from_value(json_response(resp).await).unwrap();
         assert_eq!(
-            err["error"]["details"]["reason"],
-            "template_group_unpatchable"
+            groups,
+            vec![
+                "Shipping".to_string(),
+                "Shipping/Pallets".to_string(),
+                "Shipping/Pallets/Euro".to_string()
+            ]
         );
-        assert_eq!(std::fs::read_to_string(&flow_path).unwrap(), flow_yaml);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_list_nested_group_filtering() {
+        let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("Shipping/Pallets")).unwrap();
+        std::fs::create_dir_all(dir.join("Shipping2")).unwrap();
+        std::fs::write(dir.join("Shipping/s1.yaml"), template_yaml("s1")).unwrap();
+        std::fs::write(dir.join("Shipping/Pallets/p1.yaml"), template_yaml("p1")).unwrap();
+        std::fs::write(dir.join("Shipping2/s2.yaml"), template_yaml("s2")).unwrap();
+        std::fs::write(dir.join("root.yaml"), template_yaml("root")).unwrap();
+        let app = build_app_in(&dir);
+
+        // Exact group query
+        let (_, resp) = get_json(&app, "/api/templates?group=Shipping").await;
+        let ids: Vec<&str> = resp["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["s1"]);
+
+        // Nested group query
+        let (_, resp) = get_json(&app, "/api/templates?group=Shipping&nested=true").await;
+        let mut ids: Vec<&str> = resp["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["id"].as_str().unwrap())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["p1", "s1"]);
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2750,7 +2866,11 @@ layout:
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("new1")))
+            .oneshot(yaml_post(
+                "/api/templates/new1",
+                "PUT",
+                template_yaml("new1"),
+            ))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CREATED);
@@ -2864,7 +2984,7 @@ layout:
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("f1")))
+            .oneshot(yaml_post("/api/templates/f1", "PUT", template_yaml("f1")))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CREATED);
@@ -2897,7 +3017,7 @@ layout:
         std::fs::write(dir.join("s1.yaml"), template_yaml("s1")).unwrap();
         let app = build_app_in(&dir);
 
-        std::fs::write(dir.join("bad.yaml"), "id: bad\nunit: nope\n").unwrap();
+        std::fs::write(dir.join("bad.yaml"), "unit: nope\n").unwrap();
         let resp = app
             .clone()
             .oneshot(
@@ -2917,7 +3037,7 @@ layout:
         );
         assert_eq!(template_count(&app).await, 0);
         let (_, list) = get_json(&app, "/api/templates").await;
-        assert_eq!(list["broken"][0]["filename"], "bad.yaml");
+        assert_eq!(list["broken"][0]["path"], "bad.yaml");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2952,12 +3072,10 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// A template's filename is only conventionally its id: the registry keys on the `id` inside the
-    /// YAML. Every file-backed endpoint must therefore act on the file the registry actually loaded.
     #[tokio::test]
-    async fn file_endpoints_resolve_a_template_whose_filename_differs_from_its_id() {
+    async fn file_endpoints_create_and_replace_and_delete_template() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("custom.yaml"), template_yaml("y2")).unwrap();
+        std::fs::write(dir.join("y2.yaml"), template_yaml("y2")).unwrap();
         let app = build_app_in(&dir);
 
         let resp = app
@@ -2972,9 +3090,6 @@ layout:
             .expect("request");
         assert_eq!(resp.status(), StatusCode::OK);
 
-        // PUT must overwrite custom.yaml in place. A y2.yaml sibling would give two files one id,
-        // and the reload inside the handler would refuse one of them as a duplicate, leaving a
-        // broken entry behind and making which file serves y2 depend on filename order (#181).
         let body200 = template_yaml("y2").replace("dpi: 300", "dpi: 200");
         let resp = app
             .clone()
@@ -2982,19 +3097,22 @@ layout:
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::OK);
-        assert!(
-            !dir.join("y2.yaml").exists(),
-            "PUT created a duplicate-id sibling"
-        );
         assert_eq!(template_count(&app).await, 1);
 
-        // POST for an id the registry already holds is a conflict whatever the file is called.
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("y2")))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/y2")
+                    .header("content-type", "text/yaml")
+                    .header("if-none-match", "*")
+                    .body(Body::from(template_yaml("y2")))
+                    .unwrap(),
+            )
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
 
         let resp = app
             .clone()
@@ -3009,7 +3127,7 @@ layout:
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         assert!(
-            !dir.join("custom.yaml").exists(),
+            !dir.join("y2.yaml").exists(),
             "the backing file is still on disk"
         );
 
@@ -3017,28 +3135,29 @@ layout:
     }
 
     #[tokio::test]
-    async fn template_create_duplicate_returns_409() {
+    async fn template_create_duplicate_returns_412() {
         let dir = temp_templates_dir();
         std::fs::write(dir.join("dup.yaml"), template_yaml("dup")).unwrap();
         let app = build_app_in(&dir);
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("dup")))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/dup")
+                    .header("content-type", "text/yaml")
+                    .header("if-none-match", "*")
+                    .body(Body::from(template_yaml("dup")))
+                    .unwrap(),
+            )
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateExists");
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
         std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The filename half of the create guard: an unservable file occupying `{id}.yaml` blocks the
     /// create by its name alone, since its content claims no id the registry could serve.
-    ///
-    /// This does not exercise the no-replace publish, and passes against the pre-change code too:
-    /// the destination is planted before the request, so the `exists()` check answers first. The
-    /// publish primitive is pinned where the race is actually decidable, in
-    /// `publish_new_template_file_refuses_an_occupied_name` (`api.rs`).
     #[tokio::test]
     async fn template_create_is_blocked_by_an_unservable_file_at_its_destination() {
         let dir = temp_templates_dir();
@@ -3048,17 +3167,19 @@ layout:
 
         let resp = app
             .clone()
-            .oneshot(yaml_post(
-                "/api/templates",
-                "POST",
-                template_yaml("planted"),
-            ))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/planted")
+                    .header("content-type", "text/yaml")
+                    .header("if-none-match", "*")
+                    .body(Body::from(template_yaml("planted")))
+                    .unwrap(),
+            )
             .await
             .expect("request");
 
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateExists");
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
         assert_eq!(
             std::fs::read_to_string(dir.join("planted.yaml")).unwrap(),
             "not: a valid template\n",
@@ -3073,23 +3194,24 @@ layout:
     async fn template_create_sees_a_file_copied_in_since_the_last_reload() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
-        // After the app is built, so the registry does not hold `late`, and under a filename the
-        // destination check cannot catch either.
-        std::fs::write(dir.join("aaa.yaml"), template_yaml("late")).unwrap();
+        // After the app is built, so the in-memory registry does not hold `late`.
+        std::fs::write(dir.join("late.yaml"), template_yaml("late")).unwrap();
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("late")))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/late")
+                    .header("content-type", "text/yaml")
+                    .header("if-none-match", "*")
+                    .body(Body::from(template_yaml("late")))
+                    .unwrap(),
+            )
             .await
             .expect("request");
 
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateExists");
-        assert!(
-            !dir.join("late.yaml").exists(),
-            "nothing was written for the refused create"
-        );
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3100,10 +3222,11 @@ layout:
     #[tokio::test]
     async fn template_replace_writes_the_current_winner_after_a_collider_appears() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("moved")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/moved.yaml"), template_yaml("moved")).unwrap();
         let app = build_app_in(&dir);
-        // Sorts before zzz.yaml, so the next load hands `moved` to this file instead.
-        std::fs::write(dir.join("aaa.yaml"), template_yaml("moved")).unwrap();
+        // Sorts before zzz/moved.yaml, so the next load hands `moved` to this file instead.
+        std::fs::write(dir.join("moved.yaml"), template_yaml("moved")).unwrap();
 
         let edited = template_yaml("moved").replace("name: moved", "name: edited by the caller");
         let resp = app
@@ -3119,12 +3242,12 @@ layout:
             "the response describes the caller's own write, never the other file"
         );
         assert_eq!(
-            std::fs::read_to_string(dir.join("aaa.yaml")).unwrap(),
+            std::fs::read_to_string(dir.join("moved.yaml")).unwrap(),
             edited,
             "the write went to the file that serves the id now"
         );
         assert_eq!(
-            std::fs::read_to_string(dir.join("zzz.yaml")).unwrap(),
+            std::fs::read_to_string(dir.join("zzz/moved.yaml")).unwrap(),
             template_yaml("moved"),
             "the file that lost the id is left alone"
         );
@@ -3134,16 +3257,13 @@ layout:
     /// A duplicate that sorts *after* the written file never displaces it, so the write succeeds
     /// normally and the duplicate is just a refused sibling. Returning 409 here would be a lie about
     /// which file serves the id (#184, round-4 review).
-    ///
-    /// This passed before the change too, since there was no confirmation to get wrong. It guards
-    /// the confirmation against the round-4 defect: keying on "a duplicate exists" rather than on
-    /// the written file having lost the id turns this 200 into a 409.
     #[tokio::test]
     async fn template_replace_ignores_a_later_sorting_duplicate() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("aaa.yaml"), template_yaml("kept")).unwrap();
+        std::fs::write(dir.join("kept.yaml"), template_yaml("kept")).unwrap();
         let app = build_app_in(&dir);
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("kept")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/kept.yaml"), template_yaml("kept")).unwrap();
 
         let edited = template_yaml("kept").replace("name: kept", "name: still mine");
         let resp = app
@@ -3156,7 +3276,7 @@ layout:
         let body = json_response(resp).await;
         assert_eq!(body["name"], "still mine", "the caller's own content");
         assert_eq!(
-            std::fs::read_to_string(dir.join("aaa.yaml")).unwrap(),
+            std::fs::read_to_string(dir.join("kept.yaml")).unwrap(),
             edited
         );
         std::fs::remove_dir_all(&dir).ok();
@@ -3165,18 +3285,16 @@ layout:
     /// The whole of #184, end to end: a colliding file that sorts earlier lands *between* the write
     /// and the reload, so the id the caller addressed is served from another file by the time the
     /// handler answers. Before this change the handler returned `200` with that other file's body.
-    ///
-    /// This is the one interleaving a request cannot produce on its own, so it is staged with the
-    /// test-only mid-write hook. Without it, no endpoint test fails when a handler stops confirming.
     #[tokio::test]
     async fn template_replace_returns_409_when_the_id_moves_between_write_and_reload() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("moved")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/moved.yaml"), template_yaml("moved")).unwrap();
         let (app, state) = build_app_in_with_state(&dir);
 
-        let planted = dir.join("aaa.yaml");
+        let planted = dir.join("moved.yaml");
         state.set_mid_write_hook(move || {
-            // Sorts before zzz.yaml, so the reload that follows hands `moved` to this file.
+            // Sorts before zzz/moved.yaml, so the reload that follows hands `moved` to this file.
             std::fs::write(&planted, template_yaml_for("moved", "planted")).unwrap();
         });
 
@@ -3197,9 +3315,9 @@ layout:
             .map(|v| v.as_str().unwrap())
             .collect();
         files.sort_unstable();
-        assert_eq!(files, vec!["aaa.yaml", "zzz.yaml"]);
+        assert_eq!(files, vec!["moved.yaml", "zzz/moved.yaml"]);
         assert_eq!(
-            std::fs::read_to_string(dir.join("zzz.yaml")).unwrap(),
+            std::fs::read_to_string(dir.join("zzz/moved.yaml")).unwrap(),
             edited,
             "the caller's write is kept in the file it addressed"
         );
@@ -3219,9 +3337,13 @@ layout:
             .as_array()
             .expect("broken array")
             .iter()
-            .map(|b| b["filename"].as_str().unwrap())
+            .map(|b| b["path"].as_str().unwrap())
             .collect();
-        assert_eq!(broken, vec!["zzz.yaml"], "the caller's file is quarantined");
+        assert_eq!(
+            broken,
+            vec!["zzz/moved.yaml"],
+            "the caller's file is quarantined"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3271,13 +3393,19 @@ layout:
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("racer")))
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/racer")
+                    .header("content-type", "text/yaml")
+                    .header("if-none-match", "*")
+                    .body(Body::from(template_yaml("racer")))
+                    .unwrap(),
+            )
             .await
             .expect("request");
 
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateExists");
+        assert_eq!(resp.status(), StatusCode::PRECONDITION_FAILED);
         assert_eq!(
             std::fs::read_to_string(dir.join("racer.yaml")).unwrap(),
             "someone else's file\n",
@@ -3286,21 +3414,27 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The same interleaving through `POST`: the pre-write re-read finds the id free, the collider
+    /// The same interleaving through `PUT`: the pre-write re-read finds the id free, the collider
     /// lands while the file is being published, and the create must not answer `201` describing it.
     #[tokio::test]
     async fn template_create_returns_409_when_the_id_moves_between_write_and_reload() {
         let dir = temp_templates_dir();
         let (app, state) = build_app_in_with_state(&dir);
 
-        let planted = dir.join("aaa.yaml");
+        let planted_dir = dir.join("aaa");
+        std::fs::create_dir_all(&planted_dir).unwrap();
+        let planted = planted_dir.join("late.yaml");
         state.set_mid_write_hook(move || {
             std::fs::write(&planted, template_yaml_for("late", "planted")).unwrap();
         });
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("late")))
+            .oneshot(yaml_post(
+                "/api/templates/late",
+                "PUT",
+                template_yaml("late"),
+            ))
             .await
             .expect("request");
 
@@ -3319,10 +3453,13 @@ layout:
     #[tokio::test]
     async fn template_group_update_returns_409_when_the_id_moves_between_write_and_reload() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("grouped")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/grouped.yaml"), template_yaml("grouped")).unwrap();
         let (app, state) = build_app_in_with_state(&dir);
 
-        let planted = dir.join("aaa.yaml");
+        let planted_dir = dir.join("AAA");
+        std::fs::create_dir_all(&planted_dir).unwrap();
+        let planted = planted_dir.join("grouped.yaml");
         state.set_mid_write_hook(move || {
             std::fs::write(&planted, template_yaml_for("grouped", "planted")).unwrap();
         });
@@ -3343,12 +3480,6 @@ layout:
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = json_response(resp).await;
         assert_eq!(body["error"]["code"], "TemplateIdCollision");
-        assert!(
-            std::fs::read_to_string(dir.join("zzz.yaml"))
-                .unwrap()
-                .contains("group: Warehouse"),
-            "the patch stays in the file it was applied to"
-        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3358,9 +3489,10 @@ layout:
     #[tokio::test]
     async fn template_group_update_writes_the_current_winner() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("grouped")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/grouped.yaml"), template_yaml("grouped")).unwrap();
         let app = build_app_in(&dir);
-        std::fs::write(dir.join("aaa.yaml"), template_yaml("grouped")).unwrap();
+        std::fs::write(dir.join("grouped.yaml"), template_yaml("grouped")).unwrap();
 
         let resp = app
             .clone()
@@ -3378,45 +3510,8 @@ layout:
         assert_eq!(resp.status(), StatusCode::OK);
         let body = json_response(resp).await;
         assert_eq!(body["group"], "Warehouse");
-        assert!(
-            std::fs::read_to_string(dir.join("aaa.yaml"))
-                .unwrap()
-                .contains("group: Warehouse"),
-            "the file serving the id was the one patched"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A `PUT` for an id whose file is gone by request time is a `404`, decided by the pre-write
-    /// re-read before anything is written: the registry no longer holds the id.
-    ///
-    /// The write-then-vanish `500` arm is a different case and is not reachable from here, because
-    /// it needs the file to disappear *between* the write and the reload. It is pinned in
-    /// `confirm_written_template_reports_a_renamed_file_as_a_lost_write` (`api.rs`).
-    #[tokio::test]
-    async fn template_replace_for_a_vanished_file_returns_404() {
-        let dir = temp_templates_dir();
-        std::fs::write(dir.join("gone.yaml"), template_yaml("gone")).unwrap();
-        let app = build_app_in(&dir);
-        // Stand in for the file being removed between the write and the reload: the registry then
-        // serves the id from nothing at all.
-        std::fs::remove_file(dir.join("gone.yaml")).unwrap();
-
-        let resp = app
-            .clone()
-            .oneshot(yaml_post(
-                "/api/templates/gone",
-                "PUT",
-                template_yaml("gone"),
-            ))
-            .await
-            .expect("request");
-
-        assert_eq!(
-            resp.status(),
-            StatusCode::NOT_FOUND,
-            "the id is gone from the re-read registry"
-        );
+        assert!(dir.join("Warehouse/grouped.yaml").exists());
+        assert!(!dir.join("grouped.yaml").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3425,12 +3520,10 @@ layout:
     #[tokio::test]
     async fn template_delete_is_refused_while_the_id_collides() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("aaa.yaml"), template_yaml("contested")).unwrap();
+        std::fs::write(dir.join("contested.yaml"), template_yaml("contested")).unwrap();
         let app = build_app_in(&dir);
-        // Added after the app is built, so the refusal has to read the directory to see it, and so
-        // that reading must not become the served set: `unrelated` is on disk but not yet served,
-        // and a refused delete must leave it that way (#183).
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("contested")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/contested.yaml"), template_yaml("contested")).unwrap();
         std::fs::write(dir.join("unrelated.yaml"), template_yaml("unrelated")).unwrap();
         let served_before = template_ids(&app).await;
         assert_eq!(
@@ -3477,7 +3570,7 @@ layout:
         files.sort_unstable();
         assert_eq!(
             files,
-            vec!["aaa.yaml", "zzz.yaml"],
+            vec!["contested.yaml", "zzz/contested.yaml"],
             "exactly the files declaring the id, and no others"
         );
         assert!(
@@ -3487,8 +3580,11 @@ layout:
                 .contains_key("reason"),
             "a 409 carries no details.reason key at all (ADR-0052)"
         );
-        assert!(dir.join("aaa.yaml").exists(), "nothing was unlinked");
-        assert!(dir.join("zzz.yaml").exists(), "nothing was unlinked");
+        assert!(dir.join("contested.yaml").exists(), "nothing was unlinked");
+        assert!(
+            dir.join("zzz/contested.yaml").exists(),
+            "nothing was unlinked"
+        );
 
         let resp = app
             .clone()
@@ -3571,15 +3667,13 @@ layout:
 
     /// The refusal is scoped to the id being deleted: a file refused for some *other* id is a
     /// pre-existing condition of the directory and must not block an unrelated delete (#183).
-    ///
-    /// Passes against the pre-change code as well, where nothing blocked a delete at all; it exists
-    /// to keep the new refusal from over-reaching.
     #[tokio::test]
     async fn template_delete_succeeds_beside_an_unrelated_refused_file() {
         let dir = temp_templates_dir();
         std::fs::write(dir.join("target.yaml"), template_yaml("target")).unwrap();
-        std::fs::write(dir.join("aaa.yaml"), template_yaml("other")).unwrap();
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("other")).unwrap();
+        std::fs::write(dir.join("other.yaml"), template_yaml("other")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/other.yaml"), template_yaml("other")).unwrap();
         let app = build_app_in(&dir);
 
         let resp = app
@@ -3605,11 +3699,12 @@ layout:
     #[tokio::test]
     async fn template_delete_succeeds_once_the_collider_is_gone() {
         let dir = temp_templates_dir();
-        std::fs::write(dir.join("aaa.yaml"), template_yaml("fixable")).unwrap();
-        std::fs::write(dir.join("zzz.yaml"), template_yaml("fixable")).unwrap();
+        std::fs::write(dir.join("fixable.yaml"), template_yaml("fixable")).unwrap();
+        std::fs::create_dir_all(dir.join("zzz")).unwrap();
+        std::fs::write(dir.join("zzz/fixable.yaml"), template_yaml("fixable")).unwrap();
         let app = build_app_in(&dir);
 
-        std::fs::remove_file(dir.join("zzz.yaml")).unwrap();
+        std::fs::remove_file(dir.join("zzz/fixable.yaml")).unwrap();
         let resp = app
             .clone()
             .oneshot(
@@ -3623,7 +3718,7 @@ layout:
             .expect("request");
 
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-        assert!(!dir.join("aaa.yaml").exists());
+        assert!(!dir.join("fixable.yaml").exists());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3634,9 +3729,9 @@ layout:
         let resp = app
             .clone()
             .oneshot(yaml_post(
-                "/api/templates",
-                "POST",
-                "id: x\nunit: nope\n".to_string(),
+                "/api/templates/x",
+                "PUT",
+                "name: x\nunit: nope\n".to_string(),
             ))
             .await
             .expect("request");
@@ -3650,46 +3745,15 @@ layout:
     async fn template_create_unsafe_id_returns_400() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
-        let body = template_yaml("ok").replace("id: ok", "id: ../evil");
+        let body = template_yaml("ok");
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", body))
+            .oneshot(yaml_post("/api/templates/..%2fevil", "PUT", body))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         // No file escaped the templates dir.
         assert!(!dir.parent().unwrap().join("evil.yaml").exists());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[tokio::test]
-    async fn template_replace_id_mismatch_returns_400() {
-        let dir = temp_templates_dir();
-        std::fs::write(dir.join("a.yaml"), template_yaml("a")).unwrap();
-        let app = build_app_in(&dir);
-        let resp = app
-            .clone()
-            .oneshot(yaml_post("/api/templates/a", "PUT", template_yaml("b")))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[tokio::test]
-    async fn template_replace_missing_returns_404() {
-        let dir = temp_templates_dir();
-        let app = build_app_in(&dir);
-        let resp = app
-            .clone()
-            .oneshot(yaml_post(
-                "/api/templates/ghost",
-                "PUT",
-                template_yaml("ghost"),
-            ))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3739,7 +3803,7 @@ layout:
         std::fs::write(dir.join("p1.yaml"), template_yaml("p1")).unwrap();
         let app = build_app_in(&dir);
 
-        std::fs::write(dir.join("bad.yaml"), "id: bad\nunit: nope\n").unwrap();
+        std::fs::write(dir.join("bad.yaml"), "unit: nope\n").unwrap();
         let edited = template_yaml("p1").replace("dpi: 300", "dpi: 200");
         let resp = app
             .clone()
@@ -3771,11 +3835,15 @@ layout:
         let dir = temp_templates_dir();
         std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
         let app = build_app_in(&dir);
-        std::fs::write(dir.join("broken.yaml"), "id: broken\nunit: nope\n").unwrap();
+        std::fs::write(dir.join("broken.yaml"), "unit: nope\n").unwrap();
 
         let resp = app
             .clone()
-            .oneshot(yaml_post("/api/templates", "POST", template_yaml("new1")))
+            .oneshot(yaml_post(
+                "/api/templates/new1",
+                "PUT",
+                template_yaml("new1"),
+            ))
             .await
             .expect("request");
         // Succeeds now that broken files are quarantined.
@@ -3784,6 +3852,153 @@ layout:
         assert_eq!(template_count(&app).await, 2);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_create_reclassifies_to_replace_when_destination_appears_mid_request() {
+        let dir = temp_templates_dir();
+        let (app, state) = build_app_in_with_state(&dir);
+
+        let planted = dir.join("reclass.yaml");
+        state.set_pre_publish_hook(move || {
+            std::fs::write(&planted, template_yaml_for("reclass", "initial")).unwrap();
+        });
+
+        let new_body = template_yaml_for("reclass", "updated");
+        let resp = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/reclass", "PUT", new_body.clone()))
+            .await
+            .expect("request");
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let detail = json_response(resp).await;
+        assert_eq!(detail["name"], "updated");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("reclass.yaml")).unwrap(),
+            new_body
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_group_case_clash_refused_on_create_and_move() {
+        let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("Shipping")).unwrap();
+        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+
+        // Create into case-clashing group "shipping" -> 422 TemplateInvalid template_group_case_conflict
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/new_clash?group=shipping",
+                "PUT",
+                template_yaml("new_clash"),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(resp).await;
+        assert_eq!(err["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            err["error"]["details"]["reason"],
+            "template_group_case_conflict"
+        );
+
+        // Move into case-clashing group "shipping" -> 422 TemplateInvalid template_group_case_conflict
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"shipping"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(resp).await;
+        assert_eq!(err["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            err["error"]["details"]["reason"],
+            "template_group_case_conflict"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn template_symlink_refusals_on_create_move_and_delete() {
+        let dir = temp_templates_dir();
+        let ext_dir = temp_templates_dir();
+        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        let sym_dir = dir.join("outside_sym");
+        std::os::unix::fs::symlink(&ext_dir, &sym_dir).unwrap();
+
+        let app = build_app_in(&dir);
+
+        // Create with caller-supplied symlink group -> 422 TemplateInvalid template_group_unsafe_path
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/new_sym?group=outside_sym",
+                "PUT",
+                template_yaml("new_sym"),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(resp).await;
+        assert_eq!(
+            err["error"]["details"]["reason"],
+            "template_group_unsafe_path"
+        );
+
+        // Move to caller-supplied symlink group -> 422 TemplateInvalid template_group_unsafe_path
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/t1/group")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"group":"outside_sym"}"#))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(resp).await;
+        assert_eq!(
+            err["error"]["details"]["reason"],
+            "template_group_unsafe_path"
+        );
+
+        // Delete symlink group -> 400 InvalidRequest template_group_unsafe_path
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/template-groups/outside_sym")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let err = json_response(resp).await;
+        assert_eq!(
+            err["error"]["details"]["reason"],
+            "template_group_unsafe_path"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&ext_dir).ok();
     }
 
     fn json_req(method: &str, uri: &str, body: String) -> Request<Body> {

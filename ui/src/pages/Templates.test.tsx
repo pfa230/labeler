@@ -54,10 +54,12 @@ function stubFetch(opts?: {
   recent?: string[];
   empty?: boolean;
   templates?: typeof templates;
+  groups?: string[];
   failMoveIds?: string[];
 }) {
   let favorites = [...(opts?.favorites ?? [])];
   const recent = [...(opts?.recent ?? [])];
+  let groups = [...(opts?.groups ?? [])];
   let currentTemplates = [...(opts?.templates ?? (opts?.empty ? [] : templates))];
   const calls: { method: string; url: string; body?: unknown }[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -90,8 +92,17 @@ function stubFetch(opts?: {
       const found = currentTemplates.find((t) => t.id === id);
       return jsonResponse(found ?? { id, group: newGroup });
     }
+    if (url.startsWith("/api/template-groups/") && method === "DELETE") {
+      const groupPath = decodeURIComponent(url.slice("/api/template-groups/".length));
+      groups = groups.filter((g) => g !== groupPath);
+      return new Response(null, { status: 204 });
+    }
+    if (url === "/api/template-groups") return jsonResponse(groups);
     if (url === "/api/favorites") return jsonResponse(favorites);
     if (url === "/api/recent-templates") return jsonResponse(recent);
+    if (url === "/api/templates" || url.startsWith("/api/templates?")) {
+      return jsonResponse({ templates: currentTemplates });
+    }
     return jsonResponse({ templates: currentTemplates });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -602,5 +613,94 @@ describe("Templates list", () => {
       expect(screen.getByRole("region", { name: "Favorites" })).toBeInTheDocument();
     });
     expect(within(screen.getByRole("region", { name: "Favorites" })).getByText("Brother 24mm")).toBeInTheDocument();
+  });
+
+  it("filters nested groups with the include-nested switch", async () => {
+    const nestedTemplates = [
+      {
+        id: "ship_direct",
+        name: "Direct Shipping",
+        group: "Shipping",
+        description: "",
+        unit: "mm",
+        dpi: 300,
+        format: { type: "single" as const, width: 50, height: 25 },
+      },
+      {
+        id: "ship_pallet",
+        name: "Pallet Shipping",
+        group: "Shipping/Pallets",
+        description: "",
+        unit: "mm",
+        dpi: 300,
+        format: { type: "single" as const, width: 50, height: 25 },
+      },
+      {
+        id: "other",
+        name: "Other Item",
+        group: "Warehouse",
+        description: "",
+        unit: "mm",
+        dpi: 300,
+        format: { type: "single" as const, width: 50, height: 25 },
+      },
+    ];
+    stubFetch({ templates: nestedTemplates, groups: ["Shipping", "Shipping/Pallets", "Warehouse"] });
+    renderPage();
+
+    await screen.findByText("Direct Shipping");
+    const groupToolbar = screen.getByRole("toolbar", { name: "Group filter" });
+    const switchCheckbox = screen.getByRole("checkbox", { name: "Include nested subgroups" });
+
+    // Switch is disabled under All
+    expect(switchCheckbox).toBeDisabled();
+
+    // Select Shipping group
+    fireEvent.click(within(groupToolbar).getByRole("button", { name: "Shipping" }));
+    expect(switchCheckbox).not.toBeDisabled();
+    expect(screen.getByText("Direct Shipping")).toBeInTheDocument();
+    expect(screen.queryByText("Pallet Shipping")).not.toBeInTheDocument();
+    expect(screen.queryByText("Other Item")).not.toBeInTheDocument();
+
+    // Toggle include-nested switch on
+    fireEvent.click(switchCheckbox);
+    expect(screen.getByText("Direct Shipping")).toBeInTheDocument();
+    expect(screen.getByText("Pallet Shipping")).toBeInTheDocument();
+    expect(screen.queryByText("Other Item")).not.toBeInTheDocument();
+  });
+
+  it("allows deleting an empty group with no subgroups", async () => {
+    const customTemplates = [
+      {
+        id: "t1",
+        name: "Template 1",
+        group: "Shipping",
+        description: "",
+        unit: "mm",
+        dpi: 300,
+        format: { type: "single" as const, width: 50, height: 25 },
+      },
+    ];
+    const calls = stubFetch({ templates: customTemplates, groups: ["Shipping", "EmptyGroup"] });
+    renderPage();
+
+    await screen.findByText("Template 1");
+    const groupToolbar = screen.getByRole("toolbar", { name: "Group filter" });
+
+    // Under Shipping (non-empty), Delete group button is not present
+    fireEvent.click(within(groupToolbar).getByRole("button", { name: "Shipping" }));
+    expect(screen.queryByRole("button", { name: /delete group/i })).not.toBeInTheDocument();
+
+    // Under EmptyGroup, Delete group button appears
+    fireEvent.click(within(groupToolbar).getByRole("button", { name: "EmptyGroup" }));
+    const deleteBtn = screen.getByRole("button", { name: "Delete group EmptyGroup" });
+    expect(deleteBtn).toBeInTheDocument();
+
+    fireEvent.click(deleteBtn);
+    await waitFor(() => {
+      expect(
+        calls.some((c) => c.method === "DELETE" && c.url === "/api/template-groups/EmptyGroup"),
+      ).toBe(true);
+    });
   });
 });

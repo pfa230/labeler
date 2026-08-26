@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchCatalog, fetchCatalogYaml, type CatalogEntry } from "../api/catalog";
 import { ApiError } from "../api/client";
-import { useCreateTemplate, useReplaceTemplate, useTemplates } from "../api/queries";
+import { useReplaceTemplate, useSaveTemplate, useTemplates } from "../api/queries";
 import { useToast } from "../app/toast-context";
 
 const buttonBase =
@@ -93,7 +93,7 @@ function CatalogCard({
 export function Catalog() {
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: fetchCatalog, retry: false });
   const installedQuery = useTemplates();
-  const create = useCreateTemplate();
+  const save = useSaveTemplate();
   const replace = useReplaceTemplate();
   const { push } = useToast();
   const [conflict, setConflict] = useState<Conflict | null>(null);
@@ -129,13 +129,13 @@ export function Catalog() {
     let incoming: string | null = null;
     try {
       incoming = await fetchCatalogYaml(entry);
-      await create.mutateAsync(incoming);
+      await save.mutateAsync({ id: entry.id, yaml: incoming, createOnly: true });
       push({ kind: "ok", message: `Installed ${entry.id}` });
     } catch (err) {
-      // 409 means it is already on disk: offer Replace with a diff rather than silently
+      // 412 means it is already on disk: offer Replace with a diff rather than silently
       // overwriting. Reuse the YAML already downloaded above — re-fetching here would put a second
       // network call inside the catch, where a failure becomes an unhandled rejection with no toast.
-      if (err instanceof ApiError && err.status === 409 && incoming !== null) {
+      if (err instanceof ApiError && err.status === 412 && incoming !== null) {
         try {
           const res = await fetch(`/api/templates/${encodeURIComponent(entry.id)}/source`);
           if (!res.ok) {

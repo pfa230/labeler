@@ -1,9 +1,38 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, getJson, sendJson, del, putVoid } from "./client";
-import type { TemplateSummary, TemplateDetail, Printer, ProbeResult } from "./types";
+import type { TemplateListResponse, TemplateDetail, Printer, ProbeResult } from "./types";
 
-export function useTemplates() {
-  return useQuery({ queryKey: ["templates"], queryFn: () => getJson<{ templates: TemplateSummary[] }>("/templates") });
+export function useTemplates(params?: { group?: string; nested?: boolean }) {
+  const queryParams = new URLSearchParams();
+  if (params?.group !== undefined) queryParams.set("group", params.group);
+  if (params?.nested) queryParams.set("nested", "true");
+  const qs = queryParams.toString();
+  const url = `/templates${qs ? `?${qs}` : ""}`;
+  return useQuery({
+    queryKey: ["templates", params],
+    queryFn: () => getJson<TemplateListResponse>(url),
+  });
+}
+
+export function useTemplateGroups() {
+  return useQuery({
+    queryKey: ["template-groups"],
+    queryFn: () => getJson<string[]>("/template-groups"),
+  });
+}
+
+export function useDeleteTemplateGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (groupPath: string) => {
+      const encoded = groupPath.split("/").map(encodeURIComponent).join("/");
+      return del(`/template-groups/${encoded}`);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["template-groups"] });
+      qc.invalidateQueries({ queryKey: ["templates"] });
+    },
+  });
 }
 
 export function useFavorites() {
@@ -45,28 +74,59 @@ export function useTemplateSource(id: string) {
   });
 }
 // Raw-YAML writes cannot go through client.ts's JSON helpers, so they build their own request — but
-// they must still throw ApiError, not a bare Error. Installing from the catalog branches on the
-// status: 409 means "already installed, offer Replace", 422 means "this template needs a newer
-// labeler" (#137). Existing callers only read .message, which ApiError inherits.
-async function yamlWrite(method: "POST" | "PUT", url: string, yaml: string): Promise<TemplateDetail> {
-  const res = await fetch(url, { method, headers: { "content-type": "text/yaml" }, body: yaml });
+// they must still throw ApiError, not a bare Error.
+async function yamlWrite(
+  id: string,
+  yaml: string,
+  options?: { group?: string | null; createOnly?: boolean },
+): Promise<TemplateDetail> {
+  const queryParams = new URLSearchParams();
+  if (options?.group !== undefined && options.group !== null) {
+    queryParams.set("group", options.group);
+  }
+  const qs = queryParams.toString();
+  const url = `/api/templates/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
+  const headers: Record<string, string> = { "content-type": "text/yaml" };
+  if (options?.createOnly) {
+    headers["if-none-match"] = "*";
+  }
+  const res = await fetch(url, { method: "PUT", headers, body: yaml });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new ApiError(
       res.status,
       body?.error?.code ?? "Unknown",
-      body?.error?.message ?? `${method} failed (${res.status})`,
+      body?.error?.message ?? `PUT failed (${res.status})`,
       body?.error?.details,
     );
   }
   return (await res.json()) as TemplateDetail;
 }
 
-export function useCreateTemplate() {
+export function useSaveTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (yaml: string) => yamlWrite("POST", "/api/templates", yaml),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+    mutationFn: ({
+      id,
+      yaml,
+      group,
+      createOnly,
+    }: {
+      id: string;
+      yaml: string;
+      group?: string | null;
+      createOnly?: boolean;
+    }) => yamlWrite(id, yaml, { group, createOnly }),
+    onSuccess: async (_data, { id, yaml }) => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["template-groups"] });
+      qc.invalidateQueries({ queryKey: ["template", id] });
+      await qc.cancelQueries({ queryKey: ["template-source", id] });
+      qc.setQueryData(["template-source", id], yaml);
+    },
+    onError: (_err, { id }) => {
+      qc.removeQueries({ queryKey: ["template-source", id] });
+    },
   });
 }
 
@@ -76,10 +136,9 @@ export function useDeleteTemplate() {
     mutationFn: (id: string) => del(`/templates/${encodeURIComponent(id)}`),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["template-groups"] });
       qc.invalidateQueries({ queryKey: ["favorites"] });
       qc.invalidateQueries({ queryKey: ["recent-templates"] });
-      // Removed, not invalidated: these two can only refetch into a 404 now, and a browser Back
-      // would otherwise serve the cached body of a template that no longer exists.
       qc.removeQueries({ queryKey: ["template", id] });
       qc.removeQueries({ queryKey: ["template-source", id] });
     },
@@ -90,22 +149,14 @@ export function useReplaceTemplate() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, yaml }: { id: string; yaml: string }) =>
-      yamlWrite("PUT", `/api/templates/${encodeURIComponent(id)}`, yaml),
+      yamlWrite(id, yaml),
     onSuccess: async (_data, { id, yaml }) => {
       qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["template-groups"] });
       qc.invalidateQueries({ queryKey: ["template", id] });
-      // Cancel first: a failed save removes the source query, and the refetch that follows can still
-      // be in flight when a corrected save lands. Its older response would otherwise resolve after
-      // this write and clobber the YAML we know the server just stored.
       await qc.cancelQueries({ queryKey: ["template-source", id] });
-      // setQueryData, not invalidateQueries: the value is known rather than merely stale, and an
-      // invalidated query keeps serving the old text while it refetches — long enough for a quick
-      // second Edit to seed from pre-save YAML (#141).
       qc.setQueryData(["template-source", id], yaml);
     },
-    // A failed PUT does not imply an unchanged file: the write lands before the reload, so a 500
-    // from the reload leaves the edit on disk while the cache holds the pre-edit text. Neither
-    // value is trustworthy, so drop it and let /source say what is stored.
     onError: (_err, { id }) => {
       qc.removeQueries({ queryKey: ["template-source", id] });
     },
@@ -117,7 +168,10 @@ export function useMoveTemplateGroup() {
   return useMutation({
     mutationFn: ({ id, group }: { id: string; group: string | null }) =>
       sendJson<TemplateDetail>("PUT", `/templates/${encodeURIComponent(id)}/group`, { group }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["templates"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["templates"] });
+      qc.invalidateQueries({ queryKey: ["template-groups"] });
+    },
   });
 }
 

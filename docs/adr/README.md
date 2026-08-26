@@ -71,8 +71,8 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
 | [0059](0059-auto-length-text-box-is-the-alignment-slot.md) | Auto-length text box is the alignment slot | Accepted |
 | [0060](0060-connection-scoped-field-transforms.md) | Connection-scoped field transforms | Accepted |
-| [0061](0061-template-group-yaml-field.md) | A template's group is a YAML field, not its directory | Accepted |
-| [0062](0062-service-may-rewrite-single-template-key.md) | The service may rewrite one key of a hand-authored template | Accepted |
+| [0061](0061-template-group-yaml-field.md) | A template's group is a YAML field, not its directory | Superseded by [0073](0073-group-is-a-directory-id-is-the-filename.md) |
+| [0062](0062-service-may-rewrite-single-template-key.md) | The service may rewrite one key of a hand-authored template | Superseded by [0073](0073-group-is-a-directory-id-is-the-filename.md) |
 | [0063](0063-connection-public-url-is-the-link-base.md) | A connection's public URL is the link base, its base URL is the fetch base | Accepted |
 | [0064](0064-svar-grid-for-the-connector-browser.md) | The connector browse table uses SVAR DataGrid; the ordering rules stay ours | Accepted |
 | [0065](0065-template-writes-verify-the-id-they-wrote.md) | A template write verifies the id it wrote, and a contested id refuses the delete | Accepted |
@@ -81,6 +81,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0069](0069-connect-opens-on-a-default-connection.md) | Connect opens on a default connection named by an instance-wide setting | Accepted |
 | [0071](0071-one-accent-colour-with-a-defined-ink.md) | One accent colour, dark enough to carry text, with a defined ink on its fill | Accepted |
 | [0072](0072-two-filter-scopes-named-not-merged.md) | Two filter scopes named, not merged | Accepted |
+| [0073](0073-group-is-a-directory-id-is-the-filename.md) | Group is a directory; ID is the filename | Accepted |
 | [0075](0075-request-rejections-use-the-error-envelope.md) | Request rejections use the standard JSON error envelope | Accepted |
 
 ## Adding an ADR

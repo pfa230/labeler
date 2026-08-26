@@ -4,7 +4,7 @@ Date: 2026-08-21
 
 ## Status
 
-Accepted. Issue [#164](https://github.com/pfa230/labeler/issues/164).
+Superseded by [ADR-0073](0073-group-is-a-directory-id-is-the-filename.md). Issue [#164](https://github.com/pfa230/labeler/issues/164).
 
 ## Context
 
