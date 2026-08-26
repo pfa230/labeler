@@ -29,11 +29,21 @@ fn yaml_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn load(path: &Path) -> TemplateDefinition {
     let yaml = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-    let template = parse_template(&yaml).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    template
+    let content = parse_template(&yaml).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    content
         .validate()
         .unwrap_or_else(|m| panic!("{}: {m}", path.display()));
-    template
+    let id = path
+        .file_stem()
+        .expect("file stem")
+        .to_str()
+        .expect("valid utf-8 id")
+        .to_string();
+    TemplateDefinition {
+        id,
+        group: None,
+        content,
+    }
 }
 
 fn format_kind(t: &TemplateDefinition) -> &'static str {
