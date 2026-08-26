@@ -98,8 +98,8 @@ implementation and archive rewrites the main specs *after* it:
 
    **Apply ends at implementation.** It does not commit, archive, sync deltas into
    `openspec/specs/`, or move the change folder. A checked box is a claim the next reader trusts
-   instead of redoing the work, so check one only after performing it, and never over a
-   render-and-look step satisfied by a test that merely returned bytes. `openspec/config.yaml`
+   instead of redoing the work, so check one only after performing it: a task saying to add an HTTP
+   test is not satisfied by a unit test one layer below the status code. `openspec/config.yaml`
    (`operations.apply.guidance`) says the same to every agent.
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
@@ -266,6 +266,13 @@ render → inspect → fix loop: render to PNG (`POST /api/render/label?format=p
 inside the printable area, alignment, auto-shrink, no clipping), fix the YAML, and re-render
 (`POST /api/templates/reload` picks up edits without a restart). Stop when it is correct, not when it
 merely renders. See #67.
+
+**Nothing checks this, and no task should claim it.** The loop runs against a running server and a
+config dir outside the repository, so its only evidence is an image no later reader can retrieve. A
+checked box over it would be a claim nobody can verify and no gate can refuse, which is worse than an
+honest gap, so the box is gone (#220). Template correctness rests on whoever edits the template. The
+nine YAML files under `tests/fixtures/templates/` are a different thing: they are test inputs, and
+what makes them right is the test that reads them.
 
 ## Architecture
 

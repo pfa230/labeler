@@ -200,6 +200,9 @@ is worth doing at all.
   lands, so a skipped hook delays the refusal rather than avoiding it.
 - The gates check a change that exists. Whether a given diff *should* have been a change at all is a
   judgement no gate can make, so a commit carrying no change folder is checked by nobody.
+- Whether a rendered label looks right is checked by nobody either. It is a visual judgement made
+  against a running server, no artifact of it reaches the repository, and the process says so rather
+  than carrying a checkbox that cannot fail.
 - There are no pull requests, so a change is checked by pushing its branch, which runs the validation
   jobs without publishing anything. Merging on a red or absent branch run puts the failure on `main`,
   where CI becomes a post-mortem rather than a gate.

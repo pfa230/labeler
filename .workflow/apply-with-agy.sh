@@ -68,7 +68,7 @@ fi
 if [ "$resume_requested" -eq 1 ]; then
   prompt="Review findings on your implementation of $change. Fix each one, then stop. The same limits still hold: do not commit, do not archive, do not sync specs into openspec/specs/, do not move or delete the change folder, do not edit docs/SPEC.md. $extra"
 else
-  prompt="/opsx-apply $change. Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it, including the ones that say to render a label and look at it. $extra"
+  prompt="/opsx-apply $change. Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it. $extra"
 fi
 
 # The prompt names the stage boundary in the imperative, and bluntly. `openspec/config.yaml`
