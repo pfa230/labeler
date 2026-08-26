@@ -50,14 +50,50 @@ if [ -f "$lock" ]; then
   exit 1
 fi
 printf '%s started %s (pid %s)\n' "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
-trap 'rm -f "$lock"' EXIT INT TERM
 
 log="$wt/.agy-apply.log"
 conv_file="$wt/.agy-conversation"
+raw="$wt/.agy-apply.json"
+
+# Salvage whatever the stream has already written, then release the lock. A killed
+# apply used to leave an empty file and no conversation id, so the work was there in
+# the worktree but the agent that did it was unreachable and `--fix` could not run.
+# With --output-format stream-json the first line is an `init` event carrying
+# conversation_id, so this recovers a resumable id seconds into a run and the prose
+# up to the moment of the kill.
+salvage() {
+  [ -s "$raw" ] || return 0
+  local id
+  id=$(grep -m1 -o '"conversation_id":"[^"]*"' "$raw" | cut -d'"' -f4 || true)
+  [ -n "$id" ] && printf '%s' "$id" > "$conv_file"
+  jq -rs 'map(select(.event=="result"))[-1].result.response // empty' "$raw" 2>/dev/null > "$log" \
+    || cp "$raw" "$log"
+}
+trap 'salvage; rm -f "$lock"' EXIT INT TERM
+
+# The id, from the best source that has it. $conv_file is written by a clean exit or
+# by salvage(); $raw is the live stream and carries the id from its first line onward,
+# so it answers even when neither ran - bash deals a trap only after the foreground
+# command returns, so a signal delivered to this shell alone leaves salvage() queued
+# behind a pipeline that is still running. Reading the stream directly does not care.
+conversation_id() {
+  if [ -s "$conv_file" ]; then cat "$conv_file"; return 0; fi
+  [ -s "$raw" ] || return 1
+  grep -m1 -o '"conversation_id":"[^"]*"' "$raw" | cut -d'"' -f4
+}
+
 resume=""
 if [ "$resume_requested" -eq 1 ]; then
-  [ -s "$conv_file" ] || { echo "--fix needs a previous apply; no conversation id at $conv_file" >&2; exit 2; }
-  printf -v resume -- '--conversation=%q' "$(cat "$conv_file")"
+  prev=$(conversation_id || true)
+  if [ -n "$prev" ]; then
+    printf -v resume -- '--conversation=%q' "$prev"
+  else
+    # Nothing survives a run killed before its first line reached disk. `--continue`
+    # takes the most recent conversation, which is that run, so a fix round is still
+    # possible.
+    resume='--continue'
+    echo "no conversation id in $conv_file or $raw; falling back to --continue" >&2
+  fi
 fi
 # WORKFLOW form, not skill form. OpenSpec writes both for the Antigravity target:
 # .agent/skills/openspec-*/SKILL.md and .agent/workflows/opsx-*.md. Print mode
@@ -93,6 +129,15 @@ fi
 # attached (-p=...) and -p goes last. Written as a bare `agy -p --mode ...` the
 # flag swallows `--mode` as its prompt and the real prompt is left as an ignored
 # positional; agy now refuses that outright instead of running.
+# Cap cargo's parallelism for everything the agent runs. Unset, cargo takes one
+# codegen job per core and holds a rustc, and finally a linker, for each; on this
+# project that means building Typst's dependency graph several times over for
+# `cargo test && cargo clippy --all-targets --all-features`. With an agent, an
+# orchestrator and a reviewer all resident, three applies in a row died to the OOM
+# killer mid-build: user.slice showed oom_kill 3, peak 15.2GB against 15GB of RAM,
+# and 4GB of swap fully consumed. Overridable for a machine with room to spare.
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+
 timeout="${AGY_PRINT_TIMEOUT:-120m}"
 
 # --effort is deliberately absent. The default model rejects it outright:
@@ -107,7 +152,7 @@ timeout="${AGY_PRINT_TIMEOUT:-120m}"
 #
 # On a fix round $resume pins that conversation. agy keeps what it just built and
 # why it chose it; a fresh prompt would make it re-derive both from the diff.
-printf -v agy_cmd 'agy --mode accept-edits --print-timeout %q --output-format json %s -p=%q' \
+printf -v agy_cmd 'agy --mode accept-edits --print-timeout %q --output-format stream-json %s -p=%q' \
   "$timeout" "$resume" "$prompt"
 
 # script(1) is two incompatible programs with one name. util-linux is
@@ -122,21 +167,24 @@ else
   run_pty() { script -q -e /dev/null "${BASH:-/bin/bash}" -c "$1"; }
 fi
 
-raw="$wt/.agy-apply.json"
+# -u and stdbuf -oL matter as much as stream-json does: block-buffered filters would
+# hold the first lines in a 4KB pipe buffer and a kill would still find $raw empty.
 ( cd "$wt" && run_pty "$agy_cmd" ) \
-  2>&1 | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r' > "$raw"
+  2>&1 | sed -u 's/\x1B\[[0-9;]*[A-Za-z]//g' | stdbuf -oL tr -d '\r' > "$raw"
 status=$?
 
 # Pull the result object out of whatever the pty wrapper wrapped around it, then
 # keep the prose in the log the operator reads and the id where the next round
 # looks for it.
-json=$(grep -o '{"conversation_id".*}' "$raw" | tail -1 || true)
-if [ -n "$json" ]; then
-  printf '%s' "$json" | jq -r '.response // ""' > "$log"
-  printf '%s' "$json" | jq -r '.conversation_id // empty' > "$conv_file"
-  agy_status=$(printf '%s' "$json" | jq -r '.status // "UNKNOWN"')
+result=$(jq -cs 'map(select(.event=="result"))[-1].result // empty' "$raw" 2>/dev/null || true)
+if [ -n "$result" ]; then
+  printf '%s' "$result" | jq -r '.response // ""' > "$log"
+  printf '%s' "$result" | jq -r '.conversation_id // empty' > "$conv_file"
+  agy_status=$(printf '%s' "$result" | jq -r '.status // "UNKNOWN"')
 else
-  cp "$raw" "$log"
+  # No result event: the run was killed or died. salvage() has already written what
+  # the stream held, including the id, so a fix round can still reach this agent.
+  salvage
   agy_status="NO_RESULT"
 fi
 
