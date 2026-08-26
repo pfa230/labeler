@@ -10,6 +10,12 @@ The mechanics — commands, tooling, enforcement — are in [`AGENTS.md`](../AGE
 A change starts as a GitHub issue. Issues and milestones are the only backlog, and one change
 implements exactly one open issue: scope is agreed there, before anything else happens.
 
+Not every commit is a change in this sense. The path below is for behavior changes, which are exactly
+the ones that write a spec delta. A documentation fix, a tooling script or a dependency bump still
+starts as an issue and still ends as one commit that closes it, but none of the stages apply to it.
+Nothing declares which kind a piece of work is, and size has no say: writing the delta is what makes
+it a change, and needing one is discovered rather than decided.
+
 From there the work runs in three stages — plan, implement, archive — each started by one command and
 each running to completion without supervision: isolating the work, writing the spec and design,
 getting them reviewed, implementing, reviewing the implementation, and updating the specs of record.
@@ -55,8 +61,10 @@ Folds the delta specs into `openspec/specs/`, archives the planning record, and 
 commit.
 
 That is where the commit belongs, and only there. Archive rewrote `openspec/specs/` after the last
-review pass, which makes that diff the one thing on the branch nobody has read yet; it is read, the
-verification gates run, and then the whole change lands as a single commit and the branch merges.
+review pass, so what it produced is checked rather than re-read: the published specs must be the
+reviewed delta applied to the previous commit, which a gate can decide and a person re-reading their
+own output cannot. The verification gates run, and then the whole change lands as a single commit and
+the branch merges.
 
 Also available: `/opsx:explore` for thinking something through before an issue exists, and
 `/opsx:update` for revising a change's plan in place after a review asks for edits.
@@ -147,8 +155,10 @@ intent:
   contradicting its own spec is catchable.
 - **The implementation is reviewed after it is written.**
 
-An artifact is never reviewed by whoever wrote it. `review.md` records `AUTHOR:` and `REVIEWER:`, and
-the gate refuses a change where they match, so the rule is checked rather than trusted.
+An artifact is never reviewed by whoever wrote it. Both reviews record `AUTHOR:` and `REVIEWER:`, and
+the gate refuses a change where they match, so the rule is checked rather than trusted. Both are
+recorded as files, `review.md` and `diff-review.md`, because a verdict that lives only in a transcript
+is a verdict nothing can check.
 
 The reviewer runs read-only and cannot write files, so its stdout is redirected straight into
 `review.md`: that file is its output, not a summary of it. Nothing transcribes the review, which keeps
@@ -164,7 +174,10 @@ defect: the plan is fixed and reviewed again from scratch.
 Four things the process refuses to let slide:
 
 - A blocking finding cannot coexist with approval.
-- Altering the plan after approval voids that approval.
+- Altering the contract after approval voids that approval, and the gate detects it. The contract is
+  the delta specs. Correcting a factual error in the proposal or the design costs nothing on purpose:
+  a rule that charges a full re-review for a correction is a rule that rewards leaving the plan
+  wrong.
 - A serious finding cannot be dismissed by the author alone; the reviewer must accept the rebuttal.
 - A reviewer that is unavailable or produces nothing usable stops the change. It never degrades to
   self-review, and never substitutes an assumed verdict.
@@ -185,6 +198,8 @@ is worth doing at all.
 
 - The pre-commit hook is skippable with `git commit --no-verify`. CI runs the identical check on what
   lands, so a skipped hook delays the refusal rather than avoiding it.
+- The gates check a change that exists. Whether a given diff *should* have been a change at all is a
+  judgement no gate can make, so a commit carrying no change folder is checked by nobody.
 - There are no pull requests, so a change is checked by pushing its branch, which runs the validation
   jobs without publishing anything. Merging on a red or absent branch run puts the failure on `main`,
   where CI becomes a post-mortem rather than a gate.

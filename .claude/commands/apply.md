@@ -22,6 +22,8 @@ Exit codes worth naming when you report them:
 - **6** still REVISE after the last round; the findings want a human, not another round
 
 On success it has committed nothing. Archive, merge and push are separate, explicitly requested steps.
+It records the verdict as `openspec/changes/<change>/diff-review.md`, which the commit gate reads, and
+keeps each round beside it as `diff-review-<n>.md`.
 
 If you find yourself reviewing the diff yourself, the pairing has collapsed into self-review. Say so
 instead.

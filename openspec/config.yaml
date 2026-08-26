@@ -100,9 +100,8 @@ operations:
       - >-
         This stage ends at implementation. Do not commit, do not run archive, do not sync deltas into
         `openspec/specs/`, and do not move or delete the change folder. Archive rewrites the main
-        specs, and the operator reads this diff before that happens; doing it here skips that read.
-        The commit happens after archive and the final verification pass. See the archive guidance
-        for the full order.
+        specs, and the commit happens after archive and the final verification pass. See the
+        archive guidance for the full order.
       - >-
         Check a task only after performing it. A checked box is a claim the next reader trusts
         instead of redoing the work, so a box checked over an unperformed step is worse than an
@@ -136,8 +135,15 @@ operations:
         Verify the ADR named in `design.md` exists under `docs/adr/` and has its row in
         `docs/adr/README.md`.
       - >-
-        Archive rewrites the main specs, so that diff has not been reviewed yet. Read it before
-        committing.
+        Archive rewrites the main specs by locating each requirement by name, so a drifted name
+        rewrites the wrong one. `.workflow/archive-merge-check.sh` checks that resolution at commit
+        time, in pre-commit and in CI; there is no separate step asking you to review a diff you
+        just produced.
+      - >-
+        The landing commit needs the change's `diff-review.md`, carrying `AUTHOR:`, `REVIEWER:` and
+        `VERDICT: APPROVE`; the gate refuses the commit without it and refuses one whose author is
+        its reviewer. `.workflow/apply.sh` writes it. If the diff was reviewed some other way, write
+        the file with the same fields, naming who implemented and who reviewed.
       - >-
         Then verify, in this order: `openspec doctor`, `openspec validate --all --strict
         --no-interactive`, `openspec validate --archived --no-interactive`, `cargo fmt`,

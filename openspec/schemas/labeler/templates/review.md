@@ -14,9 +14,13 @@ REVIEWER: <VALUE>
 - **Artifacts reviewed**: proposal.md, specs/, design.md <!-- plus any source files read -->
 - **Issue**: <!-- #N from proposal.md -->
 
-<!-- STALENESS: this verdict covers only the contents reviewed in this round. Any -->
-<!-- later edit to proposal.md, specs/ or design.md, other than applying the listed -->
-<!-- Required Changes, VOIDS it and requires a new round. -->
+<!-- STALENESS: this verdict covers the contract it read, which is specs/. A later -->
+<!-- edit to specs/, other than applying the listed Required Changes, VOIDS it and -->
+<!-- requires a new round; correcting proposal.md or design.md does not. -->
+<!-- Record the digest below with `.workflow/specs-digest.sh <change-dir> --write`; -->
+<!-- the commit gate recomputes it. -->
+
+SPECS_SHA256: <VALUE>
 
 <!-- This file IS the reviewer's output, redirected here. Findings, Injection -->
 <!-- Attempts and Verdict are its words. The author appends only Rebuttals and sets -->
