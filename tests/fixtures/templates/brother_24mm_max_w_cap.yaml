@@ -1,4 +1,3 @@
-id: brother_24mm_max_w_cap
 name: Brother 24mm Bounded Auto-Width Demo
 description: Dynamic-width tape with an auto qr and an auto text each capped by max_w well below the frame remainder, so the label shrinks to its content instead of the full width.max (#152)
 unit: mm

@@ -9,7 +9,7 @@ use crate::models::{
     LayoutItem, Placement, Point, Position, Rotation, SizeValue, TemplateFormat,
 };
 use crate::reason::Reason;
-use crate::templates::TemplateDefinition;
+use crate::templates::TemplateContent;
 use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, fit_text_auto_length,
@@ -32,7 +32,7 @@ pub struct ResolvedParams {
 
 /// Resolve parameters by merging request data, explicit option selections, and template parameter defaults.
 pub fn resolve_parameters(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     now: DateTime<Local>,
@@ -323,7 +323,7 @@ fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedD
 }
 
 fn compile_single_doc(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     env: &RenderEnv,
@@ -340,7 +340,7 @@ fn compile_single_doc(
 /// renders one slot at label_width/label_height. Shared by `compile_single_doc` (after its
 /// Single-only guard) and the thumbnail path.
 fn compile_label_doc(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     env: &RenderEnv,
@@ -478,13 +478,13 @@ fn compile_label_doc(
             ),
         ));
     }
-    tracing::debug!(template = %template.id, typst = %source, "render typst source");
+    tracing::debug!(name = %template.name, typst = %source, "render typst source");
     compile_paged(source, images.into_inner().files)
 }
 
 /// Render a single representative label to PNG. For sheets, renders one slot.
 pub fn render_thumbnail_png(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
@@ -518,7 +518,7 @@ pub struct ImageRenderOptions {
 }
 
 pub fn render_single_label(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
@@ -535,7 +535,7 @@ pub fn render_single_label(
 }
 
 pub fn render_single_label_image(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
@@ -562,7 +562,7 @@ pub fn render_single_label_image(
 }
 
 pub fn render_single_label_pdf(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
@@ -579,7 +579,7 @@ pub fn render_single_label_pdf(
 }
 
 pub fn render_sheet_pages(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     labels: &[LabelInput],
     start_slot: u32,
     settings: &BTreeMap<String, String>,
@@ -735,7 +735,7 @@ pub fn render_sheet_pages(
             })?;
         }
     }
-    tracing::debug!(template = %template.id, typst = %source, "render typst source");
+    tracing::debug!(name = %template.name, typst = %source, "render typst source");
 
     let doc = compile_paged(source, images.into_inner().files)?;
     typst_pdf::pdf(&doc, &Default::default()).map_err(|err| {
@@ -764,14 +764,14 @@ pub fn count_pdf_pages(pdf: &[u8]) -> usize {
     count
 }
 
-fn select_layout_items(template: &TemplateDefinition) -> Result<&[LayoutItem], AppError> {
+fn select_layout_items(template: &TemplateContent) -> Result<&[LayoutItem], AppError> {
     match &template.layout {
         Layout::Items(items) => Ok(items.as_slice()),
     }
 }
 
 fn normalize_option<'a>(
-    template: &TemplateDefinition,
+    template: &TemplateContent,
     option: Option<&'a BTreeMap<String, String>>,
 ) -> Result<Option<&'a BTreeMap<String, String>>, AppError> {
     match template.options() {
@@ -2131,7 +2131,7 @@ fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Ve
 /// resolver. Declared `datetime` parameter namespaces `{<p>}` / `{<p>.*}` are likewise excluded.
 /// The catalog index lists this so an entry advertises only what the caller must supply
 /// (#137); `homebox-qr` would otherwise appear to demand `vars.qr_base_url`.
-pub fn template_fields(template: &TemplateDefinition) -> Vec<String> {
+pub fn template_fields(template: &TemplateContent) -> Vec<String> {
     let Layout::Items(items) = &template.layout;
     let mut text = Vec::new();
     let mut image = Vec::new();
@@ -2157,7 +2157,7 @@ pub fn template_fields(template: &TemplateDefinition) -> Vec<String> {
 /// Build non-empty placeholder data for every referenced data field. Image fields get a 1×1 PNG;
 /// other fields get their own name as a stand-in. `{vars.*}` and declared `datetime` parameters are
 /// excluded (resolved from the store / clock).
-pub fn placeholder_data(template: &TemplateDefinition) -> HashMap<String, JsonValue> {
+pub fn placeholder_data(template: &TemplateContent) -> HashMap<String, JsonValue> {
     let Layout::Items(items) = &template.layout;
     let mut text = Vec::new();
     let mut image = Vec::new();
@@ -2187,7 +2187,7 @@ pub fn placeholder_data(template: &TemplateDefinition) -> HashMap<String, JsonVa
 }
 
 /// First allowed value per declared option, or None when the template declares no options.
-pub fn default_option_selection(template: &TemplateDefinition) -> Option<BTreeMap<String, String>> {
+pub fn default_option_selection(template: &TemplateContent) -> Option<BTreeMap<String, String>> {
     let options = template.options()?;
     let selection: BTreeMap<String, String> = options
         .allowed()
@@ -2215,7 +2215,7 @@ mod tests {
         Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat, VerticalAlign,
     };
     use crate::reason::Reason;
-    use crate::templates::TemplateDefinition;
+    use crate::templates::TemplateContent;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -2587,7 +2587,6 @@ mod tests {
     #[test]
     fn dynamic_width_template_centered_text_end_to_end() {
         let yaml = r#"
-id: dynamic_centered_e2e
 name: Dynamic Centered E2E
 unit: mm
 dpi: 200
@@ -3085,9 +3084,9 @@ layout:
     /// what makes a child line reaching x=50 genuinely not fit.
     #[test]
     fn the_152_repro_is_rejected_and_the_rejection_is_correct() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 3.0]\n        to: [50.0, 3.0]\n        thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 3.0]\n        to: [50.0, 3.0]\n        thickness: 0.2\n";
         let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
-        let template = crate::templates::TemplateDefinition::try_from(raw).expect("converts");
+        let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
         assert!(
             template.validate().is_err(),
             "a 50mm line inside a 30mm-capped container must be rejected"
@@ -3105,11 +3104,9 @@ layout:
     /// is a 422 on every label.
     #[test]
     fn the_155_repro_renders() {
-        let template = TemplateDefinition {
-            id: "t".to_string(),
+        let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -3304,9 +3301,9 @@ layout:
     /// template fails: the standard explained error, not a panic and not a corrupt page.
     #[test]
     fn a_container_with_no_room_left_fails_cleanly_at_render() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n        thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n        thickness: 0.2\n";
         let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
-        let template = crate::templates::TemplateDefinition::try_from(raw).expect("converts");
+        let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
         assert_eq!(
             template.validate(),
             Ok(()),
@@ -3787,11 +3784,9 @@ layout:
     /// `at.x`; clause 1 must still measure the children against that known inner width.
     #[test]
     fn a_frame_dependent_child_inside_a_right_anchored_container_does_not_mismatch_the_cursor() {
-        let template = TemplateDefinition {
-            id: "t".to_string(),
+        let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -3803,7 +3798,7 @@ layout:
                 height: Dimension::Fixed(8.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([-10.0, 0.0]),
@@ -3841,11 +3836,9 @@ layout:
     /// with "size height is auto but no max_height provided".
     #[test]
     fn an_auto_height_fixed_width_container_measures_without_erroring() {
-        let template = TemplateDefinition {
-            id: "t".to_string(),
+        let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -3857,7 +3850,7 @@ layout:
                 height: Dimension::Fixed(30.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
@@ -4055,12 +4048,10 @@ layout:
         assert_eq!(err.message_text(), "max_width must be greater than 0");
     }
 
-    fn rotated_container_template(rotate: f32, items: Vec<LayoutItem>) -> TemplateDefinition {
-        TemplateDefinition {
-            id: "rot".to_string(),
+    fn rotated_container_template(rotate: f32, items: Vec<LayoutItem>) -> TemplateContent {
+        TemplateContent {
             name: "Rot".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4068,7 +4059,7 @@ layout:
                 height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
@@ -4262,11 +4253,9 @@ layout:
             },
             items: vec![inner],
         };
-        let template = TemplateDefinition {
-            id: "nest".to_string(),
+        let template = TemplateContent {
             name: "Nest".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4274,7 +4263,7 @@ layout:
                 height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![outer]),
             version: None,
         };
@@ -4297,13 +4286,11 @@ layout:
         multiline: bool,
         vertical: VerticalAlign,
         font_pt: f32,
-    ) -> TemplateDefinition {
+    ) -> TemplateContent {
         const HEIGHT_MM: f32 = 20.0;
-        TemplateDefinition {
-            id: "tape".to_string(),
+        TemplateContent {
             name: "Tape".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -4314,7 +4301,7 @@ layout:
                 height: Dimension::Fixed(HEIGHT_MM).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: text.to_string(),
                 placement: Placement::sized(
@@ -4341,7 +4328,7 @@ layout:
         vertical: VerticalAlign,
         font_pt: f32,
         height_mm: f32,
-    ) -> TemplateDefinition {
+    ) -> TemplateContent {
         let mut t = autolength_tape(text, false, vertical, font_pt);
         t.format = TemplateFormat::Single {
             width: DynamicDimension::Dynamic {
@@ -4462,7 +4449,7 @@ layout:
         (inked[0], inked[inked.len() - 1], h)
     }
 
-    fn render_tape(template: &TemplateDefinition) -> Vec<u8> {
+    fn render_tape(template: &TemplateContent) -> Vec<u8> {
         render_single_label(
             template,
             &HashMap::new(),
@@ -4651,12 +4638,10 @@ layout:
         }
     }
 
-    fn two_slot_sheet() -> TemplateDefinition {
-        TemplateDefinition {
-            id: "sheet2".to_string(),
+    fn two_slot_sheet() -> TemplateContent {
+        TemplateContent {
             name: "Sheet2".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Sheet {
@@ -4740,11 +4725,9 @@ layout:
 
     #[test]
     fn render_single_label_produces_png() {
-        let template = TemplateDefinition {
-            id: "test".to_string(),
+        let template = TemplateContent {
             name: "Test".to_string(),
             description: "Test template".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4796,11 +4779,9 @@ layout:
 
     #[test]
     fn render_single_label_with_qr_produces_png() {
-        let template = TemplateDefinition {
-            id: "test_qr".to_string(),
+        let template = TemplateContent {
             name: "Test QR".to_string(),
             description: "Test template with qr".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4885,11 +4866,9 @@ layout:
 
     #[test]
     fn render_sheet_labels_produces_pdf() {
-        let template = TemplateDefinition {
-            id: "sheet".to_string(),
+        let template = TemplateContent {
             name: "Sheet".to_string(),
             description: "Sheet template".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Sheet {
@@ -4929,12 +4908,10 @@ layout:
     const PNG_1X1_B64: &str =
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
-    fn image_single_template() -> TemplateDefinition {
-        TemplateDefinition {
-            id: "img".to_string(),
+    fn image_single_template() -> TemplateContent {
+        TemplateContent {
             name: "Img".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -4992,11 +4969,9 @@ layout:
 
     #[test]
     fn render_sheet_labels_with_image_produces_pdf() {
-        let template = TemplateDefinition {
-            id: "sheetimg".to_string(),
+        let template = TemplateContent {
             name: "Sheet".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Sheet {
@@ -5075,7 +5050,7 @@ layout:
         assert_eq!(geometry_err.reason(), Some("line_endpoint_out_of_frame"));
     }
 
-    fn image_single_template_with_src(src: &str) -> TemplateDefinition {
+    fn image_single_template_with_src(src: &str) -> TemplateContent {
         let mut template = image_single_template();
         template.layout = Layout::Items(vec![LayoutItem::Image {
             name: None,
@@ -5149,11 +5124,9 @@ layout:
 
     #[test]
     fn render_single_label_produces_pdf() {
-        let template = TemplateDefinition {
-            id: "pdf".to_string(),
+        let template = TemplateContent {
             name: "Pdf".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5296,31 +5269,26 @@ layout:
 
         let mut seen: HashMap<String, std::path::PathBuf> = HashMap::new();
         for path in files {
-            let yaml = std::fs::read_to_string(&path).expect("read template");
-            let id = yaml
-                .lines()
-                .find_map(|l| l.strip_prefix("id:"))
-                .map(|v| v.trim().to_string())
-                .unwrap_or_else(|| panic!("{path:?} has no id"));
             let stem = path
                 .file_stem()
                 .expect("stem")
                 .to_string_lossy()
                 .to_string();
-            assert_eq!(id, stem, "{path:?}: id must equal the filename stem");
-            if let Some(prev) = seen.insert(id.clone(), path.clone()) {
-                panic!("duplicate catalog id {id}: {prev:?} and {path:?}");
+            assert!(
+                crate::templates::validate_template_id_stem(&stem),
+                "{path:?}: stem must be a valid template id stem"
+            );
+            if let Some(prev) = seen.insert(stem.clone(), path.clone()) {
+                panic!("duplicate catalog id {stem}: {prev:?} and {path:?}");
             }
         }
     }
 
     #[test]
     fn render_value_text_and_qr_interpolate() {
-        let template = TemplateDefinition {
-            id: "interp".to_string(),
+        let template = TemplateContent {
             name: "Interp".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5368,11 +5336,9 @@ layout:
 
     #[test]
     fn interpolated_data_cannot_inject_typst() {
-        let template = TemplateDefinition {
-            id: "inject".to_string(),
+        let template = TemplateContent {
             name: "Inject".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -5445,13 +5411,11 @@ layout:
         );
     }
 
-    fn sheet_template_10x5_on_100x100() -> TemplateDefinition {
+    fn sheet_template_10x5_on_100x100() -> TemplateContent {
         use crate::models::{Alignment, FontSize, Position, SheetPosition, Size, SizeValue};
-        TemplateDefinition {
-            id: "s".into(),
+        TemplateContent {
             name: "s".into(),
             description: String::new(),
-            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Sheet {
@@ -5481,11 +5445,9 @@ layout:
     #[test]
     fn placeholder_data_fills_fields_excludes_vars_and_marks_images() {
         use crate::models::{Alignment, Fit, FontSize, Position, Size, SizeValue};
-        let template = TemplateDefinition {
-            id: "t".into(),
+        let template = TemplateContent {
             name: "t".into(),
             description: String::new(),
-            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5555,11 +5517,9 @@ layout:
     #[test]
     fn placeholder_data_skips_empty_token() {
         use crate::models::{Alignment, FontSize, Position, Size, SizeValue};
-        let template = TemplateDefinition {
-            id: "t".into(),
+        let template = TemplateContent {
             name: "t".into(),
             description: String::new(),
-            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5639,11 +5599,9 @@ layout:
     #[test]
     fn default_option_selection_picks_first_values() {
         use crate::models::{Dimension, ParamSpec, ParamType};
-        let template = TemplateDefinition {
-            id: "t".into(),
+        let template = TemplateContent {
             name: "t".into(),
             description: String::new(),
-            group: None,
             unit: "mm".into(),
             dpi: 96,
             format: TemplateFormat::Single {
@@ -5684,7 +5642,7 @@ layout:
         assert_eq!(sel.get("color").map(String::as_str), Some("red"));
         assert_eq!(sel.get("size").map(String::as_str), Some("small"));
 
-        let no_opts = TemplateDefinition {
+        let no_opts = TemplateContent {
             params: BTreeMap::new(),
             ..template
         };
@@ -6036,12 +5994,10 @@ layout:
     }
 
     /// Builds a dynamic-width label whose text measures to roughly 10mm, plus one line.
-    fn dynamic_label_with_line(at: Position, to: Position) -> TemplateDefinition {
-        TemplateDefinition {
-            id: "t".to_string(),
+    fn dynamic_label_with_line(at: Position, to: Position) -> TemplateContent {
+        TemplateContent {
             name: "T".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -6197,11 +6153,9 @@ layout:
     /// must render rather than 422. The same shape with a value still renders.
     #[test]
     fn an_empty_value_collapses_a_to_spanned_box_instead_of_erroring() {
-        let template = TemplateDefinition {
-            id: "t".to_string(),
+        let template = TemplateContent {
             name: "T".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -6248,11 +6202,9 @@ layout:
     /// wording.
     #[test]
     fn a_to_sized_qr_anchored_past_the_fallback_width_errors() {
-        let qr_at = |x: f32| TemplateDefinition {
-            id: "t".to_string(),
+        let qr_at = |x: f32| TemplateContent {
             name: "T".to_string(),
             description: String::new(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 180,
             format: TemplateFormat::Single {
@@ -6398,14 +6350,14 @@ layout:
         assert_eq!(measured, 6.0, "max_h below the frame remainder must bind");
     }
 
-    fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
-        let template = crate::parse::parse_template(body).map_err(|err| {
+    fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
+        let content = crate::parse::parse_template(body).map_err(|err| {
             AppError::template_invalid(Reason::TemplateParseFailed, err.to_string())
         })?;
-        template
+        content
             .validate()
             .map_err(|err| AppError::template_invalid(Reason::TemplateValidationFailed, err))?;
-        Ok(template)
+        Ok(content)
     }
 
     fn resolver() -> crate::datetime_fmt::DateTimeResolver<'static> {
@@ -6415,7 +6367,6 @@ layout:
     #[test]
     fn render_continuous_tape_with_dynamic_target_width() {
         let yaml = r#"
-id: dynamic_width_test
 name: Dynamic Width
 unit: mm
 dpi: 200
@@ -6456,7 +6407,6 @@ layout:
     #[test]
     fn render_with_dynamic_font_weight() {
         let yaml = r#"
-id: dynamic_weight_test
 name: Dynamic Weight
 unit: mm
 dpi: 200
@@ -6491,7 +6441,6 @@ layout:
     #[test]
     fn inactive_when_branch_does_not_require_missing_fields_during_measure_or_render() {
         let yaml = r#"
-id: when_lazy_test
 name: When Lazy Test
 unit: mm
 dpi: 200
@@ -6540,7 +6489,6 @@ layout:
     #[test]
     fn active_branch_missing_field_returns_422_missing_field() {
         let yaml = r#"
-id: active_missing_test
 name: Active Missing Test
 unit: mm
 dpi: 200
@@ -6568,7 +6516,6 @@ layout:
     #[test]
     fn dimension_exceeding_max_label_dimension_returns_422() {
         let yaml = r#"
-id: dim_limit_test
 name: Dim Limit Test
 unit: mm
 dpi: 200
@@ -6600,7 +6547,6 @@ layout:
     #[test]
     fn dynamic_container_padding_overflow_at_runtime_returns_container_padding_no_room() {
         let yaml = r#"
-id: dynamic_container_padding_overflow
 name: Dynamic Container Padding Overflow
 unit: mm
 dpi: 200
@@ -6648,7 +6594,6 @@ layout:
     #[test]
     fn dynamic_container_padding_overflow_with_inactive_when_children_renders_ok() {
         let yaml = r#"
-id: dynamic_container_inactive_padding
 name: Dynamic Container Inactive Padding
 unit: mm
 dpi: 200
@@ -6695,7 +6640,6 @@ layout:
         use chrono::TimeZone;
 
         let yaml = r#"
-id: test_dt_param
 name: Test DateTime Param
 unit: mm
 dpi: 200
@@ -6779,7 +6723,7 @@ layout:
     /// real chain: `resolve_parameters` builds the instants, `interpolate` reads them. Everything
     /// below `interpolate` is Typst, which a byte-length assertion cannot inspect.
     fn interpolated(
-        template: &TemplateDefinition,
+        template: &TemplateContent,
         data: &HashMap<String, serde_json::Value>,
         resolver: &crate::datetime_fmt::DateTimeResolver,
     ) -> Result<String, AppError> {
@@ -6804,7 +6748,6 @@ layout:
     #[test]
     fn datetime_param_unknown_format_errors_at_render() {
         let yaml = r#"
-id: test_dt_unknown_fmt
 name: Test DateTime Unknown Format
 unit: mm
 dpi: 200
@@ -6840,7 +6783,6 @@ layout:
         use chrono::TimeZone;
 
         let yaml = r#"
-id: test_dt_dynamic_width
 name: Test DateTime Dynamic Width
 unit: mm
 dpi: 200
@@ -6885,7 +6827,6 @@ layout:
     #[test]
     fn datetime_param_excluded_from_fields_and_placeholders() {
         let yaml = r#"
-id: test_dt_fields
 name: Test DateTime Fields
 unit: mm
 dpi: 200
@@ -6913,10 +6854,9 @@ layout:
         assert!(!ph.contains_key("printed_on.short_date"));
     }
 
-    fn dt_param_template(value: &str) -> TemplateDefinition {
+    fn dt_param_template(value: &str) -> TemplateContent {
         let yaml = format!(
             r#"
-id: test_dt
 name: Test DateTime
 unit: mm
 dpi: 200
@@ -7024,7 +6964,6 @@ layout:
     #[test]
     fn datetime_param_when_compares_the_bare_iso_date() {
         let yaml = r#"
-id: test_dt_when
 name: Test DateTime When
 unit: mm
 dpi: 200

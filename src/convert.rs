@@ -7,7 +7,7 @@ use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
     RawTemplateFormat, TemplateDefinitionRaw,
 };
-use crate::templates::TemplateDefinition;
+use crate::templates::TemplateContent;
 
 impl PlacementRaw {
     /// `size` xor `to`. `kind` is the item type (`text`, `qr`, `image`, `container`) and becomes the
@@ -341,7 +341,7 @@ impl TryFrom<RawParamSpec> for ParamSpec {
     }
 }
 
-impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
+impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
     type Error = TemplateError;
 
     fn try_from(raw: TemplateDefinitionRaw) -> Result<Self, Self::Error> {
@@ -372,24 +372,11 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
             }
         }
 
-        let group = match raw.group {
-            None => None,
-            Some(serde_yaml_ng::Value::String(value)) => Some(value.trim().to_string()),
-            Some(_) => {
-                return Err(TemplateError::Validation {
-                    path: "group".to_string(),
-                    msg: "group must be a string".to_string(),
-                })
-            }
-        };
-
         let format = TemplateFormat::try_from(raw.format)?;
 
-        Ok(TemplateDefinition {
-            id: raw.id,
+        Ok(TemplateContent {
             name: raw.name,
             description: raw.description.unwrap_or_default(),
-            group,
             unit: raw.unit,
             dpi: raw.dpi,
             format,
@@ -403,15 +390,15 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateDefinition {
 #[cfg(test)]
 mod tests {
     use crate::raw::TemplateDefinitionRaw;
-    use crate::templates::TemplateDefinition;
+    use crate::templates::TemplateContent;
 
-    fn try_build(layout_yaml: &str) -> Result<TemplateDefinition, String> {
+    fn try_build(layout_yaml: &str) -> Result<TemplateContent, String> {
         let yaml = format!(
-            "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n{layout_yaml}"
+            "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n{layout_yaml}"
         );
         let raw: TemplateDefinitionRaw =
             serde_yaml_ng::from_str(&yaml).map_err(|e| e.to_string())?;
-        TemplateDefinition::try_from(raw).map_err(|e| e.to_string())
+        TemplateContent::try_from(raw).map_err(|e| e.to_string())
     }
 
     #[test]
