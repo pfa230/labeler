@@ -83,6 +83,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0072](0072-two-filter-scopes-named-not-merged.md) | Two filter scopes named, not merged | Accepted |
 | [0073](0073-group-is-a-directory-id-is-the-filename.md) | Group is a directory; ID is the filename | Accepted |
 | [0075](0075-request-rejections-use-the-error-envelope.md) | Request rejections use the standard JSON error envelope | Accepted |
+| [0076](0076-the-filesystem-answers-the-case-question.md) | The filesystem answers the case question | Accepted |
 
 ## Adding an ADR
 
