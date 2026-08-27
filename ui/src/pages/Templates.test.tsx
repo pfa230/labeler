@@ -12,7 +12,7 @@ const templates: Array<{
   description: string;
   unit: string;
   dpi: number;
-  format: any;
+  format: Record<string, unknown>;
   group?: string;
 }> = [
   {
@@ -72,7 +72,12 @@ function stubFetch(opts?: {
   let groups = [...(opts?.groups ?? [])];
   let currentTemplates = [...(opts?.templates ?? (opts?.empty ? [] : templates))];
   let failRefresh = opts?.failRefreshTemplates ?? false;
-  const calls: { method: string; url: string; body?: unknown }[] = [];
+  type FetchCall = { method: string; url: string; body?: unknown };
+  type StubCalls = FetchCall[] & {
+    setDelayRefetch: (p: Promise<void> | null) => void;
+    setFailRefresh: (v: boolean) => void;
+  };
+  const calls = [] as unknown as StubCalls;
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : (input as Request).url;
     const method = init?.method ?? "GET";
@@ -156,10 +161,10 @@ function stubFetch(opts?: {
     return jsonResponse({ templates: currentTemplates });
   });
   let delayRefetch: Promise<void> | null = null;
-  (calls as any).setDelayRefetch = (p: Promise<void> | null) => {
+  calls.setDelayRefetch = (p: Promise<void> | null) => {
     delayRefetch = p;
   };
-  (calls as any).setFailRefresh = (v: boolean) => {
+  calls.setFailRefresh = (v: boolean) => {
     failRefresh = v;
   };
   vi.stubGlobal("fetch", fetchMock);
@@ -838,7 +843,7 @@ describe("Templates list", () => {
             (c) =>
               c.method === "PUT" &&
               c.url === "/api/template-groups/Shipping" &&
-              (c.body as any)?.name === "Logistics",
+              (c.body as { name?: string } | undefined)?.name === "Logistics",
           ),
         ).toBe(true);
       });
@@ -972,7 +977,7 @@ describe("Templates list", () => {
       fireEvent.change(within(dialog).getByLabelText("New name"), { target: { value: "Warehouse" } });
 
       // Delay templates refetch to examine intermediate transition state
-      (calls as any).setDelayRefetch(refetchPromise);
+      calls.setDelayRefetch(refetchPromise);
       fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
 
       // Wait for rename mutation to settle and dialog to close, entering the pending transition
@@ -990,7 +995,7 @@ describe("Templates list", () => {
 
       // Now resolve the refetch
       resolveRefetch();
-      (calls as any).setDelayRefetch(null);
+      calls.setDelayRefetch(null);
 
       // After refetch completes, templates remain visible and selection updates
       await waitFor(() => {
@@ -1097,7 +1102,7 @@ describe("Templates list", () => {
       fireEvent.change(within(dialog).getByLabelText("New name"), { target: { value: "Logistics" } });
 
       // Fail next refresh
-      (calls as any).setFailRefresh(true);
+      calls.setFailRefresh(true);
       fireEvent.click(within(dialog).getByRole("button", { name: "Rename" }));
 
       // Refresh error alert is shown
@@ -1106,7 +1111,7 @@ describe("Templates list", () => {
       expect(screen.getByText("Template 1")).toBeInTheDocument();
 
       // Fix refresh and click Retry refresh
-      (calls as any).setFailRefresh(false);
+      calls.setFailRefresh(false);
       fireEvent.click(screen.getByRole("button", { name: "Retry refresh" }));
 
       // Alert disappears and selection is updated
