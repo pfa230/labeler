@@ -354,8 +354,13 @@ function validateGroupSegment(segment: string): string | null {
   if (segment.length > 64) return "Name cannot exceed 64 characters";
   const encoder = new TextEncoder();
   if (encoder.encode(segment).length > 255) return "Name cannot exceed 255 bytes";
-  if (/[\x00-\x1F\x7F]/.test(segment)) return "Name cannot contain control characters";
-  if (/[\/\\<>:"|?*]/.test(segment)) return 'Name cannot contain / \\ < > : " | ? *';
+  // Scanned by code point rather than matched by regex: a character class spelling out the C0
+  // range is what `no-control-regex` exists to flag, and the intent here is exactly that range.
+  for (const ch of segment) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code <= 0x1f || code === 0x7f) return "Name cannot contain control characters";
+  }
+  if (/[/\\<>:"|?*]/.test(segment)) return 'Name cannot contain / \\ < > : " | ? *';
   if (segment === "." || segment === "..") return 'Name cannot be "." or ".."';
   if (segment.startsWith(" ") || segment.endsWith(" ")) return "Name cannot have leading or trailing whitespace";
   if (segment.startsWith(".") || segment.endsWith(".")) return 'Name cannot begin or end with "."';
