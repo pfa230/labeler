@@ -309,9 +309,15 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
 - **Coordinates.** Bottom-left origin, y-up, in the template `unit` (`mm` or `in`). Typst is top-left,
   so the renderer flips with `frame_height_units - top`. A `Container` re-bases children into its
   padded inner box via a fresh `RenderContext`. *Watch this when touching placement math.*
-- **Sizing.** `size` is a number or `auto`. `auto` resolves to `max_w`/`max_h` if given, else (for
-  containers and lines) the parent frame. *This logic is duplicated between compile-time validation
-  (`templates.rs`) and render-time resolution (`render/mod.rs`); keep the two in sync.*
+- **Sizing** (`resolver.rs`). An extent is a number, `content` or `fill`, and comes from one of three
+  sources: the author, the content, or the frame. `source_of` is the only place a spelling is
+  classified; everything downstream branches on that classification, never on the spelling itself.
+  `resolve`, `available` and `requirement` are shared by load-time validation and render-time
+  resolution and cannot tell which stage they are in, so the two cannot drift the way they did in
+  #150 and #155. Only the walk supplying intrinsic sizes differs, because load cannot measure text,
+  encode a QR or decode an image: it passes the available extent instead, which makes a `content`
+  extent resolve exactly as a `fill` one does. *Adding a source or a bound means editing
+  `resolver.rs` alone.* (ADR-0080, ADR-0081, #226.)
 - **Rendering** (`render/mod.rs`). Walks the layout emitting Typst markup; PNG via `typst-render`,
   sheets as one clipped box per slot via `typst-pdf`. `render/helpers.rs` holds string escaping,
   length formatting, QR-SVG generation (`qrcode`), and `ttf-parser`-based text fitting for
