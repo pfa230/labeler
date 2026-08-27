@@ -1,5 +1,5 @@
 name: Brother 24mm Bounded Auto-Width Demo
-description: Dynamic-width tape with an auto qr and an auto text each capped by max_w well below the frame remainder, so the label shrinks to its content instead of the full width.max (#152)
+description: Dynamic-width tape with a fixed-size qr and a content-width text capped by max_w well below the frame remainder, so the label shrinks to its content instead of the full width.max (#152)
 unit: mm
 dpi: 180
 params:
