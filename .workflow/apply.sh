@@ -116,7 +116,11 @@ while :; do
   # forgiving than review-gate-check.sh, which refuses anything but exactly one:
   # that gate decides whether code may be committed, this only decides whether to
   # loop again.
-  verdict=$(grep -o '^VERDICT:[[:space:]]*[A-Z_]*' "$review_log" 2>/dev/null | tail -1 | sed 's/^VERDICT:[[:space:]]*//')
+  # Searched in the closing lines only. When the agent emits no structured result the
+  # log is its whole transcript, which contains every file it read: a reviewer that
+  # opened `review.md` echoed the PLAN review's `VERDICT: APPROVE` into its own log,
+  # and a whole-file grep read that as the diff verdict.
+  verdict=$(tail -40 "$review_log" 2>/dev/null | grep -o '^VERDICT:[[:space:]]*[A-Z_]*' | tail -1 | sed 's/^VERDICT:[[:space:]]*//')
   # Every round is preserved, the approving one included. The gate reads
   # diff-review.md, so a verdict that exists only in an untracked log is a verdict
   # nothing can check (#223).
