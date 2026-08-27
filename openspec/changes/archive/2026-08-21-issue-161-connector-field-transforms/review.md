@@ -13,9 +13,6 @@ REVIEWER: codex
   `ui/src/lib/templateFields.ts`, `docs/SPEC.md` §12, and the `regex` / `regex-syntax` sources
 - **Issue**: #161
 
-Raw reviewer output is preserved verbatim beside this file: `review-raw-1.txt` (round 1) and
-`review-raw-1-recheck.txt` (the re-check of the Required Changes).
-
 ## Findings
 
 ### Critical (blocking)
@@ -107,7 +104,7 @@ CHANGES_APPLIED: yes
 
 Nothing rebutted. All six Required Changes were applied and re-checked by the same reviewer in a
 read-only pass over the edited artifacts and the code; it returned all six ADDRESSED, no new
-suggestions, and `VERDICT: APPROVE` (`review-raw-1-recheck.txt`).
+suggestions, and `VERDICT: APPROVE`.
 
 1. **Fixed.** `design.md` "Materialize rewrites the field list down, then projects the result back"
    now states the three ordered steps and cites `homebox.rs:317-320` / `468-472` as the hazard, and

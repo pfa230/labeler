@@ -6,7 +6,7 @@
 AUTHOR: claude
 REVIEWER: codex
 
-- **Tool restrictions**: read-only inspection only (`codex exec --ignore-user-config -s read-only -c model_reasoning_effort=high`, default flagship model). The reviewer read files and ran `rg`/`sed`/`nl`; it wrote nothing. Raw output preserved verbatim in `review-raw-1.txt`, the re-check in `review-raw-1-recheck.txt`.
+- **Tool restrictions**: read-only inspection only (`codex exec --ignore-user-config -s read-only -c model_reasoning_effort=high`, default flagship model). The reviewer read files and ran `rg`/`sed`/`nl`; it wrote nothing.
 - **Artifacts reviewed**: proposal.md, specs/auto-length-layout/spec.md, design.md. Source read by the reviewer: `AGENTS.md`, `openspec/config.yaml`, `openspec/schemas/labeler/schema.yaml`, `docs/SPEC.md` (§3.1, §4, §4.1, §6), `docs/adr/README.md`, `src/render/mod.rs`, `src/render/helpers.rs`, `src/models.rs`, `src/templates.rs`, `catalog/tape/brother/brother_12mm.yaml`.
 - **Issue**: #180
 
@@ -111,7 +111,7 @@ CHANGES_APPLIED: yes
    three gates.
 
 **Reviewer re-check of the three Required Changes** (same CLI, fresh read-only invocation, scoped to
-these items only; raw output in `review-raw-1-recheck.txt`): item 1 PASS
+these items only): item 1 PASS
 (`specs/auto-length-layout/spec.md:39-43`, §6 prohibition at `docs/SPEC.md:594-601`), item 2 PASS
 (`design.md:47-53`), item 3 PASS (`design.md:149-153`). `RECHECK: PASS`. No new findings were
 opened.

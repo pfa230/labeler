@@ -2,7 +2,7 @@
 
 - **Round**: 2
 - **Prior round**: 1 returned REVISE (one Critical: the post-change top-level field table omitted the
-  legacy `options:` key; four Moderate; one Suggestion). Preserved as `review-raw-1.txt`.
+  legacy `options:` key; four Moderate; one Suggestion).
 
 AUTHOR: claude
 REVIEWER: codex
@@ -99,16 +99,16 @@ CHANGES_APPLIED: yes
 
 ## Re-check log (round 2)
 
-Codex re-checks the listed items only; each pass is preserved verbatim beside this file.
+Codex re-checks the listed items only; each pass is recorded below.
 
-- **Pass 1** (`review-raw-2-recheck.txt`): Required 1, 2, 3 and the quoted-comment Suggestion
-  confirmed applied and correct. Verdict REVISE over two defects the author's own edits introduced:
+- **Pass 1**: Required 1, 2, 3 and the quoted-comment Suggestion confirmed applied and correct.
+  Verdict REVISE over two defects the author's own edits introduced:
   a stale "step 7" cross-reference in the Risks section where decision 4 numbers it step 8, and an
   ordering conflict where the spec required Unicode code-point order while the design specified
   JavaScript `<`, which orders by UTF-16 code unit and disagrees for names outside the Basic
   Multilingual Plane. Both are real; the second is the sharper one, since an emoji in a group name
   would have sorted differently in the UI than on the server.
-- **Pass 2** (`review-raw-2-recheck-2.txt`): both fixes confirmed. It re-walked every numbered
+- **Pass 2**: both fixes confirmed. It re-walked every numbered
   cross-reference in decision 4, and confirmed that comparing `Array.from(name)` code-point sequences
   is equivalent to the server's `str::cmp` at `src/templates.rs:204` for every group name the spec
   allows, since Rust's UTF-8 byte order is code-point order. No new defects. VERDICT: APPROVE.
@@ -119,8 +119,8 @@ APPROVE_WITH_CHANGES therefore stands with its required changes applied and re-c
 ## Post-implementation diff review (round 3)
 
 The plan review above gated implementation. Implementation was handed to agy, and its diff was then
-reviewed by codex in read-only mode; that transcript is preserved beside this file as
-`review-raw-diff-1.txt`. Verdict: REVISE, four Major findings, no Critical. Each was reproduced
+reviewed by codex in read-only mode. Verdict: REVISE, four Major findings, no Critical. Each was
+reproduced
 against a running server before being accepted, and each is fixed in the same commit:
 
 1. **`{}` cleared a template's group.** `PUT /api/templates/{id}/group` with an empty object returned
