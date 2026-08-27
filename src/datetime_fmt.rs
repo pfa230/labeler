@@ -89,47 +89,28 @@ pub fn parse_datetime_override(s: &str) -> Result<DateTime<Local>, String> {
     parse_datetime_in_tz(s, &Local)
 }
 
-/// Resolves the `datetime` interpolation namespace. Holds the configured formats and a single
-/// captured instant so every token in one render shares the same `now`.
+/// Resolves and formats instants. Holds the configured formats and a single captured
+/// instant so every token in one render shares the same `now`.
 pub struct DateTimeResolver<'a> {
     pub formats: &'a BTreeMap<String, String>,
     pub now: DateTime<Local>,
 }
 
 impl DateTimeResolver<'_> {
-    /// `Some(Ok)` for a resolved datetime token, `Some(Err)` for an unknown named format, `None`
-    /// if `token` is not in the datetime namespace (so the caller falls through to vars/data).
-    pub fn resolve(&self, token: &str) -> Option<Result<String, AppError>> {
-        if token == "datetime" {
-            return Some(Ok(format_now(BARE_DATETIME_FORMAT, self.now)));
-        }
-        let name = token.strip_prefix("datetime.")?;
-        Some(match self.formats.get(name) {
-            Some(pattern) => Ok(format_now(pattern, self.now)),
-            None => Err(AppError::missing_field(&format!("datetime.{name}"))),
-        })
-    }
-
-    /// Resolve a token against the template's declared datetime parameters.
-    /// Returns `Some(Ok(str))` if resolved, `Some(Err(AppError))` if format name is unknown,
-    /// or `None` if token head does not name a datetime parameter.
-    pub fn resolve_param(
+    /// Format an instant using the configured format name, or ISO %Y-%m-%d if None.
+    pub fn format(
         &self,
-        token: &str,
-        instants: &BTreeMap<String, DateTime<Local>>,
-    ) -> Option<Result<String, AppError>> {
-        let (head, tail) = match token.split_once('.') {
-            Some((h, t)) => (h, Some(t)),
-            None => (token, None),
-        };
-        let instant = instants.get(head)?;
-        Some(match tail {
-            None => Ok(format_now(BARE_DATETIME_FORMAT, *instant)),
+        instant: DateTime<Local>,
+        format_name: Option<&str>,
+        full_field_name: &str,
+    ) -> Result<String, AppError> {
+        match format_name {
+            None => Ok(format_now(BARE_DATETIME_FORMAT, instant)),
             Some(fmt_name) => match self.formats.get(fmt_name) {
-                Some(pattern) => Ok(format_now(pattern, *instant)),
-                None => Err(AppError::missing_field(&format!("{head}.{fmt_name}"))),
+                Some(pattern) => Ok(format_now(pattern, instant)),
+                None => Err(AppError::missing_field(full_field_name)),
             },
-        })
+        }
     }
 }
 
@@ -170,48 +151,39 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bare_datetime_is_iso_date() {
+    fn format_instant_bare_is_iso_date() {
         let r = DateTimeResolver {
             formats: &formats(),
             now: fixed_now(),
         };
-        assert_eq!(r.resolve("datetime").unwrap().unwrap(), "2026-06-25");
+        assert_eq!(r.format(r.now, None, "sys.now").unwrap(), "2026-06-25");
     }
 
     #[test]
-    fn resolve_named_format() {
+    fn format_instant_named_format() {
         let r = DateTimeResolver {
             formats: &formats(),
             now: fixed_now(),
         };
         assert_eq!(
-            r.resolve("datetime.short_date").unwrap().unwrap(),
+            r.format(r.now, Some("short_date"), "sys.now:short_date")
+                .unwrap(),
             "06/25/2026"
         );
     }
 
     #[test]
-    fn resolve_unknown_named_format_errors() {
+    fn format_instant_unknown_named_format_errors() {
         let r = DateTimeResolver {
             formats: &formats(),
             now: fixed_now(),
         };
-        assert!(r.resolve("datetime.nope").unwrap().is_err());
+        let err = r.format(r.now, Some("nope"), "sys.now:nope").unwrap_err();
+        assert_eq!(err.status(), 422);
     }
 
     #[test]
-    fn resolve_non_datetime_token_is_none() {
-        let r = DateTimeResolver {
-            formats: &formats(),
-            now: fixed_now(),
-        };
-        assert!(r.resolve("vars.x").is_none());
-        assert!(r.resolve("title").is_none());
-        assert!(r.resolve("datetimefoo").is_none()); // no dot, not the bare token
-    }
-
-    #[test]
-    fn resolve_param_bare_and_dotted() {
+    fn format_param_instant() {
         let r = DateTimeResolver {
             formats: &formats(),
             now: fixed_now(),
@@ -220,31 +192,21 @@ mod tests {
             .with_ymd_and_hms(2026, 8, 19, 14, 30, 0)
             .single()
             .unwrap();
-        let mut instants = BTreeMap::new();
-        instants.insert("printed_on".to_string(), instant);
 
+        assert_eq!(r.format(instant, None, "printed_on").unwrap(), "2026-08-19");
         assert_eq!(
-            r.resolve_param("printed_on", &instants).unwrap().unwrap(),
-            "2026-08-19"
-        );
-        assert_eq!(
-            r.resolve_param("printed_on.long_date", &instants)
-                .unwrap()
+            r.format(instant, Some("long_date"), "printed_on:long_date")
                 .unwrap(),
             "August 19, 2026"
         );
         assert_eq!(
-            r.resolve_param("printed_on.time", &instants)
-                .unwrap()
-                .unwrap(),
+            r.format(instant, Some("time"), "printed_on:time").unwrap(),
             "14:30"
         );
-        assert!(r
-            .resolve_param("printed_on.no_such_fmt", &instants)
-            .unwrap()
-            .is_err());
-        assert!(r.resolve_param("other_param", &instants).is_none());
-        assert!(r.resolve_param("other_param.foo", &instants).is_none());
+        let err = r
+            .format(instant, Some("no_such_fmt"), "printed_on:no_such_fmt")
+            .unwrap_err();
+        assert_eq!(err.status(), 422);
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

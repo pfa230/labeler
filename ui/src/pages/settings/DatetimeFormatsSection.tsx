@@ -263,7 +263,7 @@ export function DatetimeFormatsSection() {
         )}
       </div>
       <p className="text-xs" style={{ color: "var(--muted)" }}>
-        Named strftime patterns available as {"{datetime.<name>}"} in templates.
+        Named strftime patterns available as {"{sys.now:<name>}"} in templates.
       </p>
     </section>
   );
