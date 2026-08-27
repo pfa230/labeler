@@ -6,8 +6,9 @@ allowed-tools: Bash
 
 Run the apply stage for `$ARGUMENTS` on agy.
 
-**Superseded by `/apply agy <reviewer> <change>`**, which pairs the implementer with a reviewer
-instead of leaving the review to whoever remembers. Prefer that.
+**Superseded by `/apply agy <reviewer> [change]`**, which pairs the implementer with a reviewer
+instead of leaving the review to whoever remembers, and records the verdict as a gated artifact.
+Prefer that.
 
 1. Run `.workflow/apply-with-agy.sh $ARGUMENTS` in the background; it can take many minutes.
 2. Report only the exit status and the tail it prints. Do NOT read

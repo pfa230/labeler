@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Run the apply stage on agy, from Claude, without a human cd-ing anywhere.
 #
+# SUPERSEDED by apply.sh, which takes both roles as arguments and records the
+# reviewer's verdict as diff-review.md, the artifact the commit gate reads:
+#
+#   .workflow/apply.sh agy <reviewer> [change]
+#
+# This script has no reviewer stage at all. It implements and exits, leaving the
+# review to whoever remembers, so nothing records a verdict (#224, #223).
+#
 #   .workflow/apply-with-agy.sh <change-name> [extra prompt...]
 #
 # Claude orchestrates, agy implements, Claude reviews the resulting diff: the
