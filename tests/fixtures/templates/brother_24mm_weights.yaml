@@ -18,7 +18,7 @@ layout:
   - type: text
     value: "{title}"
     at: [1.5, 9.6]
-    size: [auto, 7.5]
+    size: [content, 7.5]
     max_w: 117.0
     font_size:
       min: 6.0
@@ -30,7 +30,7 @@ layout:
   - type: text
     value: "{subtitle}"
     at: [1.5, 1.5]
-    size: [auto, 7.0]
+    size: [content, 7.0]
     max_w: 117.0
     font_size:
       min: 5.0

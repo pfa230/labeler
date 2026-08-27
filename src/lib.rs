@@ -17,6 +17,7 @@ pub mod parse;
 pub mod raw;
 pub mod reason;
 pub mod render;
+pub mod resolver;
 pub mod settings;
 pub mod store;
 pub mod templates;
@@ -2209,7 +2210,7 @@ layout:
   - type: text
     value: "{datetime.long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let response = app
