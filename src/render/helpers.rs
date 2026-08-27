@@ -34,62 +34,20 @@ pub(super) fn value_to_string(value: &JsonValue) -> String {
     }
 }
 
-/// Substitution-only interpolation (ADR-0010).
-///
-/// Resolution precedence: `{datetime}` / `{datetime.NAME}` from the resolver first, then
-/// declared `datetime` parameter namespaces `{<p>}` / `{<p>.<name>}` from `instants`, then
-/// `{vars.<key>}` from `variables`, then `{field}` from `data` via `value_to_string`.
-/// `{{`/`}}` emit literal braces. An unresolved token or an unmatched brace is an error.
-pub(super) fn interpolate(
-    template: &str,
-    data: &HashMap<String, JsonValue>,
-    variables: &BTreeMap<String, String>,
-    datetime: &crate::datetime_fmt::DateTimeResolver,
-    instants: Option<&BTreeMap<String, chrono::DateTime<chrono::Local>>>,
-) -> Result<String, AppError> {
-    let mut out = String::with_capacity(template.len());
-    let mut chars = template.chars().peekable();
+fn process_literal_chunk(chunk: &str, template: &str, out: &mut String) -> Result<(), AppError> {
+    let mut chars = chunk.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '{' => {
                 if chars.peek() == Some(&'{') {
                     chars.next();
                     out.push('{');
-                    continue;
-                }
-                let mut token = String::new();
-                let mut closed = false;
-                for tc in chars.by_ref() {
-                    if tc == '}' {
-                        closed = true;
-                        break;
-                    }
-                    token.push(tc);
-                }
-                if !closed {
+                } else {
                     return Err(AppError::invalid_request(
                         Reason::InterpolationSyntax,
                         format!("unterminated '{{' in template '{template}'"),
                     ));
                 }
-                let resolved = if let Some(dt) = datetime.resolve(&token) {
-                    dt?
-                } else if let Some(param_dt) =
-                    instants.and_then(|inst| datetime.resolve_param(&token, inst))
-                {
-                    param_dt?
-                } else if let Some(key) = token.strip_prefix("vars.") {
-                    variables
-                        .get(key)
-                        .cloned()
-                        .ok_or_else(|| AppError::missing_field(&format!("vars.{key}")))?
-                } else {
-                    value_to_string(
-                        data.get(&token)
-                            .ok_or_else(|| AppError::missing_field(&token))?,
-                    )
-                };
-                out.push_str(&resolved);
             }
             '}' => {
                 if chars.peek() == Some(&'}') {
@@ -105,6 +63,83 @@ pub(super) fn interpolate(
             other => out.push(other),
         }
     }
+    Ok(())
+}
+
+/// Substitution-only interpolation (ADR-0010, ADR-0055).
+///
+/// - `{sys.now[:<fmt>]}` resolves the request's captured instant.
+/// - `{vars.<key>}` resolves from `variables`.
+/// - `{<name>[:<fmt>]}` resolves from declared parameter `instants` (if datetime parameter) or `data`.
+///
+/// `{{`/`}}` emit literal braces. An unresolved token or an unmatched brace is an error.
+pub(super) fn interpolate(
+    template: &str,
+    data: &HashMap<String, JsonValue>,
+    variables: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
+    instants: Option<&BTreeMap<String, chrono::DateTime<chrono::Local>>>,
+) -> Result<String, AppError> {
+    let mut out = String::with_capacity(template.len());
+    let tokens = crate::interpolation::scan_tokens(template);
+    let mut pos = 0;
+
+    for scanned in tokens {
+        if scanned.start > pos {
+            process_literal_chunk(&template[pos..scanned.start], template, &mut out)?;
+        }
+        pos = scanned.end;
+
+        let token = crate::interpolation::parse(scanned.raw).map_err(|_| {
+            AppError::invalid_request(
+                Reason::InterpolationSyntax,
+                format!(
+                    "invalid interpolation token '{}' in template '{template}'",
+                    scanned.raw
+                ),
+            )
+        })?;
+
+        let inner = scanned
+            .raw
+            .strip_prefix('{')
+            .unwrap_or(scanned.raw)
+            .strip_suffix('}')
+            .unwrap_or(scanned.raw);
+
+        let resolved = match token.source {
+            crate::interpolation::Source::Sys(crate::interpolation::SysValue::Now) => {
+                datetime.format(datetime.now, token.format, inner)?
+            }
+            crate::interpolation::Source::Vars(key) => {
+                if token.format.is_some() {
+                    return Err(AppError::missing_field(inner));
+                }
+                variables
+                    .get(key)
+                    .cloned()
+                    .ok_or_else(|| AppError::missing_field(&format!("vars.{key}")))?
+            }
+            crate::interpolation::Source::Bare(name) => {
+                if let Some(instant) = instants.and_then(|inst| inst.get(name)) {
+                    datetime.format(*instant, token.format, inner)?
+                } else if token.format.is_some() {
+                    return Err(AppError::missing_field(inner));
+                } else {
+                    value_to_string(
+                        data.get(name)
+                            .ok_or_else(|| AppError::missing_field(name))?,
+                    )
+                }
+            }
+        };
+        out.push_str(&resolved);
+    }
+
+    if pos < template.len() {
+        process_literal_chunk(&template[pos..], template, &mut out)?;
+    }
+
     Ok(out)
 }
 
@@ -1326,6 +1361,8 @@ mod interpolate_tests {
     #[test]
     fn unmatched_brace_errors() {
         assert!(interpolate("a{id", &data(), &variables(), &no_datetime(), None).is_err());
+        assert!(interpolate("a}id", &data(), &variables(), &no_datetime(), None).is_err());
+        assert!(interpolate("{bad{token}", &data(), &variables(), &no_datetime(), None).is_err());
     }
 }
 

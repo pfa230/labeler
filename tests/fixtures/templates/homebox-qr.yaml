@@ -30,7 +30,7 @@ layout:
       horizontal: left
       vertical: center
   - type: text
-    value: "{datetime.iso_date}"
+    value: "{sys.now:iso_date}"
     at: [27.0, 0.0]
     size: [auto, 5.0]
     font_size:

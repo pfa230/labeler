@@ -763,12 +763,8 @@ fn validate_param_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("parameter name must not be empty".to_string());
     }
-    if name == "datetime" || name == "vars" {
-        return Err(format!("parameter name '{name}' is reserved"));
-    }
-    if name.starts_with("datetime.") || name.starts_with("vars.") {
-        return Err(format!("parameter name '{name}' uses a reserved prefix"));
-    }
+    // A parameter name must match ^[a-zA-Z0-9_-]+$. Dots separate namespaces and colons separate
+    // formats in the token grammar; no words are reserved.
     if !name
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
@@ -872,18 +868,79 @@ fn validate_when_references(
     Ok(())
 }
 
+fn validate_interpolated_string(
+    s: &str,
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+) -> Result<(), String> {
+    for scanned in crate::interpolation::scan_tokens(s) {
+        let token = match crate::interpolation::parse(scanned.raw) {
+            Ok(tok) => tok,
+            Err(crate::interpolation::TokenError::UnknownSource {
+                token: tok_str,
+                source,
+            }) => {
+                if let Some(spec) = params.get(&source) {
+                    if matches!(spec.param_type, crate::models::ParamType::Datetime { .. }) {
+                        let inner = scanned
+                            .raw
+                            .strip_prefix('{')
+                            .unwrap_or(scanned.raw)
+                            .strip_suffix('}')
+                            .unwrap_or(scanned.raw);
+                        if let Some(key) = inner.strip_prefix(&format!("{source}.")) {
+                            if !key.is_empty()
+                                && !key.contains('.')
+                                && !key.contains(':')
+                                && crate::interpolation::is_valid_ident(key)
+                            {
+                                return Err(format!(
+                                    "template contains '{tok_str}': unknown source '{source}'; use '{{{source}:{key}}}' instead"
+                                ));
+                            }
+                        }
+                    }
+                }
+                return Err(crate::interpolation::TokenError::UnknownSource {
+                    token: tok_str,
+                    source,
+                }
+                .to_string());
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        if let Some(fmt) = token.format {
+            let is_instant = match token.source {
+                crate::interpolation::Source::Sys(crate::interpolation::SysValue::Now) => true,
+                crate::interpolation::Source::Bare(name) => params.get(name).is_some_and(|spec| {
+                    matches!(spec.param_type, crate::models::ParamType::Datetime { .. })
+                }),
+                _ => false,
+            };
+            if !is_instant {
+                return Err(format!(
+                    "template contains '{}': format '{}' can only be applied to an instant (sys.now or type: datetime parameter)",
+                    scanned.raw, fmt
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_item_references(
     item: &LayoutItem,
     params: &std::collections::BTreeMap<String, ParamSpec>,
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
+            value,
             placement,
             font_weight,
             when,
             ..
         } => {
             validate_when_references(when.as_ref(), params)?;
+            validate_interpolated_string(value, params)?;
             if let Some(DynamicValue::Ref(ref_name)) = font_weight {
                 check_param_ref(params, ref_name, "font_weight", &["integer"])?;
             }
@@ -901,9 +958,13 @@ fn validate_item_references(
             }
         }
         LayoutItem::Qr {
-            placement, when, ..
+            value,
+            placement,
+            when,
+            ..
         } => {
             validate_when_references(when.as_ref(), params)?;
+            validate_interpolated_string(value, params)?;
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
                     if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
@@ -918,9 +979,27 @@ fn validate_item_references(
             }
         }
         LayoutItem::Image {
-            placement, when, ..
+            name,
+            src,
+            placement,
+            when,
+            ..
         } => {
             validate_when_references(when.as_ref(), params)?;
+            if let Some(n) = name {
+                if n.is_empty()
+                    || !n
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                {
+                    return Err(format!(
+                        "image name '{n}' contains invalid characters; must match ^[a-zA-Z0-9_-]+$"
+                    ));
+                }
+            }
+            if let Some(s) = src {
+                validate_interpolated_string(s, params)?;
+            }
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
                     if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
@@ -2503,6 +2582,41 @@ layout: []
     }
 
     #[test]
+    fn invalid_token_quarantines_template_and_serves_valid() {
+        let dir = temp_dir("bad_token_quarantine");
+        let valid_yaml = sample_yaml("valid");
+        let bad_yaml = r#"
+name: Bad
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{datetime.long_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        write_template(&dir, "valid.yaml", &valid_yaml);
+        write_template(&dir, "bad.yaml", bad_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get("valid").is_some());
+        assert!(registry.get("bad").is_none());
+
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0].path, "bad.yaml");
+        assert!(broken[0].error.contains("unknown source 'datetime'"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn summaries_are_sorted_by_id() {
         let dir = temp_dir("sorted");
         write_template(
@@ -3092,21 +3206,243 @@ layout:
     }
 
     #[test]
-    fn reject_reserved_parameter_names() {
+    fn parameter_names_character_class_and_unreserved() {
+        let good_names = ["datetime", "vars", "sys", "field_1", "my-param"];
+        for name in good_names {
+            let yaml = format!(
+                "name: T\nunit: mm\ndpi: 200\nparams:\n  {name}:\n    type: string\nformat:\n  type: single\n  height: 12\n  width: 50\nlayout: []"
+            );
+            let res = parse_and_validate(&yaml);
+            assert!(res.is_ok(), "should accept valid parameter name '{name}'");
+        }
+
         let bad_names = [
-            "datetime",
-            "vars",
             "datetime.iso",
             "vars.site",
             "invalid.dot",
+            "printed_on:long_date",
+            "has space",
         ];
         for name in bad_names {
             let yaml = format!(
                 "name: T\nunit: mm\ndpi: 200\nparams:\n  {name}:\n    type: string\nformat:\n  type: single\n  height: 12\n  width: 50\nlayout: []"
             );
             let res = parse_and_validate(&yaml);
-            assert!(res.is_err(), "should reject reserved name '{name}'");
+            assert!(
+                res.is_err(),
+                "should reject invalid parameter name '{name}'"
+            );
         }
+    }
+
+    #[test]
+    fn load_time_token_validation_refusals() {
+        // Unknown source
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{datetime.long_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("unknown source 'datetime'"));
+        assert!(err.contains("{sys.now:long_date}"));
+
+        // Unknown system value
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{sys.nwo}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("unknown system value 'nwo'"));
+
+        // Dotted rewrite of sys.now
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{sys.now.long_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("unknown system value 'now.long_date'"));
+        assert!(err.contains("{sys.now:long_date}"));
+
+        // Format on string parameter
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  title:
+    type: string
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{title:long_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("can only be applied to an instant"));
+
+        // Format on vars key
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{vars.qr_base_url:long_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("can only be applied to an instant"));
+
+        // Empty format name
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{printed_on:}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("invalid format"));
+
+        // Image name invalid
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: image
+    name: "bad image name"
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("image name 'bad image name' contains invalid characters"));
+
+        // Dotted datetime parameter unknown source with suggested replacement
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{printed_on.short_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("{printed_on.short_date}"));
+        assert!(err.contains("unknown source 'printed_on'"));
+        assert!(err.contains("{printed_on:short_date}"));
+
+        // Image src with unknown source
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: image
+    src: "logos/{datetime.brand}.png"
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let err = parse_and_validate(yaml).unwrap_err();
+        assert!(err.contains("unknown source 'datetime'"));
+
+        // Valid image src and datetime format
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: image
+    src: "logos/{vars.brand}.png"
+    at: [0, 0]
+    size: [10, 10]
+  - type: text
+    value: "{printed_on:short_date} {sys.now:iso_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        assert!(parse_and_validate(yaml).is_ok());
     }
 
     #[test]

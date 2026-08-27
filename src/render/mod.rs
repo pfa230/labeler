@@ -2078,28 +2078,11 @@ pub const SAMPLE_PNG_DATA_URI: &str =
 /// it does not error on malformed input such as unterminated `{` or `}}`; templates
 /// that are actually malformed fail later at render time.
 fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c != '{' {
-            continue;
-        }
-        if chars.peek() == Some(&'{') {
-            chars.next();
-            continue;
-        }
-        let mut token = String::new();
-        for tc in chars.by_ref() {
-            if tc == '}' {
-                if !token.is_empty()
-                    && !token.starts_with("vars.")
-                    && token != "datetime"
-                    && !token.starts_with("datetime.")
-                {
-                    out.push(token);
-                }
-                break;
+    for scanned in crate::interpolation::scan_tokens(s) {
+        if let Ok(token) = crate::interpolation::parse(scanned.raw) {
+            if let crate::interpolation::Source::Bare(name) = token.source {
+                out.push(name.to_string());
             }
-            token.push(tc);
         }
     }
 }
@@ -2124,11 +2107,19 @@ fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Ve
     }
 }
 
+fn is_datetime_param(template: &TemplateContent, name: &str) -> bool {
+    template
+        .params
+        .get(name)
+        .map(|spec| matches!(spec.param_type, crate::models::ParamType::Datetime { .. }))
+        .unwrap_or(false)
+}
+
 /// The request data keys a template needs, deduped and sorted.
 ///
 /// Shares the walker behind `placeholder_data`, so it inherits the rule that `{vars.*}` and
-/// `{datetime[.*]}` are NOT request fields — they resolve from the variables store and the datetime
-/// resolver. Declared `datetime` parameter namespaces `{<p>}` / `{<p>.*}` are likewise excluded.
+/// `{sys.*}` are NOT request fields — they resolve from the variables store and the runtime
+/// environment. Declared `datetime` parameter namespaces are likewise excluded.
 /// The catalog index lists this so an entry advertises only what the caller must supply
 /// (#137); `homebox-qr` would otherwise appear to demand `vars.qr_base_url`.
 pub fn template_fields(template: &TemplateContent) -> Vec<String> {
@@ -2136,18 +2127,10 @@ pub fn template_fields(template: &TemplateContent) -> Vec<String> {
     let mut text = Vec::new();
     let mut image = Vec::new();
     walk_placeholder(items, &mut text, &mut image);
-    let is_datetime_param = |token: &str| -> bool {
-        let head = token.split('.').next().unwrap_or(token);
-        template
-            .params
-            .get(head)
-            .map(|spec| matches!(spec.param_type, crate::models::ParamType::Datetime { .. }))
-            .unwrap_or(false)
-    };
     let mut all: Vec<String> = text
         .into_iter()
         .chain(image)
-        .filter(|t| !is_datetime_param(t))
+        .filter(|t| !is_datetime_param(template, t))
         .collect();
     all.sort();
     all.dedup();
@@ -2155,30 +2138,22 @@ pub fn template_fields(template: &TemplateContent) -> Vec<String> {
 }
 
 /// Build non-empty placeholder data for every referenced data field. Image fields get a 1×1 PNG;
-/// other fields get their own name as a stand-in. `{vars.*}` and declared `datetime` parameters are
-/// excluded (resolved from the store / clock).
+/// other fields get their own name as a stand-in. `{vars.*}`, `{sys.*}`, and declared `datetime`
+/// parameters are excluded (resolved from the store / clock).
 pub fn placeholder_data(template: &TemplateContent) -> HashMap<String, JsonValue> {
     let Layout::Items(items) = &template.layout;
     let mut text = Vec::new();
     let mut image = Vec::new();
     walk_placeholder(items, &mut text, &mut image);
-    let is_datetime_param = |token: &str| -> bool {
-        let head = token.split('.').next().unwrap_or(token);
-        template
-            .params
-            .get(head)
-            .map(|spec| matches!(spec.param_type, crate::models::ParamType::Datetime { .. }))
-            .unwrap_or(false)
-    };
     let mut data = HashMap::new();
     for f in text {
-        if !is_datetime_param(&f) {
+        if !is_datetime_param(template, &f) {
             data.entry(f.clone())
                 .or_insert_with(|| JsonValue::String(f));
         }
     }
     for f in image {
-        if !is_datetime_param(&f) {
+        if !is_datetime_param(template, &f) {
             // image wins over a same-named text guess
             data.insert(f, JsonValue::String(SAMPLE_PNG_DATA_URI.to_string()));
         }
@@ -5187,8 +5162,8 @@ layout:
             found, expected,
             "template roots do not hold the expected set"
         );
-        // homebox-qr interpolates {vars.qr_base_url} and {datetime.iso_date}; brother_24mm_printed_on
-        // interpolates {printed_on.short_date} off a `datetime` parameter. Supply all of them so the
+        // homebox-qr interpolates {vars.qr_base_url} and {sys.now:iso_date}; brother_24mm_printed_on
+        // interpolates {printed_on:short_date} off a `datetime` parameter. Supply all of them so the
         // demo entries are covered rather than skipped.
         let settings =
             BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
@@ -5470,7 +5445,7 @@ layout:
                     when: None,
                 },
                 LayoutItem::Qr {
-                    value: "{url} {vars.base} {datetime} {datetime.short_date}".into(),
+                    value: "{url} {vars.base} {sys.now} {sys.now:short_date}".into(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
                         Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
@@ -5497,17 +5472,14 @@ layout:
         assert!(!data.contains_key("base"), "vars.* must be excluded");
         assert!(!data.contains_key("vars.base"), "vars.* must be excluded");
         assert!(
-            !data.contains_key("datetime"),
-            "datetime namespace must be excluded"
+            !data.contains_key("sys.now"),
+            "sys namespace must be excluded"
         );
         assert!(
-            !data.contains_key("datetime.short_date"),
-            "datetime namespace must be excluded"
+            !data.contains_key("sys.now:short_date"),
+            "sys namespace must be excluded"
         );
-        assert!(
-            !data.contains_key("short_date"),
-            "datetime namespace must be excluded"
-        );
+        assert!(!data.contains_key("now"), "sys namespace must be excluded");
         assert_eq!(
             data.get("logo").and_then(|v| v.as_str()),
             Some(SAMPLE_PNG_DATA_URI)
@@ -5569,30 +5541,47 @@ layout:
             formats: &formats,
             now,
         };
-        let vars = BTreeMap::new();
-        // bare datetime => ISO date
+        let vars = BTreeMap::from([("site".to_string(), "https://example.com".to_string())]);
         let mut data: HashMap<String, serde_json::Value> = HashMap::new();
+        data.insert(
+            "datetime".to_string(),
+            serde_json::json!("my-datetime-data"),
+        );
+        data.insert("vars".to_string(), serde_json::json!("my-vars-data"));
+
+        // bare sys.now => ISO date
         assert_eq!(
-            super::helpers::interpolate("d={datetime}", &data, &vars, &dt, None).unwrap(),
+            super::helpers::interpolate("d={sys.now}", &data, &vars, &dt, None).unwrap(),
             "d=2026-06-25"
         );
-        // named format
+        // named format on sys.now
         assert_eq!(
-            super::helpers::interpolate("{datetime.short_date}", &data, &vars, &dt, None).unwrap(),
+            super::helpers::interpolate("{sys.now:short_date}", &data, &vars, &dt, None).unwrap(),
             "06/25/2026"
         );
-        // unknown named format => error
-        assert!(super::helpers::interpolate("{datetime.nope}", &data, &vars, &dt, None).is_err());
-        // a data field named `datetime` is shadowed by the token
-        data.insert("datetime".to_string(), serde_json::json!("SHADOWED"));
+        // unknown named format on sys.now => error
+        assert!(super::helpers::interpolate("{sys.now:nope}", &data, &vars, &dt, None).is_err());
+
+        // bare name `datetime` resolves data field
         assert_eq!(
             super::helpers::interpolate("{datetime}", &data, &vars, &dt, None).unwrap(),
-            "2026-06-25"
+            "my-datetime-data"
         );
+        // bare name `vars` resolves data field
+        assert_eq!(
+            super::helpers::interpolate("{vars}", &data, &vars, &dt, None).unwrap(),
+            "my-vars-data"
+        );
+        // vars.<key> resolves variables
+        assert_eq!(
+            super::helpers::interpolate("{vars.site}", &data, &vars, &dt, None).unwrap(),
+            "https://example.com"
+        );
+
         // literal braces unaffected
         assert_eq!(
-            super::helpers::interpolate("{{datetime}}", &data, &vars, &dt, None).unwrap(),
-            "{datetime}"
+            super::helpers::interpolate("{{sys.now}}", &data, &vars, &dt, None).unwrap(),
+            "{sys.now}"
         );
     }
 
@@ -5664,7 +5653,7 @@ layout:
         // homebox-qr interpolates {vars.qr_base_url}; placeholder_data excludes variables by design.
         let settings =
             BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
-        // homebox-qr also references {datetime.iso_date}, a named format; supply it so the harness
+        // homebox-qr also references {sys.now:iso_date}, a named format; supply it so the harness
         // resolves it (no_datetime carries no named formats).
         let datetime_formats = BTreeMap::from([("iso_date".to_string(), "%Y-%m-%d".to_string())]);
         let datetime = crate::datetime_fmt::DateTimeResolver {
@@ -6652,7 +6641,7 @@ format:
   width: 50
 layout:
   - type: text
-    value: "{printed_on} / {printed_on.short_date} / {datetime}"
+    value: "{printed_on} / {printed_on:short_date} / {sys.now}"
     at: [0, 0]
     size: [50, 20]
     font_size: 10
@@ -6674,7 +6663,7 @@ layout:
             "2026-06-25 / 06/25/2026 / 2026-06-25"
         );
 
-        // 2. With an override: the parameter's tokens move, `{datetime}` does not.
+        // 2. With an override: the parameter's tokens move, `{sys.now}` does not.
         let mut data = HashMap::new();
         data.insert("printed_on".to_string(), json!("2026-08-19"));
         assert_eq!(
@@ -6760,7 +6749,7 @@ format:
   width: 50
 layout:
   - type: text
-    value: "{printed_on.no_such_format}"
+    value: "{printed_on:no_such_format}"
     at: [0, 0]
     size: [50, 20]
     font_size: 10
@@ -6775,7 +6764,7 @@ layout:
         )
         .unwrap_err();
         assert_eq!(err.code(), "MissingField");
-        assert!(err.message_text().contains("printed_on.no_such_format"));
+        assert!(err.message_text().contains("printed_on:no_such_format"));
     }
 
     #[test]
@@ -6797,7 +6786,7 @@ format:
     max: 100
 layout:
   - type: text
-    value: "Date: {printed_on.short_date}"
+    value: "Date: {printed_on:short_date}"
     at: [0, 0]
     size: [auto, 20]
     font_size: { min: 8, max: 14 }
@@ -6839,7 +6828,7 @@ format:
   width: 50
 layout:
   - type: text
-    value: "{title} {printed_on} {printed_on.short_date}"
+    value: "{title} {printed_on} {printed_on:short_date}"
     at: [0, 0]
     size: [50, 20]
     font_size: 10
@@ -6851,7 +6840,7 @@ layout:
         let ph = placeholder_data(&template);
         assert!(ph.contains_key("title"));
         assert!(!ph.contains_key("printed_on"));
-        assert!(!ph.contains_key("printed_on.short_date"));
+        assert!(!ph.contains_key("printed_on:short_date"));
     }
 
     fn dt_param_template(value: &str) -> TemplateContent {
@@ -6901,13 +6890,13 @@ layout:
     /// `datetime` parameter's namespace.
     #[test]
     fn datetime_param_namespace_cannot_be_shadowed_by_request_data() {
-        let template = dt_param_template("{printed_on} {printed_on.short_date}");
+        let template = dt_param_template("{printed_on} {printed_on:short_date}");
         let formats = short_date_formats();
         let resolver = dt_resolver(&formats, fixed_instant());
 
         let mut data = HashMap::new();
         data.insert(
-            "printed_on.short_date".to_string(),
+            "printed_on:short_date".to_string(),
             json!("SHADOWED BY REQUEST"),
         );
         assert_eq!(
@@ -6942,7 +6931,7 @@ layout:
     /// one, so it prints a real date rather than its own name.
     #[test]
     fn datetime_param_renders_a_real_date_in_a_thumbnail() {
-        let template = dt_param_template("{printed_on.short_date}");
+        let template = dt_param_template("{printed_on:short_date}");
         let formats = short_date_formats();
         let resolver = dt_resolver(&formats, fixed_instant());
 
@@ -6957,6 +6946,34 @@ layout:
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn advertised_fields_token_grammar_test() {
+        // {datetime} is an advertised data field; {sys.now} and {sys.now:<fmt>} produce nothing
+        // {vars} is an advertised data field; {vars.<key>} produces nothing
+        // Declared parameter of type datetime (e.g. printed_on) is excluded from advertised data fields
+        let yaml = r#"
+name: Adv Test
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{datetime} {sys.now} {sys.now:iso_date} {vars} {vars.site} {printed_on} {printed_on:short_date}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let fields = template_fields(&template);
+        assert_eq!(fields, vec!["datetime".to_string(), "vars".to_string()]);
     }
 
     /// `when:` sees the parameter through the resolved data map, where the instant is written as
