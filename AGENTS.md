@@ -85,10 +85,14 @@ implementation and archive rewrites the main specs *after* it:
    rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
    artifacts, and wait. On the converging path the loop runs unattended through to the merge.
 4. **Apply and review the diff**, as a named pair:
-   `.workflow/apply.sh <change> <implementer> <reviewer>`, or `/apply` with the same arguments. It
-   runs both roles and the fix loop between them; `.workflow/run-stage.sh` runs a single stage. Prefer it over `/opsx:apply`: implementing here
-   means this session would have to review its own diff, and the pairing exists precisely so that
-   separation does not depend on remembering. Findings return to the implementer, which resumes its
+   `.workflow/apply.sh <implementer> <reviewer> [change]`, or `/apply` with the same arguments. The
+   pair is named first because it is the guarantee; the change is last and optional, resolved from the
+   worktree you are standing in, or from the single one in flight across `.worktrees/`, and refused
+   rather than guessed when several are. `--rounds N` moves the three-round cap and `--dry-run` shows
+   what it would do without launching anything. It runs both roles and the fix loop between them;
+   `.workflow/run-stage.sh` runs a single stage, and still takes the change explicitly. Prefer it over
+   `/opsx:apply`: implementing here means this session would have to review its own diff, and the
+   pairing exists precisely so that separation does not depend on remembering. Findings return to the implementer, which resumes its
    session; the reviewer re-checks and never edits. Two different reviews: step 3 judged the plan,
    this one judges the code. Do not skip it because tasks are checked.
 
@@ -156,7 +160,8 @@ edit-time signal for Claude Code.
 
 `.workflow/gate-tests.sh` asserts both scripts against a throwaway repo, mostly on the refusals: a
 gate that stops firing looks exactly like a gate that passes, and both of these did that once during
-development. CI runs it. Change either script and run it.
+development. `.workflow/apply-tests.sh` does the same for `apply.sh`'s change resolution, through
+`--dry-run`, so no agent is launched. CI runs both. Change any of those scripts and run them.
 
 The gates bound what they can see. A commit that skips OpenSpec entirely has no change folder, so
 nothing is checked; `--no-verify` skips the hook. Both are recorded in `docs/WORKFLOW.md` under what

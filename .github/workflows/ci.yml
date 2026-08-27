@@ -130,8 +130,10 @@ jobs:
       # The gates are the only check on the review process, so a gate that quietly
       # stops firing has to fail loudly somewhere. That is what these assert. The
       # pre-commit hook does not run them; changing a gate script does.
-      - name: Gate tests
-        run: .workflow/gate-tests.sh
+      - name: Workflow script tests
+        run: |
+          .workflow/gate-tests.sh
+          .workflow/apply-tests.sh
 
       # The same scripts the pre-commit hook runs, on what actually landed.
       # Tool-agnostic: they judge files, never which agent produced them (#191).

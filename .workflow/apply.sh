@@ -1,21 +1,46 @@
 #!/usr/bin/env bash
 # Implement a change on one agent, review it on another, loop until it passes.
 #
-#   .workflow/apply.sh <change> <implementer> <reviewer> [max-rounds]
-#   .workflow/apply.sh issue-123-thing agy codex
+#   .workflow/apply.sh <implementer> <reviewer> [change] [--rounds N] [--dry-run]
+#   .workflow/apply.sh agy codex                  # resolves the change from the worktree
+#   .workflow/apply.sh agy codex issue-123-thing  # or name it
 #
-# The pair is the point: the model that writes the code is never the model that
-# judges it. Findings go back to the implementer, which resumes its session and
-# keeps what it built; the reviewer re-checks and never edits.
+# The pair is the point, and it is named first for that reason: the model that
+# writes the code is never the model that judges it (#224). The change comes last
+# because it is the one argument the tool can usually work out for itself.
+#
+# Findings go back to the implementer, which resumes its session and keeps what it
+# built; the reviewer re-checks and never edits.
 #
 # Stops before commit, archive and merge. Those are deliberate steps, and the apply
 # lock makes git refuse them mid-run anyway.
 set -uo pipefail
 
-change="${1:?usage: apply.sh <change> <implementer> <reviewer> [max-rounds]}"
-implementer="${2:?implementer required, e.g. agy}"
-reviewer="${3:?reviewer required, e.g. codex}"
-max_rounds="${4:-3}"
+usage='usage: apply.sh <implementer> <reviewer> [change] [--rounds N] [--dry-run]'
+here=$(cd "$(dirname "$0")" && pwd)
+
+implementer=""; reviewer=""; change=""; max_rounds=3; dry_run=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --rounds) max_rounds="${2:?--rounds needs a number}"; shift 2 ;;
+    --rounds=*) max_rounds="${1#*=}"; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    -h|--help) echo "$usage"; exit 0 ;;
+    -*) echo "unknown option: $1" >&2; echo "$usage" >&2; exit 2 ;;
+    *)
+      if   [ -z "$implementer" ]; then implementer="$1"
+      elif [ -z "$reviewer" ];    then reviewer="$1"
+      elif [ -z "$change" ];      then change="$1"
+      else echo "too many arguments: $1" >&2; echo "$usage" >&2; exit 2; fi
+      shift ;;
+  esac
+done
+
+[ -n "$implementer" ] || { echo "$usage" >&2; exit 2; }
+[ -n "$reviewer" ] || { echo "reviewer required, e.g. codex" >&2; echo "$usage" >&2; exit 2; }
+
+case "$max_rounds" in ''|*[!0-9]*) echo "--rounds takes a number, got '$max_rounds'" >&2; exit 2 ;; esac
+[ "$max_rounds" -ge 1 ] || { echo "--rounds must be at least 1" >&2; exit 2; }
 
 if [ "$implementer" = "$reviewer" ]; then
   echo "implementer and reviewer must differ: both are '$implementer'." >&2
@@ -23,10 +48,55 @@ if [ "$implementer" = "$reviewer" ]; then
   exit 2
 fi
 
-root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
-stage="$root/.workflow/run-stage.sh"
+# The main checkout, not whichever worktree we were called from: --show-toplevel
+# answers the latter, and .worktrees/ hangs off the former.
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
+root=$(dirname "$common")
+here_top=$(git rev-parse --show-toplevel 2>/dev/null)
+
+# A live change folder is untracked and sits inside a worktree, so that is where to
+# look. Called from inside one, only that worktree counts: a session that just
+# proposed is standing in the answer.
+live_changes() { # live_changes <checkout>... -> one change name per line
+  local c d
+  for c in "$@"; do
+    for d in "$c"/openspec/changes/*/; do
+      [ -d "$d" ] || continue
+      case "$(basename "$d")" in archive) continue ;; esac
+      basename "$d"
+    done
+  done
+}
+
+if [ -z "$change" ]; then
+  if [ -n "$here_top" ] && [ "$here_top" != "$root" ]; then
+    found=$(live_changes "$here_top")
+    where="$here_top"
+  else
+    found=$(live_changes "$root"/.worktrees/*/)
+    where="$root/.worktrees"
+  fi
+  count=$(printf '%s' "$found" | grep -c . || true)
+  case "$count" in
+    1) change="$found"; echo "change: $change (resolved from $where)" ;;
+    0) echo "no change in flight under $where, and none named." >&2
+       echo "$usage" >&2; exit 2 ;;
+    *) echo "several changes in flight under $where; name the one you mean:" >&2
+       printf '  %s\n' $found >&2
+       echo "$usage" >&2; exit 2 ;;
+  esac
+fi
+
+stage="$here/run-stage.sh"
 issue=$(printf '%s' "$change" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
+[ -n "$issue" ] || { echo "change name must start with issue-<N>-: $change" >&2; exit 2; }
 wt="$root/.worktrees/$issue"
+
+if [ "$dry_run" = "1" ]; then
+  printf 'implementer: %s\nreviewer: %s\nchange: %s\nworktree: %s\nrounds: %s\n' \
+    "$implementer" "$reviewer" "$change" "$wt" "$max_rounds"
+  exit 0
+fi
 
 say() { printf '\n== %s ==\n' "$1"; }
 
