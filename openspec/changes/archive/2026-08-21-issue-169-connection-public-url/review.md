@@ -16,9 +16,6 @@ REVIEWER: codex
 - **Artifacts reviewed**: proposal.md, specs/connections/spec.md, design.md, plus `src/api.rs`, `src/store.rs`, `src/errors.rs`, `src/reason.rs`, `src/connector/homebox.rs`, `ui/src/api/connectors.ts`, `ui/src/pages/settings/ConnectionsSection.tsx`, `openspec/specs/connector-field-transforms/spec.md`, `docs/SPEC.md`, `docs/adr/0018-api-integration-spine.md`, `AGENTS.md`
 - **Issue**: #169
 
-Raw reviewer output is preserved verbatim in `review-raw-2.txt` (the round) and
-`review-raw-2-recheck.txt` (the re-check of the Required Changes).
-
 ## Findings
 ### Critical (blocking)
 None.
@@ -53,9 +50,8 @@ VERDICT: APPROVE_WITH_CHANGES
 
 none
 
-**Re-check outcome (reviewer):** APPROVE. Preserved verbatim, including its `VERDICT:` line, in
-`review-raw-2-recheck.txt`; relabelled here so this file carries exactly one canonical `VERDICT:` line,
-the round's own.
+**Re-check outcome (reviewer):** APPROVE. Its verdict is relabelled here so this file carries exactly
+one canonical `VERDICT:` line, the round's own.
 
 ## Rebuttals
 

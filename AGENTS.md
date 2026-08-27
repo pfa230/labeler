@@ -89,8 +89,16 @@ implementation and archive rewrites the main specs *after* it:
    runs both roles and the fix loop between them; `.workflow/run-stage.sh` runs a single stage. Prefer it over `/opsx:apply`: implementing here
    means this session would have to review its own diff, and the pairing exists precisely so that
    separation does not depend on remembering. Findings return to the implementer, which resumes its
-   session; the reviewer re-checks and never edits. Transcripts stay in logs, not in this context. Two different reviews: step 3
-   judged the plan, this one judges the code. Do not skip it because tasks are checked.
+   session; the reviewer re-checks and never edits. Two different reviews: step 3 judged the plan,
+   this one judges the code. Do not skip it because tasks are checked.
+
+   **A transcript belongs in a log, not in this context and not in the repository.**
+   `run-stage.sh` writes each run to `.worktrees/issue-<N>/.agent-<role>-<agent>.log`, which is
+   untracked. `review.md` and `diff-review.md` are the record, and the reviewer's stdout redirected
+   into them *is* its output rather than a summary of it, so there is nothing left to preserve
+   alongside. An earlier convention committed the raw `codex exec` capture next to the review, banner
+   and session id included; 19 such files reached 47,190 lines, against 893 lines of actual planning
+   record in the worst change, and they are gone (#244).
 
    `apply.sh` records the outcome as `diff-review.md` in the change folder, carrying `AUTHOR:`,
    `REVIEWER:` and `VERDICT:`, with each round kept alongside as `diff-review-<n>.md`. That file is
