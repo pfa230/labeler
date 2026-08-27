@@ -1,24 +1,22 @@
 mod helpers;
 
 pub const MAX_RENDER_DPI: u32 = 1200;
-const CONTENT_EPSILON: f32 = 1.0e-4;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, DynamicDimension, Extent, Fit, FontSize, HorizontalAlign, LabelInput, Layout,
-    LayoutItem, Placement, Point, Position, Rotation, SizeValue, TemplateFormat,
+    resolve_coord, DynamicDimension, Fit, LabelInput, Layout, LayoutItem, Placement, Point,
+    Position, Rotation, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::TemplateContent;
 use chrono::{DateTime, Local};
 use helpers::{
-    assets_root, binarize_rgba, build_qr_svg, escape_typst_string, fit_text_auto_length,
-    fit_text_to_box, format_length, interpolate, parse_image_data_uri, resolve_dimension,
-    resolve_dynamic_value_f32, resolve_dynamic_value_u16, resolve_image_asset, to_nonbreaking,
-    to_page_coords, typst_alignment, typst_font_options, value_to_string, MeasuredText,
+    assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, interpolate,
+    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32, resolve_dynamic_value_u16,
+    resolve_image_asset, to_page_coords, typst_alignment, typst_font_options, value_to_string,
 };
 use serde_json::Value as JsonValue;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use typst_as_lib::TypstEngine;
@@ -374,9 +372,9 @@ fn compile_label_doc(
 
     check_dimension_limit(height_units, unit, max_dim_mm, "height")?;
 
-    // For dynamic-width single templates, run a measurement pass and clamp the page width.
-    let measured: Vec<MeasuredText>;
-    let cursor_cell: Cell<usize>;
+    let geometry_values = render_geometry_values(resolved_data, template);
+
+    let measured: Vec<Measured>;
 
     if let TemplateFormat::Single {
         width: DynamicDimension::Dynamic { min, max },
@@ -397,44 +395,45 @@ fn compile_label_doc(
         check_dimension_limit(min_w, unit, max_dim_mm, "width min")?;
         check_dimension_limit(max_w, unit, max_dim_mm, "width max")?;
 
-        let mut m: Vec<MeasuredText> = Vec::new();
-        {
-            let probe = RenderContext::new(
-                (max_w, height_units),
-                unit,
-                resolved_data,
-                selected_option,
-                env,
-                &images,
-                LengthMode::Fixed,
-            )
-            .with_instants(&resolved.instants);
-            let content_extent = probe.measure(items, max_w, &mut m)?;
-            width_units = content_extent.clamp(min_w, max_w);
-        }
-        measured = m;
-        cursor_cell = Cell::new(0usize);
+        let probe = RenderContext::new(
+            unit,
+            template.dpi,
+            resolved_data,
+            selected_option,
+            env,
+            &images,
+        )
+        .with_instants(&resolved.instants);
+        let (m_tree, root_w_req) = probe.measure_items(
+            items,
+            (max_w, height_units),
+            [false, true],
+            &geometry_values,
+            "layout",
+        )?;
+        width_units = root_w_req.clamp(min_w, max_w);
+        check_dimension_limit(width_units, unit, max_dim_mm, "width")?;
+        measured = m_tree;
     } else {
         check_dimension_limit(width_units, unit, max_dim_mm, "width")?;
-        measured = Vec::new();
-        cursor_cell = Cell::new(0usize);
+        let probe = RenderContext::new(
+            unit,
+            template.dpi,
+            resolved_data,
+            selected_option,
+            env,
+            &images,
+        )
+        .with_instants(&resolved.instants);
+        let (m_tree, _) = probe.measure_items(
+            items,
+            (width_units, height_units),
+            [true, true],
+            &geometry_values,
+            "layout",
+        )?;
+        measured = m_tree;
     }
-
-    let is_dynamic = matches!(
-        &template.format,
-        TemplateFormat::Single {
-            width: DynamicDimension::Dynamic { .. },
-            ..
-        }
-    );
-    let mode = if is_dynamic {
-        LengthMode::Dynamic(AutoLength {
-            texts: &measured,
-            cursor: &cursor_cell,
-        })
-    } else {
-        LengthMode::Fixed
-    };
 
     let mut source = String::new();
     let page_width = format_length(width_units, unit)?;
@@ -457,27 +456,23 @@ fn compile_label_doc(
     })?;
 
     let context = RenderContext::new(
-        (width_units, height_units),
         unit,
+        template.dpi,
         resolved_data,
         selected_option,
         env,
         &images,
-        mode,
     )
     .with_instants(&resolved.instants);
-    source.push_str(&context.render_items(items)?);
-    // Assert we consumed exactly the texts we measured.
-    if cursor_cell.get() != measured.len() {
-        return Err(AppError::render_failed(
-            Reason::AutoLengthCursorMismatch,
-            format!(
-                "auto-length cursor mismatch: consumed {} of {} measured texts",
-                cursor_cell.get(),
-                measured.len()
-            ),
-        ));
-    }
+    let body = context.render_items(
+        items,
+        &measured,
+        (width_units, height_units),
+        &geometry_values,
+        "layout",
+    )?;
+    source.push_str(&body);
+
     tracing::debug!(name = %template.name, typst = %source, "render typst source");
     compile_paged(source, images.into_inner().files)
 }
@@ -656,17 +651,35 @@ pub fn render_sheet_pages(
                 continue;
             }
         };
-        let context = RenderContext::new(
+        let geometry_values = render_geometry_values(&resolved.data, template);
+        let context = RenderContext::new(unit, template.dpi, &resolved.data, None, &env, &images)
+            .with_instants(&resolved.instants);
+        let (measured, _) = match context.measure_items(
+            items,
             (*label_width, *label_height),
-            unit,
-            &resolved.data,
-            None,
-            &env,
-            &images,
-            LengthMode::Fixed,
-        )
-        .with_instants(&resolved.instants);
-        match context.render_items(items) {
+            [true, true],
+            &geometry_values,
+            "layout",
+        ) {
+            Ok(m) => m,
+            Err(err) => {
+                failures.push(crate::errors::BatchFailure {
+                    index: idx,
+                    code: err.code(),
+                    reason: err.reason(),
+                    message: err.message_text(),
+                });
+                rendered.push(String::new());
+                continue;
+            }
+        };
+        match context.render_items(
+            items,
+            &measured,
+            (*label_width, *label_height),
+            &geometry_values,
+            "layout",
+        ) {
             Ok(content) => rendered.push(content),
             Err(err) => {
                 failures.push(crate::errors::BatchFailure {
@@ -796,18 +809,81 @@ fn normalize_option<'a>(
     }
 }
 
-/// State threaded through the render pass for dynamic-width auto-length labels.
-struct AutoLength<'a> {
-    texts: &'a [MeasuredText],
-    cursor: &'a Cell<usize>,
+#[derive(Debug, Clone)]
+pub struct Measured {
+    pub intrinsic: [Option<f32>; 2],
+    pub text: Option<helpers::TextFit>,
+    pub children: Vec<Measured>,
 }
 
-/// Whether this frame is on a dynamic-width (auto-length) label. `Dynamic` carries the measured
-/// texts, which may legitimately be empty: a label can be sized by lines or containers alone.
-/// This is a property of the template format and must never be inferred from `texts.is_empty()`.
-enum LengthMode<'a> {
-    Fixed,
-    Dynamic(AutoLength<'a>),
+/// What the intrinsic dispatch needs to answer for one item: the box its content is measured
+/// against, which axes asked, and — for a container — the children already measured against the
+/// frame it gives them.
+struct IntrinsicInput<'a> {
+    item: &'a LayoutItem,
+    measure_box: (f32, f32),
+    demands: [bool; 2],
+    children: &'a [Measured],
+    child_frame: (f32, f32),
+    geometry_values: &'a HashMap<String, f32>,
+    path: &'a str,
+}
+
+/// How render words a resolver [`crate::resolver::Violation`]. Render reports reason slugs, so the
+/// mapping is a table of reasons and nothing else; the rule that produced the violation lives in
+/// the resolver.
+fn violation_error(violation: crate::resolver::Violation, path: &str) -> AppError {
+    use crate::resolver::Violation;
+    let (reason, message) = match violation {
+        Violation::AnchorBeforeFrame { .. } => (
+            Reason::CoordOutOfFrame,
+            format!("at {path}: coordinate resolves outside frame"),
+        ),
+        Violation::AuthoredExtentNotPositive { .. } => (
+            Reason::SizeInvalid,
+            format!("at {path}: authored size must be greater than 0"),
+        ),
+        Violation::ExtentInverted { .. } => (
+            Reason::EdgeRectInverted,
+            format!("at {path}: to must be above and to the right of at"),
+        ),
+        // A `to` never reaches here: `place` refuses a non-positive one as inverted first.
+        Violation::ExtentNegative { .. } => (
+            Reason::SizeInvalid,
+            format!("at {path}: inverted or negative resolved size"),
+        ),
+        Violation::AnchorBeyondFrame { .. } | Violation::ExtentBeyondFrame { .. } => (
+            Reason::ItemOutOfFrame,
+            format!("at {path}: item resolves outside frame bounds"),
+        ),
+    };
+    AppError::unsupported_layout_item(reason, message)
+}
+
+fn render_geometry_values(
+    data: &HashMap<String, JsonValue>,
+    template: &TemplateContent,
+) -> HashMap<String, f32> {
+    let mut map = HashMap::new();
+    for (name, spec) in &template.params {
+        if let Some(val) = data.get(name) {
+            if let Some(f) = val.as_f64() {
+                map.insert(name.clone(), f as f32);
+            } else if let Some(s) = val.as_str() {
+                if let Ok(f) = s.trim().parse::<f32>() {
+                    map.insert(name.clone(), f);
+                }
+            }
+        } else {
+            let v = match &spec.default {
+                Some(crate::models::ParamValue::Float(f)) => *f,
+                Some(crate::models::ParamValue::Integer(i)) => *i as f32,
+                _ => spec.min.unwrap_or(0.0),
+            };
+            map.insert(name.clone(), v);
+        }
+    }
+    map
 }
 
 /// Render-time environment: the variables map and the datetime resolver, passed together through
@@ -817,79 +893,52 @@ struct RenderEnv<'a> {
     datetime: &'a crate::datetime_fmt::DateTimeResolver<'a>,
 }
 
-/// The anchor of a leaf box item, for `measure`'s clause 1 (a right-anchored item cannot define
-/// the width it is anchored to, so it is skipped entirely). `Container` is excluded on purpose: a
-/// container's own position can be right-anchored while its *inner frame* is not (its width is
-/// still known, since `validate_placement_position` forbids pairing an edge-relative `at.x` with a
-/// frame-dependent width on a dynamic-width template), so its children must still be measured.
-/// `measure` gives `Container` its own clause-1 branch instead of using this. `Line` has two
-/// endpoints and no box, so it is handled separately too.
-fn item_anchor(item: &LayoutItem) -> Option<&Position> {
-    match item {
-        LayoutItem::Text { placement, .. }
-        | LayoutItem::Qr { placement, .. }
-        | LayoutItem::Image { placement, .. } => Some(&placement.at),
-        LayoutItem::Line { .. } | LayoutItem::Container { .. } => None,
-    }
-}
-
-/// `size = to - at`, both corners resolved against the frame first: `to` is the top-right corner of
-/// a box whose bottom-left is `at`. Mirrors `templates::resolve_to_extent` (kept in sync per this
-/// file's compile-time/render-time note) with one deliberate difference: a *zero* extent is legal
-/// here and rejected there. On a dynamic-width label an empty data value can measure to exactly
-/// `at.x`, so the label clamps to it and a `to`-spanning box collapses to zero width. That is an
-/// ordinary outcome of blank input, not an authoring mistake; a *negative* extent still is one, and
-/// the compile-time check (which resolves against the max-width frame) still rejects corners that
-/// are statically inverted or degenerate.
-fn resolve_to_extent(
-    at: &Position,
-    to: &Position,
-    frame_w: f32,
-    frame_h: f32,
-) -> Result<(f32, f32), AppError> {
-    const EPS: f32 = 1.0e-4;
-    let width = resolve_coord(to.x(), frame_w) - resolve_coord(at.x(), frame_w);
-    let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
-    if width < -EPS || height < -EPS {
-        return Err(AppError::unsupported_layout_item(
-            Reason::EdgeRectInverted,
-            "to must be above and to the right of at",
-        ));
-    }
-    Ok((width.max(0.0), height.max(0.0)))
-}
-
 struct RenderContext<'a> {
-    frame_width_units: f32,
-    frame_height_units: f32,
     unit: &'a str,
+    dpi: u32,
     data: &'a HashMap<String, JsonValue>,
     selected_option: Option<&'a BTreeMap<String, String>>,
     env: &'a RenderEnv<'a>,
     images: &'a RefCell<ImageCollector>,
-    mode: LengthMode<'a>,
     instants: Option<&'a BTreeMap<String, DateTime<Local>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlacedBox {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub frame: (f32, f32),
+}
+
+struct ContainerRenderArgs<'a> {
+    pub placement: &'a Placement,
+    pub cont_frame: &'a Option<crate::models::Frame>,
+    pub padding: &'a crate::models::Padding,
+    pub items: &'a [LayoutItem],
+    pub children_measured: &'a [Measured],
+    pub pbox: PlacedBox,
+    pub geometry_values: &'a HashMap<String, f32>,
+    pub path: &'a str,
 }
 
 impl<'a> RenderContext<'a> {
     fn new(
-        frame: (f32, f32),
         unit: &'a str,
+        dpi: u32,
         data: &'a HashMap<String, JsonValue>,
         selected_option: Option<&'a BTreeMap<String, String>>,
         env: &'a RenderEnv<'a>,
         images: &'a RefCell<ImageCollector>,
-        mode: LengthMode<'a>,
     ) -> Self {
         Self {
-            frame_width_units: frame.0,
-            frame_height_units: frame.1,
             unit,
+            dpi,
             data,
             selected_option,
             env,
             images,
-            mode,
             instants: None,
         }
     }
@@ -897,24 +946,6 @@ impl<'a> RenderContext<'a> {
     fn with_instants(mut self, instants: &'a BTreeMap<String, DateTime<Local>>) -> Self {
         self.instants = Some(instants);
         self
-    }
-
-    fn child_context(&self, frame: (f32, f32), mode: LengthMode<'a>) -> Self {
-        Self {
-            frame_width_units: frame.0,
-            frame_height_units: frame.1,
-            unit: self.unit,
-            data: self.data,
-            selected_option: self.selected_option,
-            env: self.env,
-            images: self.images,
-            mode,
-            instants: self.instants,
-        }
-    }
-
-    fn is_dynamic_width(&self) -> bool {
-        matches!(self.mode, LengthMode::Dynamic(_))
     }
 
     fn is_item_active(&self, item: &LayoutItem) -> bool {
@@ -934,462 +965,6 @@ impl<'a> RenderContext<'a> {
         }
     }
 
-    fn auto_length(&self) -> Option<&AutoLength<'a>> {
-        match &self.mode {
-            LengthMode::Dynamic(al) => Some(al),
-            LengthMode::Fixed => None,
-        }
-    }
-
-    /// Resolve a template position against this frame, edge-relative components included. Errors if
-    /// either axis resolves below zero: compile time cannot always prove this on a dynamic-width
-    /// label, since an edge-relative inset is only checked against `width.max` at load time.
-    fn resolve_point(&self, p: &Position) -> Result<Point, AppError> {
-        const EPS: f32 = 1.0e-4;
-        let x = resolve_coord(p.x(), self.frame_width_units);
-        let y = resolve_coord(p.y(), self.frame_height_units);
-        if x < -EPS || y < -EPS {
-            return Err(AppError::unsupported_layout_item(
-                Reason::CoordOutOfFrame,
-                format!(
-                    "a coordinate resolves outside the frame: [{}, {}] against {}x{}",
-                    p.x(),
-                    p.y(),
-                    self.frame_width_units,
-                    self.frame_height_units
-                ),
-            ));
-        }
-        Ok(Point { x, y })
-    }
-
-    /// Mirrors `templates::validate_bounds` for the cases compile time had to defer.
-    fn check_box_bounds(&self, point: &Point, width: f32, height: f32) -> Result<(), AppError> {
-        const EPS: f32 = 1.0e-4;
-        if point.x + width > self.frame_width_units + EPS
-            || point.y + height > self.frame_height_units + EPS
-        {
-            return Err(AppError::unsupported_layout_item(
-                Reason::ItemOutOfFrame,
-                format!(
-                    "an item resolves outside the frame: {width}x{height} at [{}, {}] in {}x{}",
-                    point.x, point.y, self.frame_width_units, self.frame_height_units
-                ),
-            ));
-        }
-        Ok(())
-    }
-
-    /// The line checks compile time had to defer: on a dynamic-width label an edge-relative
-    /// endpoint is resolved against `max`, so neither its upper bound nor its degeneracy against a
-    /// plain endpoint could be decided until the final width was known.
-    fn check_line(&self, start: &Point, end: &Point) -> Result<(), AppError> {
-        const EPS: f32 = 1.0e-4;
-        for p in [start, end] {
-            if p.x > self.frame_width_units + EPS || p.y > self.frame_height_units + EPS {
-                return Err(AppError::unsupported_layout_item(
-                    Reason::LineEndpointOutOfFrame,
-                    format!(
-                        "a line endpoint resolves outside the frame: [{}, {}] in {}x{}",
-                        p.x, p.y, self.frame_width_units, self.frame_height_units
-                    ),
-                ));
-            }
-        }
-        if (start.x - end.x).abs() < EPS && (start.y - end.y).abs() < EPS {
-            return Err(AppError::unsupported_layout_item(
-                Reason::LineDegenerate,
-                "line start and end must differ after resolution",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Walk items computing content right-extent and recording auto-width text fits (pre-order).
-    /// `budget_w` is the available width: page max at the top frame, inner width inside a container.
-    fn measure(
-        &self,
-        items: &[LayoutItem],
-        budget_w: f32,
-        out: &mut Vec<MeasuredText>,
-    ) -> Result<f32, AppError> {
-        let mut extent = 0.0f32;
-        for item in items {
-            if !self.is_item_active(item) {
-                continue;
-            }
-            // Clause 1: a right-anchored item cannot define the width it is anchored to. Its inset
-            // is the narrowest label it fits on, and that is all it can say. Skipping the item here
-            // also means it pushes no MeasuredText, which `render_text_item` must mirror exactly.
-            if let Some(at) = item_anchor(item) {
-                if at.x().is_sign_negative() {
-                    extent = extent.max(-at.x());
-                    continue;
-                }
-            }
-            // Clause 1, container case: unlike a leaf item, a right-anchored container's *inner
-            // frame* is not itself right-anchored. Its own width is always known here (see
-            // `item_anchor`'s doc comment), so its children's fits depend only on that known
-            // width, not on where the container ends up sitting. They must still be measured, or
-            // `render_container_item` (which recurses into every container unconditionally, with
-            // no clause-1 skip of its own) will consume `MeasuredText` entries this pass never
-            // pushed and fail with an auto-length cursor mismatch.
-            if let LayoutItem::Container {
-                placement,
-                padding,
-                items: children,
-                ..
-            } = item
-            {
-                if placement.at.x().is_sign_negative() {
-                    let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
-                    self.measure_container_footprint(placement, at_y, padding, children, out)?;
-                    extent = extent.max(-placement.at.x());
-                    continue;
-                }
-            }
-            let right = match item {
-                LayoutItem::Text {
-                    value,
-                    placement,
-                    font_size,
-                    font_weight,
-                    multiline,
-                    alignment,
-                    ..
-                } => {
-                    let text = self.resolve_item_text(value)?;
-                    // Same weight the render pass will use: this pre-pass decides the auto width, so
-                    // measuring it unweighted would size the box for text that renders wider.
-                    let weight = match font_weight {
-                        Some(dyn_val) => resolve_dynamic_value_u16(dyn_val, self.data)?,
-                        None => 400,
-                    };
-                    // `at.y` may itself be edge-relative (measured from the top), so it must be
-                    // resolved before any height arithmetic. `at.x` is already known to be
-                    // non-negative here: clause 1 skipped the item otherwise.
-                    let at = Point {
-                        x: placement.at.x(),
-                        y: resolve_coord(placement.at.y(), self.frame_height_units),
-                    };
-                    if placement.width_is_frame_dependent() {
-                        // The right margin an edge-relative `to` asks for. Subtracting it from the
-                        // budget keeps this item's contribution (at.x + width + inset) inside
-                        // `budget_w`, so the clamp can never hand back a box narrower than the
-                        // width the text was wrapped at.
-                        let inset = match &placement.extent {
-                            Extent::To(to) if to.x().is_sign_negative() => -to.x(),
-                            _ => 0.0,
-                        };
-                        // The cap binds here to size the label to the text's capped fit; for
-                        // left alignment the rendered box is also `m.width`, while for center
-                        // and right alignment the render pass applies max_w to the slot.
-                        let budget = (budget_w - at.x - inset)
-                            .min(placement.max_w.unwrap_or(f32::INFINITY))
-                            .max(0.0);
-                        let box_h = self.measure_box_height(placement, at.y)?;
-                        let m = fit_text_auto_length(
-                            &text,
-                            font_size,
-                            *multiline,
-                            weight,
-                            alignment.vertical,
-                            helpers::FitBox {
-                                width_units: budget,
-                                height_units: box_h,
-                                unit: self.unit,
-                            },
-                        )?;
-                        let w = m.width;
-                        out.push(m);
-                        at.x + w + inset
-                    } else {
-                        // Width only: this branch consumes just the width, and resolving the height
-                        // here would let an axis measurement never uses decide whether the template
-                        // renders. `measure_box_height` is the height-only counterpart.
-                        let w = match &placement.extent {
-                            // `None` here (unlike its three siblings) is safe only because this
-                            // arm is reached exactly when `width_is_frame_dependent()` is false,
-                            // which for `Extent::Size` means `size.0[0]` cannot be `auto` — so the
-                            // `Auto` branch that would need a fallback is unreachable from here.
-                            Extent::Size(size) => {
-                                self.resolve_size_value(&size.0[0], placement.max_w, None, "width")?
-                            }
-                            Extent::To(_) => {
-                                self.resolve_size(
-                                    &placement.at,
-                                    &placement.extent,
-                                    placement.max_w,
-                                    placement.max_h,
-                                    false,
-                                )?
-                                .0
-                            }
-                        };
-                        at.x + w
-                    }
-                }
-                LayoutItem::Qr { placement, .. } | LayoutItem::Image { placement, .. } => {
-                    let at_x = placement.at.x();
-                    match &placement.extent {
-                        // `auto` fills the remaining budget, capped by `max_w`. The render side
-                        // already resolves this through `resolve_size(.., allow_auto_fill: false)`,
-                        // which honors `max_w` exactly, so without the cap here the label was
-                        // sized for a code that renders far narrower.
-                        Extent::Size(size) => {
-                            at_x + size.0[0].value().unwrap_or(
-                                (budget_w - at_x)
-                                    .min(placement.max_w.unwrap_or(f32::INFINITY))
-                                    .max(0.0),
-                            )
-                        }
-                        // A numeric `to` is a known width; a frame-dependent one contributes
-                        // nothing, since a qr or image has no measured intrinsic width to offer.
-                        Extent::To(_) => {
-                            if placement.width_is_frame_dependent() {
-                                0.0
-                            } else {
-                                at_x + self
-                                    .resolve_size(
-                                        &placement.at,
-                                        &placement.extent,
-                                        placement.max_w,
-                                        placement.max_h,
-                                        false,
-                                    )?
-                                    .0
-                            }
-                        }
-                    }
-                }
-                // An edge-relative endpoint cannot contribute a frame-dependent term (the frame
-                // width is the unknown being solved for), but it does contribute its inset: the
-                // narrowest label the endpoint fits on, exactly as clause 1 does for a
-                // right-anchored box.
-                LayoutItem::Line { at, to, .. } => [at.x(), to.x()]
-                    .into_iter()
-                    .map(|x| if x.is_sign_negative() { -x } else { x })
-                    .fold(0.0f32, f32::max),
-                LayoutItem::Container {
-                    placement,
-                    padding,
-                    items,
-                    ..
-                } => {
-                    let at_x = placement.at.x();
-                    let at_y = resolve_coord(placement.at.y(), self.frame_height_units);
-                    if placement.width_is_frame_dependent() {
-                        // Width comes from the children. Any right-edge inset is theirs to pay
-                        // for, exactly as for text, so it comes out of their budget and goes back
-                        // into the contribution.
-                        let inset = match &placement.extent {
-                            Extent::To(to) if to.x().is_sign_negative() => -to.x(),
-                            _ => 0.0,
-                        };
-                        let outer_cap = placement.max_w.unwrap_or(f32::INFINITY);
-                        let outer_budget = (budget_w - at_x - inset).min(outer_cap).max(0.0);
-                        let inner_budget = (outer_budget - padding.left - padding.right).max(0.0);
-                        let inner_h = (self.measure_box_height(placement, at_y)?
-                            - padding.top
-                            - padding.bottom)
-                            .max(0.0);
-                        let has_active_children =
-                            items.iter().any(|item| self.is_item_active(item));
-                        if has_active_children
-                            && (inner_budget <= CONTENT_EPSILON || inner_h <= CONTENT_EPSILON)
-                        {
-                            return Err(AppError::unsupported_layout_item(
-                                Reason::ContainerPaddingNoRoom,
-                                "container padding leaves no room for content",
-                            ));
-                        }
-                        let ctx = self.child_context((inner_budget, inner_h), LengthMode::Fixed);
-                        let child_extent = ctx.measure(items, inner_budget, out)?;
-                        // Child measurement is bounded by `inner_budget` (which is
-                        // `(outer_budget - padding.left - padding.right).max(0.0)`), so for any
-                        // template passing validation, `outer` cannot exceed `outer_budget`.
-                        let outer = (padding.left + child_extent + padding.right).min(outer_budget);
-                        debug_assert!(
-                            outer <= outer_budget + 1e-4,
-                            "measured container extent {outer} exceeded outer_budget {outer_budget}"
-                        );
-                        at_x + outer + inset
-                    } else {
-                        // A numeric size or a numeric `to`: the footprint is known.
-                        let (explicit_w, _) =
-                            self.measure_container_footprint(placement, at_y, padding, items, out)?;
-                        at_x + explicit_w
-                    }
-                }
-            };
-            extent = extent.max(right);
-        }
-        Ok(extent)
-    }
-
-    /// A box item's vertical slot during measurement: its explicit height (capped by `max_h`, per
-    /// #150/ADR-0053, so the slot this function returns can never exceed what `render_text_item`
-    /// renders into), the box its corners describe, or the rest of the frame above `at_y` when
-    /// neither an explicit height nor `max_h` is set. `at_y` is the **resolved** bottom edge, never
-    /// the raw value: mixing a resolved `to.y` with a raw `at.y` inflates the slot.
-    fn measure_box_height(&self, placement: &Placement, at_y: f32) -> Result<f32, AppError> {
-        Ok(match &placement.extent {
-            // The same call `render_text_item` makes for this slot, so the two cannot disagree
-            // (#150). Only the height axis goes through the helper: `resolve_size` would also
-            // resolve the width and error on a `size: [40, auto]` container, which must keep
-            // measuring.
-            Extent::Size(size) => self.resolve_size_value(
-                &size.0[1],
-                placement.max_h,
-                Some((self.frame_height_units - at_y).max(0.0)),
-                "height",
-            )?,
-            Extent::To(to) => resolve_coord(to.y(), self.frame_height_units) - at_y,
-        })
-    }
-
-    /// A container's own footprint when its extent is *not* frame-dependent (a numeric `size` or
-    /// a numeric `to`), plus its children measured against the resulting inner frame. Width comes
-    /// from `resolve_size` (a numeric `to` needs its full corner-resolution logic; a numeric
-    /// `size` is read directly, since `resolve_size` would also resolve height and this is the
-    /// one call site that must not: see the height note below). Height comes from
-    /// `measure_box_height`, not `resolve_size`, so an auto height with no `max_h` still falls
-    /// back to the remaining frame height above `at_y` rather than erroring: `size: [40, auto]` is
-    /// a documented container idiom (SPEC §4, "auto size ... falls back to the parent frame") and
-    /// must keep working under measurement.
-    ///
-    /// Shared by the `Container` arm's non-frame-dependent branch and clause 1's container case (a
-    /// right-anchored container whose own width is still known; see `item_anchor`'s doc comment),
-    /// so the two can never compute a container's footprint two different ways.
-    fn measure_container_footprint(
-        &self,
-        placement: &Placement,
-        at_y: f32,
-        padding: &crate::models::Padding,
-        children: &[LayoutItem],
-        out: &mut Vec<MeasuredText>,
-    ) -> Result<(f32, f32), AppError> {
-        let explicit_w = match &placement.extent {
-            Extent::Size(size) => self.resolve_size_value(
-                &size.0[0],
-                placement.max_w,
-                Some(
-                    (self.frame_width_units
-                        - resolve_coord(placement.at.x(), self.frame_width_units))
-                    .max(0.0),
-                ),
-                "width",
-            )?,
-            Extent::To(_) => {
-                self.resolve_size(
-                    &placement.at,
-                    &placement.extent,
-                    placement.max_w,
-                    placement.max_h,
-                    false,
-                )?
-                .0
-            }
-        };
-        let explicit_h = self.measure_box_height(placement, at_y)?;
-        let rotation = placement
-            .rotate
-            .and_then(Rotation::from_degrees)
-            .unwrap_or(Rotation::R0);
-        // Rotated containers are self-contained (§4.2.1): their author-space children must not be
-        // measured in physical-horizontal terms, so do not recurse into them (#98).
-        if !rotation.is_rotated() {
-            let inner_w = (explicit_w - padding.left - padding.right).max(0.0);
-            let inner_h = (explicit_h - padding.top - padding.bottom).max(0.0);
-            let has_active_children = children.iter().any(|item| self.is_item_active(item));
-            if has_active_children && (inner_w <= CONTENT_EPSILON || inner_h <= CONTENT_EPSILON) {
-                return Err(AppError::unsupported_layout_item(
-                    Reason::ContainerPaddingNoRoom,
-                    "container padding leaves no room for content",
-                ));
-            }
-            let ctx = self.child_context((inner_w, inner_h), LengthMode::Fixed);
-            ctx.measure(children, inner_w, out)?;
-        }
-        Ok((explicit_w, explicit_h))
-    }
-
-    fn render_items(&self, items: &[LayoutItem]) -> Result<String, AppError> {
-        let mut out = String::new();
-
-        for item in items {
-            if !self.is_item_active(item) {
-                continue;
-            }
-            match item {
-                LayoutItem::Text {
-                    value,
-                    placement,
-                    font_size,
-                    font_weight,
-                    multiline,
-                    alignment,
-                    ..
-                } => {
-                    let text = self.resolve_item_text(value)?;
-                    let resolved_weight = match font_weight {
-                        Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
-                        None => None,
-                    };
-                    self.render_text_item(
-                        &mut out,
-                        text,
-                        placement,
-                        font_size,
-                        resolved_weight,
-                        *multiline,
-                        alignment,
-                    )?;
-                }
-                LayoutItem::Qr {
-                    value,
-                    placement,
-                    params,
-                    ..
-                } => {
-                    let payload = self.resolve_item_text(value)?;
-                    self.render_qr_item(&mut out, payload, placement, params)?;
-                }
-                LayoutItem::Image {
-                    name,
-                    src,
-                    placement,
-                    fit,
-                    ..
-                } => {
-                    self.render_image_item(
-                        &mut out,
-                        name.as_deref(),
-                        src.as_deref(),
-                        placement,
-                        fit,
-                    )?;
-                }
-                LayoutItem::Line {
-                    at, to, thickness, ..
-                } => {
-                    self.render_line_item(&mut out, at, to, *thickness)?;
-                }
-                LayoutItem::Container {
-                    placement,
-                    when: _,
-                    frame,
-                    padding,
-                    items,
-                } => {
-                    self.render_container_item(&mut out, placement, frame, padding, items)?;
-                }
-            }
-        }
-
-        Ok(out)
-    }
-
     fn resolve_item_text(&self, value: &str) -> Result<String, AppError> {
         interpolate(
             value,
@@ -1400,196 +975,591 @@ impl<'a> RenderContext<'a> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    fn resolve_point(
+        &self,
+        p: &Position,
+        frame: (f32, f32),
+        path: &str,
+    ) -> Result<Point, AppError> {
+        const EPS: f32 = 1.0e-4;
+        let x = resolve_coord(p.x(), frame.0);
+        let y = resolve_coord(p.y(), frame.1);
+        if x < -EPS || y < -EPS {
+            return Err(AppError::unsupported_layout_item(
+                Reason::CoordOutOfFrame,
+                format!(
+                    "at {path}: a coordinate resolves outside the frame: [{}, {}] against {}x{}",
+                    p.x(),
+                    p.y(),
+                    frame.0,
+                    frame.1
+                ),
+            ));
+        }
+        Ok(Point { x, y })
+    }
+
+    fn check_line(
+        &self,
+        start: &Point,
+        end: &Point,
+        frame: (f32, f32),
+        path: &str,
+    ) -> Result<(), AppError> {
+        const EPS: f32 = 1.0e-4;
+        for p in [start, end] {
+            if p.x > frame.0 + EPS || p.y > frame.1 + EPS {
+                return Err(AppError::unsupported_layout_item(
+                    Reason::LineEndpointOutOfFrame,
+                    format!(
+                        "at {path}: a line endpoint resolves outside the frame: [{}, {}] in {}x{}",
+                        p.x, p.y, frame.0, frame.1
+                    ),
+                ));
+            }
+        }
+        if (start.x - end.x).abs() < EPS && (start.y - end.y).abs() < EPS {
+            return Err(AppError::unsupported_layout_item(
+                Reason::LineDegenerate,
+                format!("at {path}: line start and end must differ after resolution"),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn measure_items(
+        &self,
+        items: &[LayoutItem],
+        frame: (f32, f32),
+        axes_resolved: [bool; 2],
+        geometry_values: &HashMap<String, f32>,
+        path_prefix: &str,
+    ) -> Result<(Vec<Measured>, f32), AppError> {
+        let mut measured_nodes = Vec::new();
+        let mut max_req_w = 0.0_f32;
+
+        for (idx, item) in items.iter().enumerate() {
+            if !self.is_item_active(item) {
+                continue;
+            }
+            let path = format!("{path_prefix}[{idx}]");
+
+            let node = match item.placement() {
+                // A `line` has endpoints rather than a box: nothing to size, nothing to measure.
+                None => Measured {
+                    intrinsic: [None, None],
+                    text: None,
+                    children: vec![],
+                },
+                Some(placement) => {
+                    // The rules that do not depend on a measurement hold before one is taken, so a
+                    // box a request has already invalidated is refused as such rather than as
+                    // whatever its content then fails to do inside it.
+                    crate::resolver::precheck(placement, Some(frame), geometry_values)
+                        .map_err(|violation| violation_error(violation, &path))?;
+
+                    let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
+                    let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
+                    let measure_box = (
+                        crate::resolver::resolve_unmeasured(&spec_0, frame.0, placement.max_w),
+                        crate::resolver::resolve_unmeasured(&spec_1, frame.1, placement.max_h),
+                    );
+
+                    // A container's children are measured against the frame it gives them, which
+                    // is its own unmeasured box less rotation and padding.
+                    let (children, child_frame) = match item {
+                        LayoutItem::Container {
+                            placement,
+                            padding,
+                            items: child_items,
+                            ..
+                        } => {
+                            let geometry = crate::resolver::container_geometry(
+                                placement,
+                                padding,
+                                frame,
+                                axes_resolved,
+                                geometry_values,
+                            );
+                            let (children, _) = self.measure_items(
+                                child_items,
+                                geometry.inner,
+                                geometry.child_axes_resolved,
+                                geometry_values,
+                                &format!("{path}.items"),
+                            )?;
+                            (children, geometry.inner)
+                        }
+                        _ => (vec![], measure_box),
+                    };
+
+                    let (intrinsic, text) = self.intrinsic(IntrinsicInput {
+                        item,
+                        measure_box,
+                        demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
+                        children: &children,
+                        child_frame,
+                        geometry_values,
+                        path: &path,
+                    })?;
+
+                    Measured {
+                        intrinsic,
+                        text,
+                        children,
+                    }
+                }
+            };
+
+            max_req_w =
+                max_req_w.max(self.item_axis_requirement(item, 0, frame, geometry_values, &node));
+            measured_nodes.push(node);
+        }
+
+        Ok((measured_nodes, max_req_w))
+    }
+
+    /// What an item requires of its frame on `axis`. A `line` claims its endpoints; everything else
+    /// is the resolver's composition over the item's classified axis and what it measured.
+    fn item_axis_requirement(
+        &self,
+        item: &LayoutItem,
+        axis: usize,
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        measured: &Measured,
+    ) -> f32 {
+        let frame_extent = if axis == 0 { frame.0 } else { frame.1 };
+        match item {
+            LayoutItem::Line { at, to, .. } => {
+                let (at_coord, to_coord) = if axis == 0 {
+                    (at.x(), to.x())
+                } else {
+                    (at.y(), to.y())
+                };
+                crate::resolver::line_axis_requirement(at_coord, to_coord)
+            }
+            _ => match item.placement() {
+                Some(placement) => crate::resolver::axis_requirement(
+                    placement,
+                    axis,
+                    frame_extent,
+                    geometry_values,
+                    measured.intrinsic[axis],
+                ),
+                None => 0.0,
+            },
+        }
+    }
+
+    /// The one place item type is visible in sizing: the intrinsic extent an item's own content
+    /// has, and — for a `text` — the layout that produced it. Load never calls this; it supplies
+    /// availability in place of an intrinsic, which makes `content` resolve exactly as `fill` does.
+    ///
+    /// It answers both axes at once rather than one at a time, because a `text` produces its width
+    /// and its height from a single layout pass and asking per axis would run that pass twice.
+    fn intrinsic(
+        &self,
+        input: IntrinsicInput<'_>,
+    ) -> Result<([Option<f32>; 2], Option<helpers::TextFit>), AppError> {
+        let IntrinsicInput {
+            item,
+            measure_box,
+            demands,
+            children,
+            child_frame,
+            geometry_values,
+            path,
+        } = input;
+        let per_axis = |extents: (f32, f32)| {
+            [
+                demands[0].then_some(extents.0),
+                demands[1].then_some(extents.1),
+            ]
+        };
+
+        match item {
+            LayoutItem::Text {
+                value,
+                font_size,
+                font_weight,
+                multiline,
+                alignment,
+                overflow,
+                ..
+            } => {
+                let text = self.resolve_item_text(value)?;
+                let dyn_weight = font_weight.as_ref().map(|dw| match dw {
+                    crate::models::DynamicValue::Literal(w) => {
+                        crate::models::DynamicValue::Literal(*w)
+                    }
+                    crate::models::DynamicValue::Ref(r) => {
+                        let resolved = self
+                            .data
+                            .get(r)
+                            .and_then(|v| v.as_u64())
+                            .map(|u| u as u16)
+                            .unwrap_or(400);
+                        crate::models::DynamicValue::Literal(resolved)
+                    }
+                });
+
+                // The layout pass is unconditional: the emitted lines are the render payload
+                // whether or not either axis asked for an intrinsic.
+                let text_fit = helpers::layout_text(
+                    helpers::TextLayoutItem {
+                        raw_text: &text,
+                        font_size,
+                        font_weight: dyn_weight,
+                        multiline: *multiline,
+                        alignment: alignment.clone(),
+                        overflow: *overflow,
+                    },
+                    measure_box,
+                    self.unit,
+                    path,
+                )?;
+
+                let extents = (text_fit.width_units, text_fit.height_units);
+                Ok((per_axis(extents), Some(text_fit)))
+            }
+            LayoutItem::Qr { value, params, .. } => {
+                if !demands[0] && !demands[1] {
+                    return Ok(([None, None], None));
+                }
+                let payload = self.resolve_item_text(value)?;
+                let module_size = params.as_ref().and_then(|p| p.module_size);
+                let m = module_size.ok_or_else(|| {
+                    AppError::unsupported_layout_item(
+                        Reason::IntrinsicSizeUndefined,
+                        format!("at {path}: qr with content or fill size requires module_size"),
+                    )
+                })?;
+                let ecc = params
+                    .as_ref()
+                    .and_then(|p| p.error_correction.as_deref())
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(|v| v.to_ascii_uppercase())
+                    .map(|v| match v.as_str() {
+                        "L" => Ok(qrcode::EcLevel::L),
+                        "M" => Ok(qrcode::EcLevel::M),
+                        "Q" => Ok(qrcode::EcLevel::Q),
+                        "H" => Ok(qrcode::EcLevel::H),
+                        _ => Err(AppError::unsupported_layout_item(
+                            Reason::QrErrorCorrectionInvalid,
+                            "qr error_correction must be one of L, M, Q, H",
+                        )),
+                    })
+                    .transpose()?
+                    .unwrap_or(qrcode::EcLevel::M);
+                let code = qrcode::QrCode::with_error_correction_level(payload.as_bytes(), ecc)
+                    .map_err(|err| {
+                        AppError::render_failed(
+                            Reason::QrGenerationFailed,
+                            format!("qr generation failed: {err}"),
+                        )
+                    })?;
+                let qz = params.as_ref().and_then(|p| p.quiet_zone).unwrap_or(0.0);
+                let qr_dim = (code.width() as f32 + 2.0 * qz) * m;
+                Ok((per_axis((qr_dim, qr_dim)), None))
+            }
+            LayoutItem::Image { name, src, .. } => {
+                if !demands[0] && !demands[1] {
+                    return Ok(([None, None], None));
+                }
+                let (bytes, fmt) = match (src.as_deref(), name.as_deref()) {
+                    (Some(src_str), _) => {
+                        let resolved_src = helpers::interpolate(
+                            src_str,
+                            self.data,
+                            self.env.settings,
+                            self.env.datetime,
+                            self.instants,
+                        )?;
+                        helpers::resolve_image_asset(&helpers::assets_root(), &resolved_src)?
+                    }
+                    (_, Some(name_str)) => {
+                        let value = self
+                            .data
+                            .get(name_str)
+                            .ok_or_else(|| AppError::missing_field(name_str))?;
+                        helpers::parse_image_data_uri(&helpers::value_to_string(value))?
+                    }
+                    (None, None) => {
+                        return Err(AppError::unsupported_layout_item(
+                            Reason::ImageSourceMissing,
+                            format!("at {path}: image missing source"),
+                        ));
+                    }
+                };
+
+                let extents = match fmt {
+                    helpers::ImageFmt::Png | helpers::ImageFmt::Jpg => {
+                        helpers::raster_image_dimensions(&bytes, fmt, self.dpi, self.unit, path)?
+                    }
+                    helpers::ImageFmt::Svg => {
+                        let svg_str = std::str::from_utf8(&bytes).map_err(|_| {
+                            AppError::unsupported_layout_item(
+                                Reason::ImageDataInvalid,
+                                format!("at {path}: svg data is not valid utf-8"),
+                            )
+                        })?;
+                        let w = if demands[0] {
+                            helpers::svg_axis_intrinsic(svg_str, 0, self.unit, self.dpi, path)?
+                        } else {
+                            0.0
+                        };
+                        let h = if demands[1] {
+                            helpers::svg_axis_intrinsic(svg_str, 1, self.unit, self.dpi, path)?
+                        } else {
+                            0.0
+                        };
+                        (w, h)
+                    }
+                };
+                Ok((per_axis(extents), None))
+            }
+            LayoutItem::Container {
+                placement,
+                padding,
+                items: child_items,
+                ..
+            } => {
+                if !demands[0] && !demands[1] {
+                    return Ok(([None, None], None));
+                }
+                let active_children: Vec<_> = child_items
+                    .iter()
+                    .filter(|i| self.is_item_active(i))
+                    .collect();
+
+                let mut author = (0.0_f32, 0.0_f32);
+                for (child, measured) in active_children.iter().zip(children.iter()) {
+                    author.0 = author.0.max(self.item_axis_requirement(
+                        child,
+                        0,
+                        child_frame,
+                        geometry_values,
+                        measured,
+                    ));
+                    author.1 = author.1.max(self.item_axis_requirement(
+                        child,
+                        1,
+                        child_frame,
+                        geometry_values,
+                        measured,
+                    ));
+                }
+
+                // The contribution is computed in author space and swapped as a completed pair, so
+                // a quarter turn moves the padded footprint rather than each term separately.
+                let author = (
+                    padding.left + padding.right + author.0,
+                    padding.top + padding.bottom + author.1,
+                );
+                let extents = if crate::resolver::rotation_of(placement).swaps_axes() {
+                    (author.1, author.0)
+                } else {
+                    author
+                };
+                Ok((per_axis(extents), None))
+            }
+            LayoutItem::Line { .. } => Ok(([None, None], None)),
+        }
+    }
+
+    pub fn render_items(
+        &self,
+        items: &[LayoutItem],
+        measured: &[Measured],
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        path_prefix: &str,
+    ) -> Result<String, AppError> {
+        let mut out = String::new();
+        let active_items: Vec<_> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| self.is_item_active(item))
+            .collect();
+
+        for (measured_node, (idx, item)) in measured.iter().zip(active_items) {
+            let path = format!("{path_prefix}[{idx}]");
+            match item {
+                LayoutItem::Line {
+                    at, to, thickness, ..
+                } => {
+                    self.render_line_item(&mut out, at, to, *thickness, frame, &path)?;
+                }
+                LayoutItem::Text {
+                    placement,
+                    font_weight,
+                    alignment,
+                    ..
+                } => {
+                    let pbox = self.resolve_placement_box(
+                        placement,
+                        frame,
+                        geometry_values,
+                        measured_node.intrinsic,
+                        &path,
+                    )?;
+                    let resolved_weight = match font_weight {
+                        Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
+                        None => None,
+                    };
+                    self.render_text_item(
+                        &mut out,
+                        placement,
+                        resolved_weight,
+                        alignment,
+                        pbox,
+                        measured_node.text.as_ref().unwrap(),
+                    )?;
+                }
+                LayoutItem::Qr {
+                    value,
+                    placement,
+                    params,
+                    ..
+                } => {
+                    let payload = self.resolve_item_text(value)?;
+                    let pbox = self.resolve_placement_box(
+                        placement,
+                        frame,
+                        geometry_values,
+                        measured_node.intrinsic,
+                        &path,
+                    )?;
+                    self.render_qr_item(&mut out, payload, placement, params, pbox)?;
+                }
+                LayoutItem::Image {
+                    name,
+                    src,
+                    placement,
+                    fit,
+                    ..
+                } => {
+                    let pbox = self.resolve_placement_box(
+                        placement,
+                        frame,
+                        geometry_values,
+                        measured_node.intrinsic,
+                        &path,
+                    )?;
+                    self.render_image_item(
+                        &mut out,
+                        name.as_deref(),
+                        src.as_deref(),
+                        placement,
+                        fit,
+                        pbox,
+                    )?;
+                }
+                LayoutItem::Container {
+                    placement,
+                    frame: cont_frame,
+                    padding,
+                    items: child_items,
+                    ..
+                } => {
+                    let pbox = self.resolve_placement_box(
+                        placement,
+                        frame,
+                        geometry_values,
+                        measured_node.intrinsic,
+                        &path,
+                    )?;
+                    self.render_container_item(
+                        &mut out,
+                        ContainerRenderArgs {
+                            placement,
+                            cont_frame,
+                            padding,
+                            items: child_items,
+                            children_measured: &measured_node.children,
+                            pbox,
+                            geometry_values,
+                            path: &path,
+                        },
+                    )?;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn resolve_placement_box(
+        &self,
+        placement: &Placement,
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        intrinsic: [Option<f32>; 2],
+        path: &str,
+    ) -> Result<PlacedBox, AppError> {
+        let placed = crate::resolver::place(placement, frame, geometry_values, intrinsic)
+            .map_err(|violation| violation_error(violation, path))?;
+        Ok(PlacedBox {
+            x: placed.x,
+            y: placed.y,
+            w: placed.w,
+            h: placed.h,
+            frame,
+        })
+    }
+
     fn render_text_item(
         &self,
         out: &mut String,
-        raw_text: String,
         placement: &Placement,
-        font_size: &FontSize,
         font_weight: Option<u16>,
-        multiline: bool,
         alignment: &crate::models::Alignment,
+        pbox: PlacedBox,
+        text_fit: &helpers::TextFit,
     ) -> Result<(), AppError> {
-        // Absent stays absent rather than emitting 400: an explicit weight would rewrite every
-        // existing template's generated source for no behavioral reason.
         let weight_arg = font_weight
             .map(|w| format!(", weight: {w}"))
             .unwrap_or_default();
         let weight = font_weight.unwrap_or(400);
-        let text = if multiline {
-            raw_text
-        } else {
-            raw_text.lines().next().unwrap_or("").to_string()
-        };
-        let text = if multiline {
-            text
-        } else {
-            to_nonbreaking(&text)
-        };
 
-        let point = self.resolve_point(&placement.at)?;
-        let left = point.x;
-
-        // A blank first/last line carries no ink but still gets a line box, which shoves the visible
-        // text off centre. Drop them at emission (#127); interior blanks are real spacing and stay.
-        fn trim_blank_edges(lines: &[String]) -> Vec<String> {
-            let start = lines.iter().position(|l| !l.trim().is_empty());
-            let end = lines.iter().rposition(|l| !l.trim().is_empty());
-            match (start, end) {
-                (Some(s), Some(e)) => lines[s..=e].to_vec(),
-                _ => Vec::new(),
-            }
-        }
-
-        // When auto-length is active and this text item's width is frame-dependent (an auto size or
-        // an edge-relative `to`), consume the next measured fit. This must fire for exactly the
-        // items `measure` pushed a `MeasuredText` for; both call `width_is_frame_dependent` on the
-        // same placement so they never disagree.
-        if let Some(al) = self.auto_length() {
-            if placement.width_is_frame_dependent() && !placement.at.x().is_sign_negative() {
-                let idx = al.cursor.get();
-                let m = al.texts.get(idx).ok_or_else(|| {
-                    AppError::render_failed(
-                        Reason::AutoLengthCursorMismatch,
-                        format!("auto-length cursor overrun at index {idx}"),
-                    )
-                })?;
-                al.cursor.set(idx + 1);
-
-                // The text's allotted vertical slot: `size` height (honoring `max_h`) for an auto
-                // width, or the box `to`'s corners describe for an edge-relative `to`.
-                let slot_h = match &placement.extent {
-                    Extent::Size(size) => self.resolve_size_value(
-                        &size.0[1],
-                        placement.max_h,
-                        Some((self.frame_height_units - point.y).max(0.0)),
-                        "height",
-                    )?,
-                    Extent::To(_) => self.measure_box_height(placement, point.y)?,
-                };
-                let slot_top = self.frame_height_units - point.y - slot_h;
-                // The box width is the resolved extent for a `to` (so a right-edge inset stays a
-                // visible margin). For an auto size, it is the fitted width under left alignment
-                // (preserving today's source byte-for-byte), and the alignment slot spanning the
-                // remaining frame width under center or right alignment (#180).
-                let box_w = match &placement.extent {
-                    Extent::To(_) => {
-                        self.resolve_size(
-                            &placement.at,
-                            &placement.extent,
-                            placement.max_w,
-                            placement.max_h,
-                            false,
-                        )?
-                        .0
-                    }
-                    Extent::Size(_) => match alignment.horizontal {
-                        HorizontalAlign::Left => m.width,
-                        HorizontalAlign::Center | HorizontalAlign::Right => {
-                            (self.frame_width_units - left)
-                                .min(placement.max_w.unwrap_or(f32::INFINITY))
-                                .max(m.width)
-                        }
-                    },
-                };
-                self.check_box_bounds(&point, box_w, slot_h)?;
-                let body = trim_blank_edges(&m.lines)
-                    .iter()
-                    .map(|l| {
-                        format!(
-                            "#text(\"{}\", size: {}pt{weight_arg})",
-                            escape_typst_string(l),
-                            m.font
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("#linebreak()");
-                // Vertical placement is Typst's job, not ours: its line box runs cap-height to
-                // baseline, not the full fontdue line height, so any dy we compute from font
-                // metrics lands the glyphs high (#123). Box the whole slot and let `#align` place
-                // the block inside it, exactly as the fixed-size path below does.
-                // #124: pad the aligned edge so the ink Typst's cap-height/baseline line box leaves
-                // outside — accents above, descenders below — lands inside the clipped slot.
-                let body = pad_block(
-                    &body,
-                    helpers::pad_pt(weight, m.font, alignment.vertical)?,
-                    alignment.vertical,
-                );
-                let inner = format!("#align({})[{body}]", typst_alignment(alignment));
-                let dx = format_length(left, self.unit)?;
-                let dy = format_length(slot_top, self.unit)?;
-                let box_width = format_length(box_w, self.unit)?;
-                let box_height = format_length(slot_h, self.unit)?;
-                let content = self.wrap_rotation(inner, placement.rotate);
-                writeln!(
-                    out,
-                    "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
+        let body = text_fit
+            .lines
+            .iter()
+            .map(|l| {
+                format!(
+                    "#text(\"{}\", size: {}pt{weight_arg})",
+                    escape_typst_string(l),
+                    text_fit.font_size_pt
                 )
-                .map_err(|err| {
-                    AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            )
-                })?;
-                return Ok(());
-            }
-        }
+            })
+            .collect::<Vec<_>>()
+            .join("#linebreak()");
 
-        // `allow_auto_fill: true` matches text validation's `resolve_size` call in `templates.rs`:
-        // text always has a frame to fall back on, on every format, not only when auto-length is
-        // active (#155).
-        let (width, box_height_units) = self.resolve_size(
-            &placement.at,
-            &placement.extent,
-            placement.max_w,
-            placement.max_h,
-            true,
-        )?;
-        self.check_box_bounds(&point, width, box_height_units)?;
-        let bottom = point.y;
-        let top = bottom + box_height_units;
-        let (size, text) = match font_size {
-            FontSize::Fixed(size) => (*size, text),
-            FontSize::Range { min, max } => fit_text_to_box(
-                &text,
-                multiline,
-                weight,
-                alignment.vertical,
-                *min,
-                *max,
-                helpers::FitBox {
-                    width_units: width,
-                    height_units: box_height_units,
-                    unit: self.unit,
-                },
-            )?,
-        };
-        let text =
-            trim_blank_edges(&text.lines().map(str::to_string).collect::<Vec<_>>()).join("\n");
-        let text = escape_typst_string(&text);
-        let dx = format_length(left, self.unit)?;
-        let dy = format_length(self.frame_height_units - top, self.unit)?;
-        let box_width = format_length(width, self.unit)?;
-        let box_height = format_length(box_height_units, self.unit)?;
-
-        let align = typst_alignment(alignment);
-        let body = format!("#text(\"{text}\", size: {size}pt{weight_arg})");
         let body = pad_block(
             &body,
-            helpers::pad_pt(weight, size, alignment.vertical)?,
+            helpers::pad_pt(weight, text_fit.font_size_pt, alignment.vertical)?,
             alignment.vertical,
         );
-        let content = format!("#align({align})[{body}]");
-        let content = self.wrap_rotation(content, placement.rotate);
+
+        let inner = format!("#align({})[{body}]", typst_alignment(alignment));
+        let top = pbox.y + pbox.h;
+        let dx = format_length(pbox.x, self.unit)?;
+        let dy = format_length(pbox.frame.1 - top, self.unit)?;
+        let box_width = format_length(pbox.w, self.unit)?;
+        let box_height = format_length(pbox.h, self.unit)?;
+        let content = self.wrap_rotation(inner, placement.rotate);
+
         writeln!(
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
-        .map_err(|err| AppError::render_failed(
+        .map_err(|err| {
+            AppError::render_failed(
                 Reason::TypstSourceBuildFailed,
                 format!("failed to build typst source: {err}"),
-            ))?;
+            )
+        })?;
 
         Ok(())
     }
@@ -1600,23 +1570,13 @@ impl<'a> RenderContext<'a> {
         payload: String,
         placement: &Placement,
         params: &Option<crate::models::QrParams>,
+        pbox: PlacedBox,
     ) -> Result<(), AppError> {
-        let (width, height) = self.resolve_size(
-            &placement.at,
-            &placement.extent,
-            placement.max_w,
-            placement.max_h,
-            false,
-        )?;
-        let point = self.resolve_point(&placement.at)?;
-        self.check_box_bounds(&point, width, height)?;
-        let left = point.x;
-        let bottom = point.y;
-        let top = bottom + height;
-        let dx = format_length(left, self.unit)?;
-        let dy = format_length(self.frame_height_units - top, self.unit)?;
-        let box_width = format_length(width, self.unit)?;
-        let box_height = format_length(height, self.unit)?;
+        let top = pbox.y + pbox.h;
+        let dx = format_length(pbox.x, self.unit)?;
+        let dy = format_length(pbox.frame.1 - top, self.unit)?;
+        let box_width = format_length(pbox.w, self.unit)?;
+        let box_height = format_length(pbox.h, self.unit)?;
         let svg_xml = build_qr_svg(payload.as_bytes(), params)?;
         let svg_xml = escape_typst_string(&svg_xml);
 
@@ -1628,10 +1588,12 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
-        .map_err(|err| AppError::render_failed(
+        .map_err(|err| {
+            AppError::render_failed(
                 Reason::TypstSourceBuildFailed,
                 format!("failed to build typst source: {err}"),
-            ))?;
+            )
+        })?;
 
         Ok(())
     }
@@ -1643,6 +1605,7 @@ impl<'a> RenderContext<'a> {
         src: Option<&str>,
         placement: &Placement,
         fit: &Fit,
+        pbox: PlacedBox,
     ) -> Result<(), AppError> {
         let (bytes, fmt) = match (src, name) {
             (Some(src), _) => {
@@ -1669,23 +1632,12 @@ impl<'a> RenderContext<'a> {
                 ))
             }
         };
-        let (width, height) = self.resolve_size(
-            &placement.at,
-            &placement.extent,
-            placement.max_w,
-            placement.max_h,
-            false,
-        )?;
-        let point = self.resolve_point(&placement.at)?;
-        self.check_box_bounds(&point, width, height)?;
-        let left = point.x;
-        let bottom = point.y;
-        let top = bottom + height;
+        let top = pbox.y + pbox.h;
         let vpath = self.images.borrow_mut().add(fmt.ext(), bytes);
-        let dx = format_length(left, self.unit)?;
-        let dy = format_length(self.frame_height_units - top, self.unit)?;
-        let box_width = format_length(width, self.unit)?;
-        let box_height = format_length(height, self.unit)?;
+        let dx = format_length(pbox.x, self.unit)?;
+        let dy = format_length(pbox.frame.1 - top, self.unit)?;
+        let box_width = format_length(pbox.w, self.unit)?;
+        let box_height = format_length(pbox.h, self.unit)?;
         let content = format!(
             "#image(\"{vpath}\", width: {box_width}, height: {box_height}, fit: \"{fit}\")",
             fit = fit.as_typst()
@@ -1695,10 +1647,12 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
-        .map_err(|err| AppError::render_failed(
+        .map_err(|err| {
+            AppError::render_failed(
                 Reason::TypstSourceBuildFailed,
                 format!("failed to build typst source: {err}"),
-            ))?;
+            )
+        })?;
 
         Ok(())
     }
@@ -1709,12 +1663,14 @@ impl<'a> RenderContext<'a> {
         at: &Position,
         to: &Position,
         thickness: f32,
+        frame: (f32, f32),
+        path: &str,
     ) -> Result<(), AppError> {
-        let start_point = self.resolve_point(at)?;
-        let end_point = self.resolve_point(to)?;
-        self.check_line(&start_point, &end_point)?;
-        let (start_x, start_y) = to_page_coords(&start_point, self.frame_height_units);
-        let (end_x, end_y) = to_page_coords(&end_point, self.frame_height_units);
+        let start_point = self.resolve_point(at, frame, path)?;
+        let end_point = self.resolve_point(to, frame, path)?;
+        self.check_line(&start_point, &end_point, frame, path)?;
+        let (start_x, start_y) = to_page_coords(&start_point, frame.1);
+        let (end_x, end_y) = to_page_coords(&end_point, frame.1);
         let dx = end_x - start_x;
         let dy = end_y - start_y;
         let start_x = format_length(start_x, self.unit)?;
@@ -1743,196 +1699,48 @@ impl<'a> RenderContext<'a> {
     fn render_container_item(
         &self,
         out: &mut String,
-        placement: &Placement,
-        frame: &Option<crate::models::Frame>,
-        padding: &crate::models::Padding,
-        items: &[LayoutItem],
+        args: ContainerRenderArgs<'_>,
     ) -> Result<(), AppError> {
-        let point = self.resolve_point(&placement.at)?;
-        let left = point.x;
-        let rotation = placement
-            .rotate
-            .and_then(Rotation::from_degrees)
-            .unwrap_or(Rotation::R0);
+        let rotation = crate::resolver::rotation_of(args.placement);
 
-        if !rotation.is_rotated() {
-            // R0: unchanged path (output byte-identical to before).
-            // On a dynamic-width (auto-length) label, an auto-width container must span only
-            // the remaining width from its left edge, not the full frame width. This matches the
-            // measurement pass which budgets (budget_w - at.x) - padding for the container.
-            let width = if self.is_dynamic_width()
-                && placement.size_or_auto().is_some_and(|s| s.0[0].is_auto())
-            {
-                // Deliberately an explicit `min` rather than `resolve_size_value` with the
-                // narrowed remainder as its fallback: that helper rejects `<= 0`, and a zero
-                // remainder here is a legitimate outcome of measurement rather than an authoring
-                // error. A zero-width container renders an empty box, as it does today.
-                (self.frame_width_units - left)
-                    .min(placement.max_w.unwrap_or(f32::INFINITY))
-                    .max(0.0)
-            } else {
-                self.resolve_size(
-                    &placement.at,
-                    &placement.extent,
-                    placement.max_w,
-                    placement.max_h,
-                    true,
-                )?
-                .0
-            };
-            let height = match &placement.extent {
-                Extent::Size(size) => self.resolve_size_value(
-                    &size.0[1],
-                    placement.max_h,
-                    Some(
-                        (self.frame_height_units
-                            - resolve_coord(placement.at.y(), self.frame_height_units))
-                        .max(0.0),
-                    ),
-                    "height",
-                )?,
-                Extent::To(_) => {
-                    self.resolve_size(
-                        &placement.at,
-                        &placement.extent,
-                        placement.max_w,
-                        placement.max_h,
-                        true,
-                    )?
-                    .1
-                }
-            };
-            self.check_box_bounds(&point, width, height)?;
-            let bottom = point.y;
-            let top = bottom + height;
+        let top = args.pbox.y + args.pbox.h;
+        let dx = format_length(args.pbox.x, self.unit)?;
+        let dy = format_length(args.pbox.frame.1 - top, self.unit)?;
+        let box_width = format_length(args.pbox.w, self.unit)?;
+        let box_height = format_length(args.pbox.h, self.unit)?;
 
-            let inner_width = (width - padding.left - padding.right).max(0.0);
-            let inner_height = (height - padding.top - padding.bottom).max(0.0);
-            let has_active_children = items.iter().any(|item| self.is_item_active(item));
-            if has_active_children
-                && (inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON)
-            {
-                return Err(AppError::unsupported_layout_item(
-                    Reason::ContainerPaddingNoRoom,
-                    "container padding leaves no room for content",
-                ));
-            }
-            let child_mode = match &self.mode {
-                LengthMode::Dynamic(al) => LengthMode::Dynamic(AutoLength {
-                    texts: al.texts,
-                    cursor: al.cursor,
-                }),
-                LengthMode::Fixed => LengthMode::Fixed,
-            };
-            let context = self.child_context((inner_width, inner_height), child_mode);
-            let child_source = context.render_items(items)?;
-            let content = if padding == &crate::models::Padding::ZERO {
-                child_source
-            } else {
-                let pad_left = format_length(padding.left, self.unit)?;
-                let pad_top = format_length(padding.top, self.unit)?;
-                format!("#place(top + left, dx: {pad_left}, dy: {pad_top})[{child_source}]")
-            };
-            let content = self.wrap_rotation(content, placement.rotate);
+        let ((canvas_w, canvas_h), inner) =
+            crate::resolver::container_frames((args.pbox.w, args.pbox.h), rotation, args.padding);
 
-            let dx = format_length(left, self.unit)?;
-            let dy = format_length(self.frame_height_units - top, self.unit)?;
-            let box_width = format_length(width, self.unit)?;
-            let box_height = format_length(height, self.unit)?;
+        let child_source = self.render_items(
+            args.items,
+            args.children_measured,
+            inner,
+            args.geometry_values,
+            &format!("{}.items", args.path),
+        )?;
 
-            if let Some(frame) = frame {
-                let stroke = format_length(frame.thickness, self.unit)?;
-                let radius = if frame.rounded {
-                    format_length(frame.thickness * 2.0, self.unit)?
-                } else {
-                    format_length(0.0, self.unit)?
-                };
-                let frame_content = format!(
-                    "#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})"
-                );
-                let frame_content = self.wrap_rotation(frame_content, placement.rotate);
-                writeln!(
-                    out,
-                    "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
-                )
-                .map_err(|err| {
-                    AppError::render_failed(
-                        Reason::TypstSourceBuildFailed,
-                        format!("failed to build typst source: {err}"),
-                    )
-                })?;
-            }
-
-            writeln!(
-                out,
-                "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
-            )
-            .map_err(|err| AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            ))?;
-
-            return Ok(());
-        }
-
-        // Rotated path (R90/R180/R270). Validation guarantees an explicit size and no auto here.
-        let width = self
-            .resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                true,
-            )?
-            .0;
-        let height = self
-            .resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                true,
-            )?
-            .1;
-        self.check_box_bounds(&point, width, height)?;
-        let bottom = point.y;
-        let top = bottom + height;
-
-        let dx = format_length(left, self.unit)?;
-        let dy = format_length(self.frame_height_units - top, self.unit)?;
-        let box_width = format_length(width, self.unit)?;
-        let box_height = format_length(height, self.unit)?;
-
-        // Author canvas: full physical box, swapped for 90/270. Padding is author-space.
-        let (canvas_w, canvas_h) = if rotation.swaps_axes() {
-            (height, width)
-        } else {
-            (width, height)
-        };
-        let content_w = canvas_w - padding.left - padding.right;
-        let content_h = canvas_h - padding.top - padding.bottom;
-
-        // No dynamic width under rotation (validation forbids auto descendants).
-        let context = self.child_context((content_w, content_h), LengthMode::Fixed);
-        let child_source = context.render_items(items)?;
-
-        let canvas_w_len = format_length(canvas_w, self.unit)?;
-        let canvas_h_len = format_length(canvas_h, self.unit)?;
-        let inner = if padding == &crate::models::Padding::ZERO {
+        let inner = if args.padding == &crate::models::Padding::ZERO {
             child_source
         } else {
-            let pad_left = format_length(padding.left, self.unit)?;
-            let pad_top = format_length(padding.top, self.unit)?;
+            let pad_left = format_length(args.padding.left, self.unit)?;
+            let pad_top = format_length(args.padding.top, self.unit)?;
             format!("#place(top + left, dx: {pad_left}, dy: {pad_top})[{child_source}]")
         };
-        let canvas = format!("#box(width: {canvas_w_len}, height: {canvas_h_len})[{inner}]");
-        let rotated = self.wrap_rotation(canvas, placement.rotate);
 
-        // Frame is physical and unrotated.
-        if let Some(frame) = frame {
-            let stroke = format_length(frame.thickness, self.unit)?;
-            let radius = if frame.rounded {
-                format_length(frame.thickness * 2.0, self.unit)?
+        let rotated = if rotation.is_rotated() {
+            let canvas_w_len = format_length(canvas_w, self.unit)?;
+            let canvas_h_len = format_length(canvas_h, self.unit)?;
+            let canvas = format!("#box(width: {canvas_w_len}, height: {canvas_h_len})[{inner}]");
+            self.wrap_rotation(canvas, args.placement.rotate)
+        } else {
+            self.wrap_rotation(inner, args.placement.rotate)
+        };
+
+        if let Some(cf) = args.cont_frame {
+            let stroke = format_length(cf.thickness, self.unit)?;
+            let radius = if cf.rounded {
+                format_length(cf.thickness * 2.0, self.unit)?
             } else {
                 format_length(0.0, self.unit)?
             };
@@ -1951,105 +1759,18 @@ impl<'a> RenderContext<'a> {
             })?;
         }
 
-        // Single placement of the rotated author canvas, clipped to the physical box.
         writeln!(
             out,
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{rotated}]]"
         )
-        .map_err(|err| AppError::render_failed(
+        .map_err(|err| {
+            AppError::render_failed(
                 Reason::TypstSourceBuildFailed,
                 format!("failed to build typst source: {err}"),
-            ))?;
+            )
+        })?;
 
         Ok(())
-    }
-
-    fn resolve_size(
-        &self,
-        at: &Position,
-        extent: &Extent,
-        max_w: Option<f32>,
-        max_h: Option<f32>,
-        allow_auto_fill: bool,
-    ) -> Result<(f32, f32), AppError> {
-        let size = match extent {
-            Extent::Size(size) => size,
-            Extent::To(to) => {
-                return resolve_to_extent(at, to, self.frame_width_units, self.frame_height_units);
-            }
-        };
-        let fallback = if allow_auto_fill {
-            Some((
-                (self.frame_width_units - resolve_coord(at.x(), self.frame_width_units)).max(0.0),
-                (self.frame_height_units - resolve_coord(at.y(), self.frame_height_units)).max(0.0),
-            ))
-        } else {
-            None
-        };
-        let width =
-            self.resolve_size_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
-        let height =
-            self.resolve_size_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
-        Ok((width, height))
-    }
-
-    fn resolve_size_value(
-        &self,
-        value: &SizeValue,
-        max: Option<f32>,
-        fallback: Option<f32>,
-        label: &str,
-    ) -> Result<f32, AppError> {
-        match value {
-            SizeValue::Dynamic(dyn_val) => {
-                let resolved = resolve_dynamic_value_f32(dyn_val, self.data)?;
-                if resolved <= 0.0 {
-                    return Err(AppError::unsupported_layout_item(
-                        Reason::SizeInvalid,
-                        format!("size {label} must be greater than 0"),
-                    ));
-                }
-                Ok(resolved)
-            }
-            SizeValue::Auto(_) => {
-                // `max_*` caps the resolution of `auto`; it does not replace the fallback. A cap
-                // larger than the room available is simply not binding, so the smaller wins.
-                let resolved = match (max, fallback) {
-                    (Some(max), Some(fallback)) => max.min(fallback),
-                    (Some(max), None) => max,
-                    (None, Some(fallback)) => fallback,
-                    (None, None) => {
-                        return Err(AppError::unsupported_layout_item(
-                            Reason::SizeAutoWithoutMax,
-                            format!("size {label} is auto but no max_{label} provided"),
-                        ))
-                    }
-                };
-                if resolved <= 0.0 {
-                    // Blame whichever of `max`/`fallback` is actually `resolved` (the smaller of
-                    // the two, mirroring the `.min()` above): a `max_*` that isn't the binding
-                    // value is fine even if it happens to be set, and a fallback of `0` (the
-                    // anchor leaving no room) is not a `max_*` authoring error.
-                    let max_is_binding = match (max, fallback) {
-                        (Some(max), Some(fallback)) => max <= fallback,
-                        (Some(_), None) => true,
-                        (None, _) => false,
-                    };
-                    return Err(if max_is_binding {
-                        AppError::unsupported_layout_item(
-                            Reason::MaxSizeInvalid,
-                            format!("max_{label} must be greater than 0"),
-                        )
-                    } else {
-                        AppError::unsupported_layout_item(
-                            Reason::SizeAutoNoRoom,
-                            format!("no room left for an auto {label} at this anchor"),
-                        )
-                    });
-                }
-                Ok(resolved)
-            }
-        }
     }
 
     fn wrap_rotation(&self, content: String, rotate: Option<f32>) -> String {
@@ -2185,14 +1906,30 @@ mod tests {
     };
     use crate::errors::AppError;
     use crate::models::{
-        Alignment, AutoSize, Dimension, DynamicDimension, DynamicValue, Extent, Fit, FontSize,
-        Frame, HorizontalAlign, LabelInput, Layout, LayoutItem, Padding, ParamSpec, ParamType,
+        Alignment, Dimension, DynamicDimension, DynamicValue, Extent, Fit, FontSize, Frame,
+        HorizontalAlign, LabelInput, Layout, LayoutItem, Overflow, Padding, ParamSpec, ParamType,
         Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat, VerticalAlign,
     };
     use crate::reason::Reason;
     use crate::templates::TemplateContent;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+    fn render_test_items(items: &[LayoutItem], frame: (f32, f32)) -> Result<String, AppError> {
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let geometry_values = HashMap::new();
+        let (measured, _) =
+            ctx.measure_items(items, frame, [true, true], &geometry_values, "layout")?;
+        ctx.render_items(items, &measured, frame, &geometry_values, "layout")
+    }
 
     /// Build a one-text-item source. `size_w` of `None` means an auto width, which routes through
     /// the auto-length path; `Some(w)` takes the fixed-size path. Both must carry the weight.
@@ -2222,14 +1959,30 @@ mod tests {
         )
     }
 
-    fn text_source_h_aligned(
+    fn text_source_with_size(
         horizontal: HorizontalAlign,
         vertical: VerticalAlign,
-        size_w: Option<f32>,
+        size_w: SizeValue,
         font_size: FontSize,
         text: &str,
     ) -> String {
-        text_source_h_aligned_weighted(None, horizontal, vertical, size_w, font_size, text)
+        let item = LayoutItem::Text {
+            value: text.to_string(),
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([size_w, SizeValue::fixed(30.0)]),
+            ),
+            font_size,
+            font_weight: None,
+            multiline: false,
+            alignment: crate::models::Alignment {
+                horizontal,
+                vertical,
+            },
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+        render_test_items(&[item], (80.0, 40.0)).expect("render text item")
     }
 
     fn text_source_h_aligned_weighted(
@@ -2240,15 +1993,6 @@ mod tests {
         font_size: FontSize,
         text: &str,
     ) -> String {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
         let item = LayoutItem::Text {
             value: text.to_string(),
             placement: Placement::sized(
@@ -2256,9 +2000,9 @@ mod tests {
                 Size([
                     match size_w {
                         Some(w) => SizeValue::fixed(w),
-                        None => SizeValue::Auto(crate::models::AutoSize::Auto),
+                        None => SizeValue::fill(),
                     },
-                    SizeValue::fixed(8.0),
+                    SizeValue::fixed(30.0),
                 ]),
             ),
             font_size,
@@ -2268,37 +2012,10 @@ mod tests {
                 horizontal,
                 vertical,
             },
+            overflow: Overflow::Ellipsis,
             when: None,
         };
-        // The auto-width path replays what the measure pre-pass recorded, so that pass has to run
-        // first and its results have to be handed to the render context.
-        let measuring = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let mut measured = Vec::new();
-        measuring
-            .measure(std::slice::from_ref(&item), 80.0, &mut measured)
-            .expect("measure");
-        let cursor = std::cell::Cell::new(0);
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Dynamic(super::AutoLength {
-                texts: &measured,
-                cursor: &cursor,
-            }),
-        );
-        ctx.render_items(&[item]).expect("render text item")
+        render_test_items(&[item], (80.0, 40.0)).expect("render text item")
     }
 
     fn fitted_pt(source: &str) -> f32 {
@@ -2358,10 +2075,10 @@ mod tests {
     /// continues to emit the fitted content width.
     #[test]
     fn auto_width_text_horizontal_alignment_on_dynamic_frame() {
-        let centered = text_source_h_aligned(
+        let centered = text_source_with_size(
             HorizontalAlign::Center,
             VerticalAlign::Top,
-            None,
+            SizeValue::fill(),
             FontSize::Fixed(10.0),
             "Hi",
         );
@@ -2374,10 +2091,10 @@ mod tests {
             "expected center alignment in: {centered}"
         );
 
-        let right = text_source_h_aligned(
+        let right = text_source_with_size(
             HorizontalAlign::Right,
             VerticalAlign::Top,
-            None,
+            SizeValue::fill(),
             FontSize::Fixed(10.0),
             "Hi",
         );
@@ -2390,10 +2107,10 @@ mod tests {
             "expected right alignment in: {right}"
         );
 
-        let left = text_source_h_aligned(
+        let left = text_source_with_size(
             HorizontalAlign::Left,
             VerticalAlign::Top,
-            None,
+            SizeValue::content(),
             FontSize::Fixed(10.0),
             "Hi",
         );
@@ -2410,23 +2127,11 @@ mod tests {
     /// #180: max_w caps the alignment slot at render time for center and right alignment.
     #[test]
     fn auto_width_text_max_w_caps_alignment_slot_at_render() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
         let item = LayoutItem::Text {
             value: "Hi".to_string(),
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                extent: Extent::Size(Size([
-                    SizeValue::Auto(AutoSize::Auto),
-                    SizeValue::fixed(8.0),
-                ])),
+                extent: Extent::Size(Size([SizeValue::fill(), SizeValue::fixed(8.0)])),
                 max_w: Some(30.0),
                 max_h: None,
                 rotate: None,
@@ -2438,35 +2143,10 @@ mod tests {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Top,
             },
+            overflow: Overflow::Ellipsis,
             when: None,
         };
-        let measuring = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let mut measured = Vec::new();
-        measuring
-            .measure(std::slice::from_ref(&item), 80.0, &mut measured)
-            .expect("measure");
-        let cursor = std::cell::Cell::new(0);
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Dynamic(super::AutoLength {
-                texts: &measured,
-                cursor: &cursor,
-            }),
-        );
-        let source = ctx.render_items(&[item]).expect("render");
+        let source = render_test_items(&[item], (80.0, 40.0)).expect("render");
         assert!(
             source.contains("#box(width: 30mm"),
             "max_w: 30mm must cap the 80mm frame remainder, got: {source}"
@@ -2477,23 +2157,11 @@ mod tests {
     /// gets the container's padded inner remainder, not the outer label frame.
     #[test]
     fn auto_width_text_in_padded_container_on_dynamic_frame() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
         let child = LayoutItem::Text {
             value: "Hi".to_string(),
             placement: Placement {
                 at: Position([0.0, 0.0]),
-                extent: Extent::Size(Size([
-                    SizeValue::Auto(AutoSize::Auto),
-                    SizeValue::fixed(8.0),
-                ])),
+                extent: Extent::Size(Size([SizeValue::fill(), SizeValue::fixed(8.0)])),
                 max_w: None,
                 max_h: None,
                 rotate: None,
@@ -2505,6 +2173,7 @@ mod tests {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Top,
             },
+            overflow: Overflow::Ellipsis,
             when: None,
         };
         let container = LayoutItem::Container {
@@ -2525,33 +2194,7 @@ mod tests {
             },
             items: vec![child],
         };
-        let measuring = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let mut measured = Vec::new();
-        measuring
-            .measure(std::slice::from_ref(&container), 80.0, &mut measured)
-            .expect("measure");
-        let cursor = std::cell::Cell::new(0);
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Dynamic(super::AutoLength {
-                texts: &measured,
-                cursor: &cursor,
-            }),
-        );
-        let source = ctx.render_items(&[container]).expect("render");
+        let source = render_test_items(&[container], (80.0, 40.0)).expect("render");
         assert!(
             source.contains("#box(width: 40mm"),
             "nested text must span container inner width (40mm), not 80mm or 50mm, got: {source}"
@@ -2578,7 +2221,7 @@ layout:
   - type: text
     value: "{message}"
     at: [0, 0]
-    size: [auto, 12]
+    size: [content, 12]
     font_size: 10
     alignment:
       horizontal: center
@@ -2623,25 +2266,13 @@ layout:
             img_short.width()
         );
 
-        // Also assert that the emitted text box in a 20mm dynamic frame spans the full 20mm slot:
+        // Also assert that the emitted text box with fill spans the full 20mm slot:
         let clamped_src = {
-            use std::cell::RefCell;
-            let data: HashMap<String, super::JsonValue> = HashMap::new();
-            let settings = no_settings();
-            let datetime = no_datetime();
-            let env = super::RenderEnv {
-                settings: &settings,
-                datetime: &datetime,
-            };
-            let images = RefCell::new(super::ImageCollector::default());
             let item = LayoutItem::Text {
                 value: "Hi".to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
-                    extent: Extent::Size(Size([
-                        SizeValue::Auto(AutoSize::Auto),
-                        SizeValue::fixed(12.0),
-                    ])),
+                    extent: Extent::Size(Size([SizeValue::fill(), SizeValue::fixed(12.0)])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
@@ -2653,35 +2284,10 @@ layout:
                     horizontal: HorizontalAlign::Center,
                     vertical: VerticalAlign::Top,
                 },
+                overflow: Overflow::Ellipsis,
                 when: None,
             };
-            let measuring = super::RenderContext::new(
-                (100.0, 12.0),
-                "mm",
-                &data,
-                None,
-                &env,
-                &images,
-                super::LengthMode::Fixed,
-            );
-            let mut measured = Vec::new();
-            measuring
-                .measure(std::slice::from_ref(&item), 100.0, &mut measured)
-                .expect("measure");
-            let cursor = std::cell::Cell::new(0);
-            let ctx = super::RenderContext::new(
-                (20.0, 12.0),
-                "mm",
-                &data,
-                None,
-                &env,
-                &images,
-                super::LengthMode::Dynamic(super::AutoLength {
-                    texts: &measured,
-                    cursor: &cursor,
-                }),
-            );
-            ctx.render_items(&[item]).expect("render")
+            render_test_items(&[item], (20.0, 12.0)).expect("render")
         };
         assert!(
             clamped_src.contains("#box(width: 20mm"),
@@ -2722,33 +2328,31 @@ layout:
                 datetime: &datetime,
             };
             let images = RefCell::new(super::ImageCollector::default());
-            let ctx = super::RenderContext::new(
-                (80.0, 40.0),
-                "mm",
-                &data,
-                None,
-                &env,
-                &images,
-                super::LengthMode::Fixed,
-            );
+            let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
             let item = LayoutItem::Text {
                 value: "Widget A-42 Storage".to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::fixed(8.0),
-                    ]),
+                    Size([SizeValue::content(), SizeValue::fixed(8.0)]),
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: weight.map(Into::into),
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             };
-            let mut measured = Vec::new();
-            ctx.measure(&[item], 200.0, &mut measured).expect("measure");
-            measured[0].width
+            let geometry_values = HashMap::new();
+            let (measured, _) = ctx
+                .measure_items(
+                    &[item],
+                    (200.0, 40.0),
+                    [true, true],
+                    &geometry_values,
+                    "layout",
+                )
+                .expect("measure");
+            measured[0].intrinsic[0].unwrap()
         }
 
         let regular = measured_width(None);
@@ -2781,8 +2385,10 @@ layout:
         );
     }
 
+    /// A rotated container used to have its subtree skipped by the measure pass, which is what made
+    /// a content-sized descendant illegal. It is measured now, exactly as an unrotated one is.
     #[test]
-    fn measure_skips_children_of_rotated_container() {
+    fn a_rotated_container_measures_its_children_like_an_unrotated_one() {
         use std::cell::RefCell;
         let data: HashMap<String, super::JsonValue> = HashMap::new();
         let settings = no_settings();
@@ -2792,29 +2398,19 @@ layout:
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
+        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
 
         let auto_text = LayoutItem::Text {
             value: "hello".to_string(),
             placement: Placement::sized(
                 Position([0.0, 0.0]),
-                Size([
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
-                    SizeValue::fixed(10.0),
-                ]),
+                Size([SizeValue::content(), SizeValue::fixed(10.0)]),
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
             multiline: false,
             alignment: Alignment::default(),
+            overflow: Overflow::Ellipsis,
             when: None,
         };
         let make_container = |rotate: Option<f32>| LayoutItem::Container {
@@ -2831,21 +2427,120 @@ layout:
             items: vec![auto_text.clone()],
         };
 
-        let mut out_rot = Vec::new();
-        ctx.measure(&[make_container(Some(90.0))], 80.0, &mut out_rot)
+        let geometry_values = HashMap::new();
+        let (out_rot, _) = ctx
+            .measure_items(
+                &[make_container(Some(90.0))],
+                (80.0, 40.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
             .unwrap();
-        assert!(
-            out_rot.is_empty(),
-            "rotated container must not measure its children"
-        );
+        let (out_plain, _) = ctx
+            .measure_items(
+                &[make_container(None)],
+                (80.0, 40.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
+            .unwrap();
+        for (label, measured) in [("rotated", &out_rot), ("plain", &out_plain)] {
+            assert_eq!(measured.len(), 1, "{label}");
+            let child = measured[0]
+                .children
+                .first()
+                .unwrap_or_else(|| panic!("{label} container measured no child"));
+            assert!(
+                child.intrinsic[0].is_some_and(|w| w > 0.0),
+                "{label} child has no measured content width: {:?}",
+                child.intrinsic
+            );
+            assert!(
+                child.text.is_some(),
+                "{label} child carries no laid-out text"
+            );
+        }
+    }
 
-        let mut out_plain = Vec::new();
-        ctx.measure(&[make_container(None)], 80.0, &mut out_plain)
-            .unwrap();
-        assert_eq!(
-            out_plain.len(),
-            1,
-            "non-rotated container measures its auto child"
+    /// The vertical axis contributes exactly as the horizontal one does, and a container's
+    /// contribution is its children's requirements — offsets included — plus its own padding, taken
+    /// recursively. Nothing in the sizing rules is written per axis or per depth.
+    #[test]
+    fn a_content_height_container_contributes_its_nested_children_and_offsets() {
+        use std::cell::RefCell;
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+
+        let text = LayoutItem::Text {
+            value: "hi".to_string(),
+            placement: Placement::sized(
+                Position([0.0, 3.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(8.0)]),
+            ),
+            font_size: FontSize::Fixed(6.0),
+            font_weight: None,
+            multiline: false,
+            alignment: Alignment::default(),
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+        let inner = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 5.0]),
+                Size([SizeValue::fixed(30.0), SizeValue::content()]),
+            ),
+            when: None,
+            frame: None,
+            padding: Padding {
+                top: 1.0,
+                right: 0.0,
+                bottom: 2.0,
+                left: 0.0,
+            },
+            items: vec![text],
+        };
+        let outer = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(50.0), SizeValue::content()]),
+            ),
+            when: None,
+            frame: None,
+            padding: Padding::ZERO,
+            items: vec![inner],
+        };
+
+        let geometry_values = HashMap::new();
+        let (measured, _) = ctx
+            .measure_items(
+                &[outer],
+                (100.0, 100.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
+            .expect("measure");
+
+        // inner: 3 (padding) + 3 (child offset) + 8 (child height) = 14
+        let inner_height = measured[0].children[0].intrinsic[1].expect("inner height");
+        assert!(
+            (inner_height - 14.0).abs() < 1e-3,
+            "inner contributed {inner_height}, expected 14"
+        );
+        // outer: the inner container's offset of 5 plus its 14
+        let outer_height = measured[0].intrinsic[1].expect("outer height");
+        assert!(
+            (outer_height - 19.0).abs() < 1e-3,
+            "outer contributed {outer_height}, expected 19"
         );
     }
 
@@ -2859,50 +2554,35 @@ layout:
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (budget, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let mut measured = Vec::new();
-        let extent = ctx
-            .measure(&[item], budget, &mut measured)
+        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let geometry_values = HashMap::new();
+        let (measured, max_req_w) = ctx
+            .measure_items(
+                &[item],
+                (budget, 40.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
             .expect("measure");
-        (extent, measured.len())
+        fn count_text(nodes: &[super::Measured]) -> usize {
+            nodes
+                .iter()
+                .map(|n| {
+                    let this = if n.text.is_some() { 1 } else { 0 };
+                    this + count_text(&n.children)
+                })
+                .sum()
+        }
+        let text_count = count_text(&measured);
+        (max_req_w, text_count)
     }
 
     /// Builds a `RenderContext` over a dynamic-width frame, so `render_container_item` takes its
     /// auto-width branch. Empty `texts` is legitimate: the mode comes from the format, not from
     /// whether any text needed measuring.
     fn dynamic_ctx_source(frame_w: f32, item: LayoutItem) -> String {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let texts: Vec<super::MeasuredText> = Vec::new();
-        let cursor = std::cell::Cell::new(0usize);
-        let ctx = super::RenderContext::new(
-            (frame_w, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Dynamic(super::AutoLength {
-                texts: &texts,
-                cursor: &cursor,
-            }),
-        );
-        ctx.render_items(&[item]).expect("render")
+        render_test_items(&[item], (frame_w, 12.0)).expect("render")
     }
 
     fn capped_container(at_x: f32, max_w: Option<f32>, items: Vec<LayoutItem>) -> LayoutItem {
@@ -2910,7 +2590,7 @@ layout:
             placement: Placement {
                 at: Position([at_x, 0.0]),
                 extent: crate::models::Extent::Size(Size([
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::fill(),
                     SizeValue::fixed(12.0),
                 ])),
                 max_w,
@@ -2935,7 +2615,7 @@ layout:
                 at: Position([0.0, 10.0]),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::fixed(20.0),
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::fill(),
                 ])),
                 max_w: None,
                 max_h: None,
@@ -2945,11 +2625,11 @@ layout:
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            overflow: Overflow::Ellipsis,
             when: None,
         };
-        let (extent, pushed) = measured_extent_of(item, 100.0);
+        let (extent, _) = measured_extent_of(item, 100.0);
         assert_eq!(extent, 20.0, "a fixed-width text contributes its width");
-        assert_eq!(pushed, 0, "and records no MeasuredText");
     }
 
     /// Spec §7. `measure_container_footprint` resolved this width with no fallback, so a
@@ -2977,7 +2657,7 @@ layout:
                     placement: Placement {
                         at: Position([-30.0, 0.0]),
                         extent: crate::models::Extent::Size(Size([
-                            SizeValue::Auto(crate::models::AutoSize::Auto),
+                            SizeValue::fill(),
                             SizeValue::fixed(12.0),
                         ])),
                         max_w: None,
@@ -3027,7 +2707,7 @@ layout:
             placement: Placement {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::content(),
                     SizeValue::fixed(8.0),
                 ])),
                 max_w: None,
@@ -3038,6 +2718,7 @@ layout:
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            overflow: Overflow::Ellipsis,
             when: None,
         };
         let (uncapped, _) =
@@ -3048,8 +2729,8 @@ layout:
             "the child must be wide enough for the cap to bind, got {uncapped}"
         );
         assert!(
-            (capped - 15.0).abs() < 0.5,
-            "a container at x=10 capped to 5mm contributes 15, not {capped}"
+            capped <= 15.0 + 1.0e-3 && capped > 10.0,
+            "a container at x=10 capped to 5mm contributes <= 15, got {capped}"
         );
     }
 
@@ -3059,7 +2740,7 @@ layout:
     /// what makes a child line reaching x=50 genuinely not fit.
     #[test]
     fn the_152_repro_is_rejected_and_the_rejection_is_correct() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 3.0]\n        to: [50.0, 3.0]\n        thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 3.0]\n        to: [50.0, 3.0]\n        thickness: 0.2\n";
         let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
         let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
         assert!(
@@ -3100,7 +2781,7 @@ layout:
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fixed(20.0),
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::fill(),
                     ])),
                     max_w: None,
                     max_h: Some(200.0),
@@ -3110,6 +2791,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -3125,32 +2807,14 @@ layout:
     /// in-bounds height — would satisfy the test above and still be wrong. Assert the emitted box.
     #[test]
     fn the_155_repro_renders_at_the_capped_height() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (60.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let source = ctx
-            .render_items(&[LayoutItem::Text {
+        let source = render_test_items(
+            &[LayoutItem::Text {
                 value: "x".to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fixed(20.0),
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::fill(),
                     ])),
                     max_w: None,
                     max_h: Some(200.0),
@@ -3160,9 +2824,12 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
-            }])
-            .expect("renders");
+            }],
+            (60.0, 40.0),
+        )
+        .expect("renders");
         assert!(
             source.contains("height: 40mm"),
             "the box must be capped to the frame, not the 200mm max_h: {source}"
@@ -3175,39 +2842,25 @@ layout:
     #[test]
     fn fixed_format_text_renders_at_the_remainder() {
         fn source_at(frame: (f32, f32), at: [f32; 2], size: Size, max_h: Option<f32>) -> String {
-            use std::cell::RefCell;
-            let data: HashMap<String, super::JsonValue> = HashMap::new();
-            let settings = no_settings();
-            let datetime = no_datetime();
-            let env = super::RenderEnv {
-                settings: &settings,
-                datetime: &datetime,
-            };
-            let images = RefCell::new(super::ImageCollector::default());
-            let ctx = super::RenderContext::new(
+            render_test_items(
+                &[LayoutItem::Text {
+                    value: "x".to_string(),
+                    placement: Placement {
+                        at: Position(at),
+                        extent: crate::models::Extent::Size(size),
+                        max_w: None,
+                        max_h,
+                        rotate: None,
+                    },
+                    font_size: FontSize::Fixed(6.0),
+                    font_weight: None,
+                    multiline: false,
+                    alignment: crate::models::Alignment::default(),
+                    overflow: Overflow::Ellipsis,
+                    when: None,
+                }],
                 frame,
-                "mm",
-                &data,
-                None,
-                &env,
-                &images,
-                super::LengthMode::Fixed,
-            );
-            ctx.render_items(&[LayoutItem::Text {
-                value: "x".to_string(),
-                placement: Placement {
-                    at: Position(at),
-                    extent: crate::models::Extent::Size(size),
-                    max_w: None,
-                    max_h,
-                    rotate: None,
-                },
-                font_size: FontSize::Fixed(6.0),
-                font_weight: None,
-                multiline: false,
-                alignment: crate::models::Alignment::default(),
-                when: None,
-            }])
+            )
             .expect("renders")
         }
 
@@ -3215,10 +2868,7 @@ layout:
         let s = source_at(
             (100.0, 40.0),
             [0.0, 10.0],
-            Size([
-                SizeValue::fixed(20.0),
-                SizeValue::Auto(crate::models::AutoSize::Auto),
-            ]),
+            Size([SizeValue::fixed(20.0), SizeValue::fill()]),
             None,
         );
         assert!(
@@ -3230,10 +2880,7 @@ layout:
         let s = source_at(
             (100.0, 40.0),
             [0.0, 10.0],
-            Size([
-                SizeValue::fixed(20.0),
-                SizeValue::Auto(crate::models::AutoSize::Auto),
-            ]),
+            Size([SizeValue::fixed(20.0), SizeValue::fill()]),
             Some(35.0),
         );
         assert!(
@@ -3245,10 +2892,7 @@ layout:
         let s = source_at(
             (40.0, 20.0),
             [5.0, 2.0],
-            Size([
-                SizeValue::Auto(crate::models::AutoSize::Auto),
-                SizeValue::fixed(8.0),
-            ]),
+            Size([SizeValue::fill(), SizeValue::fixed(8.0)]),
             None,
         );
         assert!(
@@ -3276,7 +2920,7 @@ layout:
     /// template fails: the standard explained error, not a panic and not a corrupt page.
     #[test]
     fn a_container_with_no_room_left_fails_cleanly_at_render() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n        thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n        thickness: 0.2\n";
         let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
         let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
         assert_eq!(
@@ -3289,8 +2933,8 @@ layout:
             .expect_err("a divider in a zero-width container cannot render");
         assert_eq!(
             err.reason(),
-            Some("container_padding_no_room"),
-            "expected container_padding_no_room, got: {}",
+            Some("line_degenerate"),
+            "expected line_degenerate, got: {}",
             err.message_text()
         );
     }
@@ -3304,7 +2948,7 @@ layout:
             placement: Placement {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::fill(),
                     SizeValue::fixed(12.0),
                 ])),
                 max_w: Some(2.0),
@@ -3323,7 +2967,7 @@ layout:
                 placement: Placement {
                     at: Position([-0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::fill(),
                         SizeValue::fixed(1.0),
                     ])),
                     max_w: None,
@@ -3359,7 +3003,7 @@ layout:
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::content(),
                         SizeValue::fixed(8.0),
                     ])),
                     max_w: None,
@@ -3370,32 +3014,40 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             },
             200.0,
         );
         assert!(text_extent > 0.0 && text_extent < 200.0);
 
-        // Qr: an uncapped auto-width qr still fills the remaining budget.
+        // Qr: an uncapped fill qr reports its intrinsic size.
         let (qr_extent, _) = measured_extent_of(
             LayoutItem::Qr {
                 value: "abc".to_string(),
                 placement: Placement {
                     at: Position([10.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::fill(),
                         SizeValue::fixed(20.0),
                     ])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
                 },
-                params: None,
+                params: Some(crate::models::QrParams {
+                    error_correction: None,
+                    module_size: Some(1.0),
+                    quiet_zone: None,
+                }),
                 when: None,
             },
             100.0,
         );
-        assert_eq!(qr_extent, 100.0, "no bound means fill the remaining budget");
+        assert_eq!(
+            qr_extent, 31.0,
+            "fill qr reports anchor + intrinsic (10 + 21 = 31)"
+        );
 
         // Container, measurement: the child must be something whose measured width depends on
         // the inner budget, or the assertion proves nothing. An empty container contributes `at_x`
@@ -3405,7 +3057,7 @@ layout:
             placement: Placement {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::content(),
                     SizeValue::fixed(8.0),
                 ])),
                 max_w: None,
@@ -3416,6 +3068,7 @@ layout:
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            overflow: Overflow::Ellipsis,
             when: None,
         };
         let (c_extent, _) = measured_extent_of(capped_container(10.0, None, vec![child]), 200.0);
@@ -3491,6 +3144,7 @@ layout:
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            overflow: Overflow::Ellipsis,
             when: None,
         }
     }
@@ -3532,7 +3186,10 @@ layout:
             100.0,
         );
         assert_eq!(extent, 30.0);
-        assert_eq!(pushed, 0, "a fixed-width item must not push a MeasuredText");
+        assert_eq!(
+            pushed, 1,
+            "an active text item creates a Measured node with text fit"
+        );
     }
 
     /// A cap on an auto-width text must bind during measurement, since that is what sizes the label.
@@ -3548,7 +3205,7 @@ layout:
                 placement: Placement {
                     at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::Size(Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
+                        SizeValue::content(),
                         SizeValue::fixed(8.0),
                     ])),
                     max_w,
@@ -3559,6 +3216,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }
         }
@@ -3575,9 +3233,7 @@ layout:
         );
     }
 
-    /// A capped qr sizes the label to its cap, not to `width.max`. Rendering already honored `max_w`
-    /// here, so before this fix an auto-length label came out `width.max` long with a small code on
-    /// it. An image item takes the same measure arm, so this covers both.
+    /// A capped qr sizes the label to its cap, not to `width.max`.
     #[test]
     fn max_w_caps_an_auto_width_qr_during_measurement() {
         let qr = |max_w: Option<f32>| LayoutItem::Qr {
@@ -3585,18 +3241,22 @@ layout:
             placement: Placement {
                 at: Position([0.0, 0.0]),
                 extent: crate::models::Extent::Size(Size([
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
+                    SizeValue::fill(),
                     SizeValue::fixed(20.0),
                 ])),
                 max_w,
                 max_h: None,
                 rotate: None,
             },
-            params: None,
+            params: Some(crate::models::QrParams {
+                error_correction: None,
+                module_size: Some(2.0),
+                quiet_zone: None,
+            }),
             when: None,
         };
         let (capped, pushed) = measured_extent_of(qr(Some(30.0)), 100.0);
-        assert_eq!(pushed, 0, "a qr never records a MeasuredText");
+        assert_eq!(pushed, 0, "a qr never records a text fit");
         assert_eq!(
             capped, 30.0,
             "a capped qr must contribute its cap, not the whole {}mm budget",
@@ -3627,6 +3287,7 @@ layout:
                 font_weight: None,
                 multiline: true,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }
         }
@@ -3676,10 +3337,9 @@ layout:
         );
     }
 
-    /// A qr spanning to the right edge has no intrinsic width this codebase measures, so it must not
-    /// drag the label out to its maximum. Text alone sizes the label.
+    /// A qr spanning to the right edge contributes its intrinsic size.
     #[test]
-    fn an_edge_relative_to_qr_contributes_nothing() {
+    fn an_edge_relative_to_qr_contributes_its_intrinsic_size() {
         let (extent, pushed) = measured_extent_of(
             LayoutItem::Qr {
                 value: "payload".to_string(),
@@ -3690,12 +3350,16 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
-                params: None,
+                params: Some(crate::models::QrParams {
+                    error_correction: None,
+                    module_size: Some(1.0),
+                    quiet_zone: None,
+                }),
                 when: None,
             },
             80.0,
         );
-        assert_eq!(extent, 0.0);
+        assert_eq!(extent, 21.0);
         assert_eq!(pushed, 0);
     }
 
@@ -3829,10 +3493,7 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Position([0.0, 0.0]),
-                    extent: Extent::Size(Size([
-                        SizeValue::fixed(40.0),
-                        SizeValue::Auto(AutoSize::Auto),
-                    ])),
+                    extent: Extent::Size(Size([SizeValue::fixed(40.0), SizeValue::fill()])),
                     max_w: None,
                     max_h: None,
                     rotate: None,
@@ -3858,24 +3519,6 @@ layout:
 
     #[test]
     fn r0_container_source_unchanged() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
         let container = LayoutItem::Container {
             placement: Placement::sized(
                 Position([0.0, 0.0]),
@@ -3889,7 +3532,7 @@ layout:
             padding: Padding::ZERO,
             items: vec![],
         };
-        let src = ctx.render_items(&[container]).expect("render r0 container");
+        let src = render_test_items(&[container], (80.0, 40.0)).expect("render r0 container");
         assert!(
             !src.contains("#rotate"),
             "R0 container must not emit #rotate"
@@ -3898,129 +3541,6 @@ layout:
             src.contains("clip: true"),
             "R0 container keeps its single clipped box"
         );
-    }
-
-    /// The render-time copy of the helper must cap identically, or it drifts from validation —
-    /// which is exactly the class of bug #152 is.
-    #[test]
-    fn render_resolve_size_value_caps_rather_than_substituting() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (100.0, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        assert_eq!(
-            ctx.resolve_size_value(&auto, Some(30.0), Some(10.0), "width")
-                .unwrap(),
-            10.0
-        );
-        assert_eq!(
-            ctx.resolve_size_value(&auto, Some(10.0), Some(30.0), "width")
-                .unwrap(),
-            10.0
-        );
-        assert_eq!(
-            ctx.resolve_size_value(&auto, Some(30.0), None, "width")
-                .unwrap(),
-            30.0
-        );
-        assert_eq!(
-            ctx.resolve_size_value(&auto, None, Some(30.0), "width")
-                .unwrap(),
-            30.0
-        );
-        assert!(ctx.resolve_size_value(&auto, None, None, "width").is_err());
-        assert_eq!(
-            ctx.resolve_size_value(&SizeValue::fixed(50.0), Some(30.0), Some(30.0), "width")
-                .unwrap(),
-            50.0,
-            "a numeric size is never clamped by the bound"
-        );
-    }
-
-    /// A zero (or negative) fallback with no `max_*` set is the anchor leaving no room, not an
-    /// invalid `max_*` — there isn't one to blame. Mirrors
-    /// `templates::a_zero_remainder_with_no_max_blames_the_anchor_not_a_max`.
-    #[test]
-    fn render_resolve_size_value_blames_the_anchor_when_max_is_absent() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (100.0, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        let err = ctx
-            .resolve_size_value(&auto, None, Some(0.0), "width")
-            .expect_err("a zero remainder with no max_w is an error");
-        assert_eq!(err.reason(), Some("size_auto_no_room"));
-        assert_eq!(
-            err.message_text(),
-            "no room left for an auto width at this anchor"
-        );
-
-        // `max_w` set and positive but not the binding value (the fallback is smaller): still a
-        // room problem, not a `max_w` problem.
-        let err = ctx
-            .resolve_size_value(&auto, Some(50.0), Some(0.0), "width")
-            .expect_err("a non-binding max_w does not rescue a zero remainder");
-        assert_eq!(err.reason(), Some("size_auto_no_room"));
-    }
-
-    /// A genuinely non-positive `max_*` keeps the original message and reason, as long as it is
-    /// the value that actually resolved.
-    #[test]
-    fn render_resolve_size_value_blames_a_non_positive_max() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (100.0, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        let err = ctx
-            .resolve_size_value(&auto, Some(-5.0), None, "width")
-            .expect_err("a non-positive max_w is an error");
-        assert_eq!(err.reason(), Some("max_size_invalid"));
-        assert_eq!(err.message_text(), "max_width must be greater than 0");
     }
 
     fn rotated_container_template(rotate: f32, items: Vec<LayoutItem>) -> TemplateContent {
@@ -4069,6 +3589,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }],
         );
@@ -4204,6 +3725,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }],
         };
@@ -4281,7 +3803,7 @@ layout:
                 value: text.to_string(),
                 placement: Placement::sized(
                     Position([0.0, 0.0]),
-                    Size([SizeValue::Auto(AutoSize::Auto), SizeValue::fixed(HEIGHT_MM)]),
+                    Size([SizeValue::content(), SizeValue::fixed(HEIGHT_MM)]),
                 ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
@@ -4290,6 +3812,7 @@ layout:
                     horizontal: HorizontalAlign::Center,
                     vertical,
                 },
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -4315,10 +3838,8 @@ layout:
         };
         let Layout::Items(items) = &mut t.layout;
         if let Some(LayoutItem::Text { placement, .. }) = items.first_mut() {
-            placement.extent = Extent::Size(Size([
-                SizeValue::Auto(AutoSize::Auto),
-                SizeValue::fixed(height_mm),
-            ]));
+            placement.extent =
+                Extent::Size(Size([SizeValue::content(), SizeValue::fixed(height_mm)]));
         }
         t
     }
@@ -4637,6 +4158,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -4732,6 +4254,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -4787,6 +4310,7 @@ layout:
                     font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
+                    overflow: Overflow::Ellipsis,
                     when: None,
                 },
                 LayoutItem::Qr {
@@ -4864,6 +4388,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -4986,38 +4511,21 @@ layout:
     /// against the other. This is the test that would have failed before the change.
     #[test]
     fn one_code_two_reasons_for_unrelated_failures() {
-        use std::cell::RefCell;
-
         let template = image_single_template();
         let data = HashMap::from([("logo".to_string(), json!("not a data uri"))]);
         let image_err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
             .expect_err("a non-data-URI image payload must not render");
 
-        let empty: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (10.0, 12.0),
-            "mm",
-            &empty,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let geometry_err = ctx
-            .render_items(&[LayoutItem::Line {
+        let geometry_err = render_test_items(
+            &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
                 thickness: 0.2,
                 when: None,
-            }])
-            .expect_err("a 30mm endpoint on a 10mm frame must not render");
+            }],
+            (10.0, 12.0),
+        )
+        .expect_err("a 30mm endpoint on a 10mm frame must not render");
 
         assert_eq!(image_err.code(), geometry_err.code());
         assert_eq!(image_err.code(), "UnsupportedLayoutItem");
@@ -5120,6 +4628,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -5283,6 +4792,7 @@ layout:
                     font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
+                    overflow: Overflow::Ellipsis,
                     when: None,
                 },
                 LayoutItem::Qr {
@@ -5332,6 +4842,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -5411,6 +4922,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -5442,6 +4954,7 @@ layout:
                     font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
+                    overflow: Overflow::Ellipsis,
                     when: None,
                 },
                 LayoutItem::Qr {
@@ -5510,6 +5023,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -5655,7 +5169,10 @@ layout:
             BTreeMap::from([("qr_base_url".to_string(), "https://example.com".to_string())]);
         // homebox-qr also references {sys.now:iso_date}, a named format; supply it so the harness
         // resolves it (no_datetime carries no named formats).
-        let datetime_formats = BTreeMap::from([("iso_date".to_string(), "%Y-%m-%d".to_string())]);
+        let datetime_formats = BTreeMap::from([
+            ("iso_date".to_string(), "%Y-%m-%d".to_string()),
+            ("short_date".to_string(), "%m/%d/%Y".to_string()),
+        ]);
         let datetime = crate::datetime_fmt::DateTimeResolver {
             formats: &datetime_formats,
             now: chrono::Local::now(),
@@ -5811,60 +5328,41 @@ layout:
     /// the page by exactly its own offset.
     #[test]
     fn dynamic_width_mode_is_independent_of_measured_text() {
-        use std::cell::RefCell;
         // `at_x` differs per mode: the render-time bounds check (Task 5) now rejects a container
         // that resolves past the frame edge, and the fixed-mode auto-width fallback fills the whole
         // frame regardless of offset, so it needs `at_x = 0.0` to stay in bounds. Compile-time
         // `validate_bounds` already forbids the x=5 fixed-mode combination on any real template
         // (5 + 25 > 25), so this keeps the fixture reachable through the real pipeline.
-        fn container_width(mode: super::LengthMode<'_>, at_x: f32) -> String {
-            let data: HashMap<String, super::JsonValue> = HashMap::new();
-            let settings = no_settings();
-            let datetime = no_datetime();
-            let env = super::RenderEnv {
-                settings: &settings,
-                datetime: &datetime,
-            };
-            let images = RefCell::new(super::ImageCollector::default());
-            let ctx =
-                super::RenderContext::new((25.0, 12.0), "mm", &data, None, &env, &images, mode);
-            ctx.render_items(&[LayoutItem::Container {
-                placement: Placement::sized(
-                    Position([at_x, 0.0]),
-                    Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::fixed(12.0),
-                    ]),
-                ),
-                when: None,
-                frame: None,
-                padding: crate::models::Padding::ZERO,
-                items: vec![LayoutItem::Line {
-                    at: Position([0.0, 6.0]),
-                    to: Position([20.0, 6.0]),
-                    thickness: 0.2,
+        fn container_width(at_x: f32) -> String {
+            render_test_items(
+                &[LayoutItem::Container {
+                    placement: Placement::sized(
+                        Position([at_x, 0.0]),
+                        Size([SizeValue::fill(), SizeValue::fixed(12.0)]),
+                    ),
                     when: None,
+                    frame: None,
+                    padding: crate::models::Padding::ZERO,
+                    items: vec![LayoutItem::Line {
+                        at: Position([0.0, 6.0]),
+                        to: Position([20.0, 6.0]),
+                        thickness: 0.2,
+                        when: None,
+                    }],
                 }],
-            }])
+                (25.0, 12.0),
+            )
             .expect("render")
         }
 
-        let cursor = std::cell::Cell::new(0usize);
-        let empty: Vec<super::MeasuredText> = Vec::new();
-        let dynamic = container_width(
-            super::LengthMode::Dynamic(super::AutoLength {
-                texts: &empty,
-                cursor: &cursor,
-            }),
-            5.0,
-        );
+        let dynamic = container_width(5.0);
         assert!(
             dynamic.contains("width: 20mm"),
             "a dynamic label with no measured text must still size the container to the remaining \
              width, got: {dynamic}"
         );
 
-        let fixed = container_width(super::LengthMode::Fixed, 0.0);
+        let fixed = container_width(0.0);
         assert!(
             fixed.contains("width: 25mm"),
             "on a fixed label an auto container fills the frame, got: {fixed}"
@@ -5876,34 +5374,15 @@ layout:
     /// wide as the inset or the endpoint has nowhere to sit. Here the wider endpoint is 5mm in.
     #[test]
     fn an_edge_relative_line_endpoint_contributes_its_inset() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
         let item = LayoutItem::Line {
             at: Position([-5.0, 6.0]),
             to: Position([-3.0, 6.0]),
             thickness: 0.2,
             when: None,
         };
-        let mut measured = Vec::new();
-        let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
+        let (extent, text_count) = measured_extent_of(item, 80.0);
         assert_eq!(extent, 5.0);
-        assert!(measured.is_empty());
+        assert_eq!(text_count, 0);
     }
 
     /// A right-anchored item cannot define the width it is anchored to, but the label still has to
@@ -5911,24 +5390,6 @@ layout:
     /// contribution.
     #[test]
     fn an_edge_relative_at_x_contributes_its_inset() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
         let item = LayoutItem::Text {
             value: "x".to_string(),
             placement: Placement::sized(
@@ -5939,43 +5400,27 @@ layout:
             font_weight: None,
             multiline: false,
             alignment: crate::models::Alignment::default(),
+            overflow: Overflow::Ellipsis,
             when: None,
         };
-        let mut measured = Vec::new();
-        let extent = ctx.measure(&[item], 80.0, &mut measured).expect("measure");
+        let (extent, text_count) = measured_extent_of(item, 80.0);
         assert_eq!(extent, 20.0);
-        assert!(measured.is_empty());
+        assert_eq!(text_count, 1);
     }
 
     /// The divider spans to the frame's right edge, not back to x=0.
     #[test]
     fn an_edge_relative_line_renders_to_the_right_edge() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (40.0, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let source = ctx
-            .render_items(&[LayoutItem::Line {
+        let source = render_test_items(
+            &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([-0.0, 6.0]),
                 thickness: 0.2,
                 when: None,
-            }])
-            .expect("render");
+            }],
+            (40.0, 12.0),
+        )
+        .expect("render");
         assert!(
             source.contains("end: (40mm, 0mm)"),
             "expected a 40mm-long line, got: {source}"
@@ -6003,15 +5448,13 @@ layout:
                     value: "hi".to_string(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
-                        Size([
-                            SizeValue::Auto(crate::models::AutoSize::Auto),
-                            SizeValue::fixed(6.0),
-                        ]),
+                        Size([SizeValue::content(), SizeValue::fixed(6.0)]),
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
                     multiline: false,
                     alignment: crate::models::Alignment::default(),
+                    overflow: Overflow::Ellipsis,
                     when: None,
                 },
                 LayoutItem::Line {
@@ -6050,32 +5493,16 @@ layout:
     /// one sizes the label to its own inset), so it is exercised here at the context level.
     #[test]
     fn a_line_endpoint_outside_the_frame_errors_at_render() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (10.0, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let err = ctx
-            .render_items(&[LayoutItem::Line {
+        let err = render_test_items(
+            &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
                 thickness: 0.2,
                 when: None,
-            }])
-            .expect_err("a 30mm endpoint on a 10mm frame must not render");
+            }],
+            (10.0, 12.0),
+        )
+        .expect_err("a 30mm endpoint on a 10mm frame must not render");
         // Not `coord_out_of_frame`: this is a Line, so it trips the endpoint check. The prose
         // assertion this replaces could not tell the two apart, which is the point of #151.
         assert_eq!(
@@ -6159,7 +5586,7 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "{v}".to_string(),
                 placement: Placement {
-                    at: Position([12.0, 0.0]),
+                    at: Position([0.0, 0.0]),
                     extent: crate::models::Extent::To(Position([-0.0, 12.0])),
                     max_w: None,
                     max_h: None,
@@ -6169,6 +5596,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -6199,12 +5627,21 @@ layout:
             format: TemplateFormat::Single {
                 width: DynamicDimension::Dynamic {
                     min: Some(DynamicValue::Literal(10.0)),
-                    max: Some(DynamicValue::Literal(100.0)),
+                    max: Some(DynamicValue::Ref("target_width".to_string())),
                 },
                 height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: BTreeMap::from([(
+                "target_width".to_string(),
+                ParamSpec {
+                    param_type: ParamType::Length,
+                    description: None,
+                    default: Some(crate::models::ParamValue::Float(100.0)),
+                    min: Some(10.0),
+                    max: Some(100.0),
+                },
+            )]),
             layout: Layout::Items(vec![LayoutItem::Qr {
                 value: "payload".to_string(),
                 placement: Placement {
@@ -6214,12 +5651,16 @@ layout:
                     max_h: None,
                     rotate: None,
                 },
-                params: None,
+                params: Some(crate::models::QrParams {
+                    error_correction: None,
+                    module_size: Some(0.5),
+                    quiet_zone: None,
+                }),
                 when: None,
             }]),
             version: None,
         };
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let mut data: HashMap<String, super::JsonValue> = HashMap::new();
 
         let flush_left = qr_at(0.0);
         assert_eq!(flush_left.validate(), Ok(()));
@@ -6228,8 +5669,9 @@ layout:
 
         let template = qr_at(30.0);
         assert_eq!(template.validate(), Ok(()), "valid against the 100mm max");
+        data.insert("target_width".to_string(), json!(20.0));
         let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
-            .expect_err("a 30mm anchor on a 10mm label leaves no box");
+            .expect_err("a 30mm anchor on a 20mm label leaves no box");
         assert_eq!(
             err.reason(),
             Some("edge_rect_inverted"),
@@ -6241,26 +5683,8 @@ layout:
     /// The box spans from x=0 to the frame's right edge, so a centered line centers on the label.
     #[test]
     fn a_to_box_renders_at_the_full_frame_width() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (40.0, 12.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        let source = ctx
-            .render_items(&[LayoutItem::Text {
+        let source = render_test_items(
+            &[LayoutItem::Text {
                 value: "x".to_string(),
                 placement: Placement {
                     at: Position([0.0, 0.0]),
@@ -6273,70 +5697,16 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
                 when: None,
-            }])
-            .expect("render");
+            }],
+            (40.0, 12.0),
+        )
+        .expect("render");
         assert!(
             source.contains("width: 40mm"),
             "expected a full-width box, got: {source}"
         );
-    }
-
-    /// #150: the measure pass and the render pass must resolve the *same* vertical slot for the same
-    /// placement. `measure_box_height` ignored `max_h` while `render_text_item` honored it, so the
-    /// fitter chose a font for a taller box than the text landed in.
-    #[test]
-    fn measure_and_render_resolve_the_same_slot_height() {
-        use std::cell::RefCell;
-        let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let settings = no_settings();
-        let datetime = no_datetime();
-        let env = super::RenderEnv {
-            settings: &settings,
-            datetime: &datetime,
-        };
-        let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new(
-            (80.0, 40.0),
-            "mm",
-            &data,
-            None,
-            &env,
-            &images,
-            super::LengthMode::Fixed,
-        );
-        // An auto height with a max_h well below the frame remainder above at.y.
-        let placement = Placement {
-            at: Position([0.0, 0.0]),
-            extent: crate::models::Extent::Size(Size([
-                SizeValue::fixed(20.0),
-                SizeValue::Auto(crate::models::AutoSize::Auto),
-            ])),
-            max_w: None,
-            max_h: Some(6.0),
-            rotate: None,
-        };
-        let measured = ctx
-            .measure_box_height(&placement, 0.0)
-            .expect("measure height");
-        // What `render_text_item` resolves for the same slot.
-        let rendered = ctx
-            .resolve_size_value(
-                &Size([
-                    SizeValue::fixed(20.0),
-                    SizeValue::Auto(crate::models::AutoSize::Auto),
-                ])
-                .0[1],
-                placement.max_h,
-                Some(40.0 - 0.0),
-                "height",
-            )
-            .expect("render height");
-        assert_eq!(
-            measured, rendered,
-            "measure resolved {measured} and render resolved {rendered} for the same slot"
-        );
-        assert_eq!(measured, 6.0, "max_h below the frame remainder must bind");
     }
 
     fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
@@ -6375,7 +5745,7 @@ layout:
   - type: text
     value: "{message}"
     at: [0, 0]
-    size: [auto, 18]
+    size: [content, 18]
     font_size: { min: 8, max: 24 }
 "#;
         let template = parse_and_validate(yaml).unwrap();
@@ -6390,7 +5760,12 @@ layout:
             render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap();
         let img = image::load_from_memory(&png).unwrap();
         let expected_px = (90.0_f32 / 25.4 * template.dpi as f32).round() as u32;
-        assert_eq!(img.width(), expected_px);
+        let min_px = (25.0_f32 / 25.4 * template.dpi as f32).round() as u32;
+        assert!(
+            img.width() <= expected_px && img.width() > min_px,
+            "tape width {}px must be in (min: {min_px}, max: {expected_px})",
+            img.width()
+        );
     }
 
     #[test]
@@ -6452,13 +5827,13 @@ layout:
   - type: text
     value: "{h_text}"
     at: [0, 0]
-    size: [auto, 18]
+    size: [content, 18]
     font_size: { min: 8, max: 24 }
     when: { orientation: h }
   - type: text
     value: "{v_text}"
     at: [0, 0]
-    size: [auto, 18]
+    size: [content, 18]
     font_size: { min: 8, max: 24 }
     when: { orientation: v }
 "#;
@@ -6522,7 +5897,7 @@ layout:
   - type: text
     value: "Test"
     at: [0, 0]
-    size: [auto, 18]
+    size: [content, 18]
     font_size: { min: 8, max: 24 }
 "#;
         let template = parse_and_validate(yaml).unwrap();
@@ -6552,13 +5927,13 @@ format:
 layout:
   - type: container
     at: [0, 0]
-    size: [auto, 18]
+    size: [fill, 18]
     padding: [0, 10, 0, 10]
     items:
       - type: text
         value: "Active text"
         at: [0, 0]
-        size: [auto, 18]
+        size: [content, 18]
         font_size: { min: 8, max: 24 }
 "#;
         let template = parse_and_validate(yaml).unwrap();
@@ -6573,11 +5948,7 @@ layout:
         );
         let err = res.unwrap_err();
         assert_eq!(err.code(), "UnsupportedLayoutItem");
-        assert_eq!(err.reason(), Some("container_padding_no_room"));
-        assert_eq!(
-            err.message_text(),
-            "container padding leaves no room for content"
-        );
+        assert_eq!(err.reason(), Some("text_does_not_fit"));
     }
 
     #[test]
@@ -6602,13 +5973,13 @@ format:
 layout:
   - type: container
     at: [0, 0]
-    size: [auto, 18]
+    size: [fill, 18]
     padding: [0, 10, 0, 10]
     items:
       - type: text
         value: "Conditional text"
         at: [0, 0]
-        size: [auto, 18]
+        size: [content, 18]
         font_size: { min: 8, max: 24 }
         when: { show_extra: "true" }
 "#;
@@ -6788,7 +6159,7 @@ layout:
   - type: text
     value: "Date: {printed_on:short_date}"
     at: [0, 0]
-    size: [auto, 20]
+    size: [content, 20]
     font_size: { min: 8, max: 14 }
 "#;
         let template = parse_and_validate(yaml).unwrap();
@@ -7012,17 +6383,9 @@ layout:
                 settings: &empty_settings,
                 datetime: &resolver,
             };
-            super::RenderContext::new(
-                (50.0, 20.0),
-                "mm",
-                &resolved.data,
-                None,
-                &env,
-                &images,
-                super::LengthMode::Fixed,
-            )
-            .with_instants(&resolved.instants)
-            .is_item_active(&items[0])
+            super::RenderContext::new("mm", 180, &resolved.data, None, &env, &images)
+                .with_instants(&resolved.instants)
+                .is_item_active(&items[0])
         };
 
         let mut matching = HashMap::new();
@@ -7044,5 +6407,330 @@ layout:
                 .data["printed_on"],
             json!("2026-08-19")
         );
+    }
+
+    #[test]
+    fn rotated_container_measurement_applies_swapped_padding() {
+        let yaml = r#"
+name: Rotated Padding
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 40]
+    rotate: 90
+    padding: [5, 10, 5, 10]
+    items:
+      - type: text
+        value: "Long text that must fit within inner width"
+        at: [0, 0]
+        size: [fill, fill]
+        font_size: { min: 8, max: 24 }
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let png = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap();
+        assert!(!png.is_empty());
+    }
+
+    #[test]
+    fn text_with_shrinking_to_laid_out_against_resolved_box() {
+        let yaml = r#"
+name: Shrinking To Overflow
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 20 }
+layout:
+  - type: text
+    value: "A long text that cannot fit within 10mm"
+    at: [-20, 0]
+    to: [90, 20]
+    overflow: fail
+    font_size: 14
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let err = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("text_does_not_fit"));
+    }
+
+    #[test]
+    fn parameter_resolved_authored_size_zero_errors_with_size_invalid() {
+        let yaml = r#"
+name: Zero Size
+unit: mm
+dpi: 200
+params:
+  w:
+    type: length
+    default: 10
+format: { type: single, width: 100, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: ["{w}", 20]
+    items: []
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("w".to_string(), json!(0.0));
+        let err =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        assert_eq!(err.reason(), Some("size_invalid"));
+    }
+
+    /// A request that collapses an authored width to zero is refused as an invalid size wherever
+    /// the item is a `text`, too. The layout pass runs before placement, so without the
+    /// intrinsic-independent checks holding first this reported what the text then failed to do
+    /// inside the zero box instead of the box being wrong.
+    #[test]
+    fn parameter_resolved_authored_size_zero_on_a_text_errors_with_size_invalid() {
+        let yaml = r#"
+name: Zero Size Text
+unit: mm
+dpi: 200
+params:
+  w:
+    type: length
+    default: 10
+format: { type: single, width: 100, height: 20 }
+layout:
+  - type: text
+    value: hello
+    at: [0, 0]
+    size: ["{w}", 10]
+    font_size: 6
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("w".to_string(), json!(0.0));
+        let err =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        assert_eq!(err.reason(), Some("size_invalid"));
+    }
+
+    #[test]
+    fn runtime_inverted_to_returns_edge_rect_inverted() {
+        let yaml = r#"
+name: Inverted To
+unit: mm
+dpi: 200
+params:
+  target_width:
+    type: length
+    default: 100
+format:
+  type: single
+  width:
+    min: 20
+    max: "{target_width}"
+  height: 20
+layout:
+  - type: container
+    at: [30, 0]
+    to: [-0.0, 20]
+    items: []
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("target_width".to_string(), json!(20.0));
+        let err =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        assert_eq!(err.reason(), Some("edge_rect_inverted"));
+    }
+
+    /// A `to` that inverts only for this request is inverted whatever sits inside the box. The
+    /// negative box must never reach the content, or a `text` reports what it then fails to do in
+    /// it instead of the box being wrong: `edge_rect_inverted` takes priority over
+    /// `text_does_not_fit`.
+    #[test]
+    fn runtime_inverted_to_on_a_text_returns_edge_rect_inverted() {
+        let yaml = r#"
+name: Inverted To Text
+unit: mm
+dpi: 200
+params:
+  target_width:
+    type: length
+    default: 100
+format:
+  type: single
+  width:
+    min: 20
+    max: "{target_width}"
+  height: 20
+layout:
+  - type: text
+    value: hello
+    at: [30, 0]
+    to: [-0.0, 20]
+    font_size: 6
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("target_width".to_string(), json!(20.0));
+        let err =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        assert_eq!(err.reason(), Some("edge_rect_inverted"));
+    }
+
+    #[test]
+    fn rotated_container_frame_rect_outline_is_not_rotated() {
+        let source = render_test_items(
+            &[LayoutItem::Container {
+                placement: Placement {
+                    at: Position([0.0, 0.0]),
+                    extent: Extent::Size(Size([SizeValue::fixed(30.0), SizeValue::fixed(10.0)])),
+                    max_w: None,
+                    max_h: None,
+                    rotate: Some(90.0),
+                },
+                frame: Some(crate::models::Frame {
+                    thickness: 1.0,
+                    rounded: false,
+                }),
+                padding: crate::models::Padding::ZERO,
+                items: vec![],
+                when: None,
+            }],
+            (100.0, 100.0),
+        )
+        .expect("render");
+        assert!(source.contains("#rect(width: 30mm, height: 10mm, stroke: 1mm, radius: 0mm)"));
+        assert!(!source.contains("#rotate(90deg, origin: center)[#rect(width: 30mm"));
+    }
+
+    #[test]
+    fn raster_image_dimensions_rejects_mismatched_mime_format() {
+        let jpeg_bytes = [
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01,
+            0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06,
+            0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d,
+            0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12, 0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d,
+            0x1a, 0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28,
+            0x37, 0x29, 0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32,
+            0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01,
+            0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xda, 0x00, 0x08, 0x01,
+            0x01, 0x00, 0x00, 0x3f, 0x00, 0xbf, 0x00, 0xff, 0xd9,
+        ];
+        let res = super::helpers::raster_image_dimensions(
+            &jpeg_bytes,
+            super::helpers::ImageFmt::Png,
+            200,
+            "mm",
+            "layout[0]",
+        );
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().reason(), Some("intrinsic_size_undefined"));
+    }
+
+    #[test]
+    fn shrinking_to_extent_is_cap_inert() {
+        let yaml = r#"
+name: Shrinking To Cap Inert
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 20 }
+layout:
+  - type: container
+    at: [-20, 0]
+    to: [90, 20]
+    max_w: 5
+    items: []
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let source = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        );
+        assert!(source.is_ok());
+    }
+
+    #[test]
+    fn capped_content_container_bounds_child_frame() {
+        let yaml = r#"
+name: Capped Content Container
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [content, 20]
+    max_w: 20
+    items:
+      - type: text
+        value: "A long message that would wrap beyond 20mm"
+        at: [0, 0]
+        size: [fill, 20]
+        overflow: fail
+        font_size: 14
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let err = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("text_does_not_fit"));
+    }
+
+    #[test]
+    fn empty_text_with_overflow_fail_in_zero_box_renders_empty() {
+        let yaml = r#"
+name: Empty Text Zero Box
+unit: mm
+dpi: 200
+params:
+  msg:
+    type: string
+format: { type: single, width: 100, height: 20 }
+layout:
+  - type: text
+    value: "{msg}"
+    at: [0, 0]
+    size: [content, content]
+    overflow: fail
+    font_size: 12
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("msg".to_string(), serde_json::json!(""));
+        let png =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap();
+        assert!(!png.is_empty());
+    }
+
+    #[test]
+    fn svg_absolute_units_pc_and_q_parse_correctly() {
+        let svg_pc = r#"<svg xmlns="http://www.w3.org/2000/svg" width="6pc" height="12pc" viewBox="0 0 100 200"></svg>"#;
+        let w = super::helpers::svg_axis_intrinsic(svg_pc, 0, "mm", 200, "layout[0]").unwrap();
+        assert!((w - 25.4).abs() < 1e-3);
+
+        let svg_q = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100q" height="200q" viewBox="0 0 100 200"></svg>"#;
+        let w_q = super::helpers::svg_axis_intrinsic(svg_q, 0, "mm", 200, "layout[0]").unwrap();
+        assert!((w_q - 25.0).abs() < 1e-3);
     }
 }

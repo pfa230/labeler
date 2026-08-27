@@ -16,13 +16,13 @@ format:
 layout:
   - type: container
     at: [0.0, 0.0]
-    size: [auto, 7.1]
+    size: [fill, 7.1]
     padding: 0.7
     items:
       - type: text
         value: "{message}"
         at: [0.0, 0.0]
-        size: [auto, 5.7]
+        size: [fill, 5.7]
         font_size:
           min: 5.0
           max: 12.0
