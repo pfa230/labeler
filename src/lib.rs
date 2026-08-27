@@ -9,6 +9,7 @@ pub mod egress;
 pub mod errors;
 pub mod extract;
 pub mod fs_safe;
+pub mod interpolation;
 pub mod middleware;
 pub mod models;
 pub mod openapi;
@@ -2189,6 +2190,42 @@ layout:
         assert_eq!(
             body["error"]["details"]["reason"],
             "template_validation_failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn template_put_rejects_invalid_token_with_validation_failed() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let yaml = r#"
+name: Bad Token
+unit: mm
+dpi: 200
+format:
+  type: single
+  height: 12
+  width: 50
+layout:
+  - type: text
+    value: "{datetime.long_date}"
+    at: [0, 0]
+    size: [auto, 10]
+    font_size: 10
+"#;
+        let response = app
+            .oneshot(yaml_post("/api/templates/bad_tok", "PUT", yaml.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
+        assert!(
+            !dir.join("bad_tok.yaml").exists(),
+            "nothing should be stored"
         );
     }
 

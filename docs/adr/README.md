@@ -38,7 +38,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0025](0025-optional-no-auth-mode.md) | Optional no-auth mode for homelab | Accepted |
 | [0026](0026-auto-length-dynamic-width.md) | Auto-length dynamic-width single labels (continuous tape) | Accepted |
 | [0027](0027-multi-arch-image-publishing.md) | Multi-arch image publishing (amd64 + arm64) | Accepted |
-| [0028](0028-datetime-interpolation-token.md) | Current-time interpolation token ({datetime.*}) | Accepted |
+| [0028](0028-datetime-interpolation-token.md) | Current-time interpolation token ({datetime.*}) | Accepted (syntax superseded in part by [0079](0079-token-grammar.md)) |
 | [0029](0029-runtime-base-debian-slim.md) | Runtime base image: debian-slim, not distroless | Accepted |
 | [0030](0030-multiline-auto-length-tape.md) | Multi-line auto-length tape labels | Accepted |
 | [0031](0031-inbound-print-webhook.md) | Inbound print webhook (POST /print) | Accepted |
@@ -77,13 +77,14 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0064](0064-svar-grid-for-the-connector-browser.md) | The connector browse table uses SVAR DataGrid; the ordering rules stay ours | Accepted |
 | [0065](0065-template-writes-verify-the-id-they-wrote.md) | A template write verifies the id it wrote, and a contested id refuses the delete | Accepted |
 | [0066](0066-format-badge-carries-icon-colour-and-count.md) | The format badge carries an icon, its own colour and a position count, and is delineated by a border | Accepted (the --accent-deep token decision superseded by [0071]) |
-| [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted |
+| [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted (token list and formatting syntax superseded by [0079](0079-token-grammar.md)) |
 | [0069](0069-connect-opens-on-a-default-connection.md) | Connect opens on a default connection named by an instance-wide setting | Accepted |
 | [0071](0071-one-accent-colour-with-a-defined-ink.md) | One accent colour, dark enough to carry text, with a defined ink on its fill | Accepted |
 | [0072](0072-two-filter-scopes-named-not-merged.md) | Two filter scopes named, not merged | Accepted |
 | [0073](0073-group-is-a-directory-id-is-the-filename.md) | Group is a directory; ID is the filename | Accepted |
 | [0075](0075-request-rejections-use-the-error-envelope.md) | Request rejections use the standard JSON error envelope | Accepted |
 | [0076](0076-the-filesystem-answers-the-case-question.md) | The filesystem answers the case question | Accepted |
+| [0079](0079-token-grammar.md) | Token grammar: namespaces, system values, and format syntax | Accepted |
 
 ## Adding an ADR
 

@@ -241,10 +241,16 @@ pub fn validate_transforms(
                 ));
             }
 
-            if name == "datetime" || name.starts_with("datetime.") || name.starts_with("vars.") {
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 return Err((
                     idx,
-                    format!("derived field '{name}' uses a reserved template namespace"),
+                    format!(
+                        "derived field '{name}' contains invalid characters; must match ^[a-zA-Z0-9_-]+$"
+                    ),
                 ));
             }
 
@@ -1073,21 +1079,16 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_reserved_namespaces() {
+    fn validate_accepts_bare_names_including_unreserved_words() {
         let descs = sample_descriptors();
-        let reserved = ["datetime", "datetime.short", "vars.site"];
-        for name in reserved {
+        let valid_names = ["datetime", "vars", "sys", "my_field"];
+        for name in valid_names {
             let rules = vec![FieldTransform {
                 resource: "entities".into(),
                 source: "location".into(),
                 pattern: format!(r"^(?<{name}>.*)$"),
             }];
-            let err = validate_transforms(descs, &rules).unwrap_err();
-            assert_eq!(err.0, 0);
-            assert!(
-                err.1.contains("reserved template namespace"),
-                "name: {name}"
-            );
+            assert!(validate_transforms(descs, &rules).is_ok(), "name: {name}");
         }
     }
 

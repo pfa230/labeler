@@ -1,6 +1,6 @@
 # 28. Current-time interpolation token ({datetime.*})
 
-**Status:** Accepted. Extends [ADR-0010](0010-variable-interpolation-layer.md) (does not supersede).
+**Status:** Accepted (token syntax and resolution precedence superseded by [ADR-0079](0079-token-grammar.md)). Extends [ADR-0010](0010-variable-interpolation-layer.md).
 
 ## Context
 

@@ -74,10 +74,13 @@ A transform SHALL be rejected when any of the following holds:
 - a capture-group name equals a field key the connector already declares for that resource;
 - a capture-group name is repeated within the same rule, or is produced by another rule on the same
   resource;
-- a capture-group name is `datetime`, or begins with `datetime.` or `vars.`. Those tokens are
-  resolved by the renderer before request data is consulted and are excluded from a template's data
-  fields, so a derived field carrying such a name could be advertised by the schema and mapped in the
-  UI and still never reach a label.
+- a capture-group name is not a legal bare interpolation token name under the `interpolation-tokens`
+  capability, which is to say it does not match `^[a-zA-Z0-9_-]+$`. A derived field is reachable from
+  a template only as a bare `{name}` token, so a name carrying a dot or a colon could be advertised by
+  the schema and mapped in the UI and still never reach a label. This replaces the earlier rejection
+  of `datetime` and of names beginning `datetime.` or `vars.`: no word is reserved any more, so
+  `datetime` is an ordinary derived name, while `datetime.short_date` and `vars.site` are refused for
+  carrying a separator rather than for the word they start with.
 
 A connector MAY declare that a resource carries text fields under a key prefix whose names it
 discovers from the upstream at runtime; Homebox's per-item custom fields, keyed `custom:<name>`, are
@@ -126,8 +129,14 @@ three faults it names are unchanged.
 
 #### Scenario: A derived name in a reserved namespace is refused
 
-- **WHEN** a transform derives a group named `datetime`, `datetime.short_date`, or `vars.site`
-- **THEN** the save is refused, because such a token never resolves from request data
+- **WHEN** a transform derives a group named `datetime.short_date`, `vars.site`, or `printed_on:long_date`
+- **THEN** the save is refused, because the name carries a token separator, so no bare token can name
+  it and it could never reach a label
+
+#### Scenario: A derived name that was once a reserved word is accepted
+
+- **WHEN** a transform derives a group named `datetime`
+- **THEN** the save succeeds, because the name is a legal bare token name and no word is reserved
 
 #### Scenario: A source under a connector's dynamic prefix is accepted unproven
 

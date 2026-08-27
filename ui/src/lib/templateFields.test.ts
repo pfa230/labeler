@@ -57,9 +57,9 @@ describe("multilineFields / singleLineTextFields", () => {
     expect(singleLineTextFields(layout, {})).toEqual(["title"]);
   });
 
-  it("excludes vars and datetime tokens from both walks", () => {
+  it("excludes vars and sys tokens from both walks", () => {
     const layout: LayoutItem[] = [
-      { type: "text", value: "{a} {vars.b} {datetime} {datetime.short}", multiline: true },
+      { type: "text", value: "{a} {vars.b} {sys.now} {sys.now:short}", multiline: true },
       { type: "text", value: "{c} {vars.d}" },
     ];
     expect(multilineFields(layout, {})).toEqual(["a"]);
@@ -97,6 +97,26 @@ describe("multilineFields / singleLineTextFields", () => {
     expect(multilineFields(layout, {})).toEqual(["shared"]);
     expect(singleLineTextFields(layout, {})).toEqual(["shared"]);
   });
+
+  it("retains declared non-datetime parameters in multilineFields and singleLineTextFields", () => {
+    const layout: LayoutItem[] = [
+      {
+        type: "container",
+        option: { mode: "long" },
+        items: [{ type: "text", value: "{notes}", multiline: true }],
+      },
+      {
+        type: "container",
+        option: { mode: "short" },
+        items: [{ type: "text", value: "{notes}" }],
+      },
+    ];
+    const params = {
+      notes: { type: "string" as const },
+    };
+    expect(multilineFields(layout, {}, params)).toEqual(["notes"]);
+    expect(singleLineTextFields(layout, {}, params)).toEqual(["notes"]);
+  });
 });
 
 describe("referencedVariables", () => {
@@ -129,24 +149,26 @@ describe("tokens robustness", () => {
   });
 });
 
-describe("referencedFields datetime exclusion", () => {
-  it("excludes datetime and datetime.* tokens from referenced fields", () => {
+describe("referencedFields token grammar", () => {
+  it("treats bare datetime as data field, excludes sys.now and sys.now:<fmt>", () => {
     const items: LayoutItem[] = [
-      { type: "text", value: "{datetime.short_date} {datetime}" },
+      { type: "text", value: "{sys.now:short_date} {sys.now} {datetime} {title:short_date}" },
       { type: "text", value: "{datetimefoo}" },
       { type: "text", value: "{product_id}" },
     ];
     const f = referencedFields(items, {});
-    expect(f).not.toContain("datetime");
-    expect(f).not.toContain("datetime.short_date");
-    expect(f).not.toContain("short_date");
-    expect(f).toContain("datetimefoo"); // only exact "datetime" and the "datetime." prefix are excluded
+    expect(f).toContain("datetime");
+    expect(f).toContain("title");
+    expect(f).toContain("datetimefoo");
     expect(f).toContain("product_id");
+    expect(f).not.toContain("sys.now");
+    expect(f).not.toContain("sys.now:short_date");
+    expect(f).not.toContain("short_date");
   });
 
-  it("excludes declared datetime parameter namespaces ({p} and {p.*})", () => {
+  it("excludes declared parameter namespaces ({p} and {p:<fmt>})", () => {
     const items: LayoutItem[] = [
-      { type: "text", value: "{printed_on} {printed_on.short_date} {title}" },
+      { type: "text", value: "{printed_on} {printed_on:short_date} {title}" },
     ];
     const params = {
       printed_on: { type: "datetime" as const },
@@ -154,7 +176,7 @@ describe("referencedFields datetime exclusion", () => {
     const f = referencedFields(items, {}, params);
     expect(f).toEqual(["title"]);
     expect(f).not.toContain("printed_on");
-    expect(f).not.toContain("printed_on.short_date");
+    expect(f).not.toContain("printed_on:short_date");
   });
 });
 
