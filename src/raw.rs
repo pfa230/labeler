@@ -134,16 +134,9 @@ pub enum RawTemplateFormat {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TemplateDefinitionRaw {
-    pub id: String,
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
-    // Presence-preserving, because `Option<T>` maps an explicit null to `None` for any `T`: without
-    // `deserialize_present`, `group:` with nothing after it would load as ungrouped instead of
-    // failing. `default` supplies `None` for an absent key; anything written, null included, arrives
-    // as `Some` and `convert.rs` decides whether it is a string.
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub group: Option<serde_yaml_ng::Value>,
     pub unit: String,
     pub dpi: u32,
     pub format: RawTemplateFormat,

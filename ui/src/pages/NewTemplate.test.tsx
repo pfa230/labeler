@@ -21,8 +21,12 @@ function renderPage() {
   );
 }
 
-function typeAndCreate(yaml: string) {
-  fireEvent.change(screen.getByRole("textbox"), { target: { value: yaml } });
+function typeAndCreate(id: string, yaml: string, group?: string) {
+  fireEvent.change(screen.getByLabelText(/template id/i), { target: { value: id } });
+  if (group) {
+    fireEvent.change(screen.getByLabelText(/template group/i), { target: { value: group } });
+  }
+  fireEvent.change(screen.getByLabelText(/template yaml/i), { target: { value: yaml } });
   fireEvent.click(screen.getByRole("button", { name: /create/i }));
 }
 
@@ -41,8 +45,25 @@ describe("New template", () => {
       ),
     );
     renderPage();
-    typeAndCreate("id: new-tpl");
+    typeAndCreate("new-tpl", "name: New Template\n");
     expect(await screen.findByText(/detail for/i)).toBeInTheDocument();
+  });
+
+  it("shows the error message inline on a 412 conflict", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({ error: { code: "PreconditionFailed", message: "already exists" } }),
+            { status: 412, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+    renderPage();
+    typeAndCreate("existing-tpl", "name: Existing\n");
+    const matches = await screen.findAllByText("A template with ID 'existing-tpl' already exists");
+    expect(matches.some((el) => el.tagName === "P")).toBe(true);
   });
 
   it("shows the error message inline on a 422", async () => {
@@ -51,14 +72,14 @@ describe("New template", () => {
       vi.fn(
         async () =>
           new Response(
-            JSON.stringify({ error: { code: "TemplateInvalid", message: "missing field: id" } }),
+            JSON.stringify({ error: { code: "TemplateInvalid", message: "invalid unit: foo" } }),
             { status: 422, headers: { "content-type": "application/json" } },
           ),
       ),
     );
     renderPage();
-    typeAndCreate("bad: yaml");
-    const matches = await screen.findAllByText("missing field: id");
+    typeAndCreate("bad-tpl", "unit: foo\n");
+    const matches = await screen.findAllByText("invalid unit: foo");
     expect(matches.some((el) => el.tagName === "P")).toBe(true);
   });
 });

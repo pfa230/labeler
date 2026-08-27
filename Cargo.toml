@@ -46,6 +46,7 @@ url = "2"
 hmac = "0.12"
 urlencoding = "2.1"
 regex = "1"
+rustix = { version = "1", features = ["fs"] }
 
 # 500 crates (Typst pulls a large tree) with full DWARF debug info fills tens of GB across dev and
 # release builds. line-tables-only keeps file/line in backtraces — all this repo's panics and test

@@ -199,6 +199,11 @@ with `-v /your/host/path:/config`. The entrypoint chowns `/config` to `PUID:PGID
 set `PUID`/`PGID` to the owner of your bind-mounted host dir (usually your own `id -u`/`id -g`) and
 ownership lines up automatically.
 
+## Upgrades and downgrades
+
+- **Upgrade:** Newer versions automatically discover templates in subdirectories and derive template IDs from filename stems.
+- **Downgrade:** Downgrading back to a version where `id:` was read from YAML file contents will fail to load templates authored or saved without `id:`, quarantining them on load as missing the required `id` field. In addition, older versions will not discover templates placed in nested subdirectories.
+
 ## Debugging
 
 The runtime image is `debian:trixie-slim`, which has a normal shell:

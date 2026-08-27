@@ -5,21 +5,18 @@ use std::{
 };
 use thiserror::Error;
 
-use crate::errors::{AppError, TemplateError};
+use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, Layout, LayoutItem, Options,
     ParamSpec, ParamType, Point, Position, Size, SizeValue, TemplateDetail, TemplateFormat,
     TemplateSummary,
 };
 use crate::parse::parse_template;
-use crate::reason::Reason;
 
 #[derive(Debug, Clone)]
-pub struct TemplateDefinition {
-    pub id: String,
+pub struct TemplateContent {
     pub name: String,
     pub description: String,
-    pub group: Option<String>,
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
@@ -28,7 +25,28 @@ pub struct TemplateDefinition {
     pub version: Option<String>,
 }
 
-impl TemplateDefinition {
+#[derive(Debug, Clone)]
+pub struct TemplateDefinition {
+    pub id: String,
+    pub group: Option<String>,
+    pub content: TemplateContent,
+}
+
+impl std::ops::Deref for TemplateDefinition {
+    type Target = TemplateContent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.content
+    }
+}
+
+impl std::ops::DerefMut for TemplateDefinition {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.content
+    }
+}
+
+impl TemplateContent {
     pub fn options(&self) -> Option<Options> {
         let mut map = std::collections::BTreeMap::new();
         for (name, spec) in &self.params {
@@ -47,8 +65,8 @@ impl TemplateDefinition {
 /// A template file that could not be parsed, failed validation, or lost an id collision.
 #[derive(Debug, Clone)]
 pub struct BrokenTemplate {
-    /// Basename of the file (e.g. `foo.yaml`).
-    pub filename: String,
+    /// Path of the file relative to the templates directory (e.g. `foo.yaml` or `Shipping/pallet.yaml`).
+    pub path: String,
     /// Human-readable description of what went wrong.
     pub error: String,
 }
@@ -57,9 +75,8 @@ pub struct BrokenTemplate {
 pub struct TemplateRegistry {
     templates: HashMap<String, TemplateDefinition>,
     hashes: HashMap<String, String>,
-    // The file each id was loaded from. A template's filename is only conventionally its id, so the
-    // file-backed endpoints (source/PUT/DELETE) cannot reconstruct this from the id alone (#140).
     paths: HashMap<String, PathBuf>,
+    rel_paths: HashMap<String, PathBuf>,
     /// Files refused by a parse, validation or duplicate-id fault; excluded from the valid set
     /// but not fatal.
     broken: Vec<BrokenTemplate>,
@@ -70,113 +87,341 @@ pub struct TemplateRegistry {
     duplicates: HashMap<String, Vec<PathBuf>>,
 }
 
-/// Every entry of `dir`, sorted. Loading in sorted order rather than `read_dir` order is what makes
-/// the winner of an id collision a property of the directory contents instead of a property of this
-/// filesystem's enumeration (#181). Every path shares the same parent, so ordering by path is
-/// ordering by filename.
-fn sorted_dir_paths(dir: &FsPath) -> Result<Vec<PathBuf>, TemplateRegistryError> {
-    let entries = std::fs::read_dir(dir).map_err(|source| TemplateRegistryError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let mut paths = Vec::new();
+pub fn validate_template_id_stem(stem: &str) -> bool {
+    !stem.is_empty()
+        && stem
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+struct DiscoveredFile {
+    rel_path_bytes: Vec<u8>,
+    rel_path: PathBuf,
+    abs_path: PathBuf,
+    is_utf8: bool,
+    dir_error: Option<String>,
+}
+
+fn collect_dir_entries(
+    root: &FsPath,
+    current_rel: &FsPath,
+    dir_error: Option<&str>,
+    out: &mut Vec<DiscoveredFile>,
+) -> Result<(), TemplateRegistryError> {
+    let current_abs = root.join(current_rel);
+    let entries = match std::fs::read_dir(&current_abs) {
+        Ok(e) => e,
+        Err(source) => {
+            return Err(TemplateRegistryError::Io {
+                path: current_abs,
+                source,
+            })
+        }
+    };
+
     for entry in entries {
-        let entry = entry.map_err(|source| TemplateRegistryError::Io {
-            path: dir.to_path_buf(),
-            source,
-        })?;
-        paths.push(entry.path());
+        let entry = match entry {
+            Ok(e) => e,
+            Err(source) => {
+                return Err(TemplateRegistryError::Io {
+                    path: current_abs,
+                    source,
+                })
+            }
+        };
+
+        let file_name = entry.file_name();
+        let name_bytes = file_name.as_encoded_bytes();
+        let abs_path = entry.path();
+
+        let meta = match std::fs::symlink_metadata(&abs_path) {
+            Ok(m) => m,
+            Err(source) => {
+                return Err(TemplateRegistryError::Io {
+                    path: abs_path,
+                    source,
+                })
+            }
+        };
+
+        let rel_path = if current_rel.as_os_str().is_empty() {
+            PathBuf::from(&file_name)
+        } else {
+            current_rel.join(&file_name)
+        };
+
+        if meta.is_dir() {
+            // Dot-directory skip outranks invalid-directory reporting at any depth
+            if name_bytes.starts_with(b".") {
+                continue;
+            }
+
+            let next_dir_error: Option<String> = if let Some(err) = dir_error {
+                Some(err.to_string())
+            } else if let Some(name_str) = file_name.to_str() {
+                match validate_group_segment(name_str) {
+                    Ok(()) => None,
+                    Err(err) => Some(format!(
+                        "directory '{}' is invalid: {err}",
+                        rel_path.display()
+                    )),
+                }
+            } else {
+                Some(format!(
+                    "directory '{}' name is not valid UTF-8",
+                    rel_path.to_string_lossy()
+                ))
+            };
+
+            collect_dir_entries(root, &rel_path, next_dir_error.as_deref(), out)?;
+        } else {
+            let is_utf8 = rel_path.to_str().is_some();
+            let is_yaml = if let Some(ext) = rel_path.extension().and_then(|e| e.to_str()) {
+                ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml")
+            } else {
+                false
+            };
+
+            let should_include = is_yaml
+                || (!is_utf8
+                    && (name_bytes.ends_with(b".yaml")
+                        || name_bytes.ends_with(b".YAML")
+                        || name_bytes.ends_with(b".yml")
+                        || name_bytes.ends_with(b".YML")));
+
+            if should_include {
+                let rel_path_bytes = rel_path.as_os_str().as_encoded_bytes().to_vec();
+                out.push(DiscoveredFile {
+                    rel_path_bytes,
+                    rel_path,
+                    abs_path,
+                    is_utf8,
+                    dir_error: dir_error.map(str::to_string),
+                });
+            }
+        }
     }
-    paths.sort();
-    Ok(paths)
+    Ok(())
+}
+
+fn collect_group_paths(
+    root: &FsPath,
+    current_rel: &FsPath,
+    out: &mut Vec<String>,
+) -> Result<(), TemplateRegistryError> {
+    let current_abs = root.join(current_rel);
+    let entries = match std::fs::read_dir(&current_abs) {
+        Ok(e) => e,
+        Err(source) => {
+            return Err(TemplateRegistryError::Io {
+                path: current_abs,
+                source,
+            })
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(source) => {
+                return Err(TemplateRegistryError::Io {
+                    path: current_abs,
+                    source,
+                })
+            }
+        };
+
+        let file_name = entry.file_name();
+        let name_bytes = file_name.as_encoded_bytes();
+        let abs_path = entry.path();
+
+        let meta = match std::fs::symlink_metadata(&abs_path) {
+            Ok(m) => m,
+            Err(source) => {
+                return Err(TemplateRegistryError::Io {
+                    path: abs_path,
+                    source,
+                })
+            }
+        };
+
+        if meta.is_dir() {
+            if name_bytes.starts_with(b".") {
+                continue;
+            }
+
+            let Some(name_str) = file_name.to_str() else {
+                continue;
+            };
+
+            if validate_group_segment(name_str).is_err() {
+                continue;
+            }
+
+            let rel_path = if current_rel.as_os_str().is_empty() {
+                PathBuf::from(name_str)
+            } else {
+                current_rel.join(name_str)
+            };
+
+            let rel_path_str = rel_path.to_string_lossy().replace('\\', "/");
+            if validate_group_name(&rel_path_str).is_ok() {
+                out.push(rel_path_str);
+                collect_group_paths(root, &rel_path, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub fn list_template_groups<P: AsRef<FsPath>>(
+    dir: P,
+) -> Result<Vec<String>, TemplateRegistryError> {
+    let mut groups = Vec::new();
+    collect_group_paths(dir.as_ref(), FsPath::new(""), &mut groups)?;
+    groups.sort();
+    Ok(groups)
 }
 
 impl TemplateRegistry {
     pub fn load_from_dir<P: AsRef<FsPath>>(dir: P) -> Result<Self, TemplateRegistryError> {
         let dir = dir.as_ref();
+        let mut files = Vec::new();
+        collect_dir_entries(dir, FsPath::new(""), None, &mut files)?;
+        files.sort_by(|a, b| a.rel_path_bytes.cmp(&b.rel_path_bytes));
+
         let mut templates = HashMap::new();
         let mut hashes = HashMap::new();
         let mut seen_paths: HashMap<String, PathBuf> = HashMap::new();
+        let mut seen_rel_paths: HashMap<String, PathBuf> = HashMap::new();
         let mut broken: Vec<BrokenTemplate> = Vec::new();
         let mut duplicates: HashMap<String, Vec<PathBuf>> = HashMap::new();
 
-        for path in sorted_dir_paths(dir)? {
-            let ext = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.to_ascii_lowercase());
-            if !matches!(ext.as_deref(), Some("yaml") | Some("yml")) {
+        for file in files {
+            if !file.is_utf8 {
+                let lossy_path = file.rel_path.to_string_lossy().into_owned();
+                let error = format!("path '{lossy_path}' is not valid UTF-8");
+                tracing::warn!(%error, "skipping broken template");
+                broken.push(BrokenTemplate {
+                    path: lossy_path,
+                    error,
+                });
                 continue;
             }
 
-            let filename = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
+            let rel_path_str = file.rel_path.to_str().unwrap().replace('\\', "/");
 
-            let contents = match std::fs::read_to_string(&path) {
+            if let Some(dir_err) = file.dir_error {
+                tracing::warn!(error = %dir_err, "skipping broken template");
+                broken.push(BrokenTemplate {
+                    path: rel_path_str,
+                    error: dir_err,
+                });
+                continue;
+            }
+
+            let stem = file
+                .rel_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if !validate_template_id_stem(stem) {
+                let error = format!(
+                    "template filename stem '{stem}' is not a valid id: must match ^[a-zA-Z0-9_-]+$"
+                );
+                tracing::warn!(%error, "skipping broken template");
+                broken.push(BrokenTemplate {
+                    path: rel_path_str,
+                    error,
+                });
+                continue;
+            }
+
+            let group = file.rel_path.parent().and_then(|p| {
+                let s = p.to_string_lossy().replace('\\', "/");
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            });
+
+            let contents = match std::fs::read_to_string(&file.abs_path) {
                 Ok(c) => c,
                 Err(source) => {
-                    return Err(TemplateRegistryError::Io {
-                        path: path.clone(),
-                        source,
-                    })
-                }
-            };
-
-            let template = match parse_template(&contents) {
-                Ok(t) => t,
-                Err(source) => {
-                    let error = TemplateRegistryError::Parse {
-                        path: path.clone(),
+                    let error = TemplateRegistryError::Io {
+                        path: file.rel_path.clone(),
                         source,
                     }
                     .to_string();
                     tracing::warn!(%error, "skipping broken template");
-                    broken.push(BrokenTemplate { filename, error });
+                    broken.push(BrokenTemplate {
+                        path: rel_path_str,
+                        error,
+                    });
                     continue;
                 }
             };
 
-            if let Err(message) = template.validate() {
+            let content = match parse_template(&contents) {
+                Ok(c) => c,
+                Err(source) => {
+                    let error = TemplateRegistryError::Parse {
+                        path: file.rel_path.clone(),
+                        source,
+                    }
+                    .to_string();
+                    tracing::warn!(%error, "skipping broken template");
+                    broken.push(BrokenTemplate {
+                        path: rel_path_str,
+                        error,
+                    });
+                    continue;
+                }
+            };
+
+            if let Err(message) = content.validate() {
                 let error = TemplateRegistryError::Validation {
-                    path: path.clone(),
+                    path: file.rel_path.clone(),
                     message,
                 }
                 .to_string();
                 tracing::warn!(%error, "skipping broken template");
-                broken.push(BrokenTemplate { filename, error });
+                broken.push(BrokenTemplate {
+                    path: rel_path_str,
+                    error,
+                });
                 continue;
             }
 
-            // The id is already taken, so this file is refused and the template already accepted
-            // for the id stays served. Quarantined like a parse or validation fault rather than
-            // fatal: one copy-pasted file must not take the whole service down (#181).
-            if let Some(existing_path) = seen_paths.get(&template.id) {
+            let id = stem.to_string();
+            if let Some(first_rel) = seen_rel_paths.get(&id) {
                 let error = TemplateRegistryError::DuplicateId {
-                    id: template.id.clone(),
-                    first: existing_path.clone(),
-                    second: path.clone(),
+                    id: id.clone(),
+                    first: first_rel.clone(),
+                    second: file.rel_path.clone(),
                 }
                 .to_string();
                 tracing::warn!(%error, "skipping broken template");
-                broken.push(BrokenTemplate { filename, error });
-                duplicates.entry(template.id).or_default().push(path);
+                broken.push(BrokenTemplate {
+                    path: rel_path_str,
+                    error,
+                });
+                duplicates.entry(id).or_default().push(file.rel_path);
                 continue;
             }
 
-            seen_paths.insert(template.id.clone(), path);
-            hashes.insert(
-                template.id.clone(),
-                hex::encode(Sha256::digest(contents.as_bytes())),
-            );
-            templates.insert(template.id.clone(), template);
+            seen_paths.insert(id.clone(), file.abs_path);
+            seen_rel_paths.insert(id.clone(), file.rel_path);
+            hashes.insert(id.clone(), hex::encode(Sha256::digest(contents.as_bytes())));
+            templates.insert(id.clone(), TemplateDefinition { id, group, content });
         }
 
         Ok(Self {
             templates,
             hashes,
             paths: seen_paths,
+            rel_paths: seen_rel_paths,
             broken,
             duplicates,
         })
@@ -211,6 +456,11 @@ impl TemplateRegistry {
     /// The file this id was loaded from, or `None` if the registry does not hold the id.
     pub fn path(&self, id: &str) -> Option<&FsPath> {
         self.paths.get(id).map(PathBuf::as_path)
+    }
+
+    /// The relative file path this id was loaded from, or `None` if the registry does not hold the id.
+    pub fn rel_path(&self, id: &str) -> Option<&FsPath> {
+        self.rel_paths.get(id).map(PathBuf::as_path)
     }
 
     /// Files refused during this load, by a parse, validation or duplicate-id fault.
@@ -251,7 +501,7 @@ pub enum TemplateRegistryError {
     },
 }
 
-impl TemplateDefinition {
+impl TemplateContent {
     pub fn validate_params(&self) -> Result<(), String> {
         for (name, spec) in &self.params {
             validate_param_name(name)?;
@@ -308,12 +558,10 @@ impl TemplateDefinition {
         Ok(())
     }
 
-    pub fn instantiate_with_defaults(&self) -> TemplateDefinition {
-        TemplateDefinition {
-            id: self.id.clone(),
+    pub fn instantiate_with_defaults(&self) -> TemplateContent {
+        TemplateContent {
             name: self.name.clone(),
             description: self.description.clone(),
-            group: self.group.clone(),
             unit: self.unit.clone(),
             dpi: self.dpi,
             format: instantiate_format_defaults(&self.format, &self.params),
@@ -324,14 +572,8 @@ impl TemplateDefinition {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.id.trim().is_empty() {
-            return Err("id must not be empty".to_string());
-        }
         if self.name.trim().is_empty() {
             return Err("name must not be empty".to_string());
-        }
-        if let Some(group) = &self.group {
-            validate_group_name(group)?;
         }
         match self.unit.as_str() {
             "mm" | "in" => {}
@@ -446,374 +688,75 @@ impl TemplateDefinition {
     }
 }
 
+impl TemplateDefinition {
+    pub fn instantiate_with_defaults(&self) -> TemplateDefinition {
+        TemplateDefinition {
+            id: self.id.clone(),
+            group: self.group.clone(),
+            content: self.content.instantiate_with_defaults(),
+        }
+    }
+}
+
+const RESERVED_DEVICE_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "COM¹", "COM²",
+    "COM³", "LPT¹", "LPT²", "LPT³",
+];
+
+pub fn validate_group_segment(segment: &str) -> Result<(), String> {
+    if segment.is_empty() {
+        return Err("group path segment must not be empty".to_string());
+    }
+    if segment.chars().count() > 64 {
+        return Err("group path segment must be at most 64 characters".to_string());
+    }
+    if segment.len() > 255 {
+        return Err("group path segment must be at most 255 bytes".to_string());
+    }
+    if segment.chars().any(|c| c.is_control()) {
+        return Err("group path segment must not contain control characters".to_string());
+    }
+    if segment
+        .chars()
+        .any(|c| matches!(c, '/' | '\\' | '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+    {
+        return Err("group path segment contains invalid characters".to_string());
+    }
+    if segment == "." || segment == ".." {
+        return Err("group path segment cannot be '.' or '..'".to_string());
+    }
+    if segment.starts_with(char::is_whitespace) || segment.ends_with(char::is_whitespace) {
+        return Err("group path segment must not have leading or trailing whitespace".to_string());
+    }
+    if segment.starts_with('.') || segment.ends_with('.') {
+        return Err("group path segment must not start or end with a period".to_string());
+    }
+    let base_name = segment.split('.').next().unwrap_or(segment);
+    let base_upper = base_name.to_uppercase();
+    if RESERVED_DEVICE_NAMES.iter().any(|&r| r == base_upper) {
+        return Err(format!(
+            "group path segment '{segment}' is a reserved device name"
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_group_name(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("group must not be empty".to_string());
+        return Err("group path must not be empty".to_string());
     }
-    if trimmed.chars().count() > 64 {
-        return Err("group must be at most 64 characters".to_string());
+    if trimmed.chars().count() > 255 {
+        return Err("group path must be at most 255 characters".to_string());
     }
-    if trimmed.chars().any(|c| c.is_control()) {
-        return Err("group must not contain control characters".to_string());
+    if trimmed.len() > 1024 {
+        return Err("group path must be at most 1024 bytes".to_string());
+    }
+    for segment in trimmed.split('/') {
+        validate_group_segment(segment)?;
     }
     Ok(trimmed.to_string())
-}
-
-/// A targeted single-key patch that sets, changes, or clears a template's top-level `group:` line
-/// while preserving every other byte of the file (ADR-0062).
-pub fn patch_template_group(yaml: &str, new_group: Option<&str>) -> Result<String, AppError> {
-    // 1. If a group name is provided, validate it first
-    let target_group = match new_group {
-        Some(name) => Some(validate_group_name(name).map_err(AppError::template_group_invalid)?),
-        None => None,
-    };
-
-    // 2. Check for multi-document YAML (refuse if > 1 doc)
-    let doc_count = serde_yaml_ng::Deserializer::from_str(yaml).count();
-    if doc_count > 1 {
-        return Err(AppError::template_group_unpatchable(
-            "multi-document template files cannot be patched",
-        ));
-    }
-
-    // 3. Parse and validate the original template
-    let original = crate::parse::parse_template(yaml)
-        .map_err(|e| AppError::template_invalid(Reason::TemplateParseFailed, e.to_string()))?;
-    original
-        .validate()
-        .map_err(|e| AppError::template_invalid(Reason::TemplateValidationFailed, e))?;
-
-    // 4. Idempotency: if already matching target_group, return original yaml unchanged
-    if original.group.as_deref() == target_group.as_deref() {
-        return Ok(yaml.to_string());
-    }
-
-    // 5. Split into lines preserving terminators
-    struct Line<'a> {
-        content: &'a str,
-        terminator: &'a str,
-    }
-
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let bytes = yaml.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len {
-        if bytes[i] == b'\r' {
-            if i + 1 < len && bytes[i + 1] == b'\n' {
-                lines.push(Line {
-                    content: &yaml[start..i],
-                    terminator: &yaml[i..i + 2],
-                });
-                i += 2;
-                start = i;
-            } else {
-                lines.push(Line {
-                    content: &yaml[start..i],
-                    terminator: &yaml[i..i + 1],
-                });
-                i += 1;
-                start = i;
-            }
-        } else if bytes[i] == b'\n' {
-            lines.push(Line {
-                content: &yaml[start..i],
-                terminator: &yaml[i..i + 1],
-            });
-            i += 1;
-            start = i;
-        } else {
-            i += 1;
-        }
-    }
-    if start < len {
-        lines.push(Line {
-            content: &yaml[start..len],
-            terminator: "",
-        });
-    }
-
-    // 6. Check root is not a flow mapping
-    for line in &lines {
-        let trimmed = line.content.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" || trimmed == "..." {
-            continue;
-        }
-        if trimmed.starts_with('{') || trimmed.starts_with('[') {
-            return Err(AppError::template_group_unpatchable(
-                "flow-mapping root is not patchable",
-            ));
-        }
-        break;
-    }
-
-    // 7. Find top-level group lines (column 0)
-    let mut group_line_indices = Vec::new();
-    for (idx, line) in lines.iter().enumerate() {
-        let c = line.content;
-        if c.is_empty()
-            || c.starts_with(' ')
-            || c.starts_with('\t')
-            || c.starts_with('#')
-            || c.starts_with("---")
-            || c.starts_with("...")
-        {
-            continue;
-        }
-        if c.starts_with("group:") {
-            group_line_indices.push(idx);
-        } else if let Some(rest) = c.strip_prefix("group") {
-            if rest.starts_with(':') {
-                group_line_indices.push(idx);
-            }
-        }
-    }
-
-    // 8. Cross-check against parsed template
-    if original.group.is_some() {
-        if group_line_indices.len() != 1 {
-            return Err(AppError::template_group_unpatchable(
-                "cannot locate single top-level group line to replace",
-            ));
-        }
-    } else if !group_line_indices.is_empty() {
-        return Err(AppError::template_group_unpatchable(
-            "scan found top-level group line in ungrouped template",
-        ));
-    }
-
-    // 9. If existing group line found, inspect its value and extract trailing comment
-    let mut trailing_comment = None;
-    if let Some(&idx) = group_line_indices.first() {
-        let line_content = lines[idx].content;
-        let colon_idx = line_content.find(':').unwrap();
-        let rest = line_content[colon_idx + 1..].trim_start();
-
-        if rest.starts_with('|') || rest.starts_with('>') {
-            return Err(AppError::template_group_unpatchable(
-                "block scalar group value is not patchable",
-            ));
-        }
-        if rest.starts_with('[') || rest.starts_with('{') {
-            return Err(AppError::template_group_unpatchable(
-                "collection group value is not patchable",
-            ));
-        }
-        if rest.starts_with('&') || rest.starts_with('*') {
-            return Err(AppError::template_group_unpatchable(
-                "anchor or alias group value is not patchable",
-            ));
-        }
-
-        // Parse scalar to locate trailing comment
-        if let Some(stripped) = rest.strip_prefix('"') {
-            let mut escape = false;
-            let mut close_idx = None;
-            for (i, ch) in stripped.char_indices() {
-                if escape {
-                    escape = false;
-                } else if ch == '\\' {
-                    escape = true;
-                } else if ch == '"' {
-                    close_idx = Some(1 + i);
-                    break;
-                }
-            }
-            let close_pos = close_idx.ok_or_else(|| {
-                AppError::template_group_unpatchable("unterminated double-quoted scalar")
-            })?;
-            let after_quote = &rest[close_pos + 1..];
-            if let Some(hash_pos) = after_quote.find('#') {
-                if after_quote[..hash_pos].trim().is_empty() {
-                    trailing_comment = Some(after_quote[hash_pos..].to_string());
-                } else {
-                    return Err(AppError::template_group_unpatchable(
-                        "invalid characters after quoted scalar",
-                    ));
-                }
-            } else if !after_quote.trim().is_empty() {
-                return Err(AppError::template_group_unpatchable(
-                    "invalid characters after quoted scalar",
-                ));
-            }
-        } else if rest.starts_with('\'') {
-            let chars: Vec<char> = rest.chars().collect();
-            let mut close_char_idx = None;
-            let mut ci = 1;
-            while ci < chars.len() {
-                if chars[ci] == '\'' {
-                    if ci + 1 < chars.len() && chars[ci + 1] == '\'' {
-                        ci += 2;
-                    } else {
-                        close_char_idx = Some(ci);
-                        break;
-                    }
-                } else {
-                    ci += 1;
-                }
-            }
-            let close_pos = close_char_idx.ok_or_else(|| {
-                AppError::template_group_unpatchable("unterminated single-quoted scalar")
-            })?;
-            let after_quote: String = chars[close_pos + 1..].iter().collect();
-            if let Some(hash_pos) = after_quote.find('#') {
-                if after_quote[..hash_pos].trim().is_empty() {
-                    trailing_comment = Some(after_quote[hash_pos..].to_string());
-                } else {
-                    return Err(AppError::template_group_unpatchable(
-                        "invalid characters after single-quoted scalar",
-                    ));
-                }
-            } else if !after_quote.trim().is_empty() {
-                return Err(AppError::template_group_unpatchable(
-                    "invalid characters after single-quoted scalar",
-                ));
-            }
-        } else {
-            let mut comment_start = None;
-            let bytes = rest.as_bytes();
-            for b_idx in 0..bytes.len() {
-                if bytes[b_idx] == b'#'
-                    && (b_idx == 0 || bytes[b_idx - 1] == b' ' || bytes[b_idx - 1] == b'\t')
-                {
-                    comment_start = Some(b_idx);
-                    break;
-                }
-            }
-            if let Some(c_pos) = comment_start {
-                trailing_comment = Some(rest[c_pos..].to_string());
-            }
-        }
-    }
-
-    // 10. Perform replacement, deletion, or insertion
-    let mut patched_lines: Vec<String> = Vec::new();
-    match target_group {
-        None => {
-            // Delete group line
-            for (idx, line) in lines.iter().enumerate() {
-                if group_line_indices.contains(&idx) {
-                    continue;
-                }
-                patched_lines.push(format!("{}{}", line.content, line.terminator));
-            }
-        }
-        Some(ref name) => {
-            // Serialize YAML scalar for name
-            let yaml_val = serde_yaml_ng::to_string(name)
-                .map_err(|e| AppError::template_group_invalid(e.to_string()))?;
-            let yaml_scalar = yaml_val.trim();
-
-            if let Some(&idx) = group_line_indices.first() {
-                // Replace existing line
-                let term = lines[idx].terminator;
-                let new_line_content = match trailing_comment {
-                    Some(ref comment) => format!("group: {yaml_scalar}  {comment}"),
-                    None => format!("group: {yaml_scalar}"),
-                };
-                for (i, line) in lines.iter().enumerate() {
-                    if i == idx {
-                        patched_lines.push(format!("{new_line_content}{term}"));
-                    } else {
-                        patched_lines.push(format!("{}{}", line.content, line.terminator));
-                    }
-                }
-            } else {
-                // Insert new line
-                // Find insertion position: after `name:`, falling back to after `id:`, then after header
-                let mut insert_after_idx = None;
-                for (i, line) in lines.iter().enumerate() {
-                    let c = line.content;
-                    if !c.starts_with(' ')
-                        && !c.starts_with('\t')
-                        && !c.starts_with('#')
-                        && c.starts_with("name:")
-                    {
-                        insert_after_idx = Some(i);
-                        break;
-                    }
-                }
-                if insert_after_idx.is_none() {
-                    for (i, line) in lines.iter().enumerate() {
-                        let c = line.content;
-                        if !c.starts_with(' ')
-                            && !c.starts_with('\t')
-                            && !c.starts_with('#')
-                            && c.starts_with("id:")
-                        {
-                            insert_after_idx = Some(i);
-                            break;
-                        }
-                    }
-                }
-                let (insert_pos, default_term) = match insert_after_idx {
-                    Some(pos) => {
-                        let term = if !lines[pos].terminator.is_empty() {
-                            lines[pos].terminator
-                        } else {
-                            "\n"
-                        };
-                        (pos + 1, term)
-                    }
-                    None => {
-                        // After leading comments and `---`
-                        let mut header_pos = 0;
-                        for (i, line) in lines.iter().enumerate() {
-                            let trimmed = line.content.trim();
-                            if trimmed.starts_with('#') || trimmed == "---" || trimmed.is_empty() {
-                                header_pos = i + 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        let term = lines
-                            .first()
-                            .map(|l| {
-                                if !l.terminator.is_empty() {
-                                    l.terminator
-                                } else {
-                                    "\n"
-                                }
-                            })
-                            .unwrap_or("\n");
-                        (header_pos, term)
-                    }
-                };
-
-                let new_line = format!("group: {yaml_scalar}{default_term}");
-                let mut i = 0;
-                while i < lines.len() {
-                    if i == insert_pos {
-                        patched_lines.push(new_line.clone());
-                    }
-                    patched_lines.push(format!("{}{}", lines[i].content, lines[i].terminator));
-                    i += 1;
-                }
-                if insert_pos >= lines.len() {
-                    patched_lines.push(new_line);
-                }
-            }
-        }
-    }
-
-    let patched_yaml = patched_lines.concat();
-
-    // 11. Parse & validate the patched result and assert readback
-    let patched_template = crate::parse::parse_template(&patched_yaml)
-        .map_err(|e| AppError::template_invalid(Reason::TemplateParseFailed, e.to_string()))?;
-    patched_template
-        .validate()
-        .map_err(|e| AppError::template_invalid(Reason::TemplateValidationFailed, e))?;
-
-    if patched_template.group.as_deref() != target_group.as_deref() {
-        return Err(AppError::template_group_unpatchable(
-            "patched template group does not match requested group",
-        ));
-    }
-
-    Ok(patched_yaml)
 }
 
 fn validate_param_name(name: &str) -> Result<(), String> {
@@ -1859,42 +1802,40 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
     // The catalog is nested (tape/brother, sheet/avery, examples) but the registry — and
     // {config}/templates, where installs land — is flat, so flatten while copying. Ids are unique
     // across the tree, enforced by `template_ids_are_unique_and_match_filenames` (#135).
-    fn copy_yaml_into(src: &FsPath, dest: &FsPath) {
-        for entry in std::fs::read_dir(src).unwrap_or_else(|e| panic!("read {src:?}: {e}")) {
+    fn copy_tree_into(src_root: &FsPath, current: &FsPath, dest_root: &FsPath) {
+        for entry in std::fs::read_dir(current).unwrap_or_else(|e| panic!("read {current:?}: {e}"))
+        {
             let path = entry.expect("dir entry").path();
-            // symlink_metadata, not is_dir: a symlinked directory under catalog/ could form a cycle
-            // and recurse forever.
-            let meta = std::fs::symlink_metadata(&path).expect("stat catalog entry");
+            let meta = std::fs::symlink_metadata(&path).expect("stat entry");
+            let rel = path.strip_prefix(src_root).expect("rel path");
+            let target = dest_root.join(rel);
             if meta.is_dir() {
-                copy_yaml_into(&path, dest);
+                std::fs::create_dir_all(&target).expect("create dir");
+                copy_tree_into(src_root, &path, dest_root);
             } else if path.extension().is_some_and(|e| e == "yaml" || e == "yml") {
-                let name = path.file_name().expect("file name");
-                let target = dest.join(name);
-                // Flattening means two catalog files with the same filename in different directories
-                // would silently overwrite each other here, before load_from_dir could ever notice a
-                // duplicate id. Fail loudly instead; the CI gate then explains which files collide.
-                assert!(
-                    !target.exists(),
-                    "two catalog templates share the filename {name:?}; ids must be unique tree-wide"
-                );
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent).expect("create parent dir");
+                }
                 std::fs::copy(&path, target).expect("copy template");
             }
         }
     }
-    copy_yaml_into(FsPath::new("catalog"), &dir);
-    // The engine demos (QR, multiline, sheet options, rotation, interpolation) are test corpus, not
-    // catalog entries (#135). They flatten into the same dir: ids are unique across both roots,
-    // enforced by `template_ids_are_unique_and_match_filenames`. The files must be copied, not just
-    // registered — this dir becomes `templates_dir`, and GET /templates/{id}/source reads
-    // {templates_dir}/{id}.yaml off disk.
-    copy_yaml_into(FsPath::new("tests/fixtures/templates"), &dir);
+    copy_tree_into(FsPath::new("catalog"), FsPath::new("catalog"), &dir);
+    copy_tree_into(
+        FsPath::new("tests/fixtures/templates"),
+        FsPath::new("tests/fixtures/templates"),
+        &dir,
+    );
     let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
     (registry, dir)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{patch_template_group, TemplateDefinition, TemplateRegistry};
+    use super::{
+        list_template_groups, validate_group_name, validate_group_segment,
+        validate_template_id_stem, TemplateContent, TemplateRegistry,
+    };
     use crate::models::{
         Alignment, Dimension, DynamicDimension, DynamicValue, FontSize, Layout, LayoutItem,
         ParamSpec, ParamType, Position, Size, SizeValue, TemplateFormat,
@@ -1914,38 +1855,38 @@ mod tests {
 
     #[test]
     fn rotation_must_be_orthogonal() {
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 45\n    items: []\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 45\n    items: []\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     #[test]
     fn rotation_rejected_on_non_container() {
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 90\n    font_size: 6\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 90\n    font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     #[test]
     fn rotation_zero_rejected_on_non_container() {
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 0\n    font_size: 6\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 0\n    font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     #[test]
     fn rotated_container_rejects_auto_outer_size() {
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [auto,40]\n    rotate: 90\n    items: []\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [auto,40]\n    rotate: 90\n    items: []\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     #[test]
     fn rotated_container_rejects_auto_child() {
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [auto,10]\n        font_size: 6\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [auto,10]\n        font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     #[test]
     fn rotated_container_child_bounds_use_swapped_canvas() {
         // physical 80x40 container, rotate 90 -> author canvas 40x80; a child 30 wide x 70 tall fits.
-        let ok = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [30,70]\n        font_size: 6\n";
+        let ok = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [30,70]\n        font_size: 6\n";
         assert!(parse_and_validate(ok).is_ok());
         // a child 50 wide exceeds the 40-wide author canvas -> error.
         let bad = ok.replace("size: [30,70]", "size: [50,70]");
@@ -1954,28 +1895,28 @@ mod tests {
 
     #[test]
     fn validate_accepts_a_to_box_spanning_to_the_right_edge() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// `to` must be above and to the right of `at`.
     #[test]
     fn validate_rejects_an_inverted_to_box() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [20.0, 0.0]\n    to: [10.0, 12.0]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [20.0, 0.0]\n    to: [10.0, 12.0]\n    font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     /// §4.2.1: a rotated container's inner canvas has to be known at compile time.
     #[test]
     fn validate_rejects_a_rotated_container_with_a_frame_dependent_to() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     /// Both corners edge-relative is a constant 20-unit box, so the canvas is known and it is fine.
     #[test]
     fn validate_accepts_a_rotated_container_whose_corners_both_hug_the_edge() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 25, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [-20.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 25, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [-20.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -1983,14 +1924,14 @@ mod tests {
     /// auto-width child resolves against the container's inner width rather than being rejected.
     #[test]
     fn validate_accepts_an_auto_child_inside_a_to_spanned_container() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 20, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [4.0, 0.0]\n    to: [-0.0, 12.0]\n    items:\n      - type: text\n        value: \"x\"\n        at: [2.0, 1.0]\n        size: [auto, 10.0]\n        font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 20, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [4.0, 0.0]\n    to: [-0.0, 12.0]\n    items:\n      - type: text\n        value: \"x\"\n        at: [2.0, 1.0]\n        size: [auto, 10.0]\n        font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     #[test]
     fn rotated_container_rejects_nonpositive_content_area() {
         // author canvas is 40 wide x 80 tall; top+bottom padding 120 > 80 -> non-positive Ch.
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    padding: [60,0,60,0]\n    items: []\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    padding: [60,0,60,0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -1999,7 +1940,7 @@ mod tests {
 
     #[test]
     fn unrotated_container_rejects_excessive_padding() {
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    padding: [0,50,0,50]\n    items: []\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    padding: [0,50,0,50]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2009,7 +1950,7 @@ mod tests {
     /// Issue #154 repro 1: an unrotated container with auto width whose padding exceeds the resolved width.
     #[test]
     fn unrotated_container_with_auto_width_and_excessive_padding_rejected() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2019,7 +1960,7 @@ mod tests {
     /// Issue #154 repro 2: an unrotated container capped by max_w whose padding exceeds the cap.
     #[test]
     fn unrotated_capped_container_with_excessive_padding_rejected() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2028,7 +1969,7 @@ mod tests {
 
     #[test]
     fn nested_container_padding_overflow_rejected() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [80, 40]\n    padding: [5, 5, 5, 5]\n    items:\n      - type: container\n        at: [0, 0]\n        size: [40, 20]\n        padding: [15, 0, 15, 0]\n        items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0, 0]\n    size: [80, 40]\n    padding: [5, 5, 5, 5]\n    items:\n      - type: container\n        at: [0, 0]\n        size: [40, 20]\n        padding: [15, 0, 15, 0]\n        items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2037,7 +1978,7 @@ mod tests {
 
     #[test]
     fn rotation_orthogonal_on_container_ok() {
-        let yaml = "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: -90\n    items: []\n";
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: -90\n    items: []\n";
         assert!(parse_and_validate(yaml).is_ok());
     }
 
@@ -2045,28 +1986,28 @@ mod tests {
     /// deferred, but its size never was.
     #[test]
     fn validate_accepts_a_right_anchored_fixed_width_box() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [20.0, 10.0]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [20.0, 10.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// Position and width would both be chasing the same unknown.
     #[test]
     fn validate_rejects_a_right_anchored_auto_width_box_on_a_dynamic_label() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     /// On a fixed frame everything resolves, so the same shape is fine.
     #[test]
     fn validate_accepts_a_right_anchored_auto_width_box_on_a_fixed_label() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    max_w: 20.0\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    max_w: 20.0\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// Negative y is the top edge, so this box sits flush against it.
     #[test]
     fn validate_accepts_a_top_anchored_box() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, -4.0]\n    size: [20.0, 4.0]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, -4.0]\n    size: [20.0, 4.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2075,7 +2016,7 @@ mod tests {
     /// dynamic-width label, and every render of it would fail.
     #[test]
     fn validate_rejects_a_right_anchored_box_that_overruns_the_right_edge() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-0.0, 2.0]\n    size: [10.0, 6.0]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-0.0, 2.0]\n    size: [10.0, 6.0]\n    font_size: 6\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("item must fit within layout bounds".to_string())
@@ -2086,7 +2027,7 @@ mod tests {
     /// load rather than deferred to a render that is guaranteed to fail.
     #[test]
     fn validate_rejects_a_plain_line_endpoint_past_the_max_width() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 30 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [40.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 30 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [40.0, 6.0]\n    thickness: 0.2\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("line must fit within layout bounds".to_string())
@@ -2098,7 +2039,7 @@ mod tests {
     /// rejected as if the label's final width were unknown to both.
     #[test]
     fn validate_accepts_an_edge_relative_line_on_a_dynamic_width_label() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [-30.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [-30.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2173,7 +2114,7 @@ mod tests {
     /// bounds, blaming the author for the resolver's arithmetic.
     #[test]
     fn an_auto_axis_falls_back_to_the_space_left_from_its_anchor() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2181,7 +2122,7 @@ mod tests {
     /// so `frame - raw_at` would give 45 on a 40mm frame instead of 5.
     #[test]
     fn an_edge_relative_anchor_is_resolved_before_the_subtraction() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, -5.0]\n    size: [20.0, auto]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, -5.0]\n    size: [20.0, auto]\n    items: []\n";
         // Resolves to 40 - 35 = 5 and fits. A raw-anchor implementation resolves 45 and is rejected.
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
@@ -2191,7 +2132,7 @@ mod tests {
     /// rather than trusting the control flow.
     #[test]
     fn a_to_extent_is_not_narrowed_twice_by_its_anchor() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [20.0, 0.0]\n    to: [-0.0, 12.0]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [20.0, 0.0]\n    to: [-0.0, 12.0]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2312,7 +2253,7 @@ mod tests {
     /// must resolve to the room left and fit, not to the cap and overflow.
     #[test]
     fn validate_accepts_a_capped_container_that_fits_the_remaining_width() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2322,21 +2263,21 @@ mod tests {
     /// `the_155_repro_renders`.
     #[test]
     fn the_155_repro_validates_and_its_height_is_capped() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    max_h: 200.0\n    font_size: 8\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    max_h: 200.0\n    font_size: 8\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// A fixed label, where text validation previously had no fallback at all.
     #[test]
     fn text_auto_height_on_a_fixed_label_falls_back_to_the_remainder() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// The false rejection this closes: it would have rendered at min(35, 30) = 30.
     #[test]
     fn text_auto_height_with_an_oversized_max_h_is_not_rejected_on_a_fixed_label() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    max_h: 35.0\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    max_h: 35.0\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2344,7 +2285,7 @@ mod tests {
     /// auto-length tape. An auto width with no max_w previously errored here.
     #[test]
     fn text_auto_width_on_a_sheet_falls_back_to_the_slot_remainder() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [auto, 8.0]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [auto, 8.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2353,7 +2294,7 @@ mod tests {
     /// exists because "origin items are unaffected" is the first wrong thing a reader assumes.
     #[test]
     fn the_origin_is_not_exempt() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    font_size: 6\n";
         // No max_h, at the origin, on a fixed label: rejected before this branch, resolves to 40 now.
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
@@ -2375,45 +2316,10 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_empty_id() {
-        let template = TemplateDefinition {
-            id: " ".to_string(),
-            name: "Label".to_string(),
-            description: "desc".to_string(),
-            group: None,
-            unit: "mm".to_string(),
-            dpi: 300,
-            format: TemplateFormat::Single {
-                width: Dimension::Fixed(12.0).into(),
-                height: Dimension::Fixed(25.0).into(),
-                media_width: None,
-            },
-            params: BTreeMap::from([(
-                "variant".to_string(),
-                ParamSpec {
-                    param_type: ParamType::Enum {
-                        values: vec!["default".to_string()],
-                    },
-                    default: None,
-                    min: None,
-                    max: None,
-                    description: None,
-                },
-            )]),
-            layout: Layout::Items(Vec::new()),
-            version: None,
-        };
-        let err = template.validate().expect_err("expected error");
-        assert!(err.contains("id must not be empty"));
-    }
-
-    #[test]
     fn validate_rejects_empty_option_value() {
-        let template = TemplateDefinition {
-            id: "test".to_string(),
+        let template = TemplateContent {
             name: "Label".to_string(),
             description: "desc".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2447,7 +2353,6 @@ mod tests {
             &dir,
             "sample.yaml",
             r#"
-id: sample
 name: Sample
 description: Sample template
 unit: mm
@@ -2473,7 +2378,6 @@ layout:
             &dir,
             "SHOUTED.YAML",
             r#"
-id: shouted
 name: Shouted
 description: Uppercase extension
 unit: mm
@@ -2489,41 +2393,16 @@ layout: []
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
         assert_eq!(registry.len(), 2);
         assert!(registry.get("sample").is_some());
-        assert!(registry.get("shouted").is_some());
+        assert!(registry.get("SHOUTED").is_some());
         assert!(registry.broken().is_empty());
 
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// The sort is what makes the collision winner reproducible, and no test can force a filesystem
-    /// to enumerate out of order, so assert the sorted list directly (#181).
-    #[test]
-    fn dir_paths_come_back_sorted_whatever_the_creation_order() {
-        let dir = temp_dir("sorted_paths");
-        for name in ["z.yaml", "m.yaml", "a.yaml", "notes.txt"] {
-            write_template(&dir, name, "");
-        }
-
-        let names: Vec<String> = super::sorted_dir_paths(&dir)
-            .expect("read dir")
-            .iter()
-            .map(|p| {
-                p.file_name()
-                    .expect("file name")
-                    .to_string_lossy()
-                    .into_owned()
-            })
-            .collect();
-        assert_eq!(names, ["a.yaml", "m.yaml", "notes.txt", "z.yaml"]);
-
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    fn yaml_with_id(id: &str) -> String {
+    fn sample_yaml(name: &str) -> String {
         format!(
             r#"
-id: {id}
-name: {id}
+name: {name}
 description: d
 unit: mm
 dpi: 300
@@ -2536,34 +2415,35 @@ layout: []
         )
     }
 
-    /// A duplicate id refuses the colliding file instead of the whole directory (#181), and the
-    /// survivor is the lexicographically first filename, not whichever file the filesystem happened
-    /// to hand back first, so both creation orders must give the same answer.
     #[test]
     fn duplicate_id_serves_first_filename_and_quarantines_the_collider() {
         for (label, first_written, second_written) in [
-            ("dup_az", "a.yaml", "z.yaml"),
-            ("dup_za", "z.yaml", "a.yaml"),
+            ("dup_az", "a.yaml", "sub/a.yaml"),
+            ("dup_za", "sub/a.yaml", "a.yaml"),
         ] {
             let dir = temp_dir(label);
-            write_template(&dir, first_written, &yaml_with_id("dup"));
-            write_template(&dir, second_written, &yaml_with_id("dup"));
+            std::fs::create_dir_all(dir.join("sub")).unwrap();
+            write_template(&dir, first_written, &sample_yaml("dup"));
+            write_template(&dir, second_written, &sample_yaml("dup"));
 
             let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
 
             assert_eq!(registry.len(), 1, "{label}: only the winner is served");
-            assert!(registry.get("dup").is_some(), "{label}: id is still served");
+            assert!(registry.get("a").is_some(), "{label}: id is still served");
             assert_eq!(
-                registry.path("dup").and_then(|p| p.file_name()),
+                registry.path("a").and_then(|p| p.file_name()),
                 Some(std::ffi::OsStr::new("a.yaml")),
                 "{label}: a.yaml wins the id"
             );
 
             let broken = registry.broken();
             assert_eq!(broken.len(), 1, "{label}: one file refused");
-            assert_eq!(broken[0].filename, "z.yaml", "{label}: z.yaml is refused");
+            assert_eq!(
+                broken[0].path, "sub/a.yaml",
+                "{label}: sub/a.yaml is refused"
+            );
             assert!(
-                broken[0].error.contains("dup") && broken[0].error.contains("a.yaml"),
+                broken[0].error.contains("a") && broken[0].error.contains("a.yaml"),
                 "{label}: message names the id and the file it collides with: {}",
                 broken[0].error
             );
@@ -2572,24 +2452,22 @@ layout: []
         }
     }
 
-    /// The refused file is recorded against the id it collided on, not only as prose in `broken`,
-    /// because the write endpoints have to answer "is this id contested, and by which file?" (#183,
-    /// #184). An uncontested id records nothing.
     #[test]
     fn duplicates_records_the_refused_file_per_id() {
         let dir = temp_dir("dup_map");
-        write_template(&dir, "a.yaml", &yaml_with_id("dup"));
-        write_template(&dir, "z.yaml", &yaml_with_id("dup"));
-        write_template(&dir, "solo.yaml", &yaml_with_id("solo"));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        write_template(&dir, "a.yaml", &sample_yaml("dup"));
+        write_template(&dir, "sub/a.yaml", &sample_yaml("dup"));
+        write_template(&dir, "solo.yaml", &sample_yaml("solo"));
 
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
 
         let refused: Vec<_> = registry
-            .duplicates("dup")
+            .duplicates("a")
             .iter()
-            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
             .collect();
-        assert_eq!(refused, vec!["z.yaml"], "the loser is recorded for 'dup'");
+        assert_eq!(refused, vec!["sub/a.yaml"], "the loser is recorded for 'a'");
         assert!(
             registry.duplicates("solo").is_empty(),
             "an uncontested id records no duplicate"
@@ -2602,14 +2480,13 @@ layout: []
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// Refusing a collider is scoped to that file: an unrelated template in the same directory is
-    /// unaffected (#181).
     #[test]
     fn duplicate_id_leaves_unrelated_templates_served() {
         let dir = temp_dir("dup_sibling");
-        write_template(&dir, "a.yaml", &yaml_with_id("dup"));
-        write_template(&dir, "z.yaml", &yaml_with_id("dup"));
-        write_template(&dir, "other.yaml", &yaml_with_id("other"));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        write_template(&dir, "a.yaml", &sample_yaml("dup"));
+        write_template(&dir, "sub/a.yaml", &sample_yaml("dup"));
+        write_template(&dir, "other.yaml", &sample_yaml("other"));
 
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
 
@@ -2620,7 +2497,7 @@ layout: []
             Some(std::ffi::OsStr::new("other.yaml"))
         );
         assert_eq!(registry.broken().len(), 1);
-        assert_eq!(registry.broken()[0].filename, "z.yaml");
+        assert_eq!(registry.broken()[0].path, "sub/a.yaml");
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -2632,7 +2509,6 @@ layout: []
             &dir,
             "b.yaml",
             r#"
-id: b
 name: B
 description: B
 unit: mm
@@ -2648,7 +2524,6 @@ layout: []
             &dir,
             "a.yaml",
             r#"
-id: a
 name: A
 description: A
 unit: mm
@@ -2689,11 +2564,9 @@ layout: []
     /// only in `convert.rs`: a `LayoutItem` built directly — as most of this suite does — is checked.
     #[test]
     fn validate_rejects_a_text_item_with_a_bad_font_weight() {
-        let template = TemplateDefinition {
-            id: "w".to_string(),
+        let template = TemplateContent {
             name: "w".to_string(),
             description: "w".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2722,11 +2595,9 @@ layout: []
 
     #[test]
     fn validate_rejects_duplicate_field_names() {
-        let template = TemplateDefinition {
-            id: "dup".to_string(),
+        let template = TemplateContent {
             name: "dup".to_string(),
             description: "dup".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2777,7 +2648,6 @@ layout: []
     #[test]
     fn parse_rejects_text_with_name() {
         let yaml = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -2797,11 +2667,9 @@ layout:
 
     #[test]
     fn validate_rejects_empty_text_value() {
-        let template = TemplateDefinition {
-            id: "empty_text".to_string(),
+        let template = TemplateContent {
             name: "Empty Text".to_string(),
             description: "test".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -2830,11 +2698,9 @@ layout:
 
     #[test]
     fn validate_rejects_empty_qr_value() {
-        let template = TemplateDefinition {
-            id: "empty_qr".to_string(),
+        let template = TemplateContent {
             name: "Empty Qr".to_string(),
             description: "test".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 200,
             format: TemplateFormat::Single {
@@ -2860,11 +2726,9 @@ layout:
 
     #[test]
     fn validate_rejects_degenerate_line() {
-        let template = TemplateDefinition {
-            id: "ln".to_string(),
+        let template = TemplateContent {
             name: "ln".to_string(),
             description: "ln".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2885,12 +2749,10 @@ layout:
         assert!(err.contains("line start and end must differ"));
     }
 
-    fn single_line_template(at: Position, to: Position) -> TemplateDefinition {
-        TemplateDefinition {
-            id: "ln".to_string(),
+    fn single_line_template(at: Position, to: Position) -> TemplateContent {
+        TemplateContent {
             name: "ln".to_string(),
             description: "ln".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2926,32 +2788,30 @@ layout:
     /// as a zero-length line. The check has to run on resolved coordinates.
     #[test]
     fn validate_accepts_a_full_width_divider_on_a_dynamic_label() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// Still degenerate after resolution: both endpoints land on the right edge.
     #[test]
     fn validate_rejects_a_line_degenerate_after_resolution() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: line\n    at: [-0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: line\n    at: [-0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     /// An inset larger than the widest the label can ever be never resolves to a valid coordinate.
     #[test]
     fn validate_rejects_a_line_inset_larger_than_the_max_width() {
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-140.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-140.0, 6.0]\n    thickness: 0.2\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     #[test]
     fn dynamic_width_single_requires_both_bounds() {
         // Only min is set; max is None. Validate should reject this.
-        let template = TemplateDefinition {
-            id: "tape".to_string(),
+        let template = TemplateContent {
             name: "Tape".to_string(),
             description: "tape".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -2988,11 +2848,9 @@ layout:
     fn dynamic_width_single_auto_width_item_at_offset_validates_ok() {
         // Dynamic-width single with both bounds; a container at at.x=5 with auto width.
         // Auto width should resolve to max_width - at.x = 100 - 5 = 95, which fits.
-        let template = TemplateDefinition {
-            id: "tape2".to_string(),
+        let template = TemplateContent {
             name: "Tape2".to_string(),
             description: "tape".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3026,11 +2884,9 @@ layout:
 
     #[test]
     fn dynamic_width_single_allows_multiline_text() {
-        let template = TemplateDefinition {
-            id: "tape_multiline".to_string(),
+        let template = TemplateContent {
             name: "Tape Multiline".to_string(),
             description: "tape".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3063,11 +2919,9 @@ layout:
 
     #[test]
     fn dynamic_width_single_allows_single_line_text() {
-        let template = TemplateDefinition {
-            id: "tape_single_line".to_string(),
+        let template = TemplateContent {
             name: "Tape Single Line".to_string(),
             description: "tape".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3100,11 +2954,9 @@ layout:
 
     #[test]
     fn fixed_width_single_allows_multiline_text() {
-        let template = TemplateDefinition {
-            id: "fixed_multiline".to_string(),
+        let template = TemplateContent {
             name: "Fixed Multiline".to_string(),
             description: "fixed".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3134,11 +2986,9 @@ layout:
 
     #[test]
     fn single_rejects_nonpositive_media_width() {
-        let build = |mw: Option<f32>| TemplateDefinition {
-            id: "mw_test".to_string(),
+        let build = |mw: Option<f32>| TemplateContent {
             name: "MW Test".to_string(),
             description: "test".to_string(),
-            group: None,
             unit: "mm".to_string(),
             dpi: 300,
             format: TemplateFormat::Single {
@@ -3169,7 +3019,7 @@ layout:
         write_template(
             &dir,
             "a.yaml",
-            "id: a\nname: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [10,5]\n    font_size: 6\n",
+            "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 10\n  height: 10\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [10,5]\n    font_size: 6\n",
         );
         let reg = TemplateRegistry::load_from_dir(&dir).expect("load");
         let hash = reg.content_hash("a").expect("hash present");
@@ -3182,7 +3032,6 @@ layout:
     #[test]
     fn raw_template_deserializes_params_dynamic_values_and_when() {
         let yaml = r#"
-id: test_params
 name: Test Params
 unit: mm
 dpi: 200
@@ -3225,7 +3074,7 @@ layout:
         let raw: crate::raw::RawTemplate =
             serde_yaml_ng::from_str(yaml).expect("parse raw template");
         assert!(raw.params.is_some());
-        let template = TemplateDefinition::try_from(raw).expect("convert template");
+        let template = TemplateContent::try_from(raw).expect("convert template");
         assert_eq!(template.params.len(), 5);
 
         // Check format has dynamic max width ref
@@ -3253,7 +3102,7 @@ layout:
         ];
         for name in bad_names {
             let yaml = format!(
-                "id: t\nname: T\nunit: mm\ndpi: 200\nparams:\n  {name}:\n    type: string\nformat:\n  type: single\n  height: 12\n  width: 50\nlayout: []"
+                "name: T\nunit: mm\ndpi: 200\nparams:\n  {name}:\n    type: string\nformat:\n  type: single\n  height: 12\n  width: 50\nlayout: []"
             );
             let res = parse_and_validate(&yaml);
             assert!(res.is_err(), "should reject reserved name '{name}'");
@@ -3263,7 +3112,6 @@ layout:
     #[test]
     fn reject_referencing_undeclared_parameter() {
         let yaml = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3286,7 +3134,6 @@ layout: []
     #[test]
     fn reject_type_mismatch_in_layout_parameter_reference() {
         let yaml = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3317,7 +3164,6 @@ layout:
     #[test]
     fn reject_datetime_parameter_in_numeric_contexts() {
         let font_weight = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3342,7 +3188,6 @@ layout:
         );
 
         let width = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3369,7 +3214,6 @@ layout:
     #[test]
     fn validate_bounds_instantiating_parameter_defaults() {
         let yaml = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3394,7 +3238,6 @@ layout:
     #[test]
     fn reject_enum_default_not_in_values() {
         let yaml = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3416,7 +3259,6 @@ layout: []
     #[test]
     fn reject_parameter_min_greater_than_max() {
         let yaml = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3438,7 +3280,6 @@ layout: []
     #[test]
     fn reject_default_bounds_overflow() {
         let yaml = r#"
-id: t
 name: T
 unit: mm
 dpi: 200
@@ -3464,367 +3305,195 @@ layout:
     }
 
     #[test]
-    fn template_with_group_loads_and_reports_it() {
-        let yaml = r#"
-id: t
-name: T
-group: Warehouse
-unit: mm
-dpi: 200
-format:
-  type: single
-  height: 18
-  width: 50
-layout: []
-"#;
-        let t = crate::parse::parse_template(yaml).expect("parse template");
-        t.validate().expect("validate template");
-        assert_eq!(t.group.as_deref(), Some("Warehouse"));
+    fn template_id_stem_validation() {
+        assert!(validate_template_id_stem("valid-id_123"));
+        assert!(!validate_template_id_stem(""));
+        assert!(!validate_template_id_stem("has space"));
+        assert!(!validate_template_id_stem("has.dot"));
+        assert!(!validate_template_id_stem("has/slash"));
     }
 
     #[test]
-    fn template_without_group_is_ungrouped() {
-        let yaml = r#"
-id: t
-name: T
-unit: mm
-dpi: 200
-format:
-  type: single
-  height: 18
-  width: 50
-layout: []
-"#;
-        let t = crate::parse::parse_template(yaml).expect("parse template");
-        t.validate().expect("validate template");
-        assert_eq!(t.group, None);
+    fn group_segment_validation_rules() {
+        assert!(validate_group_segment("Warehouse").is_ok());
+        assert!(validate_group_segment("").is_err());
+        assert!(validate_group_segment("   ").is_err());
+        assert!(validate_group_segment("trailing-dot.").is_err());
+        assert!(validate_group_segment("trailing-space ").is_err());
+        assert!(validate_group_segment(" leading-space").is_err());
+        assert!(validate_group_segment(".leading-dot").is_err());
+        assert!(validate_group_segment(".").is_err());
+        assert!(validate_group_segment("..").is_err());
+        assert!(validate_group_segment("CON").is_err());
+        assert!(validate_group_segment("con").is_err());
+        assert!(validate_group_segment("CON.txt").is_err());
+        assert!(validate_group_segment("LPT1").is_err());
+        assert!(validate_group_segment("COM¹").is_err());
+        assert!(validate_group_segment("contains/slash").is_err());
+        assert!(validate_group_segment("has\nnewline").is_err());
+        assert!(validate_group_segment("has\ttab").is_err());
+        let long_65 = "a".repeat(65);
+        assert!(validate_group_segment(&long_65).is_err());
     }
 
     #[test]
-    fn template_group_padded_value_is_stripped() {
-        let yaml = r#"
-id: t
-name: T
-group: "  Warehouse  "
-unit: mm
-dpi: 200
-format:
-  type: single
-  height: 18
-  width: 50
-layout: []
-"#;
-        let t = crate::parse::parse_template(yaml).expect("parse template");
-        t.validate().expect("validate template");
-        assert_eq!(t.group.as_deref(), Some("Warehouse"));
-    }
-
-    #[test]
-    fn template_group_invalid_values_fail_with_group_in_message() {
-        let cases = [
-            ("empty", r#"group: """#),
-            ("whitespace", r#"group: "   ""#),
-            (
-                "65-char",
-                r#"group: "12345678901234567890123456789012345678901234567890123456789012345""#,
-            ),
-            ("line-feed", r#"group: "Warehouse\n1""#),
-            ("tab", r#"group: "Warehouse\t1""#),
-        ];
-
-        for (name, group_line) in cases {
-            let yaml = format!(
-                "id: t\nname: T\n{group_line}\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n"
-            );
-            let t = crate::parse::parse_template(&yaml);
-            if let Ok(tpl) = t {
-                let err = tpl
-                    .validate()
-                    .expect_err(&format!("case {name} should fail validation"));
-                assert!(
-                    err.contains("group"),
-                    "case {name}: error '{err}' should mention 'group'"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn template_group_non_string_fails_at_parse_with_group_in_path() {
-        let yaml = "id: t\nname: T\ngroup: [a, b]\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n";
-        let err =
-            crate::parse::parse_template(yaml).expect_err("should fail to parse non-string group");
-        assert!(
-            err.to_string().contains("group"),
-            "error '{err}' should contain 'group'"
-        );
-    }
-
-    #[test]
-    fn template_group_slash_no_hierarchy() {
-        let yaml1 = "id: t1\nname: T1\ngroup: Shipping/Pallets\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n";
-        let yaml2 = "id: t2\nname: T2\ngroup: Shipping\nunit: mm\ndpi: 200\nformat:\n  type: single\n  height: 18\n  width: 50\nlayout: []\n";
-        let t1 = crate::parse::parse_template(yaml1).expect("parse t1");
-        let t2 = crate::parse::parse_template(yaml2).expect("parse t2");
-        assert_eq!(t1.group.as_deref(), Some("Shipping/Pallets"));
-        assert_eq!(t2.group.as_deref(), Some("Shipping"));
-        assert_ne!(t1.group, t2.group);
-    }
-
-    #[test]
-    fn patcher_comments_and_key_order_survive_set_change_clear() {
-        let original = r#"# Top header comment
-id: badge
-name: Event Badge
-# Line before unit
-unit: mm
-dpi: 300
-format:
-  type: single
-  width: 50
-  height: 20
-layout: []
-# Trailing comment
-"#;
-        // 1. Set group
-        let set_res = patch_template_group(original, Some("Conferences")).expect("set group");
-        assert!(set_res.contains("group: Conferences"));
-        assert!(set_res.starts_with("# Top header comment\nid: badge\nname: Event Badge\ngroup: Conferences\n# Line before unit"));
-        assert!(set_res.ends_with("# Trailing comment\n"));
-
-        // 2. Change group
-        let change_res = patch_template_group(&set_res, Some("Workshops")).expect("change group");
-        assert!(change_res.contains("group: Workshops"));
-        assert!(!change_res.contains("Conferences"));
-        assert!(change_res.starts_with("# Top header comment\nid: badge\nname: Event Badge\ngroup: Workshops\n# Line before unit"));
-
-        // 3. Clear group
-        let clear_res = patch_template_group(&change_res, None).expect("clear group");
+    fn group_name_path_validation() {
         assert_eq!(
-            clear_res, original,
-            "clearing group should restore exact byte equality"
+            validate_group_name("Shipping/Pallets").unwrap(),
+            "Shipping/Pallets"
         );
+        assert_eq!(
+            validate_group_name("  Shipping/Pallets  ").unwrap(),
+            "Shipping/Pallets"
+        );
+        assert!(validate_group_name("").is_err());
+        assert!(validate_group_name("   ").is_err());
+        assert!(validate_group_name("Shipping//Pallets").is_err());
+        assert!(validate_group_name("/Shipping").is_err());
+        assert!(validate_group_name("Shipping/").is_err());
+        assert!(validate_group_name("CON/Pallets").is_err());
+        assert!(validate_group_name("Shipping/CON").is_err());
+        assert!(validate_group_name("Shipping/./Pallets").is_err());
+        assert!(validate_group_name("Shipping/../Pallets").is_err());
+        let long_256 = format!("{}/{}", "a".repeat(64), "b".repeat(64)).repeat(3);
+        assert!(validate_group_name(&long_256).is_err());
     }
 
     #[test]
-    fn patcher_quoted_value_keeps_quotes_and_comment() {
-        let yaml_double = r#"id: badge
-name: Badge
-group: "A # B"  # keep me
-unit: mm
-dpi: 300
-format:
-  type: single
-  width: 50
-  height: 20
-layout: []
-"#;
-        let res = patch_template_group(yaml_double, Some("Warehouse"))
-            .expect("patch double quoted with comment");
+    fn list_template_groups_orders_and_filters() {
+        let temp = std::env::temp_dir().join(format!("test-groups-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join("Shipping/Pallets")).unwrap();
+        std::fs::create_dir_all(temp.join("Shipping/Boxes")).unwrap();
+        std::fs::create_dir_all(temp.join("Archive")).unwrap();
+        std::fs::create_dir_all(temp.join(".hidden/Sub")).unwrap();
+        std::fs::create_dir_all(temp.join("Invalid:Name/Sub")).unwrap();
+
+        let groups = list_template_groups(&temp).unwrap();
+        assert_eq!(
+            groups,
+            vec!["Archive", "Shipping", "Shipping/Boxes", "Shipping/Pallets"]
+        );
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn load_from_dir_handles_nesting_dot_precedence_invalid_dirs_and_stems() {
+        let dir = temp_dir("load_nesting");
+        std::fs::create_dir_all(dir.join("nested/sub")).unwrap();
+        std::fs::create_dir_all(dir.join(".dot_dir/invalid:name")).unwrap();
+        std::fs::create_dir_all(dir.join("invalid:group")).unwrap();
+
+        write_template(&dir, "nested/sub/t1.yaml", &sample_yaml("Nested 1"));
+        write_template(
+            &dir,
+            ".dot_dir/invalid:name/t2.yaml",
+            &sample_yaml("Dot Ignored"),
+        );
+        write_template(&dir, "invalid:group/t3.yaml", &sample_yaml("Invalid Dir"));
+        write_template(&dir, "bad stem.yaml", &sample_yaml("Bad Stem"));
+        write_template(&dir, "good_stem.yaml", &sample_yaml("Good Stem"));
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+
+        assert_eq!(registry.len(), 2);
+        let t1 = registry.get("t1").expect("t1 loaded");
+        assert_eq!(t1.group.as_deref(), Some("nested/sub"));
+        let good = registry.get("good_stem").expect("good_stem loaded");
+        assert_eq!(good.group, None);
+
+        // Dot dir is completely skipped (no broken entry for t2)
+        assert!(registry.get("t2").is_none());
+
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 2);
+
+        let invalid_dir_broken = broken
+            .iter()
+            .find(|b| b.path == "invalid:group/t3.yaml")
+            .expect("invalid dir reported broken");
+        assert!(invalid_dir_broken.error.contains("invalid:group"));
+
+        let bad_stem_broken = broken
+            .iter()
+            .find(|b| b.path == "bad stem.yaml")
+            .expect("bad stem reported broken");
+        assert!(bad_stem_broken.error.contains("bad stem"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn id_contest_won_by_location_valid_file() {
+        let dir = temp_dir("id_contest_validity");
+        std::fs::create_dir_all(dir.join("invalid:dir")).unwrap();
+        std::fs::create_dir_all(dir.join("valid")).unwrap();
+
+        // invalid:dir/contest.yaml sorts before valid/contest.yaml lexically,
+        // but invalid:dir fails group name validation and cannot contest the ID.
+        write_template(
+            &dir,
+            "invalid:dir/contest.yaml",
+            &sample_yaml("Invalid Loc"),
+        );
+        write_template(&dir, "valid/contest.yaml", &sample_yaml("Valid Loc"));
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+
+        assert_eq!(registry.len(), 1);
+        let contest = registry.get("contest").expect("contest loaded");
+        assert_eq!(contest.group.as_deref(), Some("valid"));
         assert!(
-            res.contains("group: Warehouse  # keep me"),
-            "expected comment to survive, got:\n{res}"
+            registry.duplicates("contest").is_empty(),
+            "invalid location file does not register as an id duplicate"
         );
 
-        let yaml_single = r#"id: badge
-name: Badge
-group: 'A # B'  # keep me single
-unit: mm
-dpi: 300
-format:
-  type: single
-  width: 50
-  height: 20
-layout: []
-"#;
-        let res_single = patch_template_group(yaml_single, Some("Warehouse"))
-            .expect("patch single quoted with comment");
-        assert!(
-            res_single.contains("group: Warehouse  # keep me single"),
-            "expected single quote comment to survive, got:\n{res_single}"
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0].path, "invalid:dir/contest.yaml");
+        assert!(broken[0].error.contains("invalid:dir"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_from_dir_skips_symlink_directories() {
+        let dir = temp_dir("symlink_dir_skip");
+        let target = dir.join("real_dir");
+        std::fs::create_dir_all(&target).unwrap();
+        write_template(&dir, "real_dir/real.yaml", &sample_yaml("Real"));
+
+        let symlink = dir.join("sym_dir");
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+        assert_eq!(registry.len(), 1);
+        assert_eq!(
+            registry.get("real").unwrap().group.as_deref(),
+            Some("real_dir")
         );
+        assert!(registry.broken().is_empty());
 
-        // Group name needing quotes
-        let res_special =
-            patch_template_group(yaml_double, Some("A: B")).expect("patch special char name");
-        assert!(
-            res_special.contains(r#"group: "A: B"  # keep me"#)
-                || res_special.contains(r#"group: 'A: B'  # keep me"#)
-        );
+        fs::remove_dir_all(&dir).ok();
     }
 
+    #[cfg(unix)]
     #[test]
-    fn patcher_crlf_stays_crlf() {
-        let crlf_yaml = "id: badge\r\nname: Badge\r\nunit: mm\r\ndpi: 300\r\nformat:\r\n  type: single\r\n  width: 50\r\n  height: 20\r\nlayout: []\r\n";
-        let patched = patch_template_group(crlf_yaml, Some("Warehouse")).expect("patch CRLF");
-        assert!(patched.contains("\r\n"));
-        assert!(!patched.replace("\r\n", "").contains('\n'));
-        assert!(patched.contains("group: Warehouse\r\n"));
+    fn load_from_dir_handles_non_utf8_paths() {
+        use std::os::unix::ffi::OsStrExt;
 
-        let cleared = patch_template_group(&patched, None).expect("clear CRLF");
-        assert_eq!(cleared, crlf_yaml);
-    }
+        let dir = temp_dir("non_utf8");
+        let non_utf8_filename = std::ffi::OsStr::from_bytes(b"non_utf8_\xff.yaml");
+        let path = dir.join(non_utf8_filename);
+        std::fs::write(&path, sample_yaml("Non UTF8")).unwrap();
 
-    #[test]
-    fn patcher_nested_group_key_untouched() {
-        let yaml = r#"id: badge
-name: Badge
-unit: mm
-dpi: 300
-params:
-  group:
-    type: string
-format:
-  type: single
-  width: 50
-  height: 20
-layout: []
-"#;
-        let patched =
-            patch_template_group(yaml, Some("Warehouse")).expect("patch with nested group param");
-        assert!(patched.contains("name: Badge\ngroup: Warehouse\nunit: mm"));
-        assert!(patched.contains("params:\n  group:\n    type: string"));
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+        assert_eq!(registry.len(), 0);
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 1);
+        assert!(broken[0].error.contains("not valid UTF-8"));
 
-        let cleared = patch_template_group(&patched, None).expect("clear with nested group param");
-        assert_eq!(cleared, yaml);
-    }
-
-    #[test]
-    fn patcher_refusals() {
-        // Flow mapping root
-        let flow_yaml = r#"{id: t, name: T, unit: mm, dpi: 200, format: {type: single, width: 50, height: 18}, layout: []}"#;
-        let err = patch_template_group(flow_yaml, Some("Warehouse"))
-            .expect_err("flow mapping root should be refused");
-        assert_eq!(err.reason(), Some("template_group_unpatchable"));
-
-        // Quoted key
-        let quoted_key_yaml = r#""group": Shipping
-id: t
-name: T
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 18
-layout: []
-"#;
-        let err = patch_template_group(quoted_key_yaml, Some("Warehouse"))
-            .expect_err("quoted key should be refused");
-        assert_eq!(err.reason(), Some("template_group_unpatchable"));
-
-        // Multi document
-        let multi_doc_yaml = r#"---
-id: t1
-name: T1
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 18
-layout: []
----
-id: t2
-name: T2
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 18
-layout: []
-"#;
-        let err = patch_template_group(multi_doc_yaml, Some("Warehouse"))
-            .expect_err("multi document should be refused");
-        assert_eq!(err.reason(), Some("template_group_unpatchable"));
-
-        // Block scalar
-        let block_scalar_yaml = r#"id: t
-name: T
-group: |
-  Shipping
-unit: mm
-dpi: 200
-format:
-  type: single
-  width: 50
-  height: 18
-layout: []
-"#;
-        let err = patch_template_group(block_scalar_yaml, Some("Warehouse"))
-            .expect_err("block scalar should be refused");
-        assert_eq!(err.reason(), Some("template_group_unpatchable"));
-
-        // Invalid group name (empty)
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 18\nlayout: []\n";
-        let err =
-            patch_template_group(yaml, Some("")).expect_err("empty group name should be rejected");
-        assert_eq!(err.reason(), Some("template_group_invalid"));
-
-        // Invalid group name (65 chars)
-        let long_name = "12345678901234567890123456789012345678901234567890123456789012345";
-        let err = patch_template_group(yaml, Some(long_name))
-            .expect_err("65 char group name should be rejected");
-        assert_eq!(err.reason(), Some("template_group_invalid"));
-    }
-
-    #[test]
-    fn present_but_valueless_group_fails_to_load() {
-        // `group:` with nothing after it is a present null, not an absent key. Loading it as
-        // ungrouped would silently swallow an authoring slip (#164 review).
-        for value in ["", " ~", " null", " Null", " 42", " true"] {
-            let yaml = format!(
-                "id: t\nname: T\ngroup:{value}\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n"
-            );
-            let err = crate::parse::parse_template(&yaml)
-                .map_err(|e| e.to_string())
-                .and_then(|t| t.validate().map(|()| t))
-                .err()
-                .unwrap_or_else(|| panic!("`group:{value}` must not load"));
-            assert!(
-                err.contains("group"),
-                "error for `group:{value}` must name the field, got: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn absent_group_still_loads_as_ungrouped() {
-        // The other side of the test above: absence is legal and must stay legal.
-        let yaml = "id: t\nname: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 10\nlayout: []\n";
-        let template = crate::parse::parse_template(yaml).expect("absent group must load");
-        template.validate().expect("absent group must validate");
-        assert_eq!(template.group, None);
-    }
-
-    #[test]
-    fn patcher_catalog_byte_equality() {
-        let manifest_dir = env!("CARGO_MANIFEST_DIR");
-        let catalog_dir = std::path::Path::new(manifest_dir).join("catalog");
-        assert!(catalog_dir.is_dir(), "catalog directory must exist");
-
-        fn test_dir(dir: &std::path::Path) {
-            for entry in std::fs::read_dir(dir).expect("read dir").flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    test_dir(&p);
-                } else if p.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                    let original = std::fs::read_to_string(&p).expect("read catalog template");
-                    let set = patch_template_group(&original, Some("TestGroup"))
-                        .unwrap_or_else(|e| panic!("failed to patch {}: {e:?}", p.display()));
-                    let cleared = patch_template_group(&set, None)
-                        .unwrap_or_else(|e| panic!("failed to clear {}: {e:?}", p.display()));
-                    assert_eq!(
-                        cleared,
-                        original,
-                        "byte equality failed after set+clear on {}",
-                        p.display()
-                    );
-                }
-            }
-        }
-
-        test_dir(&catalog_dir);
+        fs::remove_dir_all(&dir).ok();
     }
 }

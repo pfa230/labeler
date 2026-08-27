@@ -74,9 +74,7 @@ edge. Those are the failures a 200 hides.
 ## 2. Anatomy of a template
 
 ```yaml
-id: my_label          # unique across the templates directory
 name: My Label        # shown in the UI
-group: Warehouse      # optional: category name for grouping and filtering in the UI
 unit: mm              # mm | in — every coordinate and size below is in this unit
 dpi: 180              # raster resolution for PNG output
 params: { ... }       # typed inputs, defaults, bounds, and UI hints (see §9)
@@ -84,10 +82,12 @@ format: { ... }       # the physical shape of the label (below)
 layout: [ ... ]       # the tree of items to draw
 ```
 
-`group` is an optional string (1 to 64 characters) used to categorize templates in the web UI. Grouping
-is a flat single level: a slash in a group name (e.g. `Shipping/Pallets`) carries no directory or
-hierarchical structure and is treated simply as a character in the name. Templates without a `group`
-field are treated as ungrouped.
+A template's identifier is determined by its filename stem (e.g. `templates/my_label.yaml` has ID `my_label`). The `id:` and `group:` keys are **not** present in the YAML file and will be rejected with a 422 error if included.
+
+Directory structure relative to the templates root determines group membership:
+- `templates/my_label.yaml` is ungrouped (`group: null`).
+- `templates/Warehouse/my_label.yaml` belongs to group `Warehouse`.
+- `templates/Shipping/Pallets/my_label.yaml` belongs to nested group `Shipping/Pallets`.
 
 An invalid template is quarantined on load while other templates continue to serve. Full field table:
 [SPEC §3](SPEC.md#3-template-schema).
@@ -136,7 +136,6 @@ at startup rather than at print time (§10).
 `catalog/sheet/avery/avery5163.yaml` is the whole thing:
 
 ```yaml
-id: avery5163
 name: Avery 5163 2" x 4" Shipping Label
 unit: in
 dpi: 300
@@ -199,7 +198,6 @@ example; it is covered in §9 because it also demonstrates containers, parameter
 `catalog/tape/brother/brother_24mm.yaml`:
 
 ```yaml
-id: brother_24mm
 name: Brother 24mm Continuous Label (text only)
 unit: mm
 dpi: 180

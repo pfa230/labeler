@@ -21,7 +21,7 @@ const CODE_UNSUPPORTED_LAYOUT: &str = "UnsupportedLayoutItem";
 const CODE_UNSUPPORTED_FORMAT: &str = "UnsupportedFormat";
 const CODE_RENDER_FAILED: &str = "RenderFailed";
 const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
-const CODE_TEMPLATE_EXISTS: &str = "TemplateExists";
+const CODE_PRECONDITION_FAILED: &str = "PreconditionFailed";
 const CODE_TEMPLATE_ID_COLLISION: &str = "TemplateIdCollision";
 const CODE_PRINTER_NOT_FOUND: &str = "PrinterNotFound";
 const CODE_PRINTER_EXISTS: &str = "PrinterExists";
@@ -98,6 +98,10 @@ impl AppError {
             reason: Some(reason),
             response_only_detail_keys: Vec::new(),
         }
+    }
+
+    pub fn status(&self) -> StatusCode {
+        self.status
     }
 
     /// The `details.reason` slug, when this error carries one (SPEC §10.1).
@@ -266,16 +270,24 @@ impl AppError {
         Self::template_invalid(Reason::TemplateGroupInvalid, message)
     }
 
-    pub fn template_group_unpatchable(message: impl Into<String>) -> Self {
-        Self::template_invalid(Reason::TemplateGroupUnpatchable, message)
+    pub fn template_group_case_conflict(message: impl Into<String>) -> Self {
+        Self::template_invalid(Reason::TemplateGroupCaseConflict, message)
     }
 
-    pub fn template_exists(id: &str) -> Self {
+    pub fn template_group_mismatch(message: impl Into<String>) -> Self {
+        Self::invalid_request(Reason::TemplateGroupMismatch, message)
+    }
+
+    pub fn unsupported_precondition(message: impl Into<String>) -> Self {
+        Self::invalid_request(Reason::UnsupportedPrecondition, message)
+    }
+
+    pub fn precondition_failed(message: impl Into<String>) -> Self {
         Self::new(
-            StatusCode::CONFLICT,
-            CODE_TEMPLATE_EXISTS,
-            format!("A template with id '{id}' already exists"),
-            Some(json!({ "template": id })),
+            StatusCode::PRECONDITION_FAILED,
+            CODE_PRECONDITION_FAILED,
+            message,
+            None,
         )
     }
 
