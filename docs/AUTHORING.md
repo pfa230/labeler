@@ -24,10 +24,10 @@ are labelled where they appear.
 2. [Anatomy of a template](#2-anatomy-of-a-template)
 3. [A fixed-size label, end to end](#3-a-fixed-size-label-end-to-end)
 4. [Auto-length tape labels: how the width is decided](#4-auto-length-tape-labels-how-the-width-is-decided)
-5. [`auto` means two different things](#5-auto-means-two-different-things)
+5. [Sizing vocabulary: `content` and `fill`](#5-sizing-vocabulary-content-and-fill)
 6. [`max_w` and `max_h` are caps](#6-max_w-and-max_h-are-caps)
-7. [Edge-relative coordinates](#7-edge-relative-coordinates)
-8. [`to:` instead of `size:`](#8-to-instead-of-size)
+7. [Text overflow: `ellipsis` and `fail`](#7-text-overflow-ellipsis-and-fail)
+8. [Edge-relative coordinates and `to:`](#8-edge-relative-coordinates-and-to)
 9. [Containers: nesting, padding, frames, options, rotation](#9-containers-nesting-padding-frames-options-rotation)
 10. [Why some mistakes are caught at startup and others at print time](#10-why-some-mistakes-are-caught-at-startup-and-others-at-print-time)
 11. [Troubleshooting](#11-troubleshooting)
@@ -128,8 +128,8 @@ format:
 ```
 
 Whether `format.width` is a number or a range is the single most consequential choice in the file. It
-decides what `auto` means (§5), whether the measure pre-pass runs (§4), and which errors can be caught
-at startup rather than at print time (§10).
+decides what a `fill` extent stretches to (§5), whether the measure pre-pass runs (§4), and which
+errors can be caught at startup rather than at print time (§10).
 
 ## 3. A fixed-size label, end to end
 
@@ -187,8 +187,10 @@ slot. The engine repeats that layout into every position in `positions` and pagi
 write page coordinates.
 
 **A `font_size` range means auto-shrink.** `{min: 10.0, max: 48.0}` starts at 48pt and steps down in
-0.5pt increments until the text fits its box; if it still overflows at 10pt, the last line is
-ellipsized. A bare number (`font_size: 12.0`) is fixed and will clip rather than shrink.
+0.5pt increments until the text fits its box; if it still overflows at 10pt, `overflow` decides what
+happens (§7), and by default the last line is ellipsized. A bare number (`font_size: 12.0`) is fixed
+and never shrinks, but it is not a licence to clip: a fixed size runs the same `overflow` policy, so
+it ellipsizes at the box edge and errors when even the marker does not fit.
 
 For a fixed-size label with a QR, `tests/fixtures/templates/avery5163_asset_tag.yaml` is the canonical
 example; it is covered in §9 because it also demonstrates containers, parameters, conditional visibility, and rotation.
@@ -213,14 +215,15 @@ format:
 layout:
   - type: container
     at: [0.0, 0.0]
-    size: [auto, 18.1]
+    size: [fill, 18.1]
     padding: 1.0
     items:
       - type: text
         value: "{message}"
         at: [0.0, 0.0]
-        size: [auto, 16.1]
+        size: [fill, 16.1]
         font_size: { min: 10.0, max: 32.0 }
+        multiline: false
         alignment: { horizontal: center, vertical: center }
 ```
 
@@ -236,20 +239,31 @@ everything in §5 through §8 is a consequence of it.
 
 | Item | Contributes |
 | --- | --- |
-| `text` with a content-driven width | `at.x` + the width its string actually needs at the chosen font size |
+| `text` with `size: [content, …]` | `at.x` + the width its string actually needs at the chosen font size |
 | `text`/`qr`/`image`/`container` with a numeric width | `at.x + width` — a constant you wrote |
-| `qr` / `image` with `size: [auto, …]` | `at.x` + the remaining budget, capped by `max_w` (§6) |
-| `container` with a content-driven width | `at.x` + padding + whatever its children measured to |
+| `qr` / `image` with `size: [content, …]` | `at.x` + the item's intrinsic dimension (QR matrix with quiet zone; image viewBox / pixels) |
+| `container` with `size: [content, …]` | `at.x` + padding + whatever its children measured to |
+| anything with `size: [fill, …]` | exactly what the same item written `content` contributes: a `fill` extent reports its own content upward, then takes the frame |
 | `line` | the larger of its two endpoints' `x`, and nothing else |
-| anything anchored with an edge-relative `at.x` (§7) | only its **inset** — the narrowest label it fits on |
+| anything anchored with an edge-relative `at.x` (§8) | only its **inset** — the narrowest label it fits on |
 | a `text` or `container` whose `to.x` is edge-relative | its content, **plus** the right margin that `to.x` asks for (`to: [-2.0, …]` reserves 2 units to the right of the content) |
-| a `qr` or `image` whose `to.x` is edge-relative | nothing at all — see the warning below |
+| a `qr` or `image` whose `to.x` is edge-relative | its intrinsic size, **plus** the right margin |
 
-Three rows are worth dwelling on, because they are the ones that trip people up.
+Four rows are worth dwelling on, because they are the ones that trip people up.
+
+**`fill` and `content` contribute the same width, and differ afterwards.** Both report what the item
+measured, so both decide the label the same way; the difference is what the item does once the width
+exists. A `content` item keeps its own size, and a `fill` item spreads to the frame remaining from its
+anchor. On a tape that is exactly the width its text asked for the two are indistinguishable, which is
+why the difference only shows up at the ends of the range: when the label clamps up to `width.min`, or
+`max_w` caps it, the extra width is slack a `fill` box has and a `content` box does not, and
+`alignment.horizontal: center` centres in it. That is why the tape above writes `fill` and not
+`content`: with a short message the label widens to `width.min: 10.0` and the text sits in the middle
+of it, where a `content`-width text would sit against the left padding.
 
 **A `line` contributes only the coordinates you wrote, never any content of its own.** A rule drawn to
 a fixed `x` of 40 does hold the label to at least 40 wide — that is a number you asked for. But a rule
-drawn to the right *edge* (§7) contributes nothing, so it spans whatever the text decided rather than
+drawn to the right *edge* (§8) contributes nothing, so it spans whatever the text decided rather than
 deciding it. That is the difference between a divider that follows the content and one that pins the
 label open.
 
@@ -257,95 +271,53 @@ label open.
 position depends on the final width, which is what the pre-pass is trying to compute. Circular. So the
 item contributes only its inset — the narrowest label on which it would still fit — and nothing more.
 
-**A `qr` or `image` spanning to the right edge contributes nothing, and that can fail.** Neither item
-type has an intrinsic content width the engine measures, so a frame-dependent `to` on one of them adds
-zero to the extent: the item simply stretches to whatever width the label ends up at. If nothing else
-on the label sizes the content, the width falls back to `width.min` — and if the item's own `at.x`
-sits further right than `width.min`, its box resolves negative and the render fails with
-`UnsupportedLayoutItem`. Give such an item a numeric size, or put something measurable beside it.
-Intrinsic QR/image sizing is deferred ([#149](https://github.com/pfa230/labeler/issues/149)).
-
-Two things that are *not* measured: a rotated container's subtree (its inner axes are swapped, which
-the width model does not handle), and any container whose `option` gate does not match the current
-selection.
+**Containers compute intrinsic content across rotation.** A rotated container (`rotate: 90 | 180 | 270`)
+measures its subtree in author space and maps through the axis swap, contributing its author-height to
+the physical width when rotated 90° or 270°.
 
 Fixed-width `single` templates and `sheet` templates skip the pre-pass entirely. Their frame is known
 before the request arrives.
 
-## 5. `auto` means two different things
+## 5. Sizing vocabulary: `content` and `fill`
 
-This is the trap. `auto` on a size axis resolves differently depending on the template's format, and
-the two meanings are close enough to conflate and far enough apart to break a layout.
+Every box layout item (`text`, `qr`, `image`, `container`) specifies its dimensions via `size: [width, height]`
+or `to: [x, y]` (see §8).
 
-**On a fixed-width label (fixed-width `single`, or any `sheet`), `auto` means "fill the parent."**
-Specifically, it means *the space remaining from this item's own anchor*, not the whole frame
-(illustrative snippet, not a shipped template):
+On each axis of `size`, you write one of:
+- **A numeric dimension**: e.g. `20.0` or `1.5in`. Statically fixed.
+- **`content`**: Hugs the item's own intrinsic dimension.
+  - On `text`: Hugs the text rendered width or height.
+  - On `qr`: Hugs the generated QR matrix size (`(modules + 2 × quiet_zone) × module_size`, with `quiet_zone` defaulting to 0).
+  - On `image`: Hugs the SVG physical / viewBox dimensions, or raster image pixel dimensions at target DPI.
+  - On `container`: Hugs the bounding box of its active children plus padding.
+- **`fill`**: Stretches to occupy the remaining space in the parent frame from the item's anchor:
+  `parent_frame - resolved_anchor`. If an item is at `at: [10.0, 0.0]` in a 50mm container,
+  `size: [fill, ...]` resolves to `40.0mm`; at `at: [-12.0, 0.0]` it resolves to `12.0mm` in any
+  frame, because a right-anchored anchor leaves exactly its own inset. The remainder is not clamped
+  at zero: an anchor that resolves outside its frame is refused (§10), not stretched to nothing.
 
-```yaml
-format: { type: single, width: 60.0, height: 20.0 }
-layout:
-  - type: container
-    at: [10.0, 2.0]
-    size: [auto, auto]      # -> 50mm wide (60 - 10), 18mm tall (20 - 2)
-```
+When omitted, a `container` defaults to `size: [fill, fill]`.
 
-The subtraction uses the *resolved* anchor, so an edge-relative `at` (§7) is measured inward from the
-far edge first. This is [ADR-0054](adr/0054-auto-fallback-position.md); before it, `auto` resolved to
-the whole frame and an item anchored anywhere but the origin overflowed.
-
-**On an auto-length label, `auto` width on a `text` means "shrink to content."** That is what makes
-the tape cut to fit:
-
-```yaml
-params:
-  message:
-    type: string
-format: { type: single, width: { min: 10.0, max: 120.0 }, height: 18.1 }
-layout:
-  - type: text
-    value: "{message}"
-    size: [auto, 16.1]      # -> exactly as wide as the string needs
-```
-
-Two consequences that follow directly:
-
-- **An empty value produces a short label, not a blank full-width one.** "Shrink to content" with no
-  content shrinks to nothing, clamped up to `width.min`. That is intended.
-- **A container gets there differently, in two steps.** This is worth being precise about, because
-  the tape templates all wrap their text in one. During the measure pre-pass, an auto-width container
-  contributes its *children's* measured extent plus its padding — that is what sizes the label. Then,
-  at render, its own `auto` width resolves to the frame remainder (`label_width - at.x`) of the label
-  that measurement just produced. So a container does end up content-sized, but only because its
-  children sized the label first; the container itself never measures its own content. The practical
-  consequence: two sibling auto-width containers on one tape do not each shrink to their own content —
-  they both fill from their anchor to the label's right edge, and overlap. Give them explicit widths,
-  a `to`, or a `max_w`. See [SPEC §4](SPEC.md#4-layout).
-
-**`qr` and `image` have neither meaning.** Neither has an intrinsic content footprint to shrink to, so
-`auto` on them resolves to exactly `max_w` and is a hard error without one — never a fill. If you want
-a QR to fill a space, say how big:
-
-```yaml
-- type: qr
-  value: "{code}"
-  at: [0.0, 0.0]
-  size: [auto, 18.1]
-  max_w: 18.1          # required; `auto` here means "18.1", not "as much as is left"
-```
+> [!NOTE]
+> The keyword `auto` was previously overloaded with multiple conflicting meanings and is now removed.
+> Template definitions containing `auto` will be rejected at parse time. Use `content` to hug the item's
+> own size, or `fill` to stretch to the frame.
 
 ## 6. `max_w` and `max_h` are caps
 
-`max_w` and `max_h` bound the resolution of `auto` on their axis, in validation, measurement, and
-rendering, on every format ([ADR-0053](adr/0053-max-bounds-cap.md)). Two rules:
+`max_w` and `max_h` bound the resolution of `content` and `fill` on their respective axes across validation,
+measurement, and rendering ([ADR-0053](adr/0053-max-bounds-cap.md), [ADR-0080](adr/0080-unify-size-resolution.md)).
 
-**They cap `auto`; they never clamp a number.** `size: [40.0, …]` with `max_w: 30.0` is 40 wide. If
-you want 30, write 30. A `max_*` is an upper bound on a value the engine computes, not a constraint on
-one you wrote.
+Two rules:
 
-**On an auto-length label they cap content, which is the useful case.** For a `text`, `auto` there
-already means "shrink to content", so `max_w` limits how much content-driven width the item may claim.
-For a `qr` or `image` the cap is doing something different: with no content to shrink to, `max_w` *is*
-the width (§5), and what it caps is how much of the tape's budget the item reserves.
+**They cap dynamic resolution; they never clamp a fixed number.** `size: [40.0, …]` with `max_w: 30.0` is 40 wide. If
+you want 30, write 30. A `max_*` is an upper bound on a dynamically resolved value, not a constraint on an
+explicit literal you wrote.
+
+**They cap content and fill alike.** For a `text` with `size: [content, 18.1]`, `max_w: 30.0` limits how much
+content-driven width the text may claim. For a `container` with `size: [fill, 18.1]`, `max_w: 30.0` caps the
+stretched width to at most 30mm even if 80mm remains in the parent frame.
+
 `tests/fixtures/templates/brother_24mm_max_w_cap.yaml`:
 
 ```yaml
@@ -359,12 +331,11 @@ layout:
   - type: qr
     value: "{code}"
     at: [1.0, 0.0]
-    size: [auto, 18.1]
-    max_w: 18.1
+    size: [18.1, 18.1]
   - type: text
     value: "{message}"
     at: [21.1, 0.0]
-    size: [auto, 18.1]
+    size: [content, 18.1]
     max_w: 30.0
     font_size: { min: 8.0, max: 32.0 }
     alignment: { horizontal: left, vertical: center }
@@ -372,13 +343,54 @@ layout:
 
 ![QR and a capped, ellipsized message](images/authoring-max-w-cap.png)
 
-The message is "Label maker on the third shelf", which would want far more than 30mm. It is capped at
-30, so the label comes out at exactly 51.1mm (21.1 + 30) and the text ellipsizes inside its cap
-instead of running the tape out to `width.max`.
+The message is "Label maker on the third shelf", which would want far more than 30mm. The cap bounds
+the box the text is laid out against, so it ellipsizes to "Label maker on the t..." at its `min` of
+8pt instead of running the tape out to `width.max`. The cap does not then become the width: a
+`content` extent reports its content, and the shortened line measures 29.6857mm, so the label comes
+out at 50.7857mm (21.1 + 29.6857) rather than at 51.1mm. A cap is an upper bound on what the content
+may claim, never a width in its own right.
 
-`max_w` and `max_h` are an error alongside `to:` (§8), which has no `auto` axis to bound.
+`max_w` and `max_h` also apply beside stretching `to:` extents (§8) to cap frame-dependent spans against large frames; on authored shrinking `to` extents, caps are inert.
 
-## 7. Edge-relative coordinates
+## 7. Text overflow: `ellipsis` and `fail`
+
+Every `text` is laid out against its box: it breaks into lines, a `font_size` range shrinks until the
+block fits, and whatever is still too big is `overflow`'s business. The field is optional and takes
+two values, which shorten the same things and differ only in when they give up:
+
+| | `ellipsis` (default) | `fail` |
+| --- | --- | --- |
+| fits as authored | render it | render it |
+| fits once shortened | render the shortened form | `text_does_not_fit` |
+| cannot fit however short | `text_does_not_fit` | `text_does_not_fit` |
+
+Shortening keeps the lines that fit and appends `...` to the last, trimming characters until it fits.
+The marker alone is the shortest form there is, so `ellipsis` reaches the bottom row in exactly two
+cases: a box narrower than `...` itself, and a box shorter than one line at the chosen font size.
+Neither produces a half-drawn glyph — clipping is never an outcome of the policy, it is an error.
+
+`overflow` applies to every `font_size` spelling. A fixed size has nothing to shrink, so it reaches
+the policy sooner than a range does, but it runs the same one.
+
+The policy is judged on the metric model — the cap-height-to-baseline line box — not on glyph
+outlines, so it does not see ink that leaves a box the metrics say it fits in. The two standing cases
+are in §11.
+
+```yaml
+- type: text
+  value: "{critical_asset_id}"
+  at: [5.0, 5.0]
+  size: [50.0, 10.0]
+  font_size: 10.0
+  overflow: fail        # guarantees no partial asset IDs are printed
+```
+
+Use `overflow: fail` on barcodes, regulatory labels, asset identifiers, and shipping tags where truncated
+content could lead to scanning failures or data loss.
+
+## 8. Edge-relative coordinates and `to:`
+
+### Edge-relative coordinates
 
 A coordinate component that is **sign-negative** is measured inward from the frame's far edge instead
 of outward from its origin ([ADR-0051](adr/0051-edge-relative-and-corner-placement.md)):
@@ -410,7 +422,7 @@ params:
 layout:
   - type: container
     at: [0.0, 0.0]
-    size: [auto, 18.1]
+    size: [fill, 18.1]
     padding: 1.0
     items:
       - type: text
@@ -436,11 +448,7 @@ layout:
 Both text boxes span the full width, so each centers independently, and the rule spans whatever width
 the longer line settled on. Nothing here names a width.
 
-**The constraint to know:** on an auto-length label, an edge-relative `at.x` cannot be combined with an
-`auto` or otherwise frame-dependent width on the same item. Anchoring to the right edge *and* asking
-the frame to size you is circular, and the template is rejected at load.
-
-## 8. `to:` instead of `size:`
+### `to:` instead of `size:`
 
 Every box item takes exactly one of `size` or `to`. `to` names the opposite (top-right) corner, and
 the size falls out: `size = to - at`, after both corners resolve.
@@ -453,8 +461,8 @@ you do not have. Reach for `size` when the dimension is the thing you know: a 1.
 Rules:
 
 - `size` and `to` are mutually exclusive, and exactly one is required. A `container` that gives
-  neither defaults to `size: [auto, auto]`.
-- `max_w` / `max_h` are an error alongside `to`.
+  neither defaults to `size: [fill, fill]`.
+- `max_w` / `max_h` are allowed alongside `to`: they cap stretching `to` extents, and are inert on authored shrinking `to` extents.
 - `to` must resolve above and to the right of `at`. A corner that is already inverted against the
   widest frame the label could have is rejected at load (`template_validation_failed`); one that only
   inverts against the width a particular request resolved to is `edge_rect_inverted` at render.
@@ -596,9 +604,9 @@ What to know:
   its parent exactly as if it were not rotated. Rotation is purely an inner transform.
 - **The inner canvas swaps for 90 and 270.** Author children against `[inner_h, inner_w]`. Padding is
   author-space and rotates with the design; the drawn `frame` outline does not rotate.
-- **No `auto` under rotation.** A rotated container needs an extent that resolves at compile time, and
-  no descendant may use `auto` — the author-horizontal axis maps to physical-vertical, which the
-  width model does not handle.
+- **Sizing under rotation.** Rotated containers and their descendants support `content` and `fill` as
+  long as required parent axes are resolved. When axes swap (90° and 270°), child width resolves against
+  inner container height and child height against inner container width.
 
 ## 10. Why some mistakes are caught at startup and others at print time
 
@@ -624,9 +632,9 @@ The practical consequence:
 | Decidable at load | Only decidable per request |
 | --- | --- |
 | An absolute coordinate past `width.max` | A coordinate that fits `width.max` but not *this* label's width |
-| A structurally impossible combination (edge-relative `at.x` with a frame-dependent width) | Whether the content measured wide enough to leave room |
-| A `size` that is not `> 0`, a missing `max_w` on an `auto` QR | A `to`-spanning box that collapsed because its data was empty |
-| An inverted `to` against the `width.max` frame | An `auto` axis whose anchor left no room for this data |
+| An extent that shrinks as the label grows, written on an axis whose width this label does not fix | Whether the content measured wide enough to leave room |
+| A numeric `size` component that is `<= 0`, an invalid `fill` or `content` specification | A `to`-spanning box that collapsed because its data was empty |
+| An inverted `to` against the `width.max` frame | A `fill` or shrinking `to` extent whose anchor left no room for this data |
 
 So "it loaded fine but 422s on one label" is never a mystery: either the data is missing or unusable,
 or, on an auto-length label, it produced a width the layout cannot live in. Either way the failing
@@ -640,19 +648,17 @@ never on the message text ([SPEC §10.1](SPEC.md#101-detailsreason)). Everything
 
 | Reason / Code | What actually happened | Usual fix |
 | --- | --- | --- |
-| `size_auto_without_max` | `auto` on an axis with no way to resolve it — almost always a `qr` or `image`, which have no content fallback. | Add `max_w` (or `max_h`), or write a number. |
-| `size_auto_no_room` | `auto` resolved through the anchor fallback and got `<= 0`: the item's own `at` consumed the whole frame on that axis. | Move the anchor left/down, or give the item an explicit size. |
-| `max_size_invalid` | The binding `max_*` is not `> 0`. | It is your `max_*` at fault here, not the anchor — check the number. |
-| `size_invalid` | A numeric `size` component is not `> 0`. Only a written-out number triggers this; bad `to` geometry raises one of the two below. | Check for a `0` or a negative in `size`. |
-| `edge_rect_inverted` | `to` did not resolve above and to the right of `at` — for *this* request's frame. A corner already inverted against `width.max` is caught at load as `template_validation_failed` instead. | Check signs: `to: [-0.0, …]` is the right edge, `to: [0.0, …]` is the left one. |
+| `intrinsic_size_undefined` | An `image` was asked for its own size (`content` or `fill`) and its dimension metadata gives no extent on that axis, or cannot be parsed. A `qr` without `module_size` never reaches here: that demand is visible in the file, so it is refused at load as `template_validation_failed`. | Give the SVG an absolute `width`/`height` or a `viewBox`, check the image data and its MIME type, or write a numeric `size`. |
+| `text_does_not_fit` | Under `overflow: fail`, the text overflowed its box. Under `overflow: ellipsis`, it still overflowed at the shortest form there is: the box is narrower than `...`, or shorter than one line at the chosen font size (§7). | Widen or heighten the box, lower `font_size.min`, or — under `fail` only — switch to `ellipsis`. |
+| `max_size_invalid` | The binding `max_*` is not `> 0`. | It is your `max_*` at fault here — check the number. |
+| `size_invalid` | An authored `size` component resolves to `<= 0`. | Check for a `0` or a negative value in `size` or its parameter. |
+| `edge_rect_inverted` | `to` or a shrinking `to` extent did not resolve above and to the right of `at` — for *this* request's frame. A corner already inverted against `width.max` is caught at load as `template_validation_failed` instead. | Check signs: `to: [-0.0, …]` is the right edge, `to: [0.0, …]` is the left one. |
 | `coord_out_of_frame` / `item_out_of_frame` | A resolved coordinate or box falls outside the frame. On an auto-length label this can be per-request; see §10. | Remember children resolve against the container's **padded inner** box, not its outer size. |
 | `line_endpoint_out_of_frame` | A line endpoint resolved outside the frame. Endpoints are errors, not clipped. | Same as above; check the container frame you are actually in. |
 | `dimension_exceeds_limit` | A resolved label dimension exceeds the `max_label_dimension_mm` application setting (default 1000mm) or is `<= 0`. | Check requested dimension parameters or update the setting. |
-| `container_padding_no_room` | A container's padding meets or exceeds its dimensions, leaving no room for content. | Reduce container padding or increase container size. |
 | `MissingField` (422) | A `{token}` or data-bound image `name` has no value in the request `data` and no declared `default` in `params:`. | Check parameter spelling. An inactive `when:` branch never demands its unreferenced parameters (§9). |
 | `InvalidOptionValue` (422) | An `enum` parameter was supplied with a value not in its declared `values`. | Check allowed enum values declared in the template's `params:`. |
 | `template_validation_failed` (at startup) | Structural validation. The message carries the JSON path to the offending item. | Read the path; it names the exact item. |
-| `auto_length_cursor_mismatch` (500) | Internal invariant: the measure and render passes disagreed about which items they visited. | Not an authoring error — file an issue with the template and data. |
 
 Two visual failures that return `200` and still need fixing:
 

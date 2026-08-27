@@ -20,7 +20,7 @@ format:
 layout:
   - type: container
     at: [0.0, 0.0]
-    size: [auto, 18.1]
+    size: [fill, 18.1]
     padding: 1.0
     items:
       - type: text

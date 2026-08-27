@@ -18,12 +18,11 @@ layout:
   - type: qr
     value: "{code}"
     at: [1.0, 0.0]
-    size: [auto, 18.1]
-    max_w: 18.1
+    size: [18.1, 18.1]
   - type: text
     value: "{message}"
     at: [21.1, 0.0]
-    size: [auto, 18.1]
+    size: [content, 18.1]
     max_w: 30.0
     font_size:
       min: 8.0

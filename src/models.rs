@@ -364,31 +364,107 @@ impl Position {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum AutoSize {
-    Auto,
-}
-
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SizeValue {
-    Auto(AutoSize),
+    Content,
+    Fill,
     Dynamic(DynamicValue<f32>),
 }
 
-impl SizeValue {
-    pub fn value(&self) -> Option<f32> {
+/// `content` and `fill` are keywords on the wire, so they are written and read as their own strings.
+/// A derived untagged enum cannot express that: serde renders an untagged unit variant as `null`,
+/// discarding the name, which would make the two indistinguishable in a serialized layout.
+impl Serialize for SizeValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
         match self {
-            SizeValue::Dynamic(DynamicValue::Literal(value)) => Some(*value),
-            _ => None,
+            SizeValue::Content => serializer.serialize_str("content"),
+            SizeValue::Fill => serializer.serialize_str("fill"),
+            SizeValue::Dynamic(dynamic) => dynamic.serialize(serializer),
         }
     }
+}
 
-    pub fn is_auto(&self) -> bool {
-        matches!(self, SizeValue::Auto(_))
+impl<'de> Deserialize<'de> for SizeValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct SizeValueVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for SizeValueVisitor {
+            type Value = SizeValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("'content', 'fill', a number, or a '{param_name}' reference")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match v.trim() {
+                    "content" => Ok(SizeValue::Content),
+                    "fill" => Ok(SizeValue::Fill),
+                    _ => DynamicValue::<f32>::deserialize(
+                        serde::de::IntoDeserializer::into_deserializer(v),
+                    )
+                    .map(SizeValue::Dynamic),
+                }
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(SizeValue::Dynamic)
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(SizeValue::Dynamic)
+            }
+
+            fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                DynamicValue::<f32>::deserialize(serde::de::IntoDeserializer::into_deserializer(v))
+                    .map(SizeValue::Dynamic)
+            }
+        }
+
+        deserializer.deserialize_any(SizeValueVisitor)
     }
+}
 
+impl utoipa::PartialSchema for SizeValue {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Type};
+        OneOfBuilder::new()
+            .item(
+                ObjectBuilder::new()
+                    .schema_type(Type::String)
+                    .enum_values(Some(["content", "fill"]))
+                    .description(Some(
+                        "`content` hugs the item's own size; `fill` stretches to the frame",
+                    ))
+                    .build(),
+            )
+            .item(<DynamicValue<f32> as utoipa::PartialSchema>::schema())
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for SizeValue {}
+
+impl SizeValue {
     pub fn fixed(val: f32) -> Self {
         SizeValue::Dynamic(DynamicValue::Literal(val))
     }
@@ -397,8 +473,12 @@ impl SizeValue {
         SizeValue::Dynamic(DynamicValue::Ref(name.into()))
     }
 
-    pub fn auto() -> Self {
-        SizeValue::Auto(AutoSize::Auto)
+    pub fn content() -> Self {
+        SizeValue::Content
+    }
+
+    pub fn fill() -> Self {
+        SizeValue::Fill
     }
 }
 
@@ -493,25 +573,6 @@ impl Placement {
             max_w: None,
             max_h: None,
             rotate: None,
-        }
-    }
-
-    /// The `Size` when the extent is expressed that way, for the `auto`-aware paths.
-    pub fn size_or_auto(&self) -> Option<&Size> {
-        match &self.extent {
-            Extent::Size(size) => Some(size),
-            Extent::To(_) => None,
-        }
-    }
-
-    /// True when the item's width cannot be known until the enclosing frame's width is.
-    pub fn width_is_frame_dependent(&self) -> bool {
-        match &self.extent {
-            Extent::Size(size) => size.0[0].is_auto(),
-            // `size = to.x - at.x`. Each edge-relative corner contributes one `frame_width` term,
-            // so two of them cancel and the width is a constant. Only exactly one is
-            // frame-dependent.
-            Extent::To(to) => self.at.x().is_sign_negative() != to.x().is_sign_negative(),
         }
     }
 }
@@ -628,6 +689,14 @@ impl Fit {
     }
 }
 
+#[derive(Debug, Serialize, ToSchema, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Overflow {
+    #[default]
+    Ellipsis,
+    Fail,
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutItem {
@@ -642,6 +711,8 @@ pub enum LayoutItem {
         multiline: bool,
         #[serde(default)]
         alignment: Alignment,
+        #[serde(default)]
+        overflow: Overflow,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
     },
@@ -689,6 +760,19 @@ pub enum LayoutItem {
 }
 
 impl LayoutItem {
+    /// The placement an item is positioned by, or `None` for a `line`, which carries two endpoints
+    /// instead of a box. Structural, not semantic: it says which shape the model uses, and nothing
+    /// about what any extent means.
+    pub fn placement(&self) -> Option<&Placement> {
+        match self {
+            LayoutItem::Text { placement, .. }
+            | LayoutItem::Qr { placement, .. }
+            | LayoutItem::Image { placement, .. }
+            | LayoutItem::Container { placement, .. } => Some(placement),
+            LayoutItem::Line { .. } => None,
+        }
+    }
+
     pub fn when(&self) -> Option<&BTreeMap<String, String>> {
         match self {
             LayoutItem::Text { when, .. }
@@ -844,8 +928,48 @@ mod rotation_tests {
 }
 
 #[cfg(test)]
+mod size_value_tests {
+    use super::{Size, SizeValue};
+
+    /// `content` and `fill` are the wire vocabulary, so they must survive a round trip through the
+    /// API representation. A derived untagged enum wrote both as `null` and read neither back.
+    #[test]
+    fn size_value_round_trips_its_keywords() {
+        for (value, json) in [
+            (SizeValue::Content, "\"content\""),
+            (SizeValue::Fill, "\"fill\""),
+            (SizeValue::fixed(10.0), "10.0"),
+            (SizeValue::param_ref("w"), "\"{w}\""),
+        ] {
+            assert_eq!(serde_json::to_string(&value).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<SizeValue>(json).unwrap(),
+                value,
+                "reading back {json}"
+            );
+        }
+
+        let size = Size([SizeValue::Content, SizeValue::Fill]);
+        assert_eq!(
+            serde_json::to_string(&size).unwrap(),
+            "[\"content\",\"fill\"]"
+        );
+    }
+
+    /// The published schema has to offer the same two keywords the parser accepts, not a null.
+    #[test]
+    fn size_value_schema_publishes_both_keywords() {
+        use utoipa::PartialSchema;
+        let schema = serde_json::to_string(&SizeValue::schema()).unwrap();
+        assert!(schema.contains("\"content\""), "got {schema}");
+        assert!(schema.contains("\"fill\""), "got {schema}");
+        assert!(!schema.contains("\"null\""), "got {schema}");
+    }
+}
+
+#[cfg(test)]
 mod placement_tests {
-    use super::{resolve_coord, AutoSize, Placement, Position, Size, SizeValue};
+    use super::{resolve_coord, Placement, Position, Size, SizeValue};
 
     /// GET /templates/{id} must hand back the shape the author wrote. `rename_all` is load-bearing:
     /// without it the flattened key is `Size`/`To`.
@@ -883,57 +1007,10 @@ mod placement_tests {
         assert_eq!(resolve_coord(-120.0, 100.0), -20.0);
     }
 
-    fn placement(size: Size) -> Placement {
-        Placement::sized(Position([0.0, 0.0]), size)
-    }
-
-    #[test]
-    fn auto_width_is_frame_dependent_and_numeric_width_is_not() {
-        let auto = placement(Size([
-            SizeValue::Auto(AutoSize::Auto),
-            SizeValue::from(8.0),
-        ]));
-        assert!(auto.width_is_frame_dependent());
-        let fixed = placement(Size([SizeValue::from(20.0), SizeValue::from(8.0)]));
-        assert!(!fixed.width_is_frame_dependent());
-    }
-
     #[test]
     fn position_accessors_preserve_the_sign_bit() {
         let p = Position([-0.0, 5.0]);
         assert!(p.x().is_sign_negative());
         assert!(!p.y().is_sign_negative());
-    }
-
-    /// `size = to.x - at.x`, and each edge-relative corner adds one `frame_width` term, so two cancel.
-    /// Only exactly one edge-relative corner makes the width frame-dependent.
-    #[test]
-    fn to_frame_dependence_is_the_xor_of_the_corners() {
-        fn dep(at: [f32; 2], to: [f32; 2]) -> bool {
-            Placement {
-                at: Position(at),
-                extent: super::Extent::To(Position(to)),
-                max_w: None,
-                max_h: None,
-                rotate: None,
-            }
-            .width_is_frame_dependent()
-        }
-        assert!(
-            !dep([0.0, 0.0], [30.0, 5.0]),
-            "two plain corners are a constant width"
-        );
-        assert!(
-            !dep([-20.0, 0.0], [-0.0, 5.0]),
-            "two edge corners cancel: a fixed 20-unit box"
-        );
-        assert!(
-            dep([0.0, 0.0], [-0.0, 5.0]),
-            "spanning to the right edge follows the frame"
-        );
-        assert!(
-            dep([-20.0, 0.0], [90.0, 5.0]),
-            "one edge corner leaves a frame term"
-        );
     }
 }

@@ -8,10 +8,11 @@ use thiserror::Error;
 use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, Layout, LayoutItem, Options,
-    ParamSpec, ParamType, Point, Position, Size, SizeValue, TemplateDetail, TemplateFormat,
+    ParamSpec, ParamType, Placement, Point, Size, SizeValue, TemplateDetail, TemplateFormat,
     TemplateSummary,
 };
 use crate::parse::parse_template;
+use crate::resolver;
 
 #[derive(Debug, Clone)]
 pub struct TemplateContent {
@@ -620,19 +621,37 @@ impl TemplateContent {
             }
         }
 
-        let bounds = layout_bounds(&instantiated.format)?;
-        let is_dynamic_width = matches!(
-            &instantiated.format,
-            TemplateFormat::Single {
-                width: DynamicDimension::Dynamic { .. },
+        let geometry_values = load_geometry_values(self);
+        let (val_frame, axes_resolved) = match &instantiated.format {
+            TemplateFormat::Sheet {
+                label_width,
+                label_height,
                 ..
+            } => (Some((*label_width, *label_height)), [true, true]),
+            TemplateFormat::Single { width, height, .. } => {
+                let w = match width {
+                    DynamicDimension::Fixed(DynamicValue::Literal(v)) => *v,
+                    DynamicDimension::Dynamic {
+                        max: Some(DynamicValue::Literal(v)),
+                        ..
+                    } => *v,
+                    _ => 0.0,
+                };
+                let h = match height {
+                    DynamicDimension::Fixed(DynamicValue::Literal(v)) => *v,
+                    _ => 0.0,
+                };
+                let is_dynamic = matches!(width, DynamicDimension::Dynamic { .. });
+                (Some((w, h)), [!is_dynamic, true])
             }
-        );
+        };
+
         validate_layout(
             &instantiated.layout,
             instantiated.options().as_ref(),
-            bounds.as_ref(),
-            is_dynamic_width,
+            val_frame,
+            axes_resolved,
+            &geometry_values,
         )?;
 
         if let TemplateFormat::Single {
@@ -1043,6 +1062,23 @@ fn validate_item_references(
     Ok(())
 }
 
+fn load_geometry_values(template: &TemplateContent) -> HashMap<String, f32> {
+    let mut map = HashMap::new();
+    for (name, spec) in &template.params {
+        let val = match &spec.default {
+            Some(crate::models::ParamValue::Float(f)) => *f,
+            Some(crate::models::ParamValue::Integer(i)) => *i as f32,
+            _ => match (spec.min, spec.max) {
+                (Some(min), _) => min,
+                (_, Some(max)) => max,
+                _ => 0.0,
+            },
+        };
+        map.insert(name.clone(), val);
+    }
+    map
+}
+
 fn resolve_f32_default(params: &std::collections::BTreeMap<String, ParamSpec>, name: &str) -> f32 {
     if let Some(spec) = params.get(name) {
         match &spec.default {
@@ -1166,6 +1202,7 @@ fn instantiate_item_defaults(
             font_weight,
             multiline,
             alignment,
+            overflow,
             when,
         } => {
             let fw = font_weight.as_ref().map(|w| match w {
@@ -1179,6 +1216,7 @@ fn instantiate_item_defaults(
                 font_weight: fw,
                 multiline: *multiline,
                 alignment: alignment.clone(),
+                overflow: *overflow,
                 when: when.clone(),
             }
         }
@@ -1272,19 +1310,23 @@ fn validate_dimension(name: &str, dimension: &DynamicDimension) -> Result<(), St
 fn validate_layout(
     layout: &Layout,
     options: Option<&Options>,
-    bounds: Option<&LayoutBounds>,
-    is_dynamic_width: bool,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     match layout {
-        Layout::Items(items) => validate_layout_items(items, bounds, options, is_dynamic_width),
+        Layout::Items(items) => {
+            validate_layout_items(items, frame, axes_resolved, options, geometry_values)
+        }
     }
 }
 
 fn validate_layout_items(
     items: &[LayoutItem],
-    bounds: Option<&LayoutBounds>,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
     options: Option<&Options>,
-    is_dynamic_width: bool,
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     let mut seen_names = HashSet::new();
     for item in items {
@@ -1296,7 +1338,7 @@ fn validate_layout_items(
                 return Err(format!("duplicate layout item name '{}'", name));
             }
         }
-        validate_layout_item(item, bounds, options, is_dynamic_width)?;
+        validate_layout_item(item, frame, axes_resolved, options, geometry_values)?;
     }
     Ok(())
 }
@@ -1313,70 +1355,83 @@ fn layout_item_name(item: &LayoutItem) -> Option<&str> {
 
 fn validate_layout_item(
     item: &LayoutItem,
-    layout_bounds: Option<&LayoutBounds>,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
     options: Option<&Options>,
-    is_dynamic_width: bool,
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     match item {
+        LayoutItem::Line {
+            at,
+            to,
+            thickness,
+            when,
+        } => {
+            validate_when(when.as_ref())?;
+            const LINE_EPSILON: f32 = 1.0e-4;
+            if *thickness <= 0.0 {
+                return Err("line thickness must be greater than 0".to_string());
+            }
+            let (start, end) = match frame {
+                Some((fw, fh)) => (
+                    Point {
+                        x: resolve_coord(at.x(), fw),
+                        y: resolve_coord(at.y(), fh),
+                    },
+                    Point {
+                        x: resolve_coord(to.x(), fw),
+                        y: resolve_coord(to.y(), fh),
+                    },
+                ),
+                None => (at.point(), to.point()),
+            };
+            let x_comparable =
+                axes_resolved[0] || at.x().is_sign_negative() == to.x().is_sign_negative();
+            let y_comparable =
+                axes_resolved[1] || at.y().is_sign_negative() == to.y().is_sign_negative();
+            let same_x = x_comparable && (start.x - end.x).abs() < LINE_EPSILON;
+            let same_y = y_comparable && (start.y - end.y).abs() < LINE_EPSILON;
+            if same_x && same_y {
+                return Err("line start and end must differ".to_string());
+            }
+            if let Some((fw, fh)) = frame {
+                for point in [start, end] {
+                    if point.x < -LINE_EPSILON || point.y < -LINE_EPSILON {
+                        return Err("line must fit within layout bounds".to_string());
+                    }
+                    if point.x > fw + LINE_EPSILON || point.y > fh + LINE_EPSILON {
+                        return Err("line must fit within layout bounds".to_string());
+                    }
+                }
+            }
+        }
         LayoutItem::Text {
             value,
             placement,
             font_size,
             font_weight,
+            when,
             ..
         } => {
             if value.trim().is_empty() {
                 return Err("text value must not be empty".to_string());
             }
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
+            validate_when(when.as_ref())?;
             validate_font_weight(font_weight.as_ref())?;
-            validate_rotation(&placement.rotate, false)?;
-            // `allow_auto_fill` is always `true` for text: this axis asks whether the item type has
-            // a frame to fall back on (it does), not whether this template's width is dynamic. Keying
-            // it off `is_dynamic_width` instead was #155: it let validation accept a `max_h` above the
-            // frame on the strength of a fallback the render path (keyed off the item's own
-            // frame-dependence) did not have.
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                true,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
             validate_font_size(font_size)?;
+            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
         LayoutItem::Qr {
             value,
             placement,
             params,
+            when,
             ..
         } => {
             if value.trim().is_empty() {
                 return Err("qr value must not be empty".to_string());
             }
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
-            validate_rotation(&placement.rotate, false)?;
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                false,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
+            validate_when(when.as_ref())?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
                     if module_size <= 0.0 {
@@ -1389,215 +1444,146 @@ fn validate_layout_item(
                     }
                 }
             }
+            let spec_0 = resolver::source_of(placement, 0, geometry_values);
+            let spec_1 = resolver::source_of(placement, 1, geometry_values);
+            if (spec_0.demands_intrinsic() || spec_1.demands_intrinsic())
+                && params.as_ref().and_then(|p| p.module_size).is_none()
+            {
+                return Err("qr content or fill extent requires module_size".to_string());
+            }
+            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
-        LayoutItem::Image { placement, .. } => {
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
-            validate_rotation(&placement.rotate, false)?;
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                false,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
-        }
-        LayoutItem::Line {
-            at,
-            to,
-            thickness,
-            when,
+        LayoutItem::Image {
+            placement, when, ..
         } => {
             validate_when(when.as_ref())?;
-            const LINE_EPSILON: f32 = 1.0e-4;
-            if *thickness <= 0.0 {
-                return Err("line thickness must be greater than 0".to_string());
-            }
-            // Endpoints resolve against the frame before any comparison: `-0.0 == 0.0`, so raw
-            // coordinates would reject a full-width divider as zero-length.
-            let (start, end) = match layout_bounds {
-                Some(bounds) => (
-                    Point {
-                        x: resolve_coord(at.x(), bounds.width),
-                        y: resolve_coord(at.y(), bounds.height),
-                    },
-                    Point {
-                        x: resolve_coord(to.x(), bounds.width),
-                        y: resolve_coord(to.y(), bounds.height),
-                    },
-                ),
-                None => (at.point(), to.point()),
-            };
-            // On a dynamic-width single an x resolved from an edge-relative component is
-            // provisional: it was computed against `max`. Compare x only when both endpoints are
-            // comparable, and let the render pass re-check the rest.
-            let x_comparable =
-                !is_dynamic_width || at.x().is_sign_negative() == to.x().is_sign_negative();
-            let same_x = x_comparable && (start.x - end.x).abs() < LINE_EPSILON;
-            let same_y = (start.y - end.y).abs() < LINE_EPSILON;
-            if same_x && same_y {
-                return Err("line start and end must differ".to_string());
-            }
-            if let Some(bounds) = layout_bounds {
-                for point in [start, end] {
-                    // A resolved x below zero means the inset exceeds `max`, which no smaller
-                    // final width can rescue, so it is rejected here even on a dynamic label.
-                    if point.x < -LINE_EPSILON || point.y < -LINE_EPSILON {
-                        return Err("line must fit within layout bounds".to_string());
-                    }
-                    // The upper x bound binds only on a plain endpoint: an edge-relative one
-                    // resolves to `bounds.width + x` with `x <= 0`, so it can never exceed the
-                    // frame here. A plain endpoint past `max` is a constant no final width can
-                    // rescue, so it is rejected at load even on a dynamic label.
-                    if point.x > bounds.width + LINE_EPSILON
-                        || point.y > bounds.height + LINE_EPSILON
-                    {
-                        return Err("line must fit within layout bounds".to_string());
-                    }
-                }
-            }
+            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
         LayoutItem::Container {
             placement,
             when,
-            frame,
+            frame: cont_frame,
             padding,
             items,
         } => {
             validate_when(when.as_ref())?;
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
-            validate_rotation(&placement.rotate, true)?;
-            let rotation = placement
-                .rotate
-                .and_then(crate::models::Rotation::from_degrees)
-                .unwrap_or(crate::models::Rotation::R0);
-            if rotation.is_rotated() {
-                // §4.2.1: the inner author canvas must be a compile-time constant. `auto` stays
-                // banned outright (ADR-0036, unchanged); a `to` is only a problem when its width is
-                // frame-dependent, which on a fixed frame it never is.
-                let unresolvable = match &placement.extent {
-                    Extent::Size(size) => size.0[0].is_auto() || size.0[1].is_auto(),
-                    Extent::To(_) => placement.width_is_frame_dependent(),
-                };
-                if unresolvable {
-                    return Err(
-                        "rotated container must have fixed size (no auto or dynamic dimensions)"
-                            .to_string(),
-                    );
-                }
-                if subtree_uses_auto(items) {
-                    return Err("auto size is not allowed inside a rotated container".to_string());
-                }
-            }
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                true,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
-
-            if let Some(frame) = frame {
-                if frame.thickness <= 0.0 {
+            if let Some(cf) = cont_frame {
+                if cf.thickness <= 0.0 {
                     return Err("container frame thickness must be greater than 0".to_string());
                 }
             }
+            validate_placement(placement, true, frame, axes_resolved, geometry_values)?;
 
-            // Author canvas = full box, swapped for 90/270. Padding is author-space, so it is
-            // subtracted from the (swapped) author dimensions. For R0 this is the existing math.
-            let (canvas_w, canvas_h) = if rotation.swaps_axes() {
-                (height, width)
-            } else {
-                (width, height)
+            // The frame validation runs against is the declared-default one, so the geometry the
+            // children see is the resolver's, unmeasured, exactly as it is at render.
+            let child_axes_resolved = resolver::container_inner_axes_resolved(
+                placement,
+                axes_resolved,
+                resolver::rotation_of(placement),
+                geometry_values,
+            );
+
+            let child_frame = match frame {
+                Some(outer_frame) => {
+                    let geometry = resolver::container_geometry(
+                        placement,
+                        padding,
+                        outer_frame,
+                        axes_resolved,
+                        geometry_values,
+                    );
+                    if geometry.inner.0 <= resolver::BOUNDS_EPSILON
+                        || geometry.inner.1 <= resolver::BOUNDS_EPSILON
+                    {
+                        return Err("container padding leaves no room for content".to_string());
+                    }
+                    Some(geometry.inner)
+                }
+                None => None,
             };
-            let inner_width = canvas_w - padding.left - padding.right;
-            let inner_height = canvas_h - padding.top - padding.bottom;
-            const CONTENT_EPSILON: f32 = 1.0e-4;
-            if inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON {
-                return Err("container padding leaves no room for content".to_string());
-            }
-            let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
-            // Children of a frame-dependent container on a dynamic-width single may also use auto
-            // width; they resolve to the container inner width at render time. A container sized
-            // to the right edge via `to` is exactly as frame-dependent as an `auto` one. Rotated
-            // containers reject a frame-dependent extent entirely (above), so child_dynamic is
-            // false there.
-            let child_dynamic =
-                is_dynamic_width && !rotation.is_rotated() && placement.width_is_frame_dependent();
-            validate_layout_items(items, Some(&container_bounds), options, child_dynamic)?;
+
+            validate_layout_items(
+                items,
+                child_frame,
+                child_axes_resolved,
+                options,
+                geometry_values,
+            )?;
         }
     }
     Ok(())
 }
 
-/// Bounds-check a placement's anchor. A sign-negative component is edge-relative (#146) and
-/// resolves against the frame first. On a dynamic-width single the final width is unknown but
-/// bounded by `max`, so an inset larger than `max` is rejected here and a merely provisional
-/// result is deferred to the render pass.
-fn validate_placement_position(
-    at: &Position,
-    frame_dependent_width: bool,
-    bounds: Option<&LayoutBounds>,
-    is_dynamic_width: bool,
+fn validate_placement(
+    placement: &Placement,
+    is_container: bool,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
-    const BOUNDS_EPSILON: f32 = 1.0e-4;
-    if at.x().is_sign_negative() && frame_dependent_width && is_dynamic_width {
-        return Err(
-            "an edge-relative x cannot be combined with an auto or edge-relative width on a \
-             dynamic-width template: both would depend on the label width"
-                .to_string(),
-        );
+    validate_rotation(&placement.rotate, is_container)?;
+
+    if let Some(max_w) = placement.max_w {
+        if max_w <= 0.0 {
+            return Err("max_w must be greater than 0".to_string());
+        }
     }
-    let Some(bounds) = bounds else {
-        return Ok(());
-    };
-    if resolve_coord(at.x(), bounds.width) < -BOUNDS_EPSILON
-        || resolve_coord(at.y(), bounds.height) < -BOUNDS_EPSILON
-    {
-        return Err("at resolves outside the frame".to_string());
+    if let Some(max_h) = placement.max_h {
+        if max_h <= 0.0 {
+            return Err("max_h must be greater than 0".to_string());
+        }
     }
-    Ok(())
+
+    for (axis, &is_resolved) in axes_resolved.iter().enumerate() {
+        let spec = resolver::source_of(placement, axis, geometry_values);
+        if spec.is_shrinking_to() && !is_resolved {
+            return Err("extent shrinks as the label grows".to_string());
+        }
+    }
+
+    // Every remaining rule about where a box lands is the resolver's, so load reports the same
+    // refusals render does; only the words differ.
+    match frame {
+        Some(frame) => resolver::place(placement, frame, geometry_values, [None, None])
+            .map(|_| ())
+            .map_err(violation_message),
+        None => resolver::precheck(placement, None, geometry_values).map_err(violation_message),
+    }
 }
 
-/// True if any item in the subtree uses an `auto` width or height. Used to forbid auto sizing
-/// anywhere inside a rotated container (#98), where author-horizontal maps to physical-vertical
-/// and the dynamic-width measurement model does not apply.
-fn subtree_uses_auto(items: &[LayoutItem]) -> bool {
-    items.iter().any(|item| match item {
-        LayoutItem::Text { placement, .. }
-        | LayoutItem::Qr { placement, .. }
-        | LayoutItem::Image { placement, .. } => placement
-            .size_or_auto()
-            .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto()),
-        LayoutItem::Container {
-            placement, items, ..
-        } => {
-            placement
-                .size_or_auto()
-                .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto())
-                || subtree_uses_auto(items)
+/// How load words a resolver [`Violation`]. Load has no reason slugs, so the mapping is a table of
+/// messages and nothing else; the rule that produced the violation lives in the resolver.
+fn violation_message(violation: resolver::Violation) -> String {
+    let label = if violation.axis() == 0 {
+        "width"
+    } else {
+        "height"
+    };
+    let inverted = || "to must be above and to the right of at".to_string();
+    match violation {
+        resolver::Violation::AnchorBeforeFrame { .. }
+        | resolver::Violation::AnchorBeyondFrame { .. } => {
+            "at resolves outside the frame".to_string()
         }
-        LayoutItem::Line { .. } => false,
-    })
+        resolver::Violation::AuthoredExtentNotPositive { written_as_to, .. } => {
+            if written_as_to {
+                inverted()
+            } else {
+                format!("size {label} must be greater than 0")
+            }
+        }
+        resolver::Violation::ExtentInverted { .. } => inverted(),
+        resolver::Violation::ExtentNegative { .. } => {
+            format!("size {label} must be greater than 0")
+        }
+        resolver::Violation::ExtentBeyondFrame { .. } => {
+            "item does not fit within layout bounds".to_string()
+        }
+    }
 }
 
 fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), String> {
     if let Some(deg) = rotate {
-        // Rotation is a container-only inner transform (#98); reject it on any other item,
-        // regardless of value (even 0).
         if !is_container {
             return Err("rotation is only supported on containers".to_string());
         }
@@ -1606,67 +1592,6 @@ fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), Str
         }
     }
     Ok(())
-}
-
-/// `size = to - at`, both corners resolved against the frame first. Both components must be
-/// strictly positive: `to` is the top-right corner of a box whose bottom-left is `at`.
-fn resolve_to_extent(
-    at: &Position,
-    to: &Position,
-    frame_w: f32,
-    frame_h: f32,
-) -> Result<(f32, f32), String> {
-    let width = resolve_coord(to.x(), frame_w) - resolve_coord(at.x(), frame_w);
-    let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
-    if width <= 0.0 || height <= 0.0 {
-        return Err("to must be above and to the right of at".to_string());
-    }
-    Ok((width, height))
-}
-
-fn resolve_size(
-    at: &Position,
-    extent: &Extent,
-    max_w: Option<f32>,
-    max_h: Option<f32>,
-    layout_bounds: Option<&LayoutBounds>,
-    allow_auto_fill: bool,
-) -> Result<(f32, f32), String> {
-    let size = match extent {
-        Extent::Size(size) => size,
-        Extent::To(to) => {
-            // Every caller resolves against a frame (`layout_bounds` is always `Some`, and
-            // container recursion passes its inner box), so this is an internal invariant, not an
-            // authoring error. Erroring beats silently returning a zero extent if that changes.
-            let Some(layout_bounds) = layout_bounds else {
-                return Err("to cannot be resolved without a frame".to_string());
-            };
-            return resolve_to_extent(at, to, layout_bounds.width, layout_bounds.height);
-        }
-    };
-    if let Some(max_w) = max_w {
-        if max_w <= 0.0 {
-            return Err("max_w must be greater than 0".to_string());
-        }
-    }
-    if let Some(max_h) = max_h {
-        if max_h <= 0.0 {
-            return Err("max_h must be greater than 0".to_string());
-        }
-    }
-    let fallback = if allow_auto_fill {
-        layout_bounds.map(|bounds| {
-            (
-                (bounds.width - resolve_coord(at.x(), bounds.width)).max(0.0),
-                (bounds.height - resolve_coord(at.y(), bounds.height)).max(0.0),
-            )
-        })
-    } else {
-        None
-    };
-    let width = resolve_size_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
-    let height = resolve_size_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
-    Ok((width, height))
 }
 
 fn validate_when(when: Option<&std::collections::BTreeMap<String, String>>) -> Result<(), String> {
@@ -1679,79 +1604,6 @@ fn validate_when(when: Option<&std::collections::BTreeMap<String, String>>) -> R
                 return Err("when must not contain empty values".to_string());
             }
         }
-    }
-    Ok(())
-}
-
-fn resolve_size_value(
-    value: &SizeValue,
-    max: Option<f32>,
-    fallback: Option<f32>,
-    label: &str,
-) -> Result<f32, String> {
-    match value {
-        SizeValue::Dynamic(DynamicValue::Literal(value)) => {
-            if *value <= 0.0 {
-                return Err(format!("size {label} must be greater than 0"));
-            }
-            Ok(*value)
-        }
-        SizeValue::Dynamic(DynamicValue::Ref(_)) => {
-            // Unresolved dynamic parameter reference in template load validation
-            Ok(0.0)
-        }
-        SizeValue::Auto(_) => {
-            // `max_*` caps the resolution of `auto`; it does not replace the fallback. A cap
-            // larger than the room available is simply not binding, so the smaller wins.
-            let resolved = match (max, fallback) {
-                (Some(max), Some(fallback)) => max.min(fallback),
-                (Some(max), None) => max,
-                (None, Some(fallback)) => fallback,
-                (None, None) => {
-                    return Err(format!("size {label} is auto but no max_{label} provided"))
-                }
-            };
-            if resolved <= 0.0 {
-                // Blame whichever of `max`/`fallback` is actually `resolved` (the smaller of the
-                // two, mirroring the `.min()` above): a `max_*` that isn't the binding value is
-                // fine even if it happens to be set, and a fallback of `0` (the anchor leaving no
-                // room) is not a `max_*` authoring error.
-                let max_is_binding = match (max, fallback) {
-                    (Some(max), Some(fallback)) => max <= fallback,
-                    (Some(_), None) => true,
-                    (None, _) => false,
-                };
-                return Err(if max_is_binding {
-                    format!("max_{label} must be greater than 0")
-                } else {
-                    format!("no room left for an auto {label} at this anchor")
-                });
-            }
-            Ok(resolved)
-        }
-    }
-}
-
-/// The x half of this check is frame-independent even when the frame is not: for an edge-relative
-/// `at.x` it reduces to `at.x + width <= 0` once `W` cancels out of `W + at.x + width <= W`, and
-/// `validate_placement_position` guarantees such an item's width is a compile-time constant. So
-/// there is nothing to defer to the render pass on either axis.
-fn validate_bounds(
-    at: &Position,
-    width: f32,
-    height: f32,
-    layout_bounds: Option<&LayoutBounds>,
-) -> Result<(), String> {
-    const BOUNDS_EPSILON: f32 = 1.0e-4;
-    let Some(layout_bounds) = layout_bounds else {
-        return Ok(());
-    };
-    let x = resolve_coord(at.x(), layout_bounds.width);
-    let y = resolve_coord(at.y(), layout_bounds.height);
-    if x + width > layout_bounds.width + BOUNDS_EPSILON
-        || y + height > layout_bounds.height + BOUNDS_EPSILON
-    {
-        return Err("item must fit within layout bounds".to_string());
     }
     Ok(())
 }
@@ -1789,42 +1641,6 @@ fn validate_font_size(font_size: &FontSize) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy)]
-struct LayoutBounds {
-    width: f32,
-    height: f32,
-}
-
-fn layout_bounds(format: &TemplateFormat) -> Result<Option<LayoutBounds>, String> {
-    let (width, height) = match format {
-        TemplateFormat::Single { width, height, .. } => {
-            (resolve_dimension(width), resolve_dimension(height))
-        }
-        TemplateFormat::Sheet {
-            label_width,
-            label_height,
-            ..
-        } => (*label_width, *label_height),
-    };
-
-    layout_bounds_from_size(width, height).map(Some)
-}
-
-fn layout_bounds_from_size(width: f32, height: f32) -> Result<LayoutBounds, String> {
-    Ok(LayoutBounds { width, height })
-}
-fn resolve_dimension(dimension: &DynamicDimension) -> f32 {
-    match dimension {
-        DynamicDimension::Fixed(DynamicValue::Literal(value)) => *value,
-        DynamicDimension::Fixed(DynamicValue::Ref(_)) => 0.0,
-        DynamicDimension::Dynamic { min, max } => match (max, min) {
-            (Some(DynamicValue::Literal(v)), _) => *v,
-            (_, Some(DynamicValue::Literal(v))) => *v,
-            _ => 0.0,
-        },
-    }
 }
 
 impl From<&TemplateDefinition> for TemplateSummary {
@@ -1951,15 +1767,18 @@ mod tests {
     }
 
     #[test]
-    fn rotated_container_rejects_auto_outer_size() {
-        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [auto,40]\n    rotate: 90\n    items: []\n";
-        assert!(parse_and_validate(yaml).is_err());
+    /// The ban on a rotated container sizing itself from its content is gone: rotation composes
+    /// through the resolver, so the outer axes classify and resolve like any other container's.
+    fn rotated_container_accepts_a_content_outer_size() {
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [content,40]\n    rotate: 90\n    items: []\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
+    /// So is the ban on content-sized descendants: the child resolves against the swapped canvas.
     #[test]
-    fn rotated_container_rejects_auto_child() {
-        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [auto,10]\n        font_size: 6\n";
-        assert!(parse_and_validate(yaml).is_err());
+    fn rotated_container_accepts_a_content_child() {
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [content,10]\n        font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     #[test]
@@ -1985,11 +1804,11 @@ mod tests {
         assert!(parse_and_validate(yaml).is_err());
     }
 
-    /// §4.2.1: a rotated container's inner canvas has to be known at compile time.
+    /// Rotated container with frame-dependent `to` is accepted under unified resolution.
     #[test]
-    fn validate_rejects_a_rotated_container_with_a_frame_dependent_to() {
+    fn validate_accepts_a_rotated_container_with_a_frame_dependent_to() {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
-        assert!(parse_and_validate(yaml).is_err());
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// Both corners edge-relative is a constant 20-unit box, so the canvas is known and it is fine.
@@ -1999,11 +1818,10 @@ mod tests {
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// A container sized to the right edge is frame-dependent, so its children are dynamic too and an
-    /// auto-width child resolves against the container's inner width rather than being rejected.
+    /// A container sized to the right edge is frame-dependent, and a content child resolves inside.
     #[test]
     fn validate_accepts_an_auto_child_inside_a_to_spanned_container() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 20, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [4.0, 0.0]\n    to: [-0.0, 12.0]\n    items:\n      - type: text\n        value: \"x\"\n        at: [2.0, 1.0]\n        size: [auto, 10.0]\n        font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 20, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [4.0, 0.0]\n    to: [-0.0, 12.0]\n    items:\n      - type: text\n        value: \"x\"\n        at: [2.0, 1.0]\n        size: [content, 10.0]\n        font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2026,10 +1844,10 @@ mod tests {
         );
     }
 
-    /// Issue #154 repro 1: an unrotated container with auto width whose padding exceeds the resolved width.
+    /// Issue #154 repro 1: an unrotated container with fill width whose padding exceeds the resolved width.
     #[test]
     fn unrotated_container_with_auto_width_and_excessive_padding_rejected() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2039,7 +1857,7 @@ mod tests {
     /// Issue #154 repro 2: an unrotated container capped by max_w whose padding exceeds the cap.
     #[test]
     fn unrotated_capped_container_with_excessive_padding_rejected() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2069,17 +1887,17 @@ mod tests {
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// Position and width would both be chasing the same unknown.
+    /// A shrinking `to` on an unresolved axis is rejected.
     #[test]
-    fn validate_rejects_a_right_anchored_auto_width_box_on_a_dynamic_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    font_size: 6\n";
+    fn validate_rejects_a_shrinking_to_on_an_unresolved_axis() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    to: [10.0, 10.0]\n    font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     /// On a fixed frame everything resolves, so the same shape is fine.
     #[test]
     fn validate_accepts_a_right_anchored_auto_width_box_on_a_fixed_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    max_w: 20.0\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [fill, 10.0]\n    max_w: 20.0\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2098,7 +1916,7 @@ mod tests {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-0.0, 2.0]\n    size: [10.0, 6.0]\n    font_size: 6\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("item must fit within layout bounds".to_string())
+            Err("item does not fit within layout bounds".to_string())
         );
     }
 
@@ -2122,259 +1940,106 @@ mod tests {
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// `max_*` is a cap on the resolution of `auto`, not a substitute for the fallback. Discarding the
-    /// fallback is what made validation reject a container the renderer would have fitted (#152).
     #[test]
-    fn resolve_size_value_caps_rather_than_substituting() {
-        use super::resolve_size_value;
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        // Both present: the smaller wins, in both orders.
-        assert_eq!(
-            resolve_size_value(&auto, Some(30.0), Some(10.0), "width"),
-            Ok(10.0)
+    fn auto_spelling_is_rejected_at_parse_with_helpful_migration_message() {
+        let yaml_container = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
+        let err = parse_and_validate(yaml_container)
+            .expect_err("auto on container height must be rejected");
+        assert!(
+            err.contains("`auto` was renamed"),
+            "unexpected message: {err}"
         );
-        assert_eq!(
-            resolve_size_value(&auto, Some(10.0), Some(30.0), "width"),
-            Ok(10.0)
-        );
-        // One present: it is used.
-        assert_eq!(
-            resolve_size_value(&auto, Some(30.0), None, "width"),
-            Ok(30.0)
-        );
-        assert_eq!(
-            resolve_size_value(&auto, None, Some(30.0), "width"),
-            Ok(30.0)
-        );
-        // Neither: the unchanged error.
-        assert!(resolve_size_value(&auto, None, None, "width").is_err());
-        // A numeric size is never clamped by the bound.
-        assert_eq!(
-            resolve_size_value(&SizeValue::fixed(50.0), Some(30.0), Some(30.0), "width"),
-            Ok(50.0)
+
+        let yaml_text = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: text\n    value: \"hello\"\n    at: [0.0, 0.0]\n    size: [auto, 10.0]\n    font_size: 10\n";
+        let err = parse_and_validate(yaml_text).expect_err("auto on text width must be rejected");
+        assert!(
+            err.contains("`auto` was renamed"),
+            "unexpected message: {err}"
         );
     }
 
-    /// A zero (or negative) fallback with no `max_*` set is the anchor leaving no room, not an
-    /// invalid `max_*` — there isn't one. Blaming `max_width` here points the author at a field
-    /// they never wrote.
     #[test]
-    fn a_zero_remainder_with_no_max_blames_the_anchor_not_a_max() {
-        use super::resolve_size_value;
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        assert_eq!(
-            resolve_size_value(&auto, None, Some(0.0), "width"),
-            Err("no room left for an auto width at this anchor".to_string())
+    fn resolver_source_of_and_available_and_claim_behave_consistently() {
+        use crate::models::{Placement, Position, Size, SizeValue};
+        use crate::resolver::{available, claim, requirement, source_of, Anchor, ExtentSource};
+        use std::collections::HashMap;
+
+        let geo = HashMap::new();
+        let p_content = Placement::sized(
+            Position([10.0, 0.0]),
+            Size([SizeValue::content(), SizeValue::fixed(20.0)]),
         );
+        let spec_w = source_of(&p_content, 0, &geo);
+        assert_eq!(spec_w.source, ExtentSource::Content);
+        assert_eq!(spec_w.anchor, Anchor::Plain(10.0));
+        assert_eq!(available(100.0, &spec_w), 90.0);
+
+        let p_fill = Placement::sized(
+            Position([10.0, 0.0]),
+            Size([SizeValue::fill(), SizeValue::fixed(20.0)]),
+        );
+        let spec_fill_w = source_of(&p_fill, 0, &geo);
+        assert_eq!(spec_fill_w.source, ExtentSource::Frame);
+        assert_eq!(available(100.0, &spec_fill_w), 90.0);
+
+        // Claim on content respects intrinsic and cap
+        let cl = claim(&spec_w, 100.0, 90.0, Some(50.0), Some(30.0));
+        assert_eq!(cl, 30.0);
+        let req = requirement(&spec_w, cl);
+        assert_eq!(req, 40.0); // at (10) + claim (30)
     }
 
-    /// A genuinely non-positive `max_*` still gets the original message, whether or not a fallback
-    /// happens to be present, as long as `max_*` is the value that actually resolved (the smaller
-    /// of the two, or the only one set).
     #[test]
-    fn a_non_positive_max_still_blames_the_max() {
-        use super::resolve_size_value;
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        assert_eq!(
-            resolve_size_value(&auto, Some(-5.0), None, "width"),
-            Err("max_width must be greater than 0".to_string())
-        );
-        // `max_*` is set and positive but is not the binding value (the fallback is smaller and
-        // is the actual culprit): still a room problem, not a `max_*` problem, even though a
-        // `max_*` happens to be set.
-        assert_eq!(
-            resolve_size_value(&auto, Some(50.0), Some(0.0), "width"),
-            Err("no room left for an auto width at this anchor".to_string())
-        );
-    }
-
-    /// The fallback is the space remaining from the item's own anchor, not the whole frame. An
-    /// `auto` height at a nonzero `at.y` used to resolve to the full frame and get rejected on
-    /// bounds, blaming the author for the resolver's arithmetic.
-    #[test]
-    fn an_auto_axis_falls_back_to_the_space_left_from_its_anchor() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
+    fn a_fill_axis_falls_back_to_the_space_left_from_its_anchor() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, fill]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// The anchor is resolved before subtracting: an edge-relative `at.y` is measured from the top,
-    /// so `frame - raw_at` would give 45 on a 40mm frame instead of 5.
     #[test]
     fn an_edge_relative_anchor_is_resolved_before_the_subtraction() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, -5.0]\n    size: [20.0, auto]\n    items: []\n";
-        // Resolves to 40 - 35 = 5 and fits. A raw-anchor implementation resolves 45 and is rejected.
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, -5.0]\n    size: [20.0, fill]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// ADR-0053's double-subtraction, which `extent_auto_bounds` was written to prevent. The
-    /// `Extent::To` early return in `resolve_size` is what prevents it now, so test it directly
-    /// rather than trusting the control flow.
     #[test]
     fn a_to_extent_is_not_narrowed_twice_by_its_anchor() {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [20.0, 0.0]\n    to: [-0.0, 12.0]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// The fallback's actual value, not merely that something fits. `frame - resolved_at` on each
-    /// axis, with the anchor resolved first so an edge-relative component measures from the far edge.
-    #[test]
-    fn the_auto_fallback_is_the_remaining_space() {
-        use super::{resolve_size, LayoutBounds};
-        use crate::models::{AutoSize, Extent, Position, Size, SizeValue};
-        let bounds = LayoutBounds {
-            width: 100.0,
-            height: 40.0,
-        };
-        let auto_h = Extent::Size(Size([
-            SizeValue::fixed(20.0),
-            SizeValue::Auto(AutoSize::Auto),
-        ]));
-
-        // Plain anchor: 40 - 10 = 30.
-        let (_, h) = resolve_size(
-            &Position([0.0, 10.0]),
-            &auto_h,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 30.0);
-
-        // Origin: the subtraction is inert, but the fallback still applies.
-        let (_, h) = resolve_size(
-            &Position([0.0, 0.0]),
-            &auto_h,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 40.0);
-
-        // Edge-relative: at.y -5 resolves to 35, leaving 5. A raw-anchor implementation gives 45.
-        let (_, h) = resolve_size(
-            &Position([0.0, -5.0]),
-            &auto_h,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 5.0);
-
-        // The cap still binds when it is the smaller of the two: min(6, 30).
-        let (_, h) = resolve_size(
-            &Position([0.0, 10.0]),
-            &auto_h,
-            None,
-            Some(6.0),
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 6.0);
-
-        // And #155's shape: min(200, 40) = 40, not 200.
-        let (_, h) = resolve_size(
-            &Position([0.0, 0.0]),
-            &auto_h,
-            None,
-            Some(200.0),
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 40.0);
-
-        // Spec §7, the far-edge zero: an anchor exactly on the far edge leaves no room, and the
-        // helper's existing `resolved <= 0.0` rejection is the right outcome here. This is the
-        // helper path only; the dynamic auto-width container's zero remainder is deliberately
-        // allowed elsewhere and is pinned separately by
-        // `a_zero_remainder_container_renders_an_empty_box`.
-        assert!(
-            resolve_size(
-                &Position([0.0, 40.0]),
-                &auto_h,
-                None,
-                None,
-                Some(&bounds),
-                true
-            )
-            .is_err(),
-            "an auto axis with no room left is an authoring error at the helper"
-        );
-
-        // Spec §7, the width axis for a container on a fixed label: 100 - 10 = 90.
-        let auto_w = Extent::Size(Size([
-            SizeValue::Auto(AutoSize::Auto),
-            SizeValue::fixed(12.0),
-        ]));
-        let (w, _) = resolve_size(
-            &Position([10.0, 0.0]),
-            &auto_w,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(
-            w, 90.0,
-            "a container at x=10 fills the remaining width, not the whole frame"
-        );
-    }
-
-    /// The #152 disagreement, from the validation side: a container whose cap exceeds the room left
-    /// must resolve to the room left and fit, not to the cap and overflow.
     #[test]
     fn validate_accepts_a_capped_container_that_fits_the_remaining_width() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// #155's validation half, which **passes before this task** — that is the bug: validation caps
-    /// `max_h: 200` against its full-frame fallback while the render path has no fallback at all.
-    /// Kept as the pin that the two layers stay agreed, not as a red for this step. The red is
-    /// `the_155_repro_renders`.
     #[test]
     fn the_155_repro_validates_and_its_height_is_capped() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    max_h: 200.0\n    font_size: 8\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, fill]\n    max_h: 200.0\n    font_size: 8\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// A fixed label, where text validation previously had no fallback at all.
     #[test]
-    fn text_auto_height_on_a_fixed_label_falls_back_to_the_remainder() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    font_size: 6\n";
+    fn text_fill_height_on_a_fixed_label_falls_back_to_the_remainder() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, fill]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// The false rejection this closes: it would have rendered at min(35, 30) = 30.
     #[test]
-    fn text_auto_height_with_an_oversized_max_h_is_not_rejected_on_a_fixed_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    max_h: 35.0\n    font_size: 6\n";
+    fn text_fill_height_with_an_oversized_max_h_is_not_rejected_on_a_fixed_label() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, fill]\n    max_h: 35.0\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// Sheets render with LengthMode::Fixed and are easy to forget in a change that started on
-    /// auto-length tape. An auto width with no max_w previously errored here.
     #[test]
-    fn text_auto_width_on_a_sheet_falls_back_to_the_slot_remainder() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [auto, 8.0]\n    font_size: 6\n";
+    fn text_content_width_on_a_sheet_validates_ok() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [content, 8.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// `frame - 0 == frame`, so the anchor subtraction is inert at the origin — but the fallback
-    /// itself is new for text on fixed formats, and #155's repro is an origin case. This test
-    /// exists because "origin items are unaffected" is the first wrong thing a reader assumes.
     #[test]
     fn the_origin_is_not_exempt() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    font_size: 6\n";
-        // No max_h, at the origin, on a fixed label: rejected before this branch, resolves to 40 now.
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, fill]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2597,7 +2262,7 @@ layout:
   - type: text
     value: "{datetime.long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         write_template(&dir, "valid.yaml", &valid_yaml);
@@ -2699,6 +2364,7 @@ layout: []
                 font_weight: Some(DynamicValue::Literal(350)),
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -2802,6 +2468,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -2947,6 +2614,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -2959,9 +2627,7 @@ layout:
     }
 
     #[test]
-    fn dynamic_width_single_auto_width_item_at_offset_validates_ok() {
-        // Dynamic-width single with both bounds; a container at at.x=5 with auto width.
-        // Auto width should resolve to max_width - at.x = 100 - 5 = 95, which fits.
+    fn dynamic_width_single_fill_width_item_at_offset_validates_ok() {
         let template = TemplateContent {
             name: "Tape2".to_string(),
             description: "tape".to_string(),
@@ -2979,10 +2645,7 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: crate::models::Placement::sized(
                     Position([5.0, 0.0]),
-                    Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::fixed(12.0),
-                    ]),
+                    Size([SizeValue::fill(), SizeValue::fixed(12.0)]),
                 ),
                 when: None,
                 frame: None,
@@ -2993,7 +2656,7 @@ layout:
         };
         template
             .validate()
-            .expect("dynamic-width single with auto-width container at offset should validate OK");
+            .expect("dynamic-width single with fill-width container at offset should validate OK");
     }
 
     #[test]
@@ -3022,6 +2685,7 @@ layout:
                 font_weight: None,
                 multiline: true,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -3057,6 +2721,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -3089,6 +2754,7 @@ layout:
                 font_weight: None,
                 multiline: true,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -3178,7 +2844,7 @@ format:
 layout:
   - type: text
     value: "{message}"
-    size: [auto, auto]
+    size: [content, fill]
     font_size: 10
     font_weight: "{weight}"
     when:
@@ -3250,7 +2916,7 @@ layout:
   - type: text
     value: "{datetime.long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3270,7 +2936,7 @@ layout:
   - type: text
     value: "{sys.nwo}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3289,7 +2955,7 @@ layout:
   - type: text
     value: "{sys.now.long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3312,7 +2978,7 @@ layout:
   - type: text
     value: "{title:long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3331,7 +2997,7 @@ layout:
   - type: text
     value: "{vars.qr_base_url:long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3353,7 +3019,7 @@ layout:
   - type: text
     value: "{printed_on:}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3393,7 +3059,7 @@ layout:
   - type: text
     value: "{printed_on.short_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3439,7 +3105,7 @@ layout:
   - type: text
     value: "{printed_on:short_date} {sys.now:iso_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         assert!(parse_and_validate(yaml).is_ok());
@@ -3831,5 +3497,34 @@ layout:
         assert!(broken[0].error.contains("not valid UTF-8"));
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn line_validation_with_unresolved_vertical_axis_is_not_rejected() {
+        let yaml = r#"
+name: Unresolved Vertical Line
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, content]
+    items:
+      - type: line
+        at: [10, 10]
+        to: [20, -10]
+        thickness: 0.5
+      - type: text
+        value: "Hello"
+        at: [0, 0]
+        size: [100, 30]
+        font_size: 12
+"#;
+        let template = parse_and_validate(yaml);
+        assert!(
+            template.is_ok(),
+            "unresolved vertical line must validate: {template:?}"
+        );
     }
 }

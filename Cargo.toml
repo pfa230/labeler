@@ -48,6 +48,8 @@ urlencoding = "2.1"
 regex = "1"
 rustix = { version = "1", features = ["fs"] }
 
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
+
 # 500 crates (Typst pulls a large tree) with full DWARF debug info fills tens of GB across dev and
 # release builds. line-tables-only keeps file/line in backtraces — all this repo's panics and test
 # failures need — while dropping variable/type data, which is the bulk of the size.
@@ -58,5 +60,4 @@ debug = "line-tables-only"
 http-body-util = "0.1"
 tower = "0.5"
 wiremock = "0.6"
-image = { version = "=0.25.10", default-features = false }
 typst-assets = "0.15"

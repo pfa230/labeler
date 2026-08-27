@@ -184,7 +184,8 @@ fn render_sheet_batch(
 mod tests {
     use super::*;
     use crate::models::{
-        Alignment, Dimension, FontSize, Layout, LayoutItem, Placement, Position, Size, SizeValue,
+        Alignment, Dimension, FontSize, Layout, LayoutItem, Overflow, Placement, Position, Size,
+        SizeValue,
     };
     use crate::templates::TemplateContent;
     use serde_json::json;
@@ -215,6 +216,7 @@ mod tests {
                     font_weight: None,
                     multiline: false,
                     alignment: Alignment::default(),
+                    overflow: Overflow::Ellipsis,
                     when: None,
                 }]),
                 version: None,
