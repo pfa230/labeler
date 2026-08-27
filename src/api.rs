@@ -24,10 +24,11 @@ use crate::{
     connector::{BrowsePage, BrowseRequest, ConnectorSchema, LabelRow, MaterializeRequest},
     errors::AppError,
     extract::{Json, Path},
+    fs_safe::{self, PublishResult},
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, PrintRequest,
-        ReloadResponse, RenderLabelRequest, TemplateDetail, TemplateGroupUpdate, TemplateList,
-        VariableValue,
+        ReloadResponse, RenameGroupRequest, RenameGroupResponse, RenderLabelRequest,
+        TemplateDetail, TemplateGroupUpdate, TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -35,9 +36,12 @@ use crate::{
     render::{render_single_label_image, render_single_label_pdf, ColorMode, ImageRenderOptions},
     store::{Printer, Store},
     templates::{
-        patch_template_group, TemplateDefinition, TemplateRegistry, TemplateRegistryError,
+        validate_group_name, validate_template_id_stem, TemplateContent, TemplateDefinition,
+        TemplateRegistry, TemplateRegistryError,
     },
 };
+use rustix::fd::AsFd;
+use rustix::fs::{AtFlags, Mode, OFlags};
 
 const MAX_BATCH_LABELS: usize = 500;
 const MAX_PRINT_COPIES: u32 = 100;
@@ -199,7 +203,7 @@ impl AppState {
         let broken_count = registry.broken().len();
         if broken_count > 0 {
             for b in registry.broken() {
-                tracing::warn!(filename = %b.filename, error = %b.error, "template failed to load");
+                tracing::warn!(path = %b.path, error = %b.error, "template failed to load");
             }
         }
         self.templates.store(Arc::new(registry));
@@ -218,13 +222,16 @@ impl AppState {
 fn api_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/health", get(health))
-        .route("/templates", get(list_templates).post(create_template))
+        .route("/templates", get(list_templates))
+        .route("/template-groups", get(list_groups))
+        .route(
+            "/template-groups/{*path}",
+            put(update_template_group_name).delete(delete_group),
+        )
         .route("/templates/reload", post(reload_templates))
         .route(
             "/templates/{id}",
-            get(get_template)
-                .put(replace_template)
-                .delete(delete_template),
+            get(get_template).put(put_template).delete(delete_template),
         )
         .route("/templates/{id}/group", put(update_template_group))
         .route("/templates/{id}/source", get(template_source))
@@ -340,16 +347,19 @@ pub async fn health() -> impl IntoResponse {
     })
 }
 
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
 pub struct TemplateListQuery {
     pub group: Option<String>,
+    #[serde(default)]
+    pub nested: bool,
 }
 
 #[utoipa::path(
     get,
     path = "/templates",
     params(
-        ("group" = Option<String>, Query, description = "Filter templates by group. Omit for all templates; pass empty (?group=) for ungrouped templates.")
+        ("group" = Option<String>, Query, description = "Filter templates by group. Omit for all templates; pass empty (?group=) for ungrouped templates."),
+        ("nested" = Option<bool>, Query, description = "Include templates in descendant subgroups. Defaults to false.")
     ),
     responses(
         (status = 200, description = "List templates", body = TemplateList)
@@ -365,6 +375,13 @@ pub async fn list_templates(
         let stripped = group.trim();
         if stripped.is_empty() {
             templates.retain(|t| t.group.is_none());
+        } else if query.nested {
+            let prefix = format!("{stripped}/");
+            templates.retain(|t| {
+                t.group
+                    .as_deref()
+                    .is_some_and(|g| g == stripped || g.starts_with(&prefix))
+            });
         } else {
             templates.retain(|t| t.group.as_deref() == Some(stripped));
         }
@@ -373,7 +390,7 @@ pub async fn list_templates(
         .broken()
         .iter()
         .map(|b| crate::models::BrokenTemplateSummary {
-            filename: b.filename.clone(),
+            path: b.path.clone(),
             error: b.error.clone(),
         })
         .collect();
@@ -402,186 +419,238 @@ pub async fn reload_templates(
     }))
 }
 
-fn template_file_path(dir: &std::path::Path, id: &str) -> Result<PathBuf, AppError> {
-    if id.is_empty()
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(AppError::invalid_request(
-            Reason::TemplateIdInvalid,
-            format!(
-                "template id '{id}' must be non-empty and contain only letters, digits, '-' or '_'"
-            ),
-        ));
-    }
-    Ok(dir.join(format!("{id}.yaml")))
+#[utoipa::path(
+    get,
+    path = "/template-groups",
+    responses(
+        (status = 200, description = "List template group paths", body = Vec<String>),
+        (status = 500, description = "Failed to read the templates directory", body = ErrorResponse)
+    )
+)]
+pub async fn list_groups(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<String>>, AppError> {
+    let groups = crate::templates::list_template_groups(&state.templates_dir)
+        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
+    Ok(Json(groups))
 }
 
-/// The on-disk file backing `id`, per the registry. `None` for an id the registry does not hold.
-///
-/// It resolves through the registry and never guesses at a filename: `y1.yml` may well declare
-/// `id: other`, so treating a matching filename as the backing file would let `DELETE /templates/y1`
-/// unlink another template's file. A stray file the registry never loaded stays a filesystem
-/// concern (#140).
-fn existing_template_file(
-    registry: &TemplateRegistry,
-    dir: &std::path::Path,
-    id: &str,
-) -> Result<Option<PathBuf>, AppError> {
-    // Called for its id validation; the conventional path it returns is not the answer here.
-    template_file_path(dir, id)?;
-    Ok(registry.path(id).map(std::path::Path::to_path_buf))
-}
-
-fn parse_and_validate(body: &str) -> Result<TemplateDefinition, AppError> {
-    let template = parse_template(body)
-        .map_err(|err| AppError::template_invalid(Reason::TemplateParseFailed, err.to_string()))?;
-    template
-        .validate()
-        .map_err(|err| AppError::template_invalid(Reason::TemplateValidationFailed, err))?;
-    Ok(template)
-}
-
-fn write_template_file(path: &std::path::Path, body: &str) -> Result<(), AppError> {
-    let (tmp, _) = stage_template_file(path, body)?;
-    if let Err(err) = std::fs::rename(&tmp, path) {
-        // The rename can fail on a destination another writer turned into a directory, and the
-        // staging file would otherwise sit in the templates dir forever.
-        if let Err(err) = std::fs::remove_file(&tmp) {
-            tracing::warn!(path = %tmp.display(), %err, "failed to remove template staging file");
+fn check_percent_encoding(raw: &str) -> Result<(), AppError> {
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len()
+                || !bytes[i + 1].is_ascii_hexdigit()
+                || !bytes[i + 2].is_ascii_hexdigit()
+            {
+                return Err(AppError::invalid_request(
+                    Reason::PathParamInvalid,
+                    format!("malformed percent-encoding in path: '{raw}'"),
+                ));
+            }
+            i += 3;
+        } else {
+            i += 1;
         }
-        return Err(AppError::render_failed(
-            Reason::TemplateWriteFailed,
-            format!("failed to persist template: {err}"),
-        ));
     }
     Ok(())
 }
 
-/// Write `body` to a fresh staging file beside `path`, and return it with the destination's parent.
-///
-/// The staging file is created with `create_new`, not `std::fs::write`: that truncates whatever the
-/// name already holds and follows a symlink planted under it, so an external writer that guesses the
-/// staging name gets our bytes written through it. `create_new` fails instead, and a fresh nonce is
-/// tried, which also makes the name collision recoverable rather than fatal (#184).
-fn stage_template_file(path: &std::path::Path, body: &str) -> Result<(PathBuf, PathBuf), AppError> {
-    use std::io::Write;
+#[utoipa::path(
+    delete,
+    path = "/template-groups/{path}",
+    params(
+        ("path" = String, Path, description = "Group path")
+    ),
+    responses(
+        (status = 204, description = "Group directory deleted"),
+        (status = 400, description = "Malformed percent sequence, invalid group name, or symlink on path", body = ErrorResponse),
+        (status = 404, description = "Group not found or case mismatch", body = ErrorResponse),
+        (status = 409, description = "Group is not empty", body = ErrorResponse),
+        (status = 500, description = "Failed to delete group directory", body = ErrorResponse)
+    )
+)]
+pub async fn delete_group(
+    State(state): State<Arc<AppState>>,
+    uri: axum::http::Uri,
+) -> Result<Response, AppError> {
+    let raw_uri_path = uri.path();
+    let raw_group = if let Some(p) = raw_uri_path.strip_prefix("/template-groups/") {
+        p
+    } else if let Some(p) = raw_uri_path.strip_prefix("/api/template-groups/") {
+        p
+    } else {
+        return Err(AppError::invalid_request(
+            Reason::PathParamInvalid,
+            "missing group path",
+        ));
+    };
 
-    let dir = path.parent().ok_or_else(|| {
-        AppError::render_failed(Reason::TemplatePathInvalid, "invalid template path")
+    check_percent_encoding(raw_group)?;
+
+    let decoded = urlencoding::decode(raw_group).map_err(|_| {
+        AppError::invalid_request(Reason::PathParamInvalid, "group path is not valid UTF-8")
     })?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            AppError::render_failed(Reason::TemplatePathInvalid, "invalid template path")
-        })?;
 
-    let mut last_err = None;
-    for attempt in 0..8 {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-            .wrapping_add(attempt);
-        let tmp = dir.join(format!(".{file_name}.{nonce}.tmp"));
-        match open_staging_exclusive(&tmp) {
-            Ok(mut file) => {
-                file.write_all(body.as_bytes())
-                    .and_then(|()| file.sync_all())
-                    .map_err(|err| {
-                        if let Err(err) = std::fs::remove_file(&tmp) {
-                            tracing::warn!(
-                                path = %tmp.display(),
-                                %err,
-                                "failed to remove template staging file"
-                            );
-                        }
-                        AppError::render_failed(
-                            Reason::TemplateWriteFailed,
-                            format!("failed to write template: {err}"),
-                        )
-                    })?;
-                return Ok((tmp, dir.to_path_buf()));
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(err),
-            Err(err) => {
-                return Err(AppError::render_failed(
-                    Reason::TemplateWriteFailed,
-                    format!("failed to write template: {err}"),
-                ))
-            }
+    let validated = validate_group_name(&decoded)
+        .map_err(|err| AppError::invalid_request(Reason::TemplateGroupInvalid, err))?;
+
+    let _guard = state.write_lock.lock().await;
+    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+    let (parent_fd, segment) = fs_safe::resolve_group_for_delete(root_fd.as_fd(), &validated)?;
+
+    match rustix::fs::unlinkat(parent_fd.as_fd(), &segment, AtFlags::REMOVEDIR) {
+        Ok(()) => {
+            state.reload()?;
+            Ok((axum::http::StatusCode::NO_CONTENT, ()).into_response())
+        }
+        Err(rustix::io::Errno::NOTEMPTY) | Err(rustix::io::Errno::EXIST) => Err(
+            AppError::conflict(format!("group '{validated}' is not empty")),
+        ),
+        Err(rustix::io::Errno::NOENT) => Err(AppError::not_found(&validated)),
+        Err(err) => Err(AppError::internal(format!(
+            "failed to delete group '{validated}': {err}"
+        ))),
+    }
+}
+
+#[utoipa::path(
+    put,
+    path = "/template-groups/{path}",
+    params(
+        ("path" = String, Path, description = "Group path")
+    ),
+    request_body(content = RenameGroupRequest, description = "New group name"),
+    responses(
+        (status = 200, description = "Group directory renamed", body = RenameGroupResponse),
+        (status = 400, description = "Malformed percent sequence, invalid group path, or invalid request body", body = ErrorResponse),
+        (status = 404, description = "Group directory not found", body = ErrorResponse),
+        (status = 409, description = "Destination name already occupied", body = ErrorResponse),
+        (status = 422, description = "Invalid new name, whole-path limit exceeded, or unsafe path", body = ErrorResponse),
+        (status = 500, description = "Failed to rename group directory or confirmation failed", body = ErrorResponse)
+    )
+)]
+pub async fn update_template_group_name(
+    State(state): State<Arc<AppState>>,
+    uri: axum::http::Uri,
+    Json(body): Json<RenameGroupRequest>,
+) -> Result<Response, AppError> {
+    let raw_uri_path = uri.path();
+    let raw_group = if let Some(p) = raw_uri_path.strip_prefix("/template-groups/") {
+        p
+    } else if let Some(p) = raw_uri_path.strip_prefix("/api/template-groups/") {
+        p
+    } else {
+        return Err(AppError::invalid_request(
+            Reason::PathParamInvalid,
+            "missing group path",
+        ));
+    };
+
+    check_percent_encoding(raw_group)?;
+
+    let decoded = urlencoding::decode(raw_group).map_err(|_| {
+        AppError::invalid_request(Reason::PathParamInvalid, "group path is not valid UTF-8")
+    })?;
+
+    let validated_src = validate_group_name(&decoded)
+        .map_err(|err| AppError::invalid_request(Reason::TemplateGroupInvalid, err))?;
+
+    let new_segment = &body.name;
+    crate::templates::validate_group_segment(new_segment)
+        .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
+
+    // Compute new whole group path
+    let parent_rel_path = validated_src.rsplit_once('/').map(|(parent, _)| parent);
+
+    let new_group_path = match parent_rel_path {
+        Some(parent) => format!("{parent}/{new_segment}"),
+        None => new_segment.to_string(),
+    };
+
+    validate_group_name(&new_group_path)
+        .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
+
+    let _guard = state.write_lock.lock().await;
+    state.reload()?;
+
+    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+    let (parent_fd, old_name, src_dir_fd) =
+        fs_safe::resolve_group_for_rename(root_fd.as_fd(), &validated_src)?;
+
+    // Check whole-path limits on all discoverable descendants in source subtree using resolved fd
+    let mut descendant_rels = Vec::new();
+    fs_safe::collect_subgroup_rel_paths_fd(src_dir_fd.as_fd(), "", &mut descendant_rels)?;
+
+    for descendant_rel in &descendant_rels {
+        let post_rename_descendant = format!("{new_group_path}/{descendant_rel}");
+        validate_group_name(&post_rename_descendant)
+            .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
+    }
+
+    // Perform rename if byte-different
+    if old_name != *new_segment {
+        fs_safe::rename_group_dir(parent_fd.as_fd(), &old_name, new_segment)?;
+    }
+
+    // Post-mutation subtree audit: verify no raced descendant exceeds whole-path limits
+    // Open the renamed directory descriptor safely via parent_fd without restating the path string
+    let dest_dir_fd = fs_safe::open_exact_segment_dir(parent_fd.as_fd(), new_segment, true)?;
+    let mut post_descendant_rels = Vec::new();
+    fs_safe::collect_subgroup_rel_paths_fd(dest_dir_fd.as_fd(), "", &mut post_descendant_rels)?;
+    for descendant_rel in &post_descendant_rels {
+        let post_rename_descendant = format!("{new_group_path}/{descendant_rel}");
+        if validate_group_name(&post_rename_descendant).is_err() {
+            return Err(AppError::render_failed(
+                Reason::TemplateRegistryIo,
+                format!(
+                    "post-rename descendant '{post_rename_descendant}' exceeds whole-path limits"
+                ),
+            ));
         }
     }
-    Err(AppError::render_failed(
-        Reason::TemplateWriteFailed,
-        format!(
-            "failed to write template: no free staging name beside {}: {}",
-            path.display(),
-            last_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown".into())
-        ),
-    ))
-}
 
-/// Open `tmp` for writing, but only if nothing holds that name.
-///
-/// `create_new` is the whole point: `File::create` and `std::fs::write` truncate an existing file and
-/// follow a symlink planted under the name, so an external writer who guesses a staging name gets the
-/// caller's template written through it, possibly outside the templates directory (#184).
-fn open_staging_exclusive(tmp: &std::path::Path) -> std::io::Result<std::fs::File> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(tmp)
-}
+    // Post-rename confirmation
+    state.reload()?;
+    let groups = crate::templates::list_template_groups(&state.templates_dir)
+        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
 
-/// Publish `body` at `path`, but only if nothing holds that name yet.
-///
-/// `rename` cannot express this: it replaces its destination silently, so the create path's
-/// `exists()`-then-write could overwrite a file another writer landed in between and report `201`
-/// (#184). `hard_link` fails with `AlreadyExists` instead, in one operation, while keeping the
-/// fully-written-before-visible property `rename` gave us. The staging name is unlinked afterwards
-/// either way; failing to unlink it does not change the answer, since a `.tmp` file is not a
-/// template the registry would load.
-fn publish_new_template_file(path: &std::path::Path, body: &str) -> Result<(), AppError> {
-    let (tmp, _) = stage_template_file(path, body)?;
-    let published = std::fs::hard_link(&tmp, path);
-    if let Err(err) = std::fs::remove_file(&tmp) {
-        tracing::warn!(path = %tmp.display(), %err, "failed to remove template staging file");
+    if validated_src != new_group_path
+        && (groups.iter().any(|g| g == &validated_src)
+            || !groups.iter().any(|g| g == &new_group_path))
+    {
+        return Err(AppError::render_failed(
+            Reason::TemplateRegistryIo,
+            "group rename confirmation failed: new group not listed or old group still listed",
+        ));
     }
-    match published {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Err(
-            AppError::template_exists(path.file_stem().and_then(|s| s.to_str()).unwrap_or("")),
-        ),
-        Err(err) => Err(AppError::render_failed(
-            Reason::TemplateWriteFailed,
-            format!("failed to persist template: {err}"),
-        )),
-    }
+
+    Ok((
+        axum::http::StatusCode::OK,
+        Json(RenameGroupResponse {
+            group: new_group_path,
+        }),
+    )
+        .into_response())
 }
 
-/// Bare filename of `path`, for an error body. Never the path: see `AppError::template_id_collision`.
-fn file_label(path: &std::path::Path) -> String {
-    path.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string())
+fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
+    let content = parse_template(body)
+        .map_err(|err| AppError::template_invalid(Reason::TemplateParseFailed, err.to_string()))?;
+    content
+        .validate()
+        .map_err(|err| AppError::template_invalid(Reason::TemplateValidationFailed, err))?;
+    Ok(content)
 }
 
-/// Confirm the registry serves `id` from `path` with exactly `body`, or say why it does not.
-///
-/// The pathname alone cannot carry this: `hard_link`/`rename` publish onto a name and report no file
-/// identity, so a writer replacing that name leaves a path comparison passing while the response
-/// would describe content the caller never sent. The content hash the registry already keeps for its
-/// ETag closes that.
-///
-/// A `409` asserts three things at once - two files claim the id, the caller's write is intact, and
-/// it is the one being refused - so it is returned only when all of them hold. Anything else (our
-/// file gone, renamed, re-identified, or holding somebody else's bytes) is a `500`: there would be no
-/// second file to name and no intact write to point at (#184).
+fn file_label(templates_dir: &std::path::Path, path: &std::path::Path) -> String {
+    path.strip_prefix(templates_dir)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
 fn confirm_written_template(
     registry: &TemplateRegistry,
     id: &str,
@@ -601,40 +670,44 @@ fn confirm_written_template(
             Reason::TemplateMissingAfterWrite,
             format!(
                 "template '{id}' is missing after the write to {}",
-                file_label(path)
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string())
             ),
         )
     };
 
-    // The id must have gone to some *other* file; nothing else can be a collision.
     let Some(winner) = served.filter(|served| *served != path) else {
         return Err(missing());
     };
-    // And that same reading must have refused *our* file for this id. Asking the snapshot, not the
-    // filesystem, is what keeps the two halves of the answer consistent: a file that was absent or
-    // declaring another id when the directory was read is not a collider, however it looks by the
-    // time we get here, and the error would otherwise name it as one.
+
     let refused = registry.duplicates(id);
-    if !refused.iter().any(|refused| refused == path) {
+    if !refused
+        .iter()
+        .any(|refused_rel| path.ends_with(refused_rel))
+    {
         return Err(missing());
     }
-    // Finally it must still hold what we wrote, or the write is lost rather than refused. Read it
-    // back rather than asking the registry: `load_from_dir` records a hash only for the winner, so a
-    // refused file has none.
+
     match std::fs::read_to_string(path) {
         Ok(on_disk) if on_disk == body => {
-            // Every file the reading found declaring this id, not just ours: with three claimants an
-            // operator fixing only the one we happened to write would still not converge.
-            let mut files = vec![file_label(winner)];
-            files.extend(refused.iter().map(|p| file_label(p)));
+            let winner_rel = registry
+                .rel_path(id)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|| winner.file_name().unwrap().to_string_lossy().into_owned());
+            let mut files = vec![winner_rel];
+            files.extend(
+                refused
+                    .iter()
+                    .map(|p| p.to_string_lossy().replace('\\', "/")),
+            );
+            let this_file_display = path.file_name().unwrap().to_string_lossy();
+            let winner_display = winner.file_name().unwrap().to_string_lossy();
             Err(AppError::template_id_collision(
                 id,
                 files,
                 format!(
-                    "template id '{id}' is declared by both {} and {}; {} is served and the file just written is refused",
-                    file_label(winner),
-                    file_label(path),
-                    file_label(winner)
+                    "template id '{id}' is declared by both {winner_display} and {this_file_display}; {winner_display} is served and the file just written is refused"
                 ),
             ))
         }
@@ -642,105 +715,221 @@ fn confirm_written_template(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/templates",
-    request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
-    responses(
-        (status = 201, description = "Template created", body = TemplateDetail),
-        (status = 409, description = "Template id already exists, or the id is served from another file after the write", body = ErrorResponse),
-        (status = 422, description = "Invalid template", body = ErrorResponse),
-        (status = 500, description = "The write failed, the directory could not be re-read, or the written template is missing afterwards", body = ErrorResponse)
-    )
-)]
-pub async fn create_template(
-    State(state): State<Arc<AppState>>,
-    body: String,
-) -> Result<Response, AppError> {
-    let template = parse_and_validate(&body)?;
-    let id = template.id.clone();
-    let path = template_file_path(&state.templates_dir, &id)?;
-    let _guard = state.write_lock.lock().await;
-    // Decide against disk, not against a registry that may predate it: files reach this directory by
-    // hand (`cp catalog/*.yaml`), and the guard below used to test a stale in-memory set (#184).
-    state.reload()?;
-    // Two independent blocks, neither covering the other: the registry holds the id under some
-    // filename, or the destination name is taken by anything at all, including a file that fails to
-    // parse or declares another id. A file that does not parse never claims an id, so only the
-    // filename half can catch it.
-    if state.templates.load_full().get(&id).is_some() || path.exists() {
-        return Err(AppError::template_exists(&id));
-    }
-    // Not `write_template_file`: that renames onto the destination, and rename replaces silently, so
-    // a file landing here since the check above would be overwritten and the request would still
-    // report success (#184).
-    state.before_publish();
-    publish_new_template_file(&path, &body)?;
-    state.after_write();
-    state.reload()?;
-    // One snapshot for both: confirming against one registry and answering from another would let a
-    // concurrent reload put back the very content the confirmation exists to keep out.
-    let registry = state.templates.load_full();
-    confirm_written_template(&registry, &id, &path, &body)?;
-    let detail = registry.detail(&id).ok_or_else(|| {
-        AppError::render_failed(
-            Reason::TemplateMissingAfterWrite,
-            "template missing after write",
-        )
-    })?;
-    Ok((axum::http::StatusCode::CREATED, Json(detail)).into_response())
+#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
+pub struct PutTemplateQuery {
+    pub group: Option<String>,
 }
 
 #[utoipa::path(
     put,
     path = "/templates/{id}",
-    params(("id" = String, Path, description = "Template ID")),
+    params(
+        ("id" = String, Path, description = "Template ID"),
+        ("group" = Option<String>, Query, description = "Group path for create (optional)")
+    ),
     request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
     responses(
         (status = 200, description = "Template replaced", body = TemplateDetail),
-        (status = 400, description = "Body id does not match path id", body = ErrorResponse),
-        (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 201, description = "Template created", body = TemplateDetail),
+        (status = 400, description = "Invalid id, template group mismatch, or unsupported precondition", body = ErrorResponse),
         (status = 409, description = "After the write, the id is served from a different file", body = ErrorResponse),
-        (status = 422, description = "Invalid template", body = ErrorResponse),
+        (status = 412, description = "Precondition failed (If-None-Match: * and template exists)", body = ErrorResponse),
+        (status = 422, description = "Invalid template or group", body = ErrorResponse),
         (status = 500, description = "The write failed, the directory could not be re-read, or the written template is missing afterwards", body = ErrorResponse)
     )
 )]
-pub async fn replace_template(
+pub async fn put_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(query): Query<PutTemplateQuery>,
+    headers: axum::http::HeaderMap,
     body: String,
 ) -> Result<Response, AppError> {
-    let template = parse_and_validate(&body)?;
-    if template.id != id {
+    let create_only = if let Some(if_none_match) = headers.get("if-none-match") {
+        let val = if_none_match.to_str().map_err(|_| {
+            AppError::unsupported_precondition("unsupported If-None-Match header value")
+        })?;
+        if val.trim() == "*" {
+            true
+        } else {
+            return Err(AppError::unsupported_precondition(
+                "unsupported If-None-Match header value; only '*' is supported",
+            ));
+        }
+    } else {
+        false
+    };
+
+    if !validate_template_id_stem(&id) {
         return Err(AppError::invalid_request(
-            Reason::TemplateIdMismatch,
-            format!(
-                "template id in body ('{}') must match path id ('{id}')",
-                template.id
-            ),
+            Reason::TemplateIdInvalid,
+            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
         ));
     }
-    // Called for its id validation: a malformed id is a bad request, and answering that before
-    // touching the filesystem keeps an unreadable directory from masking it as a 500.
-    template_file_path(&state.templates_dir, &id)?;
-    // Resolved under the lock, not before it: an in-flight delete would otherwise unlink the file
-    // between the resolve and the write, and this handler would recreate the template it removed.
+
+    let _content = parse_and_validate(&body)?;
+
     let _guard = state.write_lock.lock().await;
     state.reload()?;
-    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    write_template_file(&path, &body)?;
-    state.after_write();
-    state.reload()?;
     let registry = state.templates.load_full();
-    confirm_written_template(&registry, &id, &path, &body)?;
-    let detail = registry.detail(&id).ok_or_else(|| {
-        AppError::render_failed(
-            Reason::TemplateMissingAfterWrite,
-            "template missing after write",
-        )
-    })?;
-    Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
+    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+
+    if let Some(existing) = registry.get(&id) {
+        if create_only {
+            return Err(AppError::precondition_failed(format!(
+                "template with id '{id}' already exists"
+            )));
+        }
+
+        if let Some(ref req_grp) = query.group {
+            let stripped = req_grp.trim();
+            let req_group_opt = if stripped.is_empty() {
+                None
+            } else {
+                Some(stripped)
+            };
+            if req_group_opt != existing.group.as_deref() {
+                return Err(AppError::template_group_mismatch(format!(
+                    "template '{id}' already exists in group '{}'; use PUT /api/templates/{id}/group to move it",
+                    existing.group.as_deref().unwrap_or("ungrouped")
+                )));
+            }
+        }
+
+        let resolved =
+            fs_safe::resolve_or_create_group(root_fd.as_fd(), existing.group.as_deref(), false)?;
+        let target_filename = format!("{id}.yaml");
+
+        match rustix::fs::openat(
+            resolved.target_fd.as_fd(),
+            &target_filename,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::LOOP) => {
+                return Err(AppError::render_failed(
+                    Reason::TemplateGroupUnsafePath,
+                    "destination template file is a symbolic link",
+                ));
+            }
+            Err(rustix::io::Errno::NOENT) => {}
+            Err(err) => {
+                return Err(AppError::render_failed(
+                    Reason::TemplateWriteFailed,
+                    format!("failed to check destination: {err}"),
+                ));
+            }
+        }
+
+        state.before_publish();
+        fs_safe::stage_and_replace(resolved.target_fd.as_fd(), &target_filename, &body)?;
+        state.after_write();
+        state.reload()?;
+        let new_registry = state.templates.load_full();
+        let dest_path = state
+            .templates_dir
+            .join(&resolved.target_path)
+            .join(&target_filename);
+        confirm_written_template(&new_registry, &id, &dest_path, &body)?;
+        let detail = new_registry.detail(&id).ok_or_else(|| {
+            AppError::render_failed(
+                Reason::TemplateMissingAfterWrite,
+                "template missing after write",
+            )
+        })?;
+        Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
+    } else {
+        let group_req = query
+            .group
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let resolved = fs_safe::resolve_or_create_group(root_fd.as_fd(), group_req, true)?;
+        let target_filename = format!("{id}.yaml");
+
+        state.before_publish();
+        let pub_res =
+            fs_safe::stage_and_publish_new(resolved.target_fd.as_fd(), &target_filename, &body);
+
+        match pub_res {
+            Ok(PublishResult::Published) => {
+                state.after_write();
+                state.reload()?;
+                let new_registry = state.templates.load_full();
+                let dest_path = state
+                    .templates_dir
+                    .join(&resolved.target_path)
+                    .join(&target_filename);
+                confirm_written_template(&new_registry, &id, &dest_path, &body)?;
+                let detail = new_registry.detail(&id).ok_or_else(|| {
+                    AppError::render_failed(
+                        Reason::TemplateMissingAfterWrite,
+                        "template missing after write",
+                    )
+                })?;
+                Ok((axum::http::StatusCode::CREATED, Json(detail)).into_response())
+            }
+            Ok(PublishResult::AlreadyExists) => {
+                if create_only {
+                    fs_safe::cleanup_created_dirs(resolved.created_dirs);
+                    return Err(AppError::precondition_failed(format!(
+                        "a file for template '{id}' already exists"
+                    )));
+                }
+
+                match rustix::fs::openat(
+                    resolved.target_fd.as_fd(),
+                    &target_filename,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                ) {
+                    Ok(_) => {}
+                    Err(rustix::io::Errno::LOOP) => {
+                        fs_safe::cleanup_created_dirs(resolved.created_dirs);
+                        return Err(AppError::render_failed(
+                            Reason::TemplateGroupUnsafePath,
+                            "destination template file is a symbolic link",
+                        ));
+                    }
+                    Err(err) => {
+                        fs_safe::cleanup_created_dirs(resolved.created_dirs);
+                        return Err(AppError::render_failed(
+                            Reason::TemplateWriteFailed,
+                            format!("failed to check destination: {err}"),
+                        ));
+                    }
+                }
+
+                if let Err(err) =
+                    fs_safe::stage_and_replace(resolved.target_fd.as_fd(), &target_filename, &body)
+                {
+                    fs_safe::cleanup_created_dirs(resolved.created_dirs);
+                    return Err(err);
+                }
+
+                state.after_write();
+                state.reload()?;
+                let new_registry = state.templates.load_full();
+                let dest_path = state
+                    .templates_dir
+                    .join(&resolved.target_path)
+                    .join(&target_filename);
+                confirm_written_template(&new_registry, &id, &dest_path, &body)?;
+                let detail = new_registry.detail(&id).ok_or_else(|| {
+                    AppError::render_failed(
+                        Reason::TemplateMissingAfterWrite,
+                        "template missing after write",
+                    )
+                })?;
+                Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
+            }
+            Err(err) => {
+                fs_safe::cleanup_created_dirs(resolved.created_dirs);
+                Err(err)
+            }
+        }
+    }
 }
 
 #[utoipa::path(
@@ -749,12 +938,12 @@ pub async fn replace_template(
     params(("id" = String, Path, description = "Template ID")),
     request_body(content = TemplateGroupUpdate, description = "Group assignment"),
     responses(
-        (status = 200, description = "Template group updated", body = TemplateDetail),
+        (status = 200, description = "Template moved to group", body = TemplateDetail),
         (status = 400, description = "Invalid id or request body", body = ErrorResponse),
         (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 409, description = "After the write, the id is served from a different file", body = ErrorResponse),
-        (status = 422, description = "Invalid group name or unpatchable template", body = ErrorResponse),
-        (status = 500, description = "File write or registry reload failed, or the patched template is missing afterwards", body = ErrorResponse)
+        (status = 409, description = "Destination already exists or id collision", body = ErrorResponse),
+        (status = 422, description = "Invalid group name or case clash", body = ErrorResponse),
+        (status = 500, description = "File move failed or template missing afterwards", body = ErrorResponse)
     )
 )]
 pub async fn update_template_group(
@@ -771,30 +960,101 @@ pub async fn update_template_group(
             "body must carry a 'group' key; use null to clear the group",
         )
     })?;
-    template_file_path(&state.templates_dir, &id)?;
+
+    if !validate_template_id_stem(&id) {
+        return Err(AppError::invalid_request(
+            Reason::TemplateIdInvalid,
+            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
+        ));
+    }
+
     let _guard = state.write_lock.lock().await;
     state.reload()?;
-    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let yaml = std::fs::read_to_string(&path)
-        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
-    let patched = patch_template_group(&yaml, group)?;
-    // Only the writing branch makes a claim about a file it touched; the idempotent branch writes
-    // nothing, performs no post-write reload, and so has nothing to confirm.
-    let wrote = patched != yaml;
-    if wrote {
-        write_template_file(&path, &patched)?;
-        state.after_write();
-        state.reload()?;
-    }
     let registry = state.templates.load_full();
-    if wrote {
-        confirm_written_template(&registry, &id, &path, &patched)?;
+    let existing = registry
+        .get(&id)
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+    let src_path = registry
+        .path(&id)
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+    let src_filename = src_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+
+    let target_group: Option<&str> = match group {
+        None => None,
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(AppError::template_group_invalid(
+                    "group path cannot be empty; use null to clear the group",
+                ));
+            }
+            crate::templates::validate_group_name(trimmed)
+                .map_err(|e| AppError::template_group_invalid(e.to_string()))?;
+            Some(trimmed)
+        }
+    };
+    if existing.group.as_deref() == target_group {
+        let detail = registry.detail(&id).unwrap();
+        return Ok((axum::http::StatusCode::OK, Json(detail)).into_response());
     }
-    let detail = registry.detail(&id).ok_or_else(|| {
+
+    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+    let src_resolved =
+        fs_safe::resolve_or_create_group(root_fd.as_fd(), existing.group.as_deref(), false)?;
+    let dest_resolved = fs_safe::resolve_or_create_group(root_fd.as_fd(), target_group, true)?;
+    let dest_filename = src_filename.clone();
+
+    let dest_exists = rustix::fs::openat(
+        dest_resolved.target_fd.as_fd(),
+        &dest_filename,
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .is_ok();
+
+    if dest_exists {
+        fs_safe::cleanup_created_dirs(dest_resolved.created_dirs);
+        let rel_dest = dest_resolved
+            .target_path
+            .join(&dest_filename)
+            .to_string_lossy()
+            .replace('\\', "/");
+        return Err(AppError::template_id_collision(
+            &id,
+            vec![rel_dest.clone()],
+            format!("destination '{rel_dest}' already exists"),
+        ));
+    }
+
+    state.before_publish();
+    if let Err(err) = fs_safe::move_template_file(
+        src_resolved.target_fd.as_fd(),
+        &src_filename,
+        dest_resolved.target_fd.as_fd(),
+        &dest_filename,
+    ) {
+        fs_safe::cleanup_created_dirs(dest_resolved.created_dirs);
+        return Err(err);
+    }
+
+    state.after_write();
+    state.reload()?;
+    let new_registry = state.templates.load_full();
+    let dest_full_path = state
+        .templates_dir
+        .join(&dest_resolved.target_path)
+        .join(&dest_filename);
+    let content_str = std::fs::read_to_string(&dest_full_path)
+        .map_err(|e| AppError::render_failed(Reason::TemplateRegistryIo, e.to_string()))?;
+    confirm_written_template(&new_registry, &id, &dest_full_path, &content_str)?;
+    let detail = new_registry.detail(&id).ok_or_else(|| {
         AppError::render_failed(
             Reason::TemplateMissingAfterWrite,
-            "template missing after write",
+            "template missing after move",
         )
     })?;
     Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
@@ -816,30 +1076,32 @@ pub async fn delete_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    template_file_path(&state.templates_dir, &id)?;
+    if !validate_template_id_stem(&id) {
+        return Err(AppError::invalid_request(
+            Reason::TemplateIdInvalid,
+            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
+        ));
+    }
     let _guard = state.write_lock.lock().await;
-    // Decided on a reading that is *not* published: a refused delete must leave the served set
-    // exactly as it was, and `reload()` would swap in whatever else the directory has gained since
-    // the last load before we get to the refusal below (#183).
     let registry = state.read_templates()?;
-    let path = match existing_template_file(&registry, &state.templates_dir, &id)? {
-        Some(path) => path,
+    let existing = match registry.get(&id) {
+        Some(t) => t,
         None => {
-            // Publish before answering. The live set can outlive the files it names, when an earlier
-            // delete unlinked one and its reload then failed on an unreadable directory; this reading
-            // is the proof the id is gone, and dropping it would leave `GET` still serving a template
-            // this request just called missing, with no retry able to converge.
             state.publish(registry);
             return Err(AppError::template_not_found(id));
         }
     };
-    // Refuse before touching anything. Unlinking the served file would promote a refused collider at
-    // the next load, so the id would still be served right after a 204, from content the caller did
-    // not ask to keep, with its favorites already pruned (#183).
+    let path = registry.path(&id).unwrap().to_path_buf();
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap()
+        .to_string();
+
     let refused = registry.duplicates(&id);
     if !refused.is_empty() {
-        let mut files = vec![file_label(&path)];
-        files.extend(refused.iter().map(|p| file_label(p)));
+        let mut files = vec![file_label(&state.templates_dir, &path)];
+        files.extend(refused.iter().map(|p| file_label(&state.templates_dir, p)));
         let named = files.join(", ");
         return Err(AppError::template_id_collision(
             &id,
@@ -849,29 +1111,16 @@ pub async fn delete_template(
             ),
         ));
     }
+
+    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+    let parent_resolved =
+        fs_safe::resolve_or_create_group(root_fd.as_fd(), existing.group.as_deref(), false)?;
     drop(registry);
-    match std::fs::remove_file(&path) {
-        Ok(()) => {}
-        // The registry can outlive the file: if a previous delete unlinked it but its `reload()`
-        // then failed on an unreadable directory, the old set stays live and still names this path.
-        // Treat an already-absent file as removed and carry on, so retrying the delete once the
-        // directory is readable converges instead of failing forever on a file that is already gone.
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => {
-            return Err(AppError::render_failed(
-                Reason::TemplateDeleteFailed,
-                format!("failed to delete template: {err}"),
-            ))
-        }
-    }
-    // After the unlink, before the reload. Unlink first because it is the step that realistically
-    // fails, and a prune-first order would mean a failed unlink had already destroyed favorites for
-    // a template that still exists. Before the reload because `reload()` re-reads the whole
-    // directory and can still fail on an unreadable one (bad content is quarantined, I/O is not).
-    // With the prune after it, that failure would leave the file deleted and the favorite alive,
-    // the exact state this prune prevents.
-    // Recents are not pruned: they derive from the job log, which is print history (#94).
+
+    fs_safe::unlink_file(parent_resolved.target_fd.as_fd(), &filename)?;
+
     state.store().remove_favorites_for_template(&id).await?;
+    state.after_write();
     state.reload()?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -913,9 +1162,17 @@ pub async fn template_source(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let path = existing_template_file(&state.templates.load_full(), &state.templates_dir, &id)?
+    if !validate_template_id_stem(&id) {
+        return Err(AppError::invalid_request(
+            Reason::TemplateIdInvalid,
+            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
+        ));
+    }
+    let registry = state.templates.load_full();
+    let path = registry
+        .path(&id)
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let yaml = std::fs::read_to_string(&path).map_err(|_| AppError::template_not_found(id))?;
+    let yaml = std::fs::read_to_string(path).map_err(|_| AppError::template_not_found(id))?;
     Ok((
         axum::http::StatusCode::OK,
         [("content-type", "text/yaml; charset=utf-8")],
@@ -2973,102 +3230,6 @@ impl FromRequestParts<Arc<AppState>> for HttpsHint {
 mod tests {
     use super::*;
 
-    /// `rename` replaces its destination silently, so the create path's `exists()`-then-write could
-    /// overwrite a file another writer landed in between and still report success. The publish must
-    /// refuse the name instead, in one operation (#184, round-4 review). The `exists()` guard cannot
-    /// stand in for this: the file it must catch appears *after* the guard has run.
-    #[tokio::test]
-    async fn publish_new_template_file_refuses_an_occupied_name() {
-        let dir = confirm_dir("publish_taken");
-        let dest = dir.join("t.yaml");
-        std::fs::write(&dest, "someone else's file\n").unwrap();
-
-        let err = publish_new_template_file(&dest, &confirm_yaml("t", "mine"))
-            .expect_err("the name is taken");
-        let (status, value) = error_response(err).await;
-        assert_eq!(status, axum::http::StatusCode::CONFLICT);
-        assert_eq!(value["error"]["code"], "TemplateExists");
-        assert_eq!(
-            std::fs::read_to_string(&dest).unwrap(),
-            "someone else's file\n",
-            "the other writer's content is untouched"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// The happy path publishes the bytes and leaves no staging file behind for the registry to trip
-    /// over or the operator to wonder about.
-    #[test]
-    fn publish_new_template_file_writes_and_cleans_up_its_staging_file() {
-        let dir = confirm_dir("publish_ok");
-        let dest = dir.join("t.yaml");
-        let body = confirm_yaml("t", "mine");
-
-        publish_new_template_file(&dest, &body).expect("publish");
-
-        assert_eq!(std::fs::read_to_string(&dest).unwrap(), body);
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "t.yaml")
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "staging files left behind: {leftovers:?}"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A failed publish must not leave its staging file behind. A destination another writer turned
-    /// into a directory is the concrete way `rename` fails here.
-    #[test]
-    fn write_template_file_removes_its_staging_file_when_the_rename_fails() {
-        let dir = confirm_dir("rename_fail");
-        let dest = dir.join("t.yaml");
-        std::fs::create_dir(&dest).unwrap();
-
-        write_template_file(&dest, &confirm_yaml("t", "mine"))
-            .expect_err("rename onto a directory");
-
-        let leftovers: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name != "t.yaml")
-            .collect();
-        assert!(
-            leftovers.is_empty(),
-            "staging files left behind: {leftovers:?}"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// The staging open refuses a name it did not create, and in particular does not follow a symlink
-    /// planted under one: `std::fs::write`/`File::create` would truncate the target and write the
-    /// caller's template through it, possibly outside the templates directory (#184, round-4 review).
-    #[test]
-    fn open_staging_exclusive_refuses_a_planted_name() {
-        let dir = confirm_dir("stage_excl");
-        let victim = dir.join("victim.txt");
-        std::fs::write(&victim, "untouched\n").unwrap();
-        let tmp = dir.join(".t.yaml.planted.tmp");
-        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
-
-        let err = open_staging_exclusive(&tmp).expect_err("the name is taken");
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(
-            std::fs::read_to_string(&victim).unwrap(),
-            "untouched\n",
-            "wrote through a planted staging name"
-        );
-
-        // A free name still works, which is what the retry loop above relies on.
-        let free = dir.join(".t.yaml.free.tmp");
-        open_staging_exclusive(&free).expect("a free staging name opens");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
     fn confirm_dir(label: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();
         let n = std::time::SystemTime::now()
@@ -3080,9 +3241,9 @@ mod tests {
         dir
     }
 
-    fn confirm_yaml(id: &str, name: &str) -> String {
+    fn confirm_yaml(name: &str) -> String {
         format!(
-            "id: {id}\nname: {name}\ndescription: d\nunit: mm\ndpi: 300\nformat:\n  type: single\n  width: 20.0\n  height: 10.0\nlayout:\n  - type: text\n    value: hi\n    at: [0.0, 0.0]\n    size: [20.0, 5.0]\n    font_size: 3.0\n"
+            "name: {name}\ndescription: d\nunit: mm\ndpi: 300\nformat:\n  type: single\n  width: 20.0\n  height: 10.0\nlayout:\n  - type: text\n    value: hi\n    at: [0.0, 0.0]\n    size: [20.0, 5.0]\n    font_size: 3.0\n"
         )
     }
 
@@ -3097,7 +3258,7 @@ mod tests {
     #[test]
     fn confirm_written_template_passes_when_the_id_is_served_from_our_file() {
         let dir = confirm_dir("pass");
-        let body = confirm_yaml("t", "mine");
+        let body = confirm_yaml("mine");
         let path = dir.join("t.yaml");
         std::fs::write(&path, &body).unwrap();
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
@@ -3123,14 +3284,17 @@ mod tests {
     #[tokio::test]
     async fn confirm_written_template_reports_a_collision_naming_every_claimant() {
         let dir = confirm_dir("collide");
-        let body = confirm_yaml("t", "mine");
+        let body = confirm_yaml("mine");
         // Ours is written, but a file sorting earlier claims the id, so the load refuses ours. A
         // third claimant is present too: an operator told about only two of three would fix one file
         // and still not converge.
-        let ours = dir.join("zzz.yaml");
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("m")).unwrap();
+        std::fs::create_dir_all(dir.join("z")).unwrap();
+        let ours = dir.join("z").join("t.yaml");
         std::fs::write(&ours, &body).unwrap();
-        std::fs::write(dir.join("aaa.yaml"), confirm_yaml("t", "theirs")).unwrap();
-        std::fs::write(dir.join("mmm.yaml"), confirm_yaml("t", "third")).unwrap();
+        std::fs::write(dir.join("a").join("t.yaml"), confirm_yaml("theirs")).unwrap();
+        std::fs::write(dir.join("m").join("t.yaml"), confirm_yaml("third")).unwrap();
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
 
         let err = confirm_written_template(&registry, "t", &ours, &body)
@@ -3148,12 +3312,8 @@ mod tests {
         files.sort_unstable();
         assert_eq!(
             files,
-            vec!["aaa.yaml", "mmm.yaml", "zzz.yaml"],
+            vec!["a/t.yaml", "m/t.yaml", "z/t.yaml"],
             "every file declaring the id, and nothing else"
-        );
-        assert!(
-            files.iter().all(|f| !f.contains(std::path::MAIN_SEPARATOR)),
-            "bare filenames only: {files:?}"
         );
         assert!(
             !value["error"]["details"]
@@ -3171,12 +3331,14 @@ mod tests {
     #[tokio::test]
     async fn confirm_written_template_requires_the_snapshot_to_have_refused_our_file() {
         let dir = confirm_dir("not_refused");
-        let body = confirm_yaml("t", "mine");
+        let body = confirm_yaml("mine");
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("z")).unwrap();
         // The reading happens while only the winner exists...
-        std::fs::write(dir.join("aaa.yaml"), confirm_yaml("t", "theirs")).unwrap();
+        std::fs::write(dir.join("a").join("t.yaml"), confirm_yaml("theirs")).unwrap();
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
         // ...and our file appears afterwards, so it is on disk with our bytes but was never refused.
-        let ours = dir.join("zzz.yaml");
+        let ours = dir.join("z").join("t.yaml");
         std::fs::write(&ours, &body).unwrap();
 
         let err = confirm_written_template(&registry, "t", &ours, &body)
@@ -3197,9 +3359,11 @@ mod tests {
     #[tokio::test]
     async fn confirm_written_template_reports_a_renamed_file_as_a_lost_write() {
         let dir = confirm_dir("renamed");
-        let body = confirm_yaml("t", "mine");
-        std::fs::write(dir.join("aaa.yaml"), &body).unwrap();
-        let ours = dir.join("zzz.yaml"); // the name we wrote, since renamed away
+        let body = confirm_yaml("mine");
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("z")).unwrap();
+        std::fs::write(dir.join("a").join("t.yaml"), &body).unwrap();
+        let ours = dir.join("z").join("t.yaml"); // the name we wrote, since renamed away
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
 
         let err =
@@ -3221,10 +3385,10 @@ mod tests {
     async fn confirm_written_template_reports_replaced_content_as_a_lost_write() {
         let dir = confirm_dir("replaced");
         let path = dir.join("t.yaml");
-        std::fs::write(&path, confirm_yaml("t", "theirs")).unwrap();
+        std::fs::write(&path, confirm_yaml("theirs")).unwrap();
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
 
-        let err = confirm_written_template(&registry, "t", &path, &confirm_yaml("t", "mine"))
+        let err = confirm_written_template(&registry, "t", &path, &confirm_yaml("mine"))
             .expect_err("the file no longer holds what we wrote");
         assert_eq!(err.reason(), Some("template_missing_after_write"));
         let (status, _) = error_response(err).await;

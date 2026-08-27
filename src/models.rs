@@ -34,8 +34,8 @@ pub struct ReloadResponse {
 
 #[derive(Serialize, ToSchema)]
 pub struct BrokenTemplateSummary {
-    /// Basename of the YAML file that failed to load (e.g. `foo.yaml`).
-    pub filename: String,
+    /// Path of the YAML file relative to the templates directory (e.g. `foo.yaml` or `Shipping/pallet.yaml`).
+    pub path: String,
     /// Human-readable parse error, validation error, or duplicate-id refusal.
     pub error: String,
 }
@@ -77,6 +77,17 @@ pub struct TemplateDetail {
     pub layout: Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RenameGroupRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RenameGroupResponse {
+    pub group: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

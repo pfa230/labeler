@@ -65,7 +65,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "templates loaded"
     );
     for b in templates.broken() {
-        tracing::warn!(filename = %b.filename, error = %b.error, "template failed to load; fix it and POST /api/templates/reload");
+        tracing::warn!(path = %b.path, error = %b.error, "template failed to load; fix it and POST /api/templates/reload");
     }
 
     // Dev-only: warn if the locally served ui/dist bundle is missing or older than ui/src. Skipped when
