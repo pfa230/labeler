@@ -77,8 +77,24 @@ if [ "$role" = "implement" ]; then
 fi
 
 cmd=$(agent_command "$agent" "$role" "$prompt" "$resume") || { echo "no invocation for $agent/$role" >&2; exit 2; }
+# What the worktree looks like right now, content included. The reviewer guard below
+# needs a DELTA across the stage, not the absolute dirtiness of the tree: apply never
+# commits, so the implementer's work is always uncommitted when the reviewer runs, and
+# counting `git status` lines blamed the reviewer for the implementer's diff every time.
+worktree_digest() {
+  (
+    cd "$wt" || exit
+    git status --porcelain -- . ':!openspec/changes' ':!.agent-*'
+    git diff HEAD -- . ':!openspec/changes' ':!.agent-*'
+    git ls-files --others --exclude-standard -- . ':!openspec/changes' ':!.agent-*' \
+      | LC_ALL=C sort | tr '\n' '\0' | xargs -0 -r sha256sum
+  ) 2>/dev/null | sha256sum | cut -d' ' -f1
+}
+before_digest=$(worktree_digest)
+
 ( cd "$wt" && pty_run "$cmd" ) 2>&1 | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r' > "$raw"
 status=$?
+after_digest=$(worktree_digest)
 
 json=$(grep -o '{"conversation_id".*}' "$raw" | tail -1 || true)
 if [ -n "$json" ]; then
@@ -97,9 +113,10 @@ echo "log: $log"
 echo "--- last 30 lines ---"
 tail -30 "$log"
 
-# A reviewer that changed files has broken the rule it was told to follow.
-if [ "$role" = "review" ] && [ "$changed" -gt 0 ]; then
-  echo >&2; echo "the reviewer modified $changed file(s). Reviewers report; they do not edit." >&2
+# A reviewer that changed files has broken the rule it was told to follow. Judged by
+# whether this stage altered the tree, not by whether the tree was already dirty.
+if [ "$role" = "review" ] && [ "$before_digest" != "$after_digest" ]; then
+  echo >&2; echo "the reviewer altered the worktree during its stage. Reviewers report; they do not edit." >&2
   exit 5
 fi
 # An implement run that exits cleanly having written nothing did not run.
