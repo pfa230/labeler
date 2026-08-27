@@ -6,6 +6,7 @@ import {
   useFavorites,
   useMoveTemplateGroup,
   useRecentTemplates,
+  useRenameTemplateGroup,
   useSetFavorite,
   useTemplateGroups,
   useTemplates,
@@ -348,8 +349,178 @@ function MoveDialog({
   );
 }
 
+function validateGroupSegment(segment: string): string | null {
+  if (!segment) return "Name cannot be empty";
+  if (segment.length > 64) return "Name cannot exceed 64 characters";
+  const encoder = new TextEncoder();
+  if (encoder.encode(segment).length > 255) return "Name cannot exceed 255 bytes";
+  if (/[\x00-\x1F\x7F]/.test(segment)) return "Name cannot contain control characters";
+  if (/[\/\\<>:"|?*]/.test(segment)) return 'Name cannot contain / \\ < > : " | ? *';
+  if (segment === "." || segment === "..") return 'Name cannot be "." or ".."';
+  if (segment.startsWith(" ") || segment.endsWith(" ")) return "Name cannot have leading or trailing whitespace";
+  if (segment.startsWith(".") || segment.endsWith(".")) return 'Name cannot begin or end with "."';
+
+  const stem = segment.replace(/\.[^.]*$/, "");
+  const upper = stem.toUpperCase();
+  const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]|COM[¹²³]|LPT[¹²³])$/;
+  if (reserved.test(upper)) return `"${stem}" is a reserved device name`;
+
+  return null;
+}
+
+function RenameDialog({
+  groupPath,
+  onClose,
+  onSuccess,
+}: {
+  groupPath: string;
+  onClose: () => void;
+  onSuccess: (newGroupPath: string, oldGroupPath: string) => void;
+}) {
+  const currentSegment = groupPath.split("/").pop() ?? groupPath;
+  const [nameInput, setNameInput] = useState(currentSegment);
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const renameGroup = useRenameTemplateGroup();
+  const { push } = useToast();
+
+  const handleRename = async () => {
+    const trimmed = nameInput.trim();
+    const validationErr = validateGroupSegment(trimmed);
+    if (validationErr) {
+      setError(validationErr);
+      return;
+    }
+
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await renameGroup.mutateAsync({ groupPath, name: trimmed });
+      push({
+        kind: "ok",
+        message: `Renamed group ${groupPath} to ${res.group}`,
+      });
+      onSuccess(res.group, groupPath);
+      onClose();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        if (err.status === 404) {
+          setError(`Group '${groupPath}' not found`);
+        } else if (err.status === 409) {
+          setError(`Destination group '${trimmed}' already exists`);
+        } else if (err.status === 422) {
+          setError(`Invalid name: ${err.message}`);
+        } else {
+          setError(err.message);
+        }
+      } else {
+        setError(err instanceof Error ? err.message : "Failed to rename group");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-label={`Rename group ${groupPath}`}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+    >
+      <div
+        className="flex w-full max-w-md flex-col gap-4 rounded-lg border p-6 shadow-xl"
+        style={{ background: "var(--surface)", borderColor: "var(--border)" }}
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold" style={{ color: "var(--ink)" }}>
+            Rename group
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="rounded p-1 text-sm focus-visible:outline-none focus-visible:ring-2"
+            style={{ color: "var(--muted)" }}
+          >
+            ✕
+          </button>
+        </div>
+
+        <p className="text-xs" style={{ color: "var(--muted)" }}>
+          Renaming <span className="font-medium" style={{ color: "var(--ink)" }}>{groupPath}</span> changes its own name within its parent directory.
+        </p>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleRename();
+          }}
+          className="flex flex-col gap-4"
+        >
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="rename-group-input"
+              className="text-xs font-medium"
+              style={{ color: "var(--muted)" }}
+            >
+              New name
+            </label>
+            <input
+              id="rename-group-input"
+              type="text"
+              value={nameInput}
+              onChange={(e) => {
+                setNameInput(e.target.value);
+                setError(null);
+              }}
+              placeholder="New name"
+              aria-label="New name"
+              autoFocus
+              className="rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
+              style={{
+                background: "var(--surface)",
+                borderColor: error ? "var(--bad, #dc2626)" : "var(--border)",
+                color: "var(--ink)",
+              }}
+            />
+            {error && (
+              <p className="text-xs" style={{ color: "var(--bad, #dc2626)" }}>
+                {error}
+              </p>
+            )}
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md border px-3 py-1.5 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
+              style={{
+                background: "var(--surface)",
+                borderColor: "var(--border)",
+                color: "var(--ink)",
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || !nameInput.trim()}
+              className="rounded-md px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+              style={{ background: "var(--accent)", color: "var(--accent-ink)" }}
+            >
+              {submitting ? "Renaming…" : "Rename"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export function Templates() {
-  const { data, isLoading, isError, error } = useTemplates();
+  const templatesQuery = useTemplates();
+  const { data, isLoading, isError, error } = templatesQuery;
   const groupsQuery = useTemplateGroups();
   const deleteGroup = useDeleteTemplateGroup();
   const favs = useFavorites();
@@ -361,6 +532,14 @@ export function Templates() {
   const [includeNested, setIncludeNested] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [movingTemplateIds, setMovingTemplateIds] = useState<string[] | null>(null);
+  const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
+  const [pendingTransition, setPendingTransition] = useState<{
+    snapshot: TemplateSummary[];
+    oldGroup: string;
+    newGroup: string;
+    targetSelectedPath: string;
+    refreshError: string | null;
+  } | null>(null);
 
   useEffect(() => {
     if (isError) {
@@ -387,7 +566,7 @@ export function Templates() {
   }, [data, groupsQuery.data]);
 
   const filtered = useMemo(() => {
-    let list = data?.templates ?? [];
+    let list = pendingTransition ? pendingTransition.snapshot : data?.templates ?? [];
     if (selectedGroup.kind === "ungrouped") {
       list = list.filter((t) => !t.group);
     } else if (selectedGroup.kind === "group") {
@@ -406,7 +585,93 @@ export function Templates() {
     return list.filter(
       (t) => t.id.toLowerCase().includes(needle) || t.name.toLowerCase().includes(needle),
     );
-  }, [data, selectedGroup, includeNested, query]);
+  }, [data, selectedGroup, includeNested, query, pendingTransition]);
+
+  const performRefresh = async (transition: {
+    snapshot: TemplateSummary[];
+    oldGroup: string;
+    newGroup: string;
+    targetSelectedPath: string;
+    refreshError: string | null;
+  }) => {
+    try {
+      const [groupsRes, templatesRes] = await Promise.all([
+        groupsQuery.refetch(),
+        templatesQuery.refetch(),
+      ]);
+
+      if (groupsRes.isError || templatesRes.isError) {
+        const errMsg =
+          (groupsRes.error instanceof Error ? groupsRes.error.message : null) ??
+          (templatesRes.error instanceof Error ? templatesRes.error.message : null) ??
+          "Failed to refresh after rename";
+        setPendingTransition({
+          ...transition,
+          refreshError: errMsg,
+        });
+        push({
+          kind: "error",
+          message: `Failed to refresh after rename: ${errMsg}`,
+        });
+        return;
+      }
+
+      const refreshedTemplates = templatesRes.data?.templates ?? [];
+      const refreshedGroups = groupsRes.data ?? [];
+      const hasNewPaths =
+        refreshedGroups.includes(transition.newGroup) ||
+        refreshedTemplates.some(
+          (t) =>
+            t.group === transition.newGroup ||
+            (t.group ? t.group.startsWith(transition.newGroup + "/") : false),
+        );
+
+      if (hasNewPaths) {
+        setSelectedGroup((prev) => {
+          if (prev.kind === "group") {
+            return { kind: "group", path: transition.targetSelectedPath };
+          }
+          return prev;
+        });
+        setPendingTransition(null);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : "Failed to refresh after rename";
+      setPendingTransition({
+        ...transition,
+        refreshError: errMsg,
+      });
+      push({
+        kind: "error",
+        message: `Failed to refresh after rename: ${errMsg}`,
+      });
+    }
+  };
+
+  const handleRenameSuccess = (newGroupPath: string, renamedOldGroup?: string) => {
+    if (selectedGroup.kind !== "group") return;
+    const oldGroupPath = renamedOldGroup ?? renamingGroup ?? selectedGroup.path;
+    if (oldGroupPath === newGroupPath) return;
+
+    const currentTemplates = data?.templates ?? [];
+    const rewrittenSelectedPath =
+      selectedGroup.path === oldGroupPath
+        ? newGroupPath
+        : selectedGroup.path.startsWith(oldGroupPath + "/")
+          ? `${newGroupPath}${selectedGroup.path.slice(oldGroupPath.length)}`
+          : selectedGroup.path;
+
+    const transition = {
+      snapshot: currentTemplates,
+      oldGroup: oldGroupPath,
+      newGroup: newGroupPath,
+      targetSelectedPath: rewrittenSelectedPath,
+      refreshError: null,
+    };
+
+    setPendingTransition(transition);
+    void performRefresh(transition);
+  };
 
   const canDeleteCurrentGroup = useMemo(() => {
     if (selectedGroup.kind !== "group") return false;
@@ -569,6 +834,22 @@ export function Templates() {
             Include nested
           </label>
 
+          {selectedGroup.kind === "group" && (
+            <button
+              type="button"
+              onClick={() => setRenamingGroup(selectedGroup.path)}
+              aria-label={`Rename group ${selectedGroup.path}`}
+              className="rounded-md border px-2.5 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-2"
+              style={{
+                background: "var(--surface)",
+                borderColor: "var(--border)",
+                color: "var(--ink)",
+              }}
+            >
+              Rename group
+            </button>
+          )}
+
           {selectedGroup.kind === "group" && canDeleteCurrentGroup && (
             <button
               type="button"
@@ -581,6 +862,27 @@ export function Templates() {
           )}
         </div>
       </div>
+
+      {pendingTransition?.refreshError && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"
+          style={{
+            background: "var(--bad-soft, #fee2e2)",
+            borderColor: "var(--bad, #dc2626)",
+            color: "var(--bad, #dc2626)",
+          }}
+        >
+          <span>Failed to refresh after rename: {pendingTransition.refreshError}</span>
+          <button
+            type="button"
+            onClick={() => void performRefresh(pendingTransition)}
+            className="rounded px-2.5 py-1 text-xs font-semibold bg-white border border-current shadow-sm hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2"
+          >
+            Retry refresh
+          </button>
+        </div>
+      )}
 
       <input
         type="search"
@@ -674,6 +976,14 @@ export function Templates() {
           onSuccess={() => {
             setSelectedIds(new Set());
           }}
+        />
+      )}
+
+      {renamingGroup && (
+        <RenameDialog
+          groupPath={renamingGroup}
+          onClose={() => setRenamingGroup(null)}
+          onSuccess={handleRenameSuccess}
         />
       )}
     </div>

@@ -27,8 +27,8 @@ use crate::{
     fs_safe::{self, PublishResult},
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, PrintRequest,
-        ReloadResponse, RenderLabelRequest, TemplateDetail, TemplateGroupUpdate, TemplateList,
-        VariableValue,
+        ReloadResponse, RenameGroupRequest, RenameGroupResponse, RenderLabelRequest,
+        TemplateDetail, TemplateGroupUpdate, TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -226,7 +226,7 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/template-groups", get(list_groups))
         .route(
             "/template-groups/{*path}",
-            axum::routing::delete(delete_group),
+            put(update_template_group_name).delete(delete_group),
         )
         .route("/templates/reload", post(reload_templates))
         .route(
@@ -513,6 +513,126 @@ pub async fn delete_group(
             "failed to delete group '{validated}': {err}"
         ))),
     }
+}
+
+#[utoipa::path(
+    put,
+    path = "/template-groups/{path}",
+    params(
+        ("path" = String, Path, description = "Group path")
+    ),
+    request_body(content = RenameGroupRequest, description = "New group name"),
+    responses(
+        (status = 200, description = "Group directory renamed", body = RenameGroupResponse),
+        (status = 400, description = "Malformed percent sequence, invalid group path, or invalid request body", body = ErrorResponse),
+        (status = 404, description = "Group directory not found", body = ErrorResponse),
+        (status = 409, description = "Destination name already occupied", body = ErrorResponse),
+        (status = 422, description = "Invalid new name, whole-path limit exceeded, or unsafe path", body = ErrorResponse),
+        (status = 500, description = "Failed to rename group directory or confirmation failed", body = ErrorResponse)
+    )
+)]
+pub async fn update_template_group_name(
+    State(state): State<Arc<AppState>>,
+    uri: axum::http::Uri,
+    Json(body): Json<RenameGroupRequest>,
+) -> Result<Response, AppError> {
+    let raw_uri_path = uri.path();
+    let raw_group = if let Some(p) = raw_uri_path.strip_prefix("/template-groups/") {
+        p
+    } else if let Some(p) = raw_uri_path.strip_prefix("/api/template-groups/") {
+        p
+    } else {
+        return Err(AppError::invalid_request(
+            Reason::PathParamInvalid,
+            "missing group path",
+        ));
+    };
+
+    check_percent_encoding(raw_group)?;
+
+    let decoded = urlencoding::decode(raw_group).map_err(|_| {
+        AppError::invalid_request(Reason::PathParamInvalid, "group path is not valid UTF-8")
+    })?;
+
+    let validated_src = validate_group_name(&decoded)
+        .map_err(|err| AppError::invalid_request(Reason::TemplateGroupInvalid, err))?;
+
+    let new_segment = &body.name;
+    crate::templates::validate_group_segment(new_segment)
+        .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
+
+    // Compute new whole group path
+    let parent_rel_path = validated_src.rsplit_once('/').map(|(parent, _)| parent);
+
+    let new_group_path = match parent_rel_path {
+        Some(parent) => format!("{parent}/{new_segment}"),
+        None => new_segment.to_string(),
+    };
+
+    validate_group_name(&new_group_path)
+        .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
+
+    let _guard = state.write_lock.lock().await;
+    state.reload()?;
+
+    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+    let (parent_fd, old_name, src_dir_fd) =
+        fs_safe::resolve_group_for_rename(root_fd.as_fd(), &validated_src)?;
+
+    // Check whole-path limits on all discoverable descendants in source subtree using resolved fd
+    let mut descendant_rels = Vec::new();
+    fs_safe::collect_subgroup_rel_paths_fd(src_dir_fd.as_fd(), "", &mut descendant_rels)?;
+
+    for descendant_rel in &descendant_rels {
+        let post_rename_descendant = format!("{new_group_path}/{descendant_rel}");
+        validate_group_name(&post_rename_descendant)
+            .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
+    }
+
+    // Perform rename if byte-different
+    if old_name != *new_segment {
+        fs_safe::rename_group_dir(parent_fd.as_fd(), &old_name, new_segment)?;
+    }
+
+    // Post-mutation subtree audit: verify no raced descendant exceeds whole-path limits
+    // Open the renamed directory descriptor safely via parent_fd without restating the path string
+    let dest_dir_fd = fs_safe::open_exact_segment_dir(parent_fd.as_fd(), new_segment, true)?;
+    let mut post_descendant_rels = Vec::new();
+    fs_safe::collect_subgroup_rel_paths_fd(dest_dir_fd.as_fd(), "", &mut post_descendant_rels)?;
+    for descendant_rel in &post_descendant_rels {
+        let post_rename_descendant = format!("{new_group_path}/{descendant_rel}");
+        if validate_group_name(&post_rename_descendant).is_err() {
+            return Err(AppError::render_failed(
+                Reason::TemplateRegistryIo,
+                format!(
+                    "post-rename descendant '{post_rename_descendant}' exceeds whole-path limits"
+                ),
+            ));
+        }
+    }
+
+    // Post-rename confirmation
+    state.reload()?;
+    let groups = crate::templates::list_template_groups(&state.templates_dir)
+        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
+
+    if validated_src != new_group_path
+        && (groups.iter().any(|g| g == &validated_src)
+            || !groups.iter().any(|g| g == &new_group_path))
+    {
+        return Err(AppError::render_failed(
+            Reason::TemplateRegistryIo,
+            "group rename confirmation failed: new group not listed or old group still listed",
+        ));
+    }
+
+    Ok((
+        axum::http::StatusCode::OK,
+        Json(RenameGroupResponse {
+            group: new_group_path,
+        }),
+    )
+        .into_response())
 }
 
 fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {

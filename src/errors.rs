@@ -100,6 +100,10 @@ impl AppError {
         }
     }
 
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
     /// The `details.reason` slug, when this error carries one (SPEC §10.1).
     pub fn reason(&self) -> Option<&'static str> {
         self.reason.map(Reason::as_slug)

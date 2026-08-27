@@ -35,6 +35,20 @@ export function useDeleteTemplateGroup() {
   });
 }
 
+export function useRenameTemplateGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupPath, name }: { groupPath: string; name: string }) => {
+      const encoded = groupPath.split("/").map(encodeURIComponent).join("/");
+      return sendJson<{ group: string }>("PUT", `/template-groups/${encoded}`, { name });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["template-groups"] });
+      qc.invalidateQueries({ queryKey: ["templates"] });
+    },
+  });
+}
+
 export function useFavorites() {
   return useQuery({ queryKey: ["favorites"], queryFn: () => getJson<string[]>("/favorites") });
 }

@@ -81,6 +81,17 @@ pub struct TemplateDetail {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+pub struct RenameGroupRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RenameGroupResponse {
+    pub group: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct TemplateGroupUpdate {
     /// Nested on purpose: the outer `Option` is *presence of the key*, the inner one is its null.
     /// `{"group": null}` clears the group deliberately, `{}` is a malformed body, and a plain

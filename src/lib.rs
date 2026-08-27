@@ -101,6 +101,7 @@ mod http_tests {
         http::{Request, StatusCode},
     };
     use http_body_util::BodyExt;
+    use rustix::fd::AsFd;
     use serde_json::{json, Value};
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -3882,50 +3883,433 @@ layout:
     }
 
     #[tokio::test]
-    async fn template_group_case_clash_refused_on_create_and_move() {
+    async fn template_group_case_sibling_created_on_case_sensitive_fs() {
         let dir = temp_templates_dir();
-        std::fs::create_dir_all(dir.join("Shipping")).unwrap();
-        std::fs::write(dir.join("t1.yaml"), template_yaml("t1")).unwrap();
+        std::fs::create_dir_all(dir.join("Warehouse")).unwrap();
+        std::fs::write(dir.join("Warehouse/t1.yaml"), template_yaml("t1")).unwrap();
         let app = build_app_in(&dir);
 
-        // Create into case-clashing group "shipping" -> 422 TemplateInvalid template_group_case_conflict
+        // Create into sibling group "warehouse" -> 201 Created on case-sensitive filesystem
         let resp = app
             .clone()
             .oneshot(yaml_post(
-                "/api/templates/new_clash?group=shipping",
+                "/api/templates/t2?group=warehouse",
                 "PUT",
-                template_yaml("new_clash"),
+                template_yaml("t2"),
             ))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let err = json_response(resp).await;
-        assert_eq!(err["error"]["code"], "TemplateInvalid");
-        assert_eq!(
-            err["error"]["details"]["reason"],
-            "template_group_case_conflict"
-        );
+        assert_eq!(resp.status(), StatusCode::CREATED);
 
-        // Move into case-clashing group "shipping" -> 422 TemplateInvalid template_group_case_conflict
+        let (status, groups) = get_json(&app, "/api/template-groups").await;
+        assert_eq!(status, StatusCode::OK);
+        let list: Vec<String> = serde_json::from_value(groups).unwrap();
+        assert!(list.contains(&"Warehouse".to_string()));
+        assert!(list.contains(&"warehouse".to_string()));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_group_rename_success_paths() {
+        let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("Warehosue")).unwrap();
+        std::fs::create_dir_all(dir.join("Shipping/Pallets")).unwrap();
+
+        let commented_yaml = format!("# Header comment\n{}", template_yaml("bin-tag"));
+        std::fs::write(dir.join("Warehosue/bin-tag.yaml"), &commented_yaml).unwrap();
+        std::fs::write(
+            dir.join("Shipping/Pallets/euro.yaml"),
+            template_yaml("euro"),
+        )
+        .unwrap();
+        std::fs::write(dir.join("Warehosue/broken.yaml"), b"invalid: [yaml: broken").unwrap();
+
+        let app = build_app_in(&dir);
+
+        // Favorite the template
         let resp = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("PUT")
-                    .uri("/api/templates/t1/group")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"group":"shipping"}"#))
+                    .uri("/api/favorites/bin-tag")
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
-            .expect("request");
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+        // 1. Top-level rename: Warehosue -> Warehouse
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Warehosue",
+                json!({ "name": "Warehouse" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let res_json = json_response(resp).await;
+        assert_eq!(res_json["group"], "Warehouse");
+
+        // File is at templates/Warehouse/bin-tag.yaml
+        assert!(dir.join("Warehouse/bin-tag.yaml").exists());
+        assert!(!dir.join("Warehosue").exists());
+
+        // File bytes unchanged (comments preserved)
+        let bytes = std::fs::read_to_string(dir.join("Warehouse/bin-tag.yaml")).unwrap();
+        assert_eq!(bytes, commented_yaml);
+
+        // Template id and favorites untouched
+        let (status, favs) = get_json(&app, "/api/favorites").await;
+        assert_eq!(status, StatusCode::OK);
+        let fav_list: Vec<String> = serde_json::from_value(favs).unwrap();
+        assert!(fav_list.contains(&"bin-tag".to_string()));
+
+        // Quarantined file follows directory and reported under broken at new path
+        let (status, tpls) = get_json(&app, "/api/templates").await;
+        assert_eq!(status, StatusCode::OK);
+        let broken = tpls["broken"].as_array().unwrap();
+        assert!(broken.iter().any(|b| b["path"] == "Warehouse/broken.yaml"));
+
+        // GET /api/template-groups lists Warehouse and not Warehosue
+        let (status, groups) = get_json(&app, "/api/template-groups").await;
+        assert_eq!(status, StatusCode::OK);
+        let group_list: Vec<String> = serde_json::from_value(groups).unwrap();
+        assert!(group_list.contains(&"Warehouse".to_string()));
+        assert!(!group_list.contains(&"Warehosue".to_string()));
+
+        // 2. Nested rename changing last segment only: Shipping/Pallets -> Shipping/Euro
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Shipping/Pallets",
+                json!({ "name": "Euro" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let res_json = json_response(resp).await;
+        assert_eq!(res_json["group"], "Shipping/Euro");
+        assert!(dir.join("Shipping").is_dir());
+        assert!(dir.join("Shipping/Euro/euro.yaml").exists());
+
+        // 3. Descendants follow renamed group: Shipping -> Freight => Freight/Euro
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Shipping",
+                json!({ "name": "Freight" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let res_json = json_response(resp).await;
+        assert_eq!(res_json["group"], "Freight");
+        assert!(dir.join("Freight/Euro/euro.yaml").exists());
+
+        let (_, groups) = get_json(&app, "/api/template-groups").await;
+        let group_list: Vec<String> = serde_json::from_value(groups).unwrap();
+        assert!(group_list.contains(&"Freight".to_string()));
+        assert!(group_list.contains(&"Freight/Euro".to_string()));
+        assert!(!group_list.contains(&"Shipping".to_string()));
+        assert!(!group_list.contains(&"Shipping/Euro".to_string()));
+
+        // 4. Idempotent rename
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Warehouse",
+                json!({ "name": "Warehouse" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let res_json = json_response(resp).await;
+        assert_eq!(res_json["group"], "Warehouse");
+        assert!(dir.join("Warehouse").is_dir());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_group_rename_refusals() {
+        let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("Shipping")).unwrap();
+        std::fs::create_dir_all(dir.join("Warehouse")).unwrap();
+        std::fs::write(dir.join("Shipping/t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+
+        // 1. Occupied destination -> 409
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Shipping",
+                json!({ "name": "Warehouse" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(dir.join("Shipping/t1.yaml").exists());
+        assert!(dir.join("Warehouse").is_dir());
+
+        // 2. Empty destination directory not replaced -> 409
+        let empty_dest = dir.join("EmptyDest");
+        std::fs::create_dir_all(&empty_dest).unwrap();
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Shipping",
+                json!({ "name": "EmptyDest" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(dir.join("Shipping/t1.yaml").exists());
+        assert!(empty_dest.is_dir());
+
+        // 3. Name carrying a slash -> 422 template_group_invalid
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Shipping",
+                json!({ "name": "Warehouse/Pallets" }).to_string(),
+            ))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let err = json_response(resp).await;
-        assert_eq!(err["error"]["code"], "TemplateInvalid");
+        assert_eq!(err["error"]["details"]["reason"], "template_group_invalid");
+
+        // 4. Invalid new name (CON, .., long) -> 422 template_group_invalid
+        for bad_name in &["CON", "..", &"a".repeat(200), "bad\tname"] {
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "PUT",
+                    "/api/template-groups/Shipping",
+                    json!({ "name": bad_name }).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let err = json_response(resp).await;
+            assert_eq!(err["error"]["details"]["reason"], "template_group_invalid");
+        }
+
+        // 5. Body omitting key -> 400
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/Shipping",
+                "{}".to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // 6. Unknown group -> 404
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/UnknownGroup",
+                json!({ "name": "NewName" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // 7. Malformed percent sequence -> 400 path_param_invalid
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/%ZZ",
+                json!({ "name": "ValidName" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let err = json_response(resp).await;
+        assert_eq!(err["error"]["details"]["reason"], "path_param_invalid");
+
+        // 8. Regular file as path component -> 422 template_group_unsafe_path (says not a directory)
+        std::fs::write(dir.join("file_comp"), b"content").unwrap();
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/file_comp",
+                json!({ "name": "ValidName" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(resp).await;
         assert_eq!(
             err["error"]["details"]["reason"],
-            "template_group_case_conflict"
+            "template_group_unsafe_path"
         );
+        assert!(err["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is not a directory"));
+
+        #[cfg(unix)]
+        {
+            // 9. Symlink as path component -> 422 template_group_unsafe_path (says symbolic link)
+            let ext_dir = temp_templates_dir();
+            std::os::unix::fs::symlink(&ext_dir, dir.join("sym_comp")).unwrap();
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "PUT",
+                    "/api/template-groups/sym_comp",
+                    json!({ "name": "ValidName" }).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let err = json_response(resp).await;
+            assert_eq!(
+                err["error"]["details"]["reason"],
+                "template_group_unsafe_path"
+            );
+            assert!(err["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("is a symbolic link"));
+            std::fs::remove_dir_all(&ext_dir).ok();
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_group_rename_recasing() {
+        let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("shipping")).unwrap();
+        std::fs::write(dir.join("shipping/t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+
+        // Recase shipping -> Shipping on free destination succeeds
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/shipping",
+                json!({ "name": "Shipping" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let res_json = json_response(resp).await;
+        assert_eq!(res_json["group"], "Shipping");
+
+        // Now create shipping again alongside Shipping
+        std::fs::create_dir_all(dir.join("shipping")).unwrap();
+        let (_, _) = get_json(&app, "/api/template-groups").await;
+
+        // Renaming shipping -> Shipping when Shipping exists gives 409
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/shipping",
+                json!({ "name": "Shipping" }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_group_rename_whole_path_limits() {
+        let dir = temp_templates_dir();
+        std::fs::create_dir_all(dir.join("Ancestor/Subgroup")).unwrap();
+        std::fs::write(dir.join("Ancestor/Subgroup/t1.yaml"), template_yaml("t1")).unwrap();
+        let app = build_app_in(&dir);
+
+        // 1. Own path exceeding 255 chars
+        let long_parent = format!(
+            "{}/{}/{}/{}",
+            "a".repeat(60),
+            "b".repeat(60),
+            "c".repeat(60),
+            "d".repeat(40)
+        );
+        std::fs::create_dir_all(dir.join(&long_parent).join("sub")).unwrap();
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                &format!("/api/template-groups/{long_parent}/sub"),
+                json!({ "name": "e".repeat(60) }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(resp).await;
+        assert_eq!(err["error"]["details"]["reason"], "template_group_invalid");
+
+        // 2. Descendant crossing limit
+        // Create an ancestor whose rename pushes descendant past 255 chars
+        let deep = dir
+            .join("P")
+            .join("a".repeat(60))
+            .join("b".repeat(60))
+            .join("c".repeat(60))
+            .join("d".repeat(60));
+        std::fs::create_dir_all(&deep).unwrap();
+
+        // Rename "P" to 60-character name so deep descendant path (60*5 + 4 = 304) exceeds 255 chars:
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/template-groups/P",
+                json!({ "name": "n".repeat(60) }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = json_response(resp).await;
+        assert_eq!(err["error"]["details"]["reason"], "template_group_invalid");
+        assert!(dir.join("P").is_dir());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn template_group_empty_destination_fails_against_replace_rename() {
+        let dir = temp_templates_dir();
+        let src = dir.join("SrcGroup");
+        let dest = dir.join("DestGroup");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(src.join("t1.yaml"), template_yaml("t1")).unwrap();
+
+        let root_fd = crate::fs_safe::open_dir_handle(&dir).unwrap();
+
+        // fs_safe::rename_group_dir uses NOREPLACE and returns 409 Conflict
+        let err =
+            crate::fs_safe::rename_group_dir(root_fd.as_fd(), "SrcGroup", "DestGroup").unwrap_err();
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+        assert!(src.join("t1.yaml").exists());
+        assert!(dest.is_dir());
 
         std::fs::remove_dir_all(&dir).ok();
     }
