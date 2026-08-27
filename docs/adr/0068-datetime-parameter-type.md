@@ -4,7 +4,7 @@ Date: 2026-08-24
 
 ## Status
 
-Accepted. Issue [#209](https://github.com/pfa230/labeler/issues/209).
+Accepted (token list and formatting syntax superseded by [ADR-0079](0079-token-grammar.md)). Issue [#209](https://github.com/pfa230/labeler/issues/209).
 
 ## Context
 

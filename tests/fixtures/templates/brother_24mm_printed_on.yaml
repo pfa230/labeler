@@ -25,7 +25,7 @@ layout:
           horizontal: center
           vertical: center
       - type: text
-        value: "Printed {printed_on.short_date}"
+        value: "Printed {printed_on:short_date}"
         at: [0.0, 0.0]
         size: [auto, 8.0]
         font_size:

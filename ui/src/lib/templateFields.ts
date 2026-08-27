@@ -190,13 +190,20 @@ function walk(
   for (const it of items) {
     if (it.type === "text" || it.type === "qr") {
       const emit = (t: string) => {
-        onData(t);
-        if (it.type === "text") onText(t, it.multiline === true); // a qr payload is never multiline
+        const valPath = t.split(":")[0];
+        onData(valPath);
+        if (it.type === "text") onText(valPath, it.multiline === true); // a qr payload is never multiline
       };
       if (it.value) for (const t of tokens(it.value)) emit(t);
     } else if (it.type === "image") {
       // a data-bound image is BOTH a referenced data field AND an image field (sample = data URI)
       if (it.name) { onData(it.name); onImage(it.name); }
+      if (it.src) {
+        for (const t of tokens(it.src)) {
+          const valPath = t.split(":")[0];
+          onData(valPath);
+        }
+      }
     } else if (it.type === "container") {
       const match = !gating || Object.entries(it.option ?? {}).every(([k, v]) => selected[k] === v);
       if (match) walk(it.items, selected, onData, onImage, onText);
@@ -204,23 +211,21 @@ function walk(
   }
 }
 
-// {vars.*}, {datetime} and {datetime.*} resolve server-side; they are never request data fields.
-// Declared datetime parameter tokens ({<p>} and {<p>.*}) are likewise excluded from data fields.
-const isDataField = (t: string, params?: Record<string, ParamSpec>) => {
-  if (t.startsWith("vars.") || t === "datetime" || t.startsWith("datetime.")) {
+// {vars.*} and {sys.*} resolve server-side; they are never request data fields.
+// Declared datetime parameter tokens are likewise excluded from data fields.
+export const isDataField = (t: string, params?: Record<string, ParamSpec>): boolean => {
+  const valPath = t.split(":")[0];
+  if (valPath.startsWith("vars.") || valPath.startsWith("sys.") || valPath.includes(".")) {
     return false;
   }
-  if (params) {
-    const head = t.split(".")[0];
-    if (params[head]?.type === "datetime") {
-      return false;
-    }
+  if (params && params[valPath]?.type === "datetime") {
+    return false;
   }
   return true;
 };
 
 // Data fields the (option-selected) layout references: text/qr value tokens
-// (excluding vars.*, datetime, datetime.*, and datetime parameters).
+// (excluding vars.*, sys.*, and declared parameters).
 export function referencedFields(
   layout: LayoutItem[],
   selected: Record<string, string>,
@@ -272,8 +277,20 @@ export function referencedVariables(layout: LayoutItem[]): string[] {
   const rec = (items: LayoutItem[]) => {
     for (const it of items) {
       if ((it.type === "text" || it.type === "qr") && it.value) {
-        for (const t of tokens(it.value)) if (t.startsWith("vars.")) set.add(t.slice("vars.".length));
-      } else if (it.type === "container") rec(it.items);
+        for (const t of tokens(it.value)) {
+          const valPath = t.split(":")[0];
+          if (valPath.startsWith("vars.")) set.add(valPath.slice("vars.".length));
+        }
+      } else if (it.type === "image") {
+        if (it.src) {
+          for (const t of tokens(it.src)) {
+            const valPath = t.split(":")[0];
+            if (valPath.startsWith("vars.")) set.add(valPath.slice("vars.".length));
+          }
+        }
+      } else if (it.type === "container") {
+        rec(it.items);
+      }
     }
   };
   rec(layout);
