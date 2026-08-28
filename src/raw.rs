@@ -175,7 +175,9 @@ pub struct TextRaw {
     #[serde(default)]
     pub font_weight: Option<Dynamic<u16>>,
     #[serde(default)]
-    pub multiline: bool,
+    pub wrap: bool,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub multiline: Option<serde_yaml_ng::Value>,
     #[serde(default)]
     pub alignment: Alignment,
     #[serde(default)]

@@ -60,7 +60,7 @@ parameters and `when:` conditional visibility, and a troubleshooting table.
 **On other tape widths.** Copy the closest tape template and change three things: `format.height`
 (the printable height, narrower than the nominal tape), `format.media_width` (the nominal width, used
 for print preflight), and the `font_size` range. Templates demonstrating engine features — QR
-layouts, multiline, conditional `when:` branches and rotation, variable interpolation — are not in the catalog; they
+layouts, text wrapping, conditional `when:` branches and rotation, variable interpolation — are not in the catalog; they
 live in `tests/fixtures/templates/` and are worth reading when authoring your own.
 
 ## Endpoints

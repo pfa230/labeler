@@ -27,7 +27,7 @@ layout:
     font_size:
       min: 8.0
       max: 32.0
-    multiline: false
+    wrap: false
     alignment:
       horizontal: left
       vertical: center

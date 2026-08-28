@@ -562,21 +562,34 @@ fn instance(weight: u16, size_pt: f32) -> Result<ttf_parser::Face<'static>, AppE
     Ok(face)
 }
 
+fn break_lines(
+    face: &ttf_parser::Face,
+    segments: &[&str],
+    wrap: bool,
+    size: f32,
+    width_pt: f32,
+) -> Vec<String> {
+    if wrap {
+        segments
+            .iter()
+            .flat_map(|seg| wrap_text(face, seg, size, width_pt))
+            .collect()
+    } else {
+        segments.iter().map(|s| (*s).to_string()).collect()
+    }
+}
+
 fn text_fits(
     face: &ttf_parser::Face,
-    text: &str,
-    multiline: bool,
+    segments: &[&str],
+    wrap: bool,
     size_pt: f32,
     width_pt: f32,
     height_pt: f32,
     vertical: VerticalAlign,
 ) -> bool {
     const EPS: f32 = 0.01;
-    let lines = if multiline {
-        wrap_text(face, text, size_pt, width_pt)
-    } else {
-        vec![text.to_string()]
-    };
+    let lines = break_lines(face, segments, wrap, size_pt, width_pt);
     let h = block_height(face, size_pt, lines.len(), vertical);
     if h > height_pt + EPS {
         return false;
@@ -591,8 +604,8 @@ fn text_fits(
 
 /// Largest font in [min_size, max_size] (0.5pt steps) at which `text` fits the box, else min_size.
 pub(super) fn largest_fitting_font(
-    text: &str,
-    multiline: bool,
+    segments: &[&str],
+    wrap: bool,
     weight: u16,
     vertical: VerticalAlign,
     min_size: f32,
@@ -611,7 +624,7 @@ pub(super) fn largest_fitting_font(
     while size >= min_size - f32::EPSILON {
         // opsz tracks the size Typst would render this candidate at.
         face.set_variation(OPSZ, size);
-        if text_fits(&face, text, multiline, size, width_pt, height_pt, vertical) {
+        if text_fits(&face, segments, wrap, size, width_pt, height_pt, vertical) {
             return size;
         }
         size -= 0.5;
@@ -632,7 +645,7 @@ pub(super) struct TextLayoutItem<'a> {
     pub raw_text: &'a str,
     pub font_size: &'a FontSize,
     pub font_weight: Option<crate::models::DynamicValue<u16>>,
-    pub multiline: bool,
+    pub wrap: bool,
     pub alignment: Alignment,
     pub overflow: Overflow,
 }
@@ -652,32 +665,17 @@ pub(super) fn layout_text(
     let height_pt = units_to_pt(box_size.1, unit);
     let vertical = item.alignment.vertical;
 
-    // Step 1: Input line(s)
-    let input_text = if item.multiline {
-        item.raw_text.to_string()
-    } else {
-        item.raw_text.lines().next().unwrap_or("").to_string()
-    };
-
-    if input_text.is_empty() {
-        return Ok(TextFit {
-            font_size_pt: match item.font_size {
-                FontSize::Fixed(s) => *s,
-                FontSize::Range { max, .. } => *max,
-            },
-            lines: vec![],
-            width_units: 0.0,
-            height_units: 0.0,
-        });
-    }
+    // Step 1: Break (Segmentation)
+    let normalized = item.raw_text.replace("\r\n", "\n");
+    let segments: Vec<&str> = normalized.split('\n').collect();
 
     // Step 2: Shrink font_size if range
     let (chosen_size, face) = match item.font_size {
         FontSize::Fixed(s) => (*s, instance(weight, *s)?),
         FontSize::Range { min, max } => {
             let fitted = largest_fitting_font(
-                &input_text,
-                item.multiline,
+                &segments,
+                item.wrap,
                 weight,
                 vertical,
                 *min,
@@ -693,23 +691,19 @@ pub(super) fn layout_text(
     };
 
     // Step 3: Break & Overflow at chosen_size
-    let raw_lines = if item.multiline {
-        wrap_text(&face, &input_text, chosen_size, width_pt)
-    } else {
-        vec![input_text.clone()]
-    };
+    let raw_lines = break_lines(&face, &segments, item.wrap, chosen_size, width_pt);
 
     let fits = text_fits(
         &face,
-        &input_text,
-        item.multiline,
+        &segments,
+        item.wrap,
         chosen_size,
         width_pt,
         height_pt,
         vertical,
     );
 
-    let lines_to_trim = if fits {
+    let emitted_raw = if fits {
         raw_lines
     } else {
         match item.overflow {
@@ -734,63 +728,39 @@ pub(super) fn layout_text(
                 if line_1_h > height_pt + 0.01 {
                     return Err(AppError::unsupported_layout_item(
                         Reason::TextDoesNotFit,
-                        format!("at {path}: box height {}{unit} is shorter than one line at font size {chosen_size}pt", box_size.1),
+                        format!(
+                            "at {path}: box height {}{unit} is shorter than one line at font size {chosen_size}pt",
+                            box_size.1
+                        ),
                     ));
                 }
 
-                if item.multiline {
-                    let max_lines = ((height_pt - overflow_em(&face, vertical) * chosen_size
-                        + leading(chosen_size))
-                        / (cap_height(&face, chosen_size) + leading(chosen_size)))
-                    .floor()
-                    .max(1.0) as usize;
+                let max_lines = ((height_pt - overflow_em(&face, vertical) * chosen_size
+                    + leading(chosen_size))
+                    / (cap_height(&face, chosen_size) + leading(chosen_size)))
+                .floor()
+                .max(1.0) as usize;
 
-                    let mut lines = raw_lines;
-                    // The marker means content was dropped, so only a truncation earns it, and it
-                    // goes on the last line the truncation kept. A block that already fits the
-                    // line budget lost nothing off its end and keeps its final line as authored.
-                    let truncated = lines.len() > max_lines;
-                    if truncated {
-                        lines.truncate(max_lines);
-                    }
-                    // An over-wide line is shortened wherever it sits, not only last: `wrap_text`
-                    // emits one whenever a single glyph is wider than the box, and leaving it
-                    // alone would clip it, which is never an outcome of an overflow policy.
-                    let last = lines.len().saturating_sub(1);
-                    for (index, line) in lines.iter_mut().enumerate() {
-                        if text_width(&face, line, chosen_size) > width_pt
-                            || (truncated && index == last)
-                        {
-                            *line = ellipsize(&face, line, chosen_size, width_pt);
-                        }
-                    }
-                    lines
-                } else {
-                    let mut out = raw_lines.into_iter().next().unwrap_or_default();
-                    if text_width(&face, &out, chosen_size) > width_pt {
-                        out = ellipsize(&face, &out, chosen_size, width_pt);
-                    }
-                    vec![out]
+                let mut lines = raw_lines;
+                let any_dropped = lines.len() > max_lines;
+                if any_dropped {
+                    lines.truncate(max_lines);
                 }
+
+                let last = lines.len().saturating_sub(1);
+                for (index, line) in lines.iter_mut().enumerate() {
+                    if text_width(&face, line, chosen_size) > width_pt
+                        || (any_dropped && index == last)
+                    {
+                        *line = ellipsize(&face, line, chosen_size, width_pt);
+                    }
+                }
+                lines
             }
         }
     };
 
-    // Step 4: Trim blank edges at emission
-    let mut start = 0;
-    while start < lines_to_trim.len() && lines_to_trim[start].trim().is_empty() {
-        start += 1;
-    }
-    let mut end = lines_to_trim.len();
-    while end > start && lines_to_trim[end - 1].trim().is_empty() {
-        end -= 1;
-    }
-    let emitted_raw: Vec<String> = if start >= end {
-        vec![]
-    } else {
-        lines_to_trim[start..end].to_vec()
-    };
-
+    // Step 4: Intrinsic metrics and emission
     let emitted_count = emitted_raw.len();
     let block_h_pt = if emitted_count == 0 {
         0.0
@@ -831,75 +801,74 @@ fn ellipsize(face: &ttf_parser::Face, line: &str, size: f32, width_pt: f32) -> S
     format!("{out}{ELLIPSIS}")
 }
 
-fn wrap_text(face: &ttf_parser::Face, text: &str, size: f32, width_pt: f32) -> Vec<String> {
+fn wrap_text(face: &ttf_parser::Face, segment: &str, size: f32, width_pt: f32) -> Vec<String> {
+    if segment.trim().is_empty() {
+        return vec![String::new()];
+    }
     let mut lines = Vec::new();
     let space_width = text_width(face, " ", size);
-    let paragraphs: Vec<&str> = text.split('\n').collect();
-    for paragraph in paragraphs {
-        if paragraph.is_empty() {
-            lines.push(String::new());
-            continue;
-        }
-        let mut current = String::new();
-        let mut current_width = 0.0;
-        for word in paragraph.split_whitespace() {
-            let word_width = text_width(face, word, size);
-            if current.is_empty() {
-                if word_width <= width_pt {
-                    current.push_str(word);
-                    current_width = word_width;
-                } else {
-                    let mut chunk = String::new();
-                    let mut chunk_width = 0.0;
-                    for ch in word.chars() {
-                        let ch_width = text_width(face, &ch.to_string(), size);
-                        if !chunk.is_empty() && chunk_width + ch_width > width_pt {
-                            lines.push(chunk);
-                            chunk = String::new();
-                            chunk_width = 0.0;
-                        }
-                        chunk.push(ch);
-                        chunk_width += ch_width;
-                    }
-                    if !chunk.is_empty() {
-                        current = chunk;
-                        current_width = chunk_width;
-                    }
-                }
-                continue;
-            }
-
-            if current_width + space_width + word_width <= width_pt {
-                current.push(' ');
+    let mut current = String::new();
+    let mut current_width = 0.0;
+    for word in segment.split_whitespace() {
+        let word_width = text_width(face, word, size);
+        if current.is_empty() {
+            if word_width <= width_pt {
                 current.push_str(word);
-                current_width += space_width + word_width;
+                current_width = word_width;
             } else {
-                lines.push(current);
-                current = String::new();
-                if word_width <= width_pt {
-                    current.push_str(word);
-                    current_width = word_width;
-                } else {
-                    let mut chunk = String::new();
-                    let mut chunk_width = 0.0;
-                    for ch in word.chars() {
-                        let ch_width = text_width(face, &ch.to_string(), size);
-                        if !chunk.is_empty() && chunk_width + ch_width > width_pt {
-                            lines.push(chunk);
-                            chunk = String::new();
-                            chunk_width = 0.0;
-                        }
-                        chunk.push(ch);
-                        chunk_width += ch_width;
+                let mut chunk = String::new();
+                let mut chunk_width = 0.0;
+                for ch in word.chars() {
+                    let ch_width = text_width(face, &ch.to_string(), size);
+                    if !chunk.is_empty() && chunk_width + ch_width > width_pt {
+                        lines.push(chunk);
+                        chunk = String::new();
+                        chunk_width = 0.0;
                     }
+                    chunk.push(ch);
+                    chunk_width += ch_width;
+                }
+                if !chunk.is_empty() {
                     current = chunk;
                     current_width = chunk_width;
                 }
             }
+            continue;
         }
-        if !current.is_empty() {
+
+        if current_width + space_width + word_width <= width_pt {
+            current.push(' ');
+            current.push_str(word);
+            current_width += space_width + word_width;
+        } else {
             lines.push(current);
+            current = String::new();
+            if word_width <= width_pt {
+                current.push_str(word);
+                current_width = word_width;
+            } else {
+                let mut chunk = String::new();
+                let mut chunk_width = 0.0;
+                for ch in word.chars() {
+                    let ch_width = text_width(face, &ch.to_string(), size);
+                    if !chunk.is_empty() && chunk_width + ch_width > width_pt {
+                        lines.push(chunk);
+                        chunk = String::new();
+                        chunk_width = 0.0;
+                    }
+                    chunk.push(ch);
+                    chunk_width += ch_width;
+                }
+                current = chunk;
+                current_width = chunk_width;
+            }
         }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
     }
     lines
 }
@@ -1028,6 +997,17 @@ pub(crate) fn block_height_for_test(weight: u16, size: f32, lines: usize) -> f32
 }
 
 #[cfg(test)]
+pub(crate) fn block_height_with_align_for_test(
+    weight: u16,
+    size: f32,
+    lines: usize,
+    vertical: VerticalAlign,
+) -> f32 {
+    let face = instance(weight, size).expect("face");
+    block_height(&face, size, lines, vertical)
+}
+
+#[cfg(test)]
 pub(crate) fn text_width_for_test(weight: u16, size: f32, text: &str) -> f32 {
     let face = instance(weight, size).expect("face");
     text_width(&face, text, size)
@@ -1036,6 +1016,11 @@ pub(crate) fn text_width_for_test(weight: u16, size: f32, text: &str) -> f32 {
 #[cfg(test)]
 pub(crate) fn units_to_pt_for_test(value: f32, unit: &str) -> f32 {
     units_to_pt(value, unit)
+}
+
+#[cfg(test)]
+pub(crate) fn pt_to_units_for_test(value_pt: f32, unit: &str) -> f32 {
+    pt_to_units(value_pt, unit)
 }
 
 fn units_to_pt(value: f32, unit: &str) -> f32 {
@@ -1288,7 +1273,7 @@ mod helpers_tests {
     fn largest_fitting_font_picks_max_then_steps_down() {
         assert_eq!(
             largest_fitting_font(
-                "Hi",
+                &["Hi"],
                 false,
                 400,
                 VerticalAlign::Center,
@@ -1304,7 +1289,7 @@ mod helpers_tests {
         );
         assert_eq!(
             largest_fitting_font(
-                "A long label that cannot fit",
+                &["A long label that cannot fit"],
                 false,
                 400,
                 VerticalAlign::Center,
@@ -1323,7 +1308,7 @@ mod helpers_tests {
     fn test_layout(
         text: &str,
         font_size: &FontSize,
-        multiline: bool,
+        wrap: bool,
         align: Alignment,
         overflow: Overflow,
         box_size: (f32, f32),
@@ -1333,7 +1318,7 @@ mod helpers_tests {
                 raw_text: text,
                 font_size,
                 font_weight: None,
-                multiline,
+                wrap,
                 alignment: align,
                 overflow,
             },
@@ -1600,7 +1585,7 @@ mod helpers_tests {
     }
 
     #[test]
-    fn layout_text_multiline_empty_input_is_ok() {
+    fn layout_text_empty_input_is_one_line() {
         let align = Alignment {
             horizontal: HorizontalAlign::Center,
             vertical: VerticalAlign::Center,
@@ -1617,8 +1602,151 @@ mod helpers_tests {
             (50.0, 20.0),
         )
         .unwrap();
-        assert_eq!(m.lines, Vec::<String>::new());
+        assert_eq!(m.lines, vec![String::new()]);
         assert_eq!(m.width_units, 0.0);
+        assert!(m.height_units > 0.0);
+    }
+
+    #[test]
+    fn crlf_normalisation_matches_lf() {
+        let align = Alignment::default();
+        let font_size = FontSize::Range {
+            min: 6.0,
+            max: 14.0,
+        };
+        let face = super::instance(400, 10.0).unwrap();
+        let notdef_w = super::text_width(&face, "\r", 10.0);
+        assert!(
+            notdef_w > 0.0,
+            "guard: bare \\r must measure non-zero (.notdef) in Inter"
+        );
+
+        let crlf = test_layout(
+            "abc\r\nabc",
+            &font_size,
+            false,
+            align.clone(),
+            Overflow::Ellipsis,
+            (50.0, 20.0),
+        )
+        .unwrap();
+
+        let lf = test_layout(
+            "abc\nabc",
+            &font_size,
+            false,
+            align,
+            Overflow::Ellipsis,
+            (50.0, 20.0),
+        )
+        .unwrap();
+
+        assert_eq!(crlf.lines.len(), lf.lines.len());
+        assert_eq!(crlf.lines.len(), 2);
+        assert_eq!(crlf.font_size_pt, lf.font_size_pt);
+        assert_eq!(crlf.width_units, lf.width_units);
+    }
+
+    #[test]
+    fn whitespace_only_segment_keeps_its_line() {
+        let align = Alignment::default();
+        let m = test_layout(
+            "line1\n   \nline3",
+            &FontSize::Fixed(10.0),
+            true,
+            align,
+            Overflow::Ellipsis,
+            (50.0, 30.0),
+        )
+        .unwrap();
+        assert_eq!(m.lines.len(), 3);
+        assert_eq!(m.lines[0], "line1");
+        assert_eq!(m.lines[1], "");
+        assert_eq!(m.lines[2], "line3");
+    }
+
+    #[test]
+    fn hard_breaks_survive_when_wrap_is_false() {
+        let align = Alignment::default();
+        let m = test_layout(
+            "line1\nline2",
+            &FontSize::Fixed(10.0),
+            false,
+            align,
+            Overflow::Ellipsis,
+            (50.0, 30.0),
+        )
+        .unwrap();
+        assert_eq!(m.lines, vec!["line1", "line2"]);
+    }
+
+    #[test]
+    fn dropped_trailing_blank_line_earns_ellipsis_marker() {
+        let align = Alignment::default();
+        let face = super::instance(400, 10.0).unwrap();
+        let msg_w_pt = super::text_width(&face, "message", 10.0);
+        let msg_w_mm = super::pt_to_units(msg_w_pt, "mm");
+        let line_1_h_pt = super::block_height(&face, 10.0, 1, VerticalAlign::Top);
+        let line_1_h_mm = super::pt_to_units(line_1_h_pt, "mm");
+
+        // Box is wide enough for "message" (msg_w_mm + 0.1) but not "message..."
+        // Box is tall enough for 1 line only
+        let m = test_layout(
+            "message\n",
+            &FontSize::Fixed(10.0),
+            false,
+            align,
+            Overflow::Ellipsis,
+            (msg_w_mm + 0.1, line_1_h_mm + 0.1),
+        )
+        .unwrap();
+
+        assert_eq!(m.lines.len(), 1);
+        let line = &m.lines[0];
+        assert!(line.ends_with("..."), "expected ellipsis on line: {line}");
+        assert_ne!(
+            line, "message...",
+            "at least one character should be removed"
+        );
+        assert!(line.starts_with('m'));
+    }
+
+    #[test]
+    fn dropped_leading_blank_line_earns_ellipsis_marker() {
+        let align = Alignment::default();
+        let face = super::instance(400, 10.0).unwrap();
+        let dot_w_pt = super::text_width(&face, "...", 10.0);
+        let dot_w_mm = super::pt_to_units(dot_w_pt, "mm");
+        let line_1_h_pt = super::block_height(&face, 10.0, 1, VerticalAlign::Top);
+        let line_1_h_mm = super::pt_to_units(line_1_h_pt, "mm");
+
+        // Box is tall enough for 1 line, wide enough for "..."
+        let m = test_layout(
+            "\nmessage",
+            &FontSize::Fixed(10.0),
+            false,
+            align,
+            Overflow::Ellipsis,
+            (dot_w_mm + 1.0, line_1_h_mm + 0.1),
+        )
+        .unwrap();
+
+        assert_eq!(m.lines, vec!["..."]);
+    }
+
+    #[test]
+    fn fully_shown_multiline_value_carries_no_marker() {
+        let align = Alignment::default();
+        let m = test_layout(
+            "line1\nline2",
+            &FontSize::Fixed(10.0),
+            false,
+            align,
+            Overflow::Ellipsis,
+            (50.0, 30.0),
+        )
+        .unwrap();
+        assert_eq!(m.lines, vec!["line1", "line2"]);
     }
 
     /// Task 3.3: a center-aligned multiline item at a fixed font_size whose box holds three
@@ -1875,9 +2003,9 @@ mod measurement_tests {
             unit: "mm",
         };
         let aligned =
-            largest_fitting_font("Hxy", false, 400, VerticalAlign::Bottom, 6.0, 80.0, fit);
+            largest_fitting_font(&["Hxy"], false, 400, VerticalAlign::Bottom, 6.0, 80.0, fit);
         let centered =
-            largest_fitting_font("Hxy", false, 400, VerticalAlign::Center, 6.0, 80.0, fit);
+            largest_fitting_font(&["Hxy"], false, 400, VerticalAlign::Center, 6.0, 80.0, fit);
         let face = instance(400, aligned).expect("face");
         // In symmetric Inter, both alignments reserve the same 0.4824em, so they fit at the same size
         assert_eq!(

@@ -6,6 +6,7 @@ params:
   message:
     type: string
     description: "Label message text"
+    multiline: true
 format:
   type: sheet
   paper_width: 8.5
@@ -38,7 +39,7 @@ layout:
         font_size:
           min: 10.0
           max: 48.0
-        multiline: true
+        wrap: true
         alignment:
           horizontal: center
           vertical: center

@@ -161,7 +161,7 @@ layout:
         at: [0.0, 0.0]
         size: [3.7, 1.7]
         font_size: { min: 10.0, max: 48.0 }
-        multiline: true
+        wrap: true
         alignment: { horizontal: center, vertical: center }
 ```
 
@@ -223,7 +223,7 @@ layout:
         at: [0.0, 0.0]
         size: [fill, 16.1]
         font_size: { min: 10.0, max: 32.0 }
-        multiline: false
+        wrap: false
         alignment: { horizontal: center, vertical: center }
 ```
 
@@ -387,6 +387,14 @@ are in §11.
 
 Use `overflow: fail` on barcodes, regulatory labels, asset identifiers, and shipping tags where truncated
 content could lead to scanning failures or data loss.
+
+### Text wrapping (`wrap`) and hard breaks
+
+Text layout items support an optional `wrap: bool` flag (default: `false`):
+- **Hard newlines always survive:** Any newline (`\n`) in input data creates a new line box, whether `wrap` is `true` or `false`.
+- **Soft wrapping (`wrap: true`):** When a line exceeds the width of its box, it is softly wrapped to subsequent lines at word boundaries (or character boundaries for words wider than the box).
+- **No soft wrapping (`wrap: false`):** Lines are not broken beyond authored newlines. If an individual line exceeds the box width, `overflow` handles it.
+- **Form inputs in the web UI:** For a **declared** parameter, whether the print form displays a multi-line `<textarea>` or a single-line `<input>` is controlled entirely by `params.<field>.multiline: true`. A field the layout references but `params:` does not declare still takes a `<textarea>` from a wrapping text item that reads it; issue #269 removes that fallback, after which the declaration is the only source.
 
 ## 8. Edge-relative coordinates and `to:`
 
@@ -608,7 +616,7 @@ What to know:
 - **The two `fill` outcomes on packed children:**
   - **Alone in a container:** An uncapped `size: [fill, ...]` child stretches to the container's padded inner extent.
   - **Beside a sibling:** An uncapped `fill` child claims the entire inner extent, advancing the cursor past the container frame and failing at render with `item_out_of_frame`. When pairing `fill` with siblings, cap it using `max_w` (in a row) or `max_h` (in a column).
-- **Multiline `content`-sized text in a row:** A text child with `multiline: true` and `size: [content, ...]` measures its wrapped line box against the container's full padded inner width, so its content width equals the inner width. Consequently, it can only be packed first or alone; placed after a sibling (e.g. following a QR code), its width plus the preceding sibling's width overruns the container and fails with `item_out_of_frame`. To place multiline text beside a sibling, give it an explicit numeric width (or cap it).
+- **Wrapping `content`-sized text in a row:** A text child with `wrap: true` and `size: [content, ...]` measures its wrapped line box against the container's full padded inner width, so its content width equals the inner width. Consequently, it can only be packed first or alone; placed after a sibling (e.g. following a QR code), its width plus the preceding sibling's width overruns the container and fails with `item_out_of_frame`. To place multiline text beside a sibling, give it an explicit numeric width (or cap it).
 - **Nested flow containers.** A flow container inside another flow container packs its assembled extent (sum of child sizes + gaps) into the parent flow.
 
 ### Rotation
@@ -720,4 +728,4 @@ string uses it. This is inherent to baseline alignment and is what every other r
 - [`adr/`](adr/) — why each decision is the way it is.
 - `catalog/` — the shipped starter templates, the best base to copy from.
 - `tests/fixtures/templates/` — templates that exist to demonstrate engine features (QR layouts,
-  multiline, sheet options, rotation, edge-relative placement, interpolation).
+  text wrapping, sheet options, rotation, edge-relative placement, interpolation).

@@ -2230,6 +2230,61 @@ layout:
         );
     }
 
+    #[tokio::test]
+    async fn template_put_rejects_unmigrated_multiline_text() {
+        for (i, multiline_spec) in [
+            "multiline: true",
+            "multiline: false",
+            "multiline: \"yes\"",
+            "multiline:",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let dir = temp_templates_dir();
+            let app = build_app_in(&dir);
+            let id = format!("bad_multiline_{i}");
+            let yaml = format!(
+                r#"
+name: Unmigrated Put
+unit: mm
+dpi: 180
+format:
+  type: single
+  width: 60
+  height: 20
+layout:
+  - type: text
+    value: "test"
+    at: [0, 0]
+    size: [60, 20]
+    font_size: 10
+    {multiline_spec}
+"#
+            );
+            let response = app
+                .oneshot(yaml_post(&format!("/api/templates/{id}"), "PUT", yaml))
+                .await
+                .expect("request");
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let body = json_response(response).await;
+            assert_eq!(body["error"]["code"], "TemplateInvalid");
+            let msg = body["error"]["message"].as_str().unwrap_or("");
+            assert!(
+                msg.contains("layout[0].multiline"),
+                "error must name layout path: {msg}"
+            );
+            assert!(
+                msg.contains("wrap"),
+                "error must name rename to wrap: {msg}"
+            );
+            assert!(
+                !dir.join(format!("{id}.yaml")).exists(),
+                "nothing should be written to disk"
+            );
+        }
+    }
+
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
     /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
     /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates

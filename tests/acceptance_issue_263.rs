@@ -370,7 +370,7 @@ layout:
       - type: text
         value: "This is a multiline text item packed inside a flow container"
         size: [40, content]
-        multiline: true
+        wrap: true
         font_size: { min: 6, max: 14 }
       - type: qr
         value: "MULTI"
@@ -867,7 +867,7 @@ layout:
       - type: text
         value: "This multiline text wraps to the full container width and therefore overruns when placed second"
         size: [content, 26]
-        multiline: true
+        wrap: true
         font_size: 8
 "#;
     let t_multiline_overrun = parse_and_validate(yaml_multiline_after_qr).unwrap();
