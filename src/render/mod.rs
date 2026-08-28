@@ -332,8 +332,8 @@ fn check_dimension_limit(
 /// Wrap `body` in a `#pad` at the aligned edge. Typst's `#pad` grows the frame and translates the
 /// child inward, so aligning the padded block insets the content by exactly `pad` — which is how ink
 /// falling outside the cap-height/baseline line box (accents above, descenders below) stays inside
-/// the clipped slot (#124). Center pads nothing: it already splits the slack, and reserving both
-/// sides would cost a full em and shrink the bundled tape templates (ADR-0050).
+/// the clipped slot (#124). Center pads nothing: centring the metric box already splits the slack,
+/// so placement needs no inset (ADR-0084).
 fn pad_block(body: &str, pad: f32, vertical: crate::models::VerticalAlign) -> String {
     use crate::models::VerticalAlign;
     if pad <= 0.0 {
@@ -398,15 +398,17 @@ fn compile_single_doc(
     compile_label_doc(template, data, option, env)
 }
 
-/// Compile a single label for any template: a `Single` uses its width/height; a `Sheet`
-/// renders one slot at label_width/label_height. Shared by `compile_single_doc` (after its
-/// Single-only guard) and the thumbnail path.
-fn compile_label_doc(
+struct CompiledSource {
+    source: String,
+    files: Vec<(String, Vec<u8>)>,
+}
+
+fn compile_label_source(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     env: &RenderEnv,
-) -> Result<PagedDocument, AppError> {
+) -> Result<CompiledSource, AppError> {
     let unit = &template.unit;
     let selected_option = normalize_option(template, option)?;
     let resolved = resolve_parameters(template, data, selected_option, env.datetime.now)?;
@@ -539,7 +541,23 @@ fn compile_label_doc(
     source.push_str(&body);
 
     tracing::debug!(name = %template.name, typst = %source, "render typst source");
-    compile_paged(source, images.into_inner().files)
+    Ok(CompiledSource {
+        source,
+        files: images.into_inner().files,
+    })
+}
+
+/// Compile a single label for any template: a `Single` uses its width/height; a `Sheet`
+/// renders one slot at label_width/label_height. Shared by `compile_single_doc` (after its
+/// Single-only guard) and the thumbnail path.
+fn compile_label_doc(
+    template: &TemplateContent,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+    env: &RenderEnv,
+) -> Result<PagedDocument, AppError> {
+    let compiled = compile_label_source(template, data, option, env)?;
+    compile_paged(compiled.source, compiled.files)
 }
 
 /// Render a single representative label to PNG. For sheets, renders one slot.
@@ -2151,7 +2169,7 @@ mod tests {
     }
 
     /// The emitted pad is `pad_em × size` for the aligned edge — the *placement* constant. Not
-    /// `overflow_em`: the fitter's reservation is twice this and never reaches the source (#124).
+    /// `overflow_em`: for `top` and `bottom` the fitter's reservation is twice this and never reaches the source (#124).
     #[test]
     fn the_emitted_pad_is_the_aligned_edge_metric() {
         // 0.2412em at 20pt = 4.82pt, and in Inter the top and bottom pads are the same 494 units —
@@ -5702,6 +5720,130 @@ layout:
         );
     }
 
+    /// Task 3.6: Update expectations for fixtures affected by centered ink reservation.
+    #[test]
+    fn fixture_renders_reflect_new_centered_ink_reservation_numbers() {
+        let (registry, _dir) = crate::templates::load_all_for_tests();
+
+        // 1. brother_24mm_printed_on: line 1 in 8.0mm box (max 24pt) fits at 18.5pt (down from 24.0pt)
+        let printed_on = registry
+            .get("brother_24mm_printed_on")
+            .expect("printed_on template");
+        let mut data1 = HashMap::new();
+        data1.insert("message".to_string(), json!("Warehouse Section B"));
+        let mut dt_formats = BTreeMap::new();
+        dt_formats.insert("short_date".to_string(), "%Y-%m-%d".to_string());
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now: chrono::Local::now(),
+        };
+        let env1 = super::RenderEnv {
+            settings: &no_settings(),
+            datetime: &dt,
+        };
+        let compiled1 = super::compile_label_source(printed_on, &data1, None, &env1)
+            .expect("compile printed_on");
+        let size1 = fitted_pt(&compiled1.source);
+        assert_eq!(
+            size1, 18.5,
+            "brother_24mm_printed_on line 1 must fit at 18.5pt (down from 24pt)"
+        );
+
+        // 2. brother_24mm_lines_divider: line 1 in 7.5mm box (max 20pt) fits at 17.5pt (down from 20.0pt)
+        let lines_divider = registry
+            .get("brother_24mm_lines_divider")
+            .expect("lines_divider template");
+        let mut data2 = HashMap::new();
+        data2.insert("line1".to_string(), json!("Storage Bin A-42"));
+        data2.insert("line2".to_string(), json!("Workshop / North Wall"));
+        let env2 = super::RenderEnv {
+            settings: &no_settings(),
+            datetime: &no_datetime(),
+        };
+        let compiled2 = super::compile_label_source(lines_divider, &data2, None, &env2)
+            .expect("compile lines_divider");
+        let size2 = fitted_pt(&compiled2.source);
+        assert_eq!(
+            size2, 17.5,
+            "brother_24mm_lines_divider line 1 must fit at 17.5pt (down from 20pt)"
+        );
+
+        // 3. brother_24mm_multiline: 2-line wrapped text in 16.1mm box (max 32pt) fits at 17.5pt (down from 21.5pt)
+        let multiline = registry
+            .get("brother_24mm_multiline")
+            .expect("multiline template");
+        let mut data3 = HashMap::new();
+        data3.insert(
+            "message".to_string(),
+            json!("Long label that should wrap onto two lines on the tape"),
+        );
+        let env3 = super::RenderEnv {
+            settings: &no_settings(),
+            datetime: &no_datetime(),
+        };
+        let compiled3 =
+            super::compile_label_source(multiline, &data3, None, &env3).expect("compile multiline");
+        let size3 = fitted_pt(&compiled3.source);
+        assert_eq!(
+            size3, 17.5,
+            "brother_24mm_multiline 2-line text must fit at 17.5pt (down from 21.5pt)"
+        );
+
+        // 4. avery5163_asset_tag:
+        let avery = registry
+            .get("avery5163_asset_tag")
+            .expect("avery5163_asset_tag template");
+        let mut data4 = HashMap::new();
+        data4.insert("id".to_string(), json!("A1"));
+        data4.insert("url".to_string(), json!("https://example.com"));
+        data4.insert("name".to_string(), json!("Floor Grinder"));
+        data4.insert(
+            "tags".to_string(),
+            json!("Angle grinder with floor grinding attachment and heavy dust shroud"),
+        );
+        data4.insert(
+            "description".to_string(),
+            json!("Angle grinder with floor grinding attachment and heavy dust shroud"),
+        );
+        let mut opt4 = BTreeMap::new();
+        opt4.insert("orientation".to_string(), "horizontal".to_string());
+        let env4 = super::RenderEnv {
+            settings: &no_settings(),
+            datetime: &no_datetime(),
+        };
+        let compiled4 = super::compile_label_source(avery, &data4, Some(&opt4), &env4)
+            .expect("compile avery5163");
+        let src4 = &compiled4.source;
+
+        // {id} in horizontal orientation (0.35in box, max 22pt) fits at 20.5pt (down from 22.0pt)
+        let id_idx = src4.find("\"A1\"").expect("id text in source");
+        let size4_id = fitted_pt(&src4[id_idx..]);
+        assert_eq!(
+            size4_id, 20.5,
+            "avery5163_asset_tag {{id}} must fit at 20.5pt (down from 22pt)"
+        );
+
+        // {name} in horizontal orientation (0.4in box, max 24pt) fits at 23.5pt (down from 24.0pt)
+        let name_idx = src4.find("Floor").expect("name text in source");
+        let size4_name = fitted_pt(&src4[name_idx..]);
+        assert_eq!(
+            size4_name, 23.5,
+            "avery5163_asset_tag {{name}} must fit at 23.5pt (down from 24pt)"
+        );
+
+        // {tags} / {description} in 0.65in box at fixed 12pt keeps 2 lines and ellipsizes when wrapping
+        let desc_chunk = &src4[name_idx..];
+        assert!(
+            desc_chunk.contains("..."),
+            "expected description to be ellipsized in source: {desc_chunk}"
+        );
+        let linebreaks = desc_chunk.matches("#linebreak()").count();
+        assert_eq!(
+            linebreaks, 2,
+            "avery5163_asset_tag tags and description must each wrap to 2 lines (1 linebreak each, down from 3 lines)"
+        );
+    }
+
     /// A blank optional field is ordinary in CSV-driven printing. The empty value measures to
     /// nothing, the label clamps to the item's own `at.x`, and the `to`-spanning box collapses to
     /// zero width — a legitimate render-time outcome of empty data, not an authoring error, so it
@@ -7410,5 +7552,102 @@ layout:
         let pdf =
             render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime()).unwrap();
         assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    /// #245 acceptance: a centered multiline text item in an 18.1mm box reserves its ink
+    /// and fits at 19.5pt rather than 24.0pt, keeping its descender closed and off the final raster row.
+    #[test]
+    fn center_aligned_multiline_auto_shrink_descender_fits_and_closes_stroke() {
+        let item = LayoutItem::Text {
+            value: "Kitchen Utensils and a much longer second line here".to_string(),
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(120.0), SizeValue::fixed(18.1)]),
+            ),
+            font_size: FontSize::Range {
+                min: 10.0,
+                max: 32.0,
+            },
+            font_weight: None,
+            multiline: true,
+            alignment: crate::models::Alignment {
+                horizontal: HorizontalAlign::Center,
+                vertical: VerticalAlign::Center,
+            },
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+        let src = render_test_items(&[item], (120.0, 18.1)).expect("render text item");
+        let size = fitted_pt(&src);
+        assert_eq!(size, 19.5, "fitted size after fix should be 19.5pt");
+
+        let yaml = r#"
+name: Issue 245 Repro
+unit: mm
+dpi: 180
+format: { type: single, width: 120, height: 18.1 }
+layout:
+  - type: text
+    value: "Kitchen Utensils and a much longer second line here"
+    at: [0, 0]
+    size: [120, 18.1]
+    font_size:
+      min: 10
+      max: 32
+    multiline: true
+    alignment:
+      horizontal: center
+      vertical: center
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let png = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap();
+        let img = image::load_from_memory(&png).expect("decode").to_luma8();
+        let (w, h) = (img.width(), img.height());
+        let last_row = h - 1;
+        let inked_cols: Vec<u32> = (0..w)
+            .filter(|&x| img.get_pixel(x, last_row).0[0] < 128)
+            .collect();
+        assert!(
+            inked_cols.is_empty(),
+            "expected no ink on the final raster row {last_row}, but found {} inked pixels",
+            inked_cols.len()
+        );
+    }
+
+    /// Task 5.2: Render the four catalog tapes and confirm they are unchanged from the baseline.
+    #[test]
+    fn catalog_brother_tapes_render_unchanged_from_baseline() {
+        let (registry, _dir) = crate::templates::load_all_for_tests();
+        let archive_dir = std::path::Path::new(
+            "openspec/changes/archive/2026-08-27-issue-226-unify-size-resolution/renders",
+        );
+
+        for tape_id in [
+            "brother_9mm",
+            "brother_12mm",
+            "brother_18mm",
+            "brother_24mm",
+        ] {
+            let template = registry.get(tape_id).expect("catalog template");
+            let mut data = HashMap::new();
+            data.insert("message".to_string(), json!("BOX.073 - Floor Grinder"));
+            let png = render_single_label(template, &data, None, &no_settings(), &no_datetime())
+                .unwrap_or_else(|e| panic!("render {tape_id}: {e:?}"));
+
+            let baseline_path = archive_dir.join(format!("{tape_id}.png"));
+            let baseline = std::fs::read(&baseline_path)
+                .unwrap_or_else(|e| panic!("missing baseline PNG {baseline_path:?}: {e}"));
+            assert_eq!(
+                png, baseline,
+                "rendered PNG for {tape_id} differs from baseline {baseline_path:?}"
+            );
+        }
     }
 }

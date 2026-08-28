@@ -987,15 +987,16 @@ pub(super) fn pad_pt(weight: u16, size: f32, vertical: VerticalAlign) -> Result<
     Ok(pad_em(&face, vertical) * size)
 }
 
-/// What the *fitter* holds back so the edge the text is not aligned to cannot clip either: a
-/// top-aligned block pushed down by its top pad still has descenders near the slot floor. Both
-/// overflows, so it is neither `pad_em` nor the 1.21em band — the cap-height line covers the rest.
+/// What the *fitter* holds back so ink falling outside the cap-height line box cannot clip:
+/// `Top` and `Bottom` reserve both overflows because padding the aligned edge pushes the opposite
+/// edge toward the slot floor/ceiling; `Center` reserves twice the larger overflow because the metric
+/// block is centred and the slack on each side must absorb the overflow on that side (ADR-0084).
 fn overflow_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
     match vertical {
         VerticalAlign::Top | VerticalAlign::Bottom => {
             ascent_overflow_em(face) + descent_overflow_em(face)
         }
-        VerticalAlign::Center => 0.0,
+        VerticalAlign::Center => 2.0 * ascent_overflow_em(face).max(descent_overflow_em(face)),
     }
 }
 
@@ -1004,20 +1005,26 @@ fn leading(size: f32) -> f32 {
     size * 0.65
 }
 
-/// Height of an `n`-line block as Typst stacks it: leading between lines, not after the last one
+/// Height of an `n`-line metric block as Typst stacks it: leading between lines, not after the last one
 /// (typst-layout `collect.rs` pushes it only when `i > 0`). A fused per-line constant — which is what
 /// a "line height" is — overshoots by one leading per block and shrinks text that would have fit.
-fn block_height(face: &ttf_parser::Face, size: f32, lines: usize, vertical: VerticalAlign) -> f32 {
+fn metric_block_height(face: &ttf_parser::Face, size: f32, lines: usize) -> f32 {
     let n = lines.max(1) as f32;
+    n * cap_height(face, size) + (n - 1.0) * leading(size)
+}
+
+/// The reserved demand: the metric block height Typst lays out plus the ink reservation for the
+/// item's vertical alignment.
+fn block_height(face: &ttf_parser::Face, size: f32, lines: usize, vertical: VerticalAlign) -> f32 {
     // The overflow is read off *this* face, already instanced at the candidate size: the metrics move
     // with the opsz axis, so a ratio captured earlier would belong to a different instance.
-    n * cap_height(face, size) + (n - 1.0) * leading(size) + overflow_em(face, vertical) * size
+    metric_block_height(face, size, lines) + overflow_em(face, vertical) * size
 }
 
 #[cfg(test)]
 pub(crate) fn block_height_for_test(weight: u16, size: f32, lines: usize) -> f32 {
     let face = instance(weight, size).expect("face");
-    block_height(&face, size, lines, VerticalAlign::Center)
+    metric_block_height(&face, size, lines)
 }
 
 #[cfg(test)]
@@ -1613,6 +1620,135 @@ mod helpers_tests {
         assert_eq!(m.lines, Vec::<String>::new());
         assert_eq!(m.width_units, 0.0);
     }
+
+    /// Task 3.3: a center-aligned multiline item at a fixed font_size whose box holds three
+    /// metric lines but only two reserved ones keeps two lines and ellipsizes.
+    #[test]
+    fn layout_text_center_aligned_multiline_line_budget_reserves_overflow() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Center,
+        };
+        // At 10pt in Inter:
+        // metric_block(3, 10.0) = 3 * 7.275 + 2 * 6.5 = 34.83pt
+        // reserved demand(2, 10.0, Center) = 2 * 7.275 + 6.5 + 4.824 = 25.875pt
+        // reserved demand(3, 10.0, Center) = 34.83 + 4.824 = 39.65pt
+        // In a 36.0pt box (12.7mm): holds 3 metric lines, but only 2 reserved lines.
+        let box_h_mm = super::pt_to_units(36.0, "mm");
+        let m = test_layout(
+            "Line 1\nLine 2\nLine 3",
+            &FontSize::Fixed(10.0),
+            true,
+            align,
+            Overflow::Ellipsis,
+            (100.0, box_h_mm),
+        )
+        .unwrap();
+        assert_eq!(
+            m.lines.len(),
+            2,
+            "expected 2 lines kept out of 3 under the reserved budget, got {:?}",
+            m.lines
+        );
+        assert!(
+            m.lines[1].ends_with("..."),
+            "expected second line to be ellipsized, got {}",
+            m.lines[1]
+        );
+    }
+
+    /// Task 3.4: a center-aligned item with overflow: fail whose metric block fits but whose block plus
+    /// reservation does not returns 422 text_does_not_fit, and one whose box cannot hold one line plus
+    /// the reservation returns 422 under ellipsis too.
+    #[test]
+    fn layout_text_center_aligned_refusals() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Center,
+        };
+        // Case 1: 3-line block in a 36.0pt (12.7mm) box with overflow: fail.
+        // Metric block (34.83pt) fits within 36.0pt, but reserved demand (39.65pt) does not.
+        let box_h_mm = super::pt_to_units(36.0, "mm");
+        let err_fail = test_layout(
+            "Line 1\nLine 2\nLine 3",
+            &FontSize::Fixed(10.0),
+            true,
+            align.clone(),
+            Overflow::Fail,
+            (100.0, box_h_mm),
+        )
+        .expect_err("overflow: fail must reject when block plus reservation exceeds box");
+        assert_eq!(err_fail.reason(), Some("text_does_not_fit"));
+
+        // Case 2: 1-line item in a box shorter than one line plus reservation (e.g. 8.0pt = 2.822mm).
+        // 1 metric line = 7.275pt (< 8.0pt), but 1 reserved line = 12.099pt (> 8.0pt).
+        let short_box_mm = super::pt_to_units(8.0, "mm");
+        let err_ellipsis = test_layout(
+            "One line",
+            &FontSize::Fixed(10.0),
+            false,
+            align,
+            Overflow::Ellipsis,
+            (100.0, short_box_mm),
+        )
+        .expect_err("box shorter than one line plus reservation must error under ellipsis");
+        assert_eq!(err_ellipsis.reason(), Some("text_does_not_fit"));
+        assert!(
+            err_ellipsis
+                .message_text()
+                .contains("shorter than one line"),
+            "got {}",
+            err_ellipsis.message_text()
+        );
+    }
+
+    /// Task 3.5: a center-aligned text with a content height resolves a box taller by the
+    /// reservation, and its top-aligned twin is unchanged.
+    #[test]
+    fn layout_text_center_aligned_content_height_includes_reservation() {
+        let center_align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Center,
+        };
+        let top_align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Top,
+        };
+        let m_center = test_layout(
+            "Sample text",
+            &FontSize::Fixed(10.0),
+            false,
+            center_align,
+            Overflow::Ellipsis,
+            (100.0, 50.0),
+        )
+        .unwrap();
+        let m_top = test_layout(
+            "Sample text",
+            &FontSize::Fixed(10.0),
+            false,
+            top_align,
+            Overflow::Ellipsis,
+            (100.0, 50.0),
+        )
+        .unwrap();
+
+        let face = super::instance(400, 10.0).unwrap();
+        let expected_h_pt = super::cap_height(&face, 10.0)
+            + super::overflow_em(&face, VerticalAlign::Center) * 10.0;
+        let expected_h_mm = super::pt_to_units(expected_h_pt, "mm");
+
+        assert!(
+            (m_center.height_units - expected_h_mm).abs() < 1e-4,
+            "center content height {} should match expected reserved height {}",
+            m_center.height_units,
+            expected_h_mm
+        );
+        assert_eq!(
+            m_center.height_units, m_top.height_units,
+            "center and top alignments should resolve identical intrinsic height in symmetric font"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1712,19 +1848,27 @@ mod measurement_tests {
         assert!((both - (top + bottom)).abs() < 1e-6, "overflow {both}");
         assert!((both - 0.4824).abs() < 0.001, "overflow {both}");
 
-        // Center reserves and pads nothing (spec Decision 2).
+        // Center pads nothing (placement is unchanged), but reserves 2 * max(top, bottom) (ADR-0084).
         assert_eq!(pad_em(&face, VerticalAlign::Center), 0.0);
-        assert_eq!(overflow_em(&face, VerticalAlign::Center), 0.0);
+        let center_overflow = overflow_em(&face, VerticalAlign::Center);
+        assert!(
+            (center_overflow - 2.0 * top.max(bottom)).abs() < 1e-6,
+            "center overflow {center_overflow}"
+        );
+        assert!(
+            (center_overflow - 0.4824).abs() < 0.001,
+            "center overflow {center_overflow}"
+        );
 
         // pad_pt is the same number in points, for callers with no Face.
         let pt = pad_pt(400, 20.0, VerticalAlign::Bottom).expect("pad_pt");
         assert!((pt - bottom * 20.0).abs() < 1e-4, "pad_pt {pt}");
     }
 
-    /// A height-bound item must leave room for the ink outside the cap-height line, so an aligned
-    /// item fits at a smaller size than a centered one in the same slot (#124).
+    /// A height-bound item must leave room for the ink outside the cap-height line: aligned and
+    /// centered items reserve ink room in the fitter, while placement pads only aligned edges (ADR-0084).
     #[test]
-    fn a_height_bound_aligned_fit_reserves_the_overflow() {
+    fn a_height_bound_fit_reserves_the_overflow() {
         let fit = FitBox {
             width_units: 400.0,
             height_units: 10.0,
@@ -1734,11 +1878,16 @@ mod measurement_tests {
             largest_fitting_font("Hxy", false, 400, VerticalAlign::Bottom, 6.0, 80.0, fit);
         let centered =
             largest_fitting_font("Hxy", false, 400, VerticalAlign::Center, 6.0, 80.0, fit);
-        assert!(
-            aligned < centered,
-            "bottom-aligned must reserve the overflow and land smaller ({aligned} vs {centered})"
-        );
         let face = instance(400, aligned).expect("face");
+        // In symmetric Inter, both alignments reserve the same 0.4824em, so they fit at the same size
+        assert_eq!(
+            aligned, centered,
+            "symmetric font reserves the same ink depth for bottom and center ({aligned} vs {centered})"
+        );
+        // Placement pad is 0.0 for center, while bottom is padded
+        assert_eq!(pad_em(&face, VerticalAlign::Center), 0.0);
+        assert!(pad_em(&face, VerticalAlign::Bottom) > 0.0);
+
         let need = cap_height(&face, aligned) + overflow_em(&face, VerticalAlign::Bottom) * aligned;
         assert!(
             need <= units_to_pt(10.0, "mm") + 0.5,
