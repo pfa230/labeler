@@ -27,7 +27,7 @@ complete:
 | `unit` | For a `length` parameter, the template's unit, for display beside the control. Absent otherwise. |
 | `description` | The parameter's declared description. Absent when it declares none. |
 | `interpolated` | Whether some active item reads this name **as a value**: a `text` or `qr` token, an `image` `name:`, or an interpolated `image.src`. False for a name present only because it gates an item or resolves a layout attribute. |
-| `truncated_elsewhere` | Whether some single-line `text` item anywhere in the template, in any branch, reads this name, so a multiline value would show only its first line. |
+| `truncated_elsewhere` | Whether some `wrap: false` `text` item anywhere in the template, in any branch, reads this name. **The name is historical.** It meant that such an item would render only the value's first line; since #251 every segment of a value enters layout regardless of `wrap`, so the flag no longer reports a loss. It is still computed, still returned, and the print form still renders its note from it — a warning about a truncation that no longer happens. Issue #269 removes the field, the computation and the note together, because deleting a response field is a change of its own. |
 
 An entry SHALL be present for a name the label's render will read, and for no other name. In
 particular an entry SHALL be present for a parameter read only as a `when:` key, and for one read
@@ -52,13 +52,18 @@ a declared parameter today:
   tell them apart. `slider` then says whether the control is presented as a slider, which is true
   exactly when both `min` and `max` are declared.
 - For a name the template does not declare, `control` follows use: `image` when an active `image`
-  item binds it through `name:`; otherwise `textarea` when an active `multiline` `text` item reads
-  it; otherwise `text`.
+  item binds it through `name:`; otherwise `textarea` when an active `wrap: true` `text` item reads
+  it; otherwise `text`. That a layout flag decides a text control at all is a leftover this capability
+  keeps only until #269: `wrap` says whether the renderer soft-wraps a line, which is not a statement
+  about what a caller types into.
 
 These two rules are total and mutually exclusive, so a name with several uses has exactly one
-`control`. A declared `string` read by a `multiline` text item but declared `multiline: false`
-therefore keeps its single-line control, and `truncated_elsewhere` is what warns about the mismatch,
-exactly as today.
+`control`. A declared `string` read by a `wrap: true` text item but declared `multiline: false`
+therefore keeps its single-line control. `truncated_elsewhere` still reports the reverse pairing, but
+it no longer describes a loss: since #251 every `\n` segment of a value enters layout under either
+control and under either flag. Only the authored `overflow` policy may then shorten a line, drop lines,
+or — under `overflow: fail` — reject the render with `text_does_not_fit`; a shortened or dropped line is
+marked.
 
 `required` SHALL be false for a declared parameter that resolves when omitted, namely one carrying a
 `default` and one of type `boolean`, `enum` or `datetime`, and true otherwise, including for every
@@ -93,10 +98,10 @@ retained.
 
 #### Scenario: A declared control ignores a conflicting use
 
-- **WHEN** a template declares `title` as a `string` with `multiline: false` and a `multiline` `text`
+- **WHEN** a template declares `title` as a `string` with `multiline: false` and a `wrap: true` `text`
   item reads `{title}`
-- **THEN** its entry carries control `text` and `truncated_elsewhere` false, since no single-line item
-  reads it
+- **THEN** its entry carries control `text` and `truncated_elsewhere` false, since no `wrap: false`
+  item reads it
 
 #### Scenario: An image binding overrides a string declaration
 
@@ -105,7 +110,7 @@ retained.
 
 #### Scenario: An undeclared name read by a multiline item gets a textarea
 
-- **WHEN** a `multiline` `text` item reads `{body}` and `body` is not declared under `params:`
+- **WHEN** a `wrap: true` `text` item reads `{body}` and `body` is not declared under `params:`
 - **THEN** its entry carries control `textarea` and `required` true
 
 #### Scenario: An interpolated image source is an input
@@ -250,7 +255,7 @@ a control that cannot hold what some branch needs.
 
 #### Scenario: The union prefers the wider control for an undeclared name
 
-- **WHEN** undeclared `{title}` is read by a `multiline` `text` item in one branch and a single-line
+- **WHEN** undeclared `{title}` is read by a `wrap: true` `text` item in one branch and a `wrap: false`
   one in another
 - **THEN** its `inputs.all` entry carries control `textarea` and `truncated_elsewhere` true
 

@@ -274,7 +274,7 @@ impl TemplateContent {
                         placement,
                         font_weight,
                         value,
-                        multiline,
+                        wrap,
                         ..
                     } => {
                         if let Extent::Size(size) = &placement.extent {
@@ -292,7 +292,7 @@ impl TemplateContent {
                                 name,
                                 true,
                                 false,
-                                *multiline && !is_datetime_param(params, name),
+                                *wrap && !is_datetime_param(params, name),
                             );
                         }
                     }
@@ -492,10 +492,8 @@ fn collect_single_line_names(layout: &Layout) -> HashSet<String> {
     fn walk(items: &[LayoutItem], names: &mut HashSet<String>) {
         for item in items {
             match item {
-                LayoutItem::Text {
-                    value, multiline, ..
-                } => {
-                    if !*multiline {
+                LayoutItem::Text { value, wrap, .. } => {
+                    if !*wrap {
                         for name in bare_token_names(value) {
                             names.insert(name.to_string());
                         }
@@ -1649,7 +1647,7 @@ fn instantiate_item_defaults(
             placement,
             font_size,
             font_weight,
-            multiline,
+            wrap,
             alignment,
             overflow,
             when,
@@ -1663,7 +1661,7 @@ fn instantiate_item_defaults(
                 placement: inst_placement(placement),
                 font_size: font_size.clone(),
                 font_weight: fw,
-                multiline: *multiline,
+                wrap: *wrap,
                 alignment: alignment.clone(),
                 overflow: *overflow,
                 when: when.clone(),
@@ -2590,7 +2588,7 @@ layout:
     at: [0.0, 0.0]
     size: [10.0, 5.0]
     font_size: 10.0
-    multiline: true
+    wrap: true
 "#,
         );
 
@@ -2841,7 +2839,7 @@ layout: []
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: Some(DynamicValue::Literal(350)),
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -2945,7 +2943,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -3091,7 +3089,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -3163,7 +3161,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: true,
+                wrap: true,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -3172,7 +3170,7 @@ layout:
         };
         template
             .validate()
-            .expect("dynamic-width single with multiline: true should validate OK");
+            .expect("dynamic-width single with wrap: true should validate OK");
     }
 
     #[test]
@@ -3199,7 +3197,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -3208,7 +3206,7 @@ layout:
         };
         template
             .validate()
-            .expect("dynamic-width single with multiline: false should validate OK");
+            .expect("dynamic-width single with wrap: false should validate OK");
     }
 
     #[test]
@@ -3232,7 +3230,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: true,
+                wrap: true,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -3241,7 +3239,7 @@ layout:
         };
         template
             .validate()
-            .expect("fixed-width single with multiline: true should validate OK");
+            .expect("fixed-width single with wrap: true should validate OK");
     }
 
     #[test]
@@ -4262,7 +4260,7 @@ layout:
     items:
       - type: text
         value: "{beta_multiline}\n{vars.secret}"
-        multiline: true
+        wrap: true
         at: [0, 0]
         size: [40, 20]
         font_size: 10
@@ -4955,6 +4953,66 @@ layout:
             assert!(
                 broken[0].error.contains(expected_fragment),
                 "{name}: expected error to contain '{expected_fragment}', got '{}'",
+                broken[0].error
+            );
+
+            fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    #[test]
+    fn unmigrated_multiline_text_template_is_quarantined_with_rename_error() {
+        for (i, multiline_spec) in [
+            "multiline: true",
+            "multiline: false",
+            "multiline: \"yes\"",
+            "multiline:",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let dir = temp_dir(&format!("unmigrated_{i}"));
+            write_template(&dir, "valid.yaml", &sample_yaml("Valid Template"));
+            let bad_yaml = format!(
+                r#"
+name: Unmigrated
+unit: mm
+dpi: 180
+format:
+  type: single
+  width: 60
+  height: 20
+layout:
+  - type: text
+    value: "test"
+    at: [0, 0]
+    size: [60, 20]
+    font_size: 10
+    {multiline_spec}
+"#
+            );
+            write_template(&dir, "unmigrated.yaml", &bad_yaml);
+
+            let registry =
+                TemplateRegistry::load_from_dir(&dir).expect("registry load should not crash");
+            assert_eq!(registry.len(), 1, "valid template must be served");
+            assert!(registry.get("valid").is_some());
+            assert!(registry.get("unmigrated").is_none());
+
+            let broken = registry.broken();
+            assert_eq!(broken.len(), 1, "unmigrated template must be quarantined");
+            assert_eq!(
+                broken[0].path, "unmigrated.yaml",
+                "broken path must name the file"
+            );
+            assert!(
+                broken[0].error.contains("layout[0].multiline"),
+                "error must name the layout path: {}",
+                broken[0].error
+            );
+            assert!(
+                broken[0].error.contains("wrap"),
+                "error must name the rename to wrap: {}",
                 broken[0].error
             );
 

@@ -1282,7 +1282,7 @@ impl<'a> RenderContext<'a> {
                 value,
                 font_size,
                 font_weight,
-                multiline,
+                wrap,
                 alignment,
                 overflow,
                 ..
@@ -1310,7 +1310,7 @@ impl<'a> RenderContext<'a> {
                         raw_text: &text,
                         font_size,
                         font_weight: dyn_weight,
-                        multiline: *multiline,
+                        wrap: *wrap,
                         alignment: alignment.clone(),
                         overflow: *overflow,
                     },
@@ -1749,18 +1749,21 @@ impl<'a> RenderContext<'a> {
             .unwrap_or_default();
         let weight = font_weight.unwrap_or(400);
 
-        let body = text_fit
+        let mut body = text_fit
             .lines
             .iter()
-            .map(|l| {
-                format!(
-                    "#text(\"{}\", size: {}pt{weight_arg})",
-                    escape_typst_string(l),
-                    text_fit.font_size_pt
-                )
-            })
+            .map(|l| format!("#text(\"{}\")", escape_typst_string(l)))
             .collect::<Vec<_>>()
             .join("#linebreak()");
+
+        if text_fit.lines.last().is_some_and(|l| l.is_empty()) {
+            body.push_str("#linebreak()");
+        }
+
+        let body = format!(
+            "#text(size: {}pt{weight_arg})[{body}]",
+            text_fit.font_size_pt
+        );
 
         let body = pad_block(
             &body,
@@ -2110,7 +2113,7 @@ mod tests {
             ),
             font_size,
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: crate::models::Alignment {
                 horizontal,
                 vertical,
@@ -2143,7 +2146,7 @@ mod tests {
             ),
             font_size,
             font_weight: weight.map(Into::into),
-            multiline: false,
+            wrap: false,
             alignment: crate::models::Alignment {
                 horizontal,
                 vertical,
@@ -2152,6 +2155,19 @@ mod tests {
             when: None,
         };
         render_test_items(&[item], (80.0, 40.0)).expect("render text item")
+    }
+
+    /// The fitted size of the text at the start of `source`.
+    ///
+    /// Emission wraps a block in `#text(size: Npt)[...]` and leaves the inner runs unsized, so the
+    /// size that applies to a literal is the nearest one *before* it, not after: searching forward
+    /// finds the next item's size instead. Callers pass the whole source and the literal's offset.
+    fn fitted_pt_at(source: &str, at: usize) -> f32 {
+        let before = &source[..at];
+        let start = before.rfind("size: ").expect("a size enclosing the text") + 6;
+        let rest = &source[start..];
+        let end = rest.find("pt").expect("pt suffix");
+        rest[..end].parse().expect("a number")
     }
 
     fn fitted_pt(source: &str) -> f32 {
@@ -2274,7 +2290,7 @@ mod tests {
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Top,
@@ -2304,7 +2320,7 @@ mod tests {
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Top,
@@ -2416,7 +2432,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
                     vertical: VerticalAlign::Top,
@@ -2474,7 +2490,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: weight.map(Into::into),
-                multiline: false,
+                wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -2545,7 +2561,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -2626,7 +2642,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -2764,7 +2780,7 @@ layout:
             },
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -2859,7 +2875,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -2932,7 +2948,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -2965,7 +2981,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -2997,7 +3013,7 @@ layout:
                     },
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
-                    multiline: false,
+                    wrap: false,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -3157,7 +3173,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3211,7 +3227,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -3287,7 +3303,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -3359,7 +3375,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3430,7 +3446,7 @@ layout:
                     max: 28.0,
                 },
                 font_weight: None,
-                multiline: true,
+                wrap: true,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3737,7 +3753,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3874,7 +3890,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3932,7 +3948,7 @@ layout:
     /// pixel geometry the same as the bundled brother tapes.
     fn autolength_tape(
         text: &str,
-        multiline: bool,
+        wrap: bool,
         vertical: VerticalAlign,
         font_pt: f32,
     ) -> TemplateContent {
@@ -3959,7 +3975,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
-                multiline,
+                wrap,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
                     vertical,
@@ -4054,35 +4070,31 @@ layout:
         bands
     }
 
-    /// #148: the print form now offers a textarea for multiline fields, which is only worth anything
-    /// if a newline in the data becomes a line on the label. The UI tests can prove the value reaches
-    /// the request; only a render proves the rest.
+    /// #148 / #251: a newline in the data becomes a line on the label, whether wrap is true or false.
     #[test]
-    fn a_newline_in_a_multiline_field_renders_as_two_lines() {
-        let two = render_tape(&autolength_tape(
+    fn a_newline_in_a_text_field_renders_as_two_lines_even_without_wrap() {
+        let wrapped = render_tape(&autolength_tape(
             "one\ntwo",
             true,
             VerticalAlign::Center,
             12.0,
         ));
         assert_eq!(
-            ink_bands(&two),
+            ink_bands(&wrapped),
             2,
-            "a two-line value must put two lines of ink on the label"
+            "a two-line value with wrap: true must put two lines of ink on the label"
         );
 
-        // The control case: the same value in a single-line item keeps one line, which is the
-        // truncation the form now warns about.
-        let one = render_tape(&autolength_tape(
+        let unwrapped = render_tape(&autolength_tape(
             "one\ntwo",
             false,
             VerticalAlign::Center,
             12.0,
         ));
         assert_eq!(
-            ink_bands(&one),
-            1,
-            "a single-line item must still render only its first line"
+            ink_bands(&unwrapped),
+            2,
+            "a two-line value with wrap: false must still render both lines"
         );
     }
 
@@ -4116,17 +4128,12 @@ layout:
     /// blows the tolerance at 24 pt even if it hid at 12 pt.
     #[test]
     fn autolength_text_centers_vertically() {
-        for (label, multiline, text) in [
+        for (label, wrap, text) in [
             ("single line", false, "test"),
             ("multiline", true, "test\ntest"),
         ] {
             for font_pt in [12.0, 24.0] {
-                let png = render_tape(&autolength_tape(
-                    text,
-                    multiline,
-                    VerticalAlign::Center,
-                    font_pt,
-                ));
+                let png = render_tape(&autolength_tape(text, wrap, VerticalAlign::Center, font_pt));
                 let (top, bottom, height) = ink_rows(&png);
                 let offset = (top + bottom) as f32 / 2.0 - (height - 1) as f32 / 2.0;
                 assert!(
@@ -4184,13 +4191,10 @@ layout:
         );
     }
 
-    /// A blank edge line carries no ink, so it is trimmed at emission (#127): it must not drag the
-    /// visible text off centre. `fit_text_auto_length` does preserve them — `"\nmessage"` measures as
-    /// `["", "message"]` — and a leading one adds a real line box, so without the trim the text sits
-    /// a full line-advance low. (A *trailing* blank is trimmed for the same reason but is not
-    /// separately observable: Typst gives a trailing empty line no box.)
+    /// #251: blank edge lines are rendered, not trimmed (#127 superseded).
+    /// A leading blank line shifts the visible text down by one line box.
     #[test]
-    fn blank_edge_line_does_not_shift_centering() {
+    fn blank_edge_line_is_rendered_and_shifts_centering() {
         let plain = render_tape(&autolength_tape(
             "message",
             true,
@@ -4203,13 +4207,149 @@ layout:
             VerticalAlign::Center,
             18.0,
         ));
-        let (t1, b1, _) = ink_rows(&plain);
-        let (t2, b2, _) = ink_rows(&leading);
-        assert_eq!(
-            t2 + b2,
-            t1 + b1,
-            "a leading blank line changed the ink centre ({t2}..{b2} vs {t1}..{b1})"
+        let (t1, _, _) = ink_rows(&plain);
+        let (t2, _, _) = ink_rows(&leading);
+        assert!(
+            t2 > t1,
+            "a leading blank line must shift text downwards ({t2} vs {t1})"
         );
+    }
+
+    /// Task 3.5: Render tests at a font size well away from the default (28pt vs default 10/12pt):
+    /// a leading blank, an interior blank, a trailing blank and an empty value each produce a rendered
+    /// block height matching what the fitter measured for the same value.
+    ///
+    /// Verifies at the Typst layout/render level: compiles the emitted Typst and asserts that
+    /// the rendered height matches the fitter's block height, ensuring that:
+    /// 1. The whole block is wrapped in `#text(size: {font_pt}pt...)`, so blank lines and fallbacks
+    ///    inherit the fitted font size rather than ambient default (11pt).
+    /// 2. Trailing blank lines emit a trailing `#linebreak()` so Typst allocates a box for them.
+    #[test]
+    fn rendered_block_height_matches_fitter_at_non_default_font_size() {
+        use std::cell::RefCell;
+        let font_pt = 28.0;
+        let weight = 400;
+
+        for (label, text, expected_lines) in [
+            ("leading blank", "\nhello", 2),
+            ("interior blank", "hello\n\nworld", 3),
+            ("trailing blank", "hello\n", 2),
+            ("empty value", "", 1),
+        ] {
+            let data: HashMap<String, super::JsonValue> = HashMap::new();
+            let settings = no_settings();
+            let datetime = no_datetime();
+            let env = super::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            let images = RefCell::new(super::ImageCollector::default());
+            let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+
+            let item = LayoutItem::Text {
+                value: text.to_string(),
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::content(), SizeValue::content()]),
+                ),
+                font_size: FontSize::Fixed(font_pt),
+                font_weight: None,
+                wrap: false,
+                alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
+                when: None,
+            };
+
+            let geometry_values = HashMap::new();
+            let (measured, _) = ctx
+                .measure_items(
+                    std::slice::from_ref(&item),
+                    (200.0, 100.0),
+                    [true, true],
+                    &geometry_values,
+                    "layout",
+                )
+                .unwrap();
+
+            let mut typst_rendered = String::new();
+            let pbox = super::PlacedBox {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+                frame: (200.0, 100.0),
+            };
+            let placement = match &item {
+                LayoutItem::Text { placement, .. } => placement,
+                _ => unreachable!(),
+            };
+            ctx.render_text_item(
+                &mut typst_rendered,
+                placement,
+                None,
+                &Alignment::default(),
+                pbox,
+                measured[0].text.as_ref().unwrap(),
+            )
+            .unwrap();
+
+            // 1. Assert emitted Typst structure: outer block wrapper carries font size and weight,
+            // inner individual text nodes do not carry their own size.
+            assert!(
+                typst_rendered.contains(&format!("#text(size: {font_pt}pt")),
+                "{label}: emitted Typst must wrap the block in #text(size: {font_pt}pt...): got {typst_rendered}"
+            );
+
+            // 2. Extract the emitted #text(size: ...) block and compile it in Typst on an auto-height page
+            let start = typst_rendered
+                .find(&format!("#text(size: {font_pt}pt"))
+                .expect("found text wrapper");
+            let mut depth = 0;
+            let mut end = start;
+            for (i, c) in typst_rendered[start..].char_indices() {
+                if c == '[' {
+                    depth += 1;
+                } else if c == ']' {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + i + 1;
+                        break;
+                    }
+                }
+            }
+            let text_block = &typst_rendered[start..end];
+
+            let probe_source = format!(
+                "#set page(width: 200mm, height: auto, margin: 0mm)\n#set text(font: \"Inter\")\n{text_block}"
+            );
+            let rendered_h_pt = compile_probe(&probe_source).pages()[0]
+                .frame
+                .height()
+                .to_pt() as f32;
+            let predicted_h_pt =
+                super::helpers::block_height_for_test(weight, font_pt, expected_lines);
+
+            let drift = (rendered_h_pt - predicted_h_pt).abs() / predicted_h_pt;
+            assert!(
+                drift < 0.01,
+                "{label}: Typst compiled height {rendered_h_pt:.2}pt vs predicted {predicted_h_pt:.2}pt ({:.1}% drift)",
+                drift * 100.0
+            );
+
+            // 3. Verify intrinsic measurement matches predicted height
+            let measured_h_mm = measured[0].intrinsic[1].expect("text measured height");
+            let expected_h_pt = super::helpers::block_height_with_align_for_test(
+                weight,
+                font_pt,
+                expected_lines,
+                VerticalAlign::Top,
+            );
+            let expected_h_mm = super::helpers::pt_to_units_for_test(expected_h_pt, "mm");
+            assert!(
+                (measured_h_mm - expected_h_mm).abs() < 0.01,
+                "{label}: measured {measured_h_mm}mm, expected {expected_h_mm}mm"
+            );
+        }
     }
 
     /// Guards the other two `alignment.vertical` values (ADR-0030 honours them literally), so a
@@ -4311,7 +4451,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4407,7 +4547,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4463,7 +4603,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
-                    multiline: false,
+                    wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -4542,7 +4682,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4782,7 +4922,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4946,7 +5086,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
-                    multiline: false,
+                    wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -4996,7 +5136,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -5076,7 +5216,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -5108,7 +5248,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
-                    multiline: false,
+                    wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -5177,7 +5317,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -5555,7 +5695,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            multiline: false,
+            wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -5609,7 +5749,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
-                    multiline: false,
+                    wrap: false,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -5817,7 +5957,7 @@ layout:
 
         // {id} in horizontal orientation (0.35in box, max 22pt) fits at 20.5pt (down from 22.0pt)
         let id_idx = src4.find("\"A1\"").expect("id text in source");
-        let size4_id = fitted_pt(&src4[id_idx..]);
+        let size4_id = fitted_pt_at(src4, id_idx);
         assert_eq!(
             size4_id, 20.5,
             "avery5163_asset_tag {{id}} must fit at 20.5pt (down from 22pt)"
@@ -5825,7 +5965,7 @@ layout:
 
         // {name} in horizontal orientation (0.4in box, max 24pt) fits at 23.5pt (down from 24.0pt)
         let name_idx = src4.find("Floor").expect("name text in source");
-        let size4_name = fitted_pt(&src4[name_idx..]);
+        let size4_name = fitted_pt_at(src4, name_idx);
         assert_eq!(
             size4_name, 23.5,
             "avery5163_asset_tag {{name}} must fit at 23.5pt (down from 24pt)"
@@ -5875,7 +6015,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -5976,7 +6116,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                multiline: false,
+                wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -7569,7 +7709,7 @@ layout:
                 max: 32.0,
             },
             font_weight: None,
-            multiline: true,
+            wrap: true,
             alignment: crate::models::Alignment {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Center,
@@ -7594,7 +7734,7 @@ layout:
     font_size:
       min: 10
       max: 32
-    multiline: true
+    wrap: true
     alignment:
       horizontal: center
       vertical: center

@@ -194,6 +194,12 @@ impl LayoutItem {
     pub(crate) fn try_from_raw(raw: LayoutItemRaw, is_packed: bool) -> Result<Self, TemplateError> {
         match raw {
             LayoutItemRaw::Text(raw) => {
+                if raw.multiline.is_some() {
+                    return Err(TemplateError::Validation {
+                        path: "multiline".to_string(),
+                        msg: "`multiline` on a text item was renamed: use `wrap: true` to enable soft wrapping, or `wrap: false` (the default) to keep hard breaks without soft wrapping".to_string(),
+                    });
+                }
                 // Also checked in `TemplateDefinition::validate`, which covers items built by any
                 // other route; here so an API caller gets the error with its JSON path.
                 if let Some(crate::raw::Dynamic::Literal(weight)) = raw.font_weight {
@@ -211,7 +217,7 @@ impl LayoutItem {
                     placement: raw.placement.into_placement("text", None, is_packed)?,
                     font_size: raw.font_size,
                     font_weight: raw.font_weight,
-                    multiline: raw.multiline,
+                    wrap: raw.wrap,
                     alignment: raw.alignment,
                     overflow: raw.overflow,
                     when: raw.when,

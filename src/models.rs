@@ -788,7 +788,7 @@ pub enum LayoutItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font_weight: Option<DynamicValue<u16>>,
         #[serde(default)]
-        multiline: bool,
+        wrap: bool,
         #[serde(default)]
         alignment: Alignment,
         #[serde(default)]
