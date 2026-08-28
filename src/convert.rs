@@ -1,7 +1,7 @@
 use crate::errors::TemplateError;
 use crate::models::{
-    DynamicDimension, Extent, Layout, LayoutItem, Padding, ParamSpec, ParamType, ParamValue,
-    Placement, Size, SizeValue, TemplateFormat,
+    DynamicDimension, Extent, Flow, FlowDirection, Layout, LayoutItem, Padding, ParamSpec,
+    ParamType, ParamValue, Placement, Size, SizeValue, TemplateFormat,
 };
 use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
@@ -19,7 +19,22 @@ impl PlacementRaw {
         self,
         kind: &str,
         default_extent: Option<Extent>,
+        is_packed: bool,
     ) -> Result<Placement, TemplateError> {
+        if is_packed {
+            if self.at.is_some() {
+                return Err(TemplateError::Validation {
+                    path: "at".to_string(),
+                    msg: "packed child cannot carry at".to_string(),
+                });
+            }
+            if self.to.is_some() {
+                return Err(TemplateError::Validation {
+                    path: "to".to_string(),
+                    msg: "packed child cannot carry to".to_string(),
+                });
+            }
+        }
         let extent = match (self.size, self.to) {
             (Some(_), Some(_)) => {
                 return Err(TemplateError::Validation {
@@ -50,8 +65,13 @@ impl PlacementRaw {
                 msg: "must set one of size or to".to_string(),
             })?,
         };
+        let at = if is_packed {
+            None
+        } else {
+            Some(self.at.unwrap_or_default())
+        };
         Ok(Placement {
-            at: self.at.unwrap_or_default(),
+            at,
             extent,
             max_w: self.max_w,
             max_h: self.max_h,
@@ -90,39 +110,88 @@ impl TryFrom<PaddingRaw> for Padding {
     }
 }
 
-impl TryFrom<ContainerRaw> for LayoutItem {
-    type Error = TemplateError;
+impl ContainerRaw {
+    pub(crate) fn try_into_container(self, is_packed: bool) -> Result<LayoutItem, TemplateError> {
+        let flow = match self.flow {
+            Some(Some(flow_raw)) => {
+                let direction = match flow_raw.direction.as_deref() {
+                    Some("row") => FlowDirection::Row,
+                    Some("column") => FlowDirection::Column,
+                    None => {
+                        return Err(TemplateError::Validation {
+                            path: "flow.direction".to_string(),
+                            msg: "flow direction is required ('row' or 'column')".to_string(),
+                        });
+                    }
+                    Some(other) => {
+                        return Err(TemplateError::Validation {
+                            path: "flow.direction".to_string(),
+                            msg: format!(
+                                "unknown flow direction '{other}': must be 'row' or 'column'"
+                            ),
+                        });
+                    }
+                };
+                let gap = match flow_raw.gap {
+                    Some(g) if !g.is_finite() || g < 0.0 => {
+                        return Err(TemplateError::Validation {
+                            path: "flow.gap".to_string(),
+                            msg: "flow gap must be >= 0 and finite".to_string(),
+                        });
+                    }
+                    Some(g) => g,
+                    None => 0.0,
+                };
+                Some(Flow { direction, gap })
+            }
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "flow.direction".to_string(),
+                    msg: "flow direction is required ('row' or 'column')".to_string(),
+                });
+            }
+            None => None,
+        };
 
-    fn try_from(raw: ContainerRaw) -> Result<Self, Self::Error> {
         // A container with neither `size` nor `to` defaults to size: [fill, fill]
         let default_extent = Some(Extent::Size(Size([SizeValue::Fill, SizeValue::Fill])));
-        let placement = raw.placement.into_placement("container", default_extent)?;
-        let padding = match raw.padding {
+        let placement = self
+            .placement
+            .into_placement("container", default_extent, is_packed)?;
+        let padding = match self.padding {
             None => Padding::ZERO,
             Some(padding) => Padding::try_from(padding)?,
         };
 
-        let mut items = Vec::with_capacity(raw.items.len());
-        for (idx, item) in raw.items.into_iter().enumerate() {
-            let node = LayoutItem::try_from(item)
+        let is_flow = flow.is_some();
+        let mut items = Vec::with_capacity(self.items.len());
+        for (idx, item) in self.items.into_iter().enumerate() {
+            let node = LayoutItem::try_from_raw(item, is_flow)
                 .map_err(|err| err.with_prefix(&format!("items[{idx}]")))?;
             items.push(node);
         }
 
         Ok(LayoutItem::Container {
             placement,
-            when: raw.when.or(raw.option),
-            frame: raw.frame,
+            when: self.when.or(self.option),
+            frame: self.frame,
             padding,
+            flow,
             items,
         })
     }
 }
 
-impl TryFrom<LayoutItemRaw> for LayoutItem {
+impl TryFrom<ContainerRaw> for LayoutItem {
     type Error = TemplateError;
 
-    fn try_from(raw: LayoutItemRaw) -> Result<Self, Self::Error> {
+    fn try_from(raw: ContainerRaw) -> Result<Self, Self::Error> {
+        raw.try_into_container(false)
+    }
+}
+
+impl LayoutItem {
+    pub(crate) fn try_from_raw(raw: LayoutItemRaw, is_packed: bool) -> Result<Self, TemplateError> {
         match raw {
             LayoutItemRaw::Text(raw) => {
                 // Also checked in `TemplateDefinition::validate`, which covers items built by any
@@ -139,7 +208,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 }
                 Ok(LayoutItem::Text {
                     value: raw.value,
-                    placement: raw.placement.into_placement("text", None)?,
+                    placement: raw.placement.into_placement("text", None, is_packed)?,
                     font_size: raw.font_size,
                     font_weight: raw.font_weight,
                     multiline: raw.multiline,
@@ -150,7 +219,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
             }
             LayoutItemRaw::Qr(raw) => Ok(LayoutItem::Qr {
                 value: raw.value,
-                placement: raw.placement.into_placement("qr", None)?,
+                placement: raw.placement.into_placement("qr", None, is_packed)?,
                 params: raw.params,
                 when: raw.when,
             }),
@@ -166,19 +235,35 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                 _ => Ok(LayoutItem::Image {
                     name: raw.name,
                     src: raw.src,
-                    placement: raw.placement.into_placement("image", None)?,
+                    placement: raw.placement.into_placement("image", None, is_packed)?,
                     fit: raw.fit,
                     when: raw.when,
                 }),
             },
-            LayoutItemRaw::Line(raw) => Ok(LayoutItem::Line {
-                at: raw.at,
-                to: raw.to,
-                thickness: raw.thickness,
-                when: raw.when,
-            }),
-            LayoutItemRaw::Container(raw) => LayoutItem::try_from(raw),
+            LayoutItemRaw::Line(raw) => {
+                if is_packed {
+                    return Err(TemplateError::Validation {
+                        path: "".to_string(),
+                        msg: "line cannot be a packed child".to_string(),
+                    });
+                }
+                Ok(LayoutItem::Line {
+                    at: raw.at,
+                    to: raw.to,
+                    thickness: raw.thickness,
+                    when: raw.when,
+                })
+            }
+            LayoutItemRaw::Container(raw) => raw.try_into_container(is_packed),
         }
+    }
+}
+
+impl TryFrom<LayoutItemRaw> for LayoutItem {
+    type Error = TemplateError;
+
+    fn try_from(raw: LayoutItemRaw) -> Result<Self, Self::Error> {
+        LayoutItem::try_from_raw(raw, false)
     }
 }
 

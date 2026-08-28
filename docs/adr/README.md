@@ -86,9 +86,10 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0075](0075-request-rejections-use-the-error-envelope.md) | Request rejections use the standard JSON error envelope | Accepted |
 | [0076](0076-the-filesystem-answers-the-case-question.md) | The filesystem answers the case question | Accepted |
 | [0079](0079-token-grammar.md) | Token grammar: namespaces, system values, and format syntax | Accepted |
-| [0080](0080-unify-size-resolution.md) | One size-resolution protocol across validation, measurement, and rendering | Accepted |
-| [0081](0081-size-vocabulary-content-and-fill.md) | Sizing vocabulary is `content` and `fill` | Accepted |
+| [0080](0080-unify-size-resolution.md) | One size-resolution protocol across validation, measurement, and rendering | Accepted (amended by [0083](0083-packed-children-flow-layout.md)) |
+| [0081](0081-size-vocabulary-content-and-fill.md) | Sizing vocabulary is `content` and `fill` | Accepted (amended by [0083](0083-packed-children-flow-layout.md)) |
 | [0082](0082-text-overflow-policy.md) | Text overflow is an authored policy (`ellipsis` or `fail`) | Accepted |
+| [0083](0083-packed-children-flow-layout.md) | A packed child is anchorless, and its container's arrangement places it | Accepted |
 
 ## Adding an ADR
 

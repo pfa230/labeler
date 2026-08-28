@@ -6436,6 +6436,109 @@ layout:
             }
         }
     }
+
+    /// Proves that flow container templates serialize without `at` or `to` on packed children
+    /// in API responses and round-trip successfully through template modification endpoints.
+    #[tokio::test]
+    async fn template_with_flow_container_http_round_trip() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let flow_yaml = r#"name: Flow HTTP
+description: Flow test
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 60.0
+  height: 30.0
+layout:
+  - type: container
+    at: [0.0, 0.0]
+    size: [60.0, 30.0]
+    flow:
+      direction: row
+      gap: 5.0
+    items:
+      - type: text
+        value: "Item A"
+        size: [20.0, 10.0]
+        font_size: 8.0
+      - type: qr
+        value: "QR-123"
+        size: [10.0, 10.0]
+"#;
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/flow_tpl",
+                "PUT",
+                flow_yaml.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/flow_tpl")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let detail = json_response(resp).await;
+
+        let container = &detail["layout"][0];
+        assert_eq!(container["type"], "container");
+        assert_eq!(container["flow"]["direction"], "row");
+        assert_eq!(container["flow"]["gap"], 5.0);
+
+        let child_text = &container["items"][0];
+        assert_eq!(child_text["type"], "text");
+        assert!(
+            child_text.get("at").is_none(),
+            "packed text child must not serialize 'at'"
+        );
+        assert!(
+            child_text.get("to").is_none(),
+            "packed text child must not serialize 'to'"
+        );
+
+        let child_qr = &container["items"][1];
+        assert_eq!(child_qr["type"], "qr");
+        assert!(
+            child_qr.get("at").is_none(),
+            "packed qr child must not serialize 'at'"
+        );
+        assert!(
+            child_qr.get("to").is_none(),
+            "packed qr child must not serialize 'to'"
+        );
+
+        let resp_src = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/flow_tpl/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(resp_src.status(), StatusCode::OK);
+        let src_bytes = bytes_response(resp_src).await;
+        let src_body = String::from_utf8(src_bytes).expect("utf8");
+
+        let resp_put = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/flow_tpl", "PUT", src_body))
+            .await
+            .expect("request");
+        assert_eq!(resp_put.status(), StatusCode::OK);
+    }
 }
 
 #[cfg(test)]
