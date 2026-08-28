@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useDeleteTemplate, useReplaceTemplate, useTemplate, useTemplateSource } from "../api/queries";
 import { useToast } from "../app/toast-context";
 import { useTemplatePreview } from "../lib/preview";
-import { referencedFields, referencedVariables } from "../lib/templateFields";
 import type { Dimension, TemplateFormat } from "../api/types";
 import { PreviewPane } from "../components/PreviewPane";
 import { FormatBadge } from "../components/FormatBadge";
@@ -186,10 +185,8 @@ export function TemplateDetail() {
     );
   }
 
-  // Reference view: show the union of fields across all option branches (empty selection = ungated),
-  // consistent with referencedVariables which is also ungated.
-  const fields = referencedFields(detail.layout, {}, detail.params);
-  const variables = referencedVariables(detail.layout);
+  const fields = detail.inputs?.all?.map((i) => i.name) ?? [];
+  const variables = detail.variables ?? [];
 
   return (
     <div className="flex flex-col gap-6">
@@ -324,7 +321,7 @@ export function TemplateDetail() {
                     <span className="text-xs" style={{ color: "var(--muted)" }}>
                       allowed values:
                     </span>
-                    {spec.values.map((v) => (
+                    {spec.values.map((v: string) => (
                       <Chip key={v}>{v}</Chip>
                     ))}
                   </div>
@@ -334,23 +331,6 @@ export function TemplateDetail() {
           </div>
         </section>
       )}
-
-      {detail.options && Object.keys(detail.options).length > 0 && (
-        <section className="flex flex-col gap-2">
-          <h2 className="text-lg font-semibold">Options</h2>
-          <ul className="flex flex-col gap-1">
-            {Object.entries(detail.options).map(([name, values]) => (
-              <li key={name} className="flex flex-wrap items-center gap-2">
-                <span style={{ color: "var(--muted)" }}>{name}:</span>
-                {values.map((v) => (
-                  <Chip key={v}>{v}</Chip>
-                ))}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
       <section className="flex flex-col gap-2">
         <h2 className="text-lg font-semibold">Referenced fields</h2>
         {fields.length > 0 ? (

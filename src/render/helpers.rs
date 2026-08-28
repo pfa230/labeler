@@ -26,7 +26,7 @@ pub(super) fn binarize_rgba(data: &mut [u8]) {
     }
 }
 
-pub(super) fn value_to_string(value: &JsonValue) -> String {
+pub fn value_to_string(value: &JsonValue) -> String {
     match value {
         JsonValue::String(value) => value.clone(),
         JsonValue::Number(value) => value.to_string(),

@@ -4,8 +4,8 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, DynamicDimension, Fit, LabelInput, Layout, LayoutItem, Placement, Point,
-    Position, Rotation, TemplateFormat,
+    resolve_coord, DynamicDimension, Fit, LabelInput, Layout, LayoutItem, ParamSpec, Placement,
+    Point, Position, Rotation, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::TemplateContent;
@@ -13,14 +13,23 @@ use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, interpolate,
     parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32, resolve_dynamic_value_u16,
-    resolve_image_asset, to_page_coords, typst_alignment, typst_font_options, value_to_string,
+    resolve_image_asset, to_page_coords, typst_alignment, typst_font_options,
 };
+
+pub(crate) use helpers::value_to_string;
 use serde_json::Value as JsonValue;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use typst_as_lib::TypstEngine;
 use typst_layout::PagedDocument;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveMode {
+    Strict,
+    Lenient,
+}
 
 #[derive(Debug, Clone)]
 pub struct ResolvedParams {
@@ -34,6 +43,16 @@ pub fn resolve_parameters(
     data: &HashMap<String, JsonValue>,
     option: Option<&BTreeMap<String, String>>,
     now: DateTime<Local>,
+) -> Result<ResolvedParams, AppError> {
+    resolve_parameters_mode(template, data, option, now, ResolveMode::Strict)
+}
+
+pub fn resolve_parameters_mode(
+    template: &TemplateContent,
+    data: &HashMap<String, JsonValue>,
+    option: Option<&BTreeMap<String, String>>,
+    now: DateTime<Local>,
+    mode: ResolveMode,
 ) -> Result<ResolvedParams, AppError> {
     let mut resolved = data.clone();
     let mut instants = BTreeMap::new();
@@ -73,169 +92,186 @@ pub fn resolve_parameters(
                                 )),
                             );
                         } else {
-                            let dt = crate::datetime_fmt::parse_datetime_override(trimmed)
-                                .map_err(|_| {
-                                    AppError::invalid_request(
-                                        Reason::DatetimeParamInvalid,
-                                        format!(
-                                            "Invalid value for datetime parameter '{name}': {trimmed}"
-                                        ),
-                                    )
-                                })?;
-                            instants.insert(name.clone(), dt);
+                            match crate::datetime_fmt::parse_datetime_override(trimmed) {
+                                Ok(dt) => {
+                                    instants.insert(name.clone(), dt);
+                                    resolved.insert(
+                                        name.clone(),
+                                        JsonValue::String(crate::datetime_fmt::format_now(
+                                            crate::datetime_fmt::BARE_DATETIME_FORMAT,
+                                            dt,
+                                        )),
+                                    );
+                                }
+                                Err(_) => {
+                                    if mode == ResolveMode::Lenient {
+                                        instants.insert(name.clone(), now);
+                                        resolved.insert(
+                                            name.clone(),
+                                            JsonValue::String(crate::datetime_fmt::format_now(
+                                                crate::datetime_fmt::BARE_DATETIME_FORMAT,
+                                                now,
+                                            )),
+                                        );
+                                    } else {
+                                        return Err(AppError::invalid_request(
+                                            Reason::DatetimeParamInvalid,
+                                            format!(
+                                                "Invalid value for datetime parameter '{name}': {trimmed}"
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        if mode == ResolveMode::Lenient {
+                            instants.insert(name.clone(), now);
                             resolved.insert(
                                 name.clone(),
                                 JsonValue::String(crate::datetime_fmt::format_now(
                                     crate::datetime_fmt::BARE_DATETIME_FORMAT,
-                                    dt,
+                                    now,
                                 )),
                             );
+                        } else {
+                            return Err(AppError::invalid_request(
+                                Reason::DatetimeParamInvalid,
+                                format!("Invalid value for datetime parameter '{name}'"),
+                            ));
                         }
-                    }
-                    Some(_) => {
-                        return Err(AppError::invalid_request(
-                            Reason::DatetimeParamInvalid,
-                            format!("Invalid value for datetime parameter '{name}'"),
-                        ));
                     }
                 }
             }
             _ => match resolved.get(name) {
-                Some(val) => match &spec.param_type {
-                    crate::models::ParamType::Enum { values } => {
-                        let s = match val {
-                            JsonValue::String(s) => s.clone(),
-                            other => value_to_string(other),
-                        };
-                        if !values.contains(&s) {
-                            let mut selection = BTreeMap::new();
-                            selection.insert(name.clone(), s);
-                            let mut allowed = BTreeMap::new();
-                            allowed.insert(name.clone(), values.clone());
-                            return Err(AppError::invalid_option_value(&selection, &allowed));
+                Some(val) => {
+                    let mut fallback = false;
+                    match &spec.param_type {
+                        crate::models::ParamType::Enum { values } => {
+                            let s = match val {
+                                JsonValue::String(s) => s.clone(),
+                                other => value_to_string(other),
+                            };
+                            if !values.contains(&s) {
+                                if mode == ResolveMode::Lenient {
+                                    fallback = true;
+                                } else {
+                                    let mut selection = BTreeMap::new();
+                                    selection.insert(name.clone(), s);
+                                    let mut allowed = BTreeMap::new();
+                                    allowed.insert(name.clone(), values.clone());
+                                    return Err(AppError::invalid_option_value(
+                                        &selection, &allowed,
+                                    ));
+                                }
+                            } else {
+                                resolved.insert(name.clone(), JsonValue::String(s));
+                            }
                         }
-                        resolved.insert(name.clone(), JsonValue::String(s));
-                    }
-                    crate::models::ParamType::Boolean => {
-                        let b = match val {
-                            JsonValue::Bool(b) => *b,
-                            JsonValue::String(s) => {
-                                let trimmed = s.trim();
-                                if trimmed == "true" || trimmed == "1" {
-                                    true
-                                } else if trimmed == "false" || trimmed == "0" {
-                                    false
-                                } else {
-                                    return Err(AppError::invalid_request(
-                                        Reason::RequestBodyInvalid,
-                                        format!("parameter '{name}' is not a valid boolean"),
-                                    ));
+                        crate::models::ParamType::Boolean => {
+                            let b_res = match val {
+                                JsonValue::Bool(b) => Ok(*b),
+                                JsonValue::String(s) => {
+                                    let trimmed = s.trim();
+                                    if trimmed == "true" || trimmed == "1" {
+                                        Ok(true)
+                                    } else if trimmed == "false" || trimmed == "0" {
+                                        Ok(false)
+                                    } else {
+                                        Err(())
+                                    }
+                                }
+                                JsonValue::Number(n) => {
+                                    if n.as_i64() == Some(1) {
+                                        Ok(true)
+                                    } else if n.as_i64() == Some(0) {
+                                        Ok(false)
+                                    } else {
+                                        Err(())
+                                    }
+                                }
+                                _ => Err(()),
+                            };
+                            match b_res {
+                                Ok(b) => {
+                                    resolved.insert(name.clone(), JsonValue::Bool(b));
+                                }
+                                Err(()) => {
+                                    if mode == ResolveMode::Lenient {
+                                        fallback = true;
+                                    } else {
+                                        return Err(AppError::invalid_request(
+                                            Reason::RequestBodyInvalid,
+                                            format!("parameter '{name}' is not a valid boolean"),
+                                        ));
+                                    }
                                 }
                             }
-                            JsonValue::Number(n) => {
-                                if n.as_i64() == Some(1) {
-                                    true
-                                } else if n.as_i64() == Some(0) {
-                                    false
-                                } else {
-                                    return Err(AppError::invalid_request(
-                                        Reason::RequestBodyInvalid,
-                                        format!("parameter '{name}' is not a valid boolean"),
-                                    ));
+                        }
+                        crate::models::ParamType::Integer => {
+                            let i_res = match val {
+                                JsonValue::Number(n) => n
+                                    .as_i64()
+                                    .or_else(|| n.as_f64().map(|f| f.round() as i64))
+                                    .ok_or(()),
+                                JsonValue::String(s) => s.trim().parse::<i64>().map_err(|_| ()),
+                                _ => Err(()),
+                            };
+                            match i_res {
+                                Ok(i) => {
+                                    resolved.insert(name.clone(), serde_json::json!(i));
+                                }
+                                Err(()) => {
+                                    if mode == ResolveMode::Lenient {
+                                        fallback = true;
+                                    } else {
+                                        return Err(AppError::invalid_request(
+                                            Reason::RequestBodyInvalid,
+                                            format!("parameter '{name}' is not a valid integer"),
+                                        ));
+                                    }
                                 }
                             }
-                            _ => {
-                                return Err(AppError::invalid_request(
-                                    Reason::RequestBodyInvalid,
-                                    format!("parameter '{name}' is not a valid boolean"),
-                                ));
+                        }
+                        crate::models::ParamType::Length | crate::models::ParamType::Number => {
+                            let f_res = match val {
+                                JsonValue::Number(n) => n.as_f64().map(|f| f as f32).ok_or(()),
+                                JsonValue::String(s) => {
+                                    let trimmed = s.trim();
+                                    let num_str = trimmed
+                                        .strip_suffix("mm")
+                                        .or_else(|| trimmed.strip_suffix("in"))
+                                        .unwrap_or(trimmed);
+                                    num_str.trim().parse::<f32>().map_err(|_| ())
+                                }
+                                _ => Err(()),
+                            };
+                            match f_res {
+                                Ok(f) => {
+                                    resolved.insert(name.clone(), serde_json::json!(f));
+                                }
+                                Err(()) => {
+                                    if mode == ResolveMode::Lenient {
+                                        fallback = true;
+                                    } else {
+                                        return Err(AppError::invalid_request(
+                                            Reason::RequestBodyInvalid,
+                                            format!("parameter '{name}' is not a valid number"),
+                                        ));
+                                    }
+                                }
                             }
-                        };
-                        resolved.insert(name.clone(), JsonValue::Bool(b));
+                        }
+                        crate::models::ParamType::String { .. } => {}
+                        crate::models::ParamType::Datetime { .. } => unreachable!(),
                     }
-                    crate::models::ParamType::Integer => {
-                        let i = match val {
-                            JsonValue::Number(n) => n
-                                .as_i64()
-                                .or_else(|| n.as_f64().map(|f| f.round() as i64))
-                                .ok_or_else(|| {
-                                    AppError::invalid_request(
-                                        Reason::RequestBodyInvalid,
-                                        format!("parameter '{name}' is not a valid integer"),
-                                    )
-                                })?,
-                            JsonValue::String(s) => s.trim().parse::<i64>().map_err(|_| {
-                                AppError::invalid_request(
-                                    Reason::RequestBodyInvalid,
-                                    format!("parameter '{name}' is not a valid integer"),
-                                )
-                            })?,
-                            _ => {
-                                return Err(AppError::invalid_request(
-                                    Reason::RequestBodyInvalid,
-                                    format!("parameter '{name}' is not a valid integer"),
-                                ));
-                            }
-                        };
-                        resolved.insert(name.clone(), serde_json::json!(i));
+                    if fallback {
+                        apply_param_default(name, spec, &mut resolved);
                     }
-                    crate::models::ParamType::Length | crate::models::ParamType::Number => {
-                        let f = match val {
-                            JsonValue::Number(n) => {
-                                n.as_f64().map(|f| f as f32).ok_or_else(|| {
-                                    AppError::invalid_request(
-                                        Reason::RequestBodyInvalid,
-                                        format!("parameter '{name}' is not a valid number"),
-                                    )
-                                })?
-                            }
-                            JsonValue::String(s) => {
-                                let trimmed = s.trim();
-                                let num_str = trimmed
-                                    .strip_suffix("mm")
-                                    .or_else(|| trimmed.strip_suffix("in"))
-                                    .unwrap_or(trimmed);
-                                num_str.trim().parse::<f32>().map_err(|_| {
-                                    AppError::invalid_request(
-                                        Reason::RequestBodyInvalid,
-                                        format!("parameter '{name}' is not a valid number"),
-                                    )
-                                })?
-                            }
-                            _ => {
-                                return Err(AppError::invalid_request(
-                                    Reason::RequestBodyInvalid,
-                                    format!("parameter '{name}' is not a valid number"),
-                                ));
-                            }
-                        };
-                        resolved.insert(name.clone(), serde_json::json!(f));
-                    }
-                    crate::models::ParamType::String { .. } => {}
-                    crate::models::ParamType::Datetime { .. } => unreachable!(),
-                },
+                }
                 None => {
-                    if let Some(default_val) = &spec.default {
-                        let json_val = match default_val {
-                            crate::models::ParamValue::String(s) => JsonValue::String(s.clone()),
-                            crate::models::ParamValue::Float(f) => serde_json::json!(f),
-                            crate::models::ParamValue::Integer(i) => serde_json::json!(i),
-                            crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
-                        };
-                        resolved.insert(name.clone(), json_val);
-                    } else {
-                        match &spec.param_type {
-                            crate::models::ParamType::Boolean => {
-                                resolved.insert(name.clone(), JsonValue::Bool(false));
-                            }
-                            crate::models::ParamType::Enum { values } => {
-                                if let Some(first) = values.first() {
-                                    resolved.insert(name.clone(), JsonValue::String(first.clone()));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                    apply_param_default(name, spec, &mut resolved);
                 }
             },
         }
@@ -245,6 +281,34 @@ pub fn resolve_parameters(
         data: resolved,
         instants,
     })
+}
+
+fn apply_param_default(name: &str, spec: &ParamSpec, resolved: &mut HashMap<String, JsonValue>) {
+    if let Some(default_val) = &spec.default {
+        let json_val = match default_val {
+            crate::models::ParamValue::String(s) => JsonValue::String(s.clone()),
+            crate::models::ParamValue::Float(f) => serde_json::json!(f),
+            crate::models::ParamValue::Integer(i) => serde_json::json!(i),
+            crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
+        };
+        resolved.insert(name.to_string(), json_val);
+    } else {
+        match &spec.param_type {
+            crate::models::ParamType::Boolean => {
+                resolved.insert(name.to_string(), JsonValue::Bool(false));
+            }
+            crate::models::ParamType::Enum { values } => {
+                if let Some(first) = values.first() {
+                    resolved.insert(name.to_string(), JsonValue::String(first.clone()));
+                } else {
+                    resolved.remove(name);
+                }
+            }
+            _ => {
+                resolved.remove(name);
+            }
+        }
+    }
 }
 
 fn check_dimension_limit(
@@ -1792,96 +1856,6 @@ impl<'a> RenderContext<'a> {
 pub const SAMPLE_PNG_DATA_URI: &str =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
-/// Collect `{token}` field names from a well-formed template string.
-///
-/// Skips `{{` escapes, empty tokens (`{}`), and `vars.*` tokens (resolved from the
-/// settings store, not from request data). This is not a full `interpolate` parser:
-/// it does not error on malformed input such as unterminated `{` or `}}`; templates
-/// that are actually malformed fail later at render time.
-fn collect_data_tokens(s: &str, out: &mut Vec<String>) {
-    for scanned in crate::interpolation::scan_tokens(s) {
-        if let Ok(token) = crate::interpolation::parse(scanned.raw) {
-            if let crate::interpolation::Source::Bare(name) = token.source {
-                out.push(name.to_string());
-            }
-        }
-    }
-}
-
-fn walk_placeholder(items: &[LayoutItem], text: &mut Vec<String>, image: &mut Vec<String>) {
-    for item in items {
-        match item {
-            LayoutItem::Text { value, .. } | LayoutItem::Qr { value, .. } => {
-                collect_data_tokens(value, text);
-            }
-            LayoutItem::Image { name, src, .. } => {
-                if let Some(n) = name {
-                    image.push(n.clone());
-                }
-                if let Some(s) = src {
-                    collect_data_tokens(s, image);
-                }
-            }
-            LayoutItem::Container { items, .. } => walk_placeholder(items, text, image),
-            LayoutItem::Line { .. } => {}
-        }
-    }
-}
-
-fn is_datetime_param(template: &TemplateContent, name: &str) -> bool {
-    template
-        .params
-        .get(name)
-        .map(|spec| matches!(spec.param_type, crate::models::ParamType::Datetime { .. }))
-        .unwrap_or(false)
-}
-
-/// The request data keys a template needs, deduped and sorted.
-///
-/// Shares the walker behind `placeholder_data`, so it inherits the rule that `{vars.*}` and
-/// `{sys.*}` are NOT request fields — they resolve from the variables store and the runtime
-/// environment. Declared `datetime` parameter namespaces are likewise excluded.
-/// The catalog index lists this so an entry advertises only what the caller must supply
-/// (#137); `homebox-qr` would otherwise appear to demand `vars.qr_base_url`.
-pub fn template_fields(template: &TemplateContent) -> Vec<String> {
-    let Layout::Items(items) = &template.layout;
-    let mut text = Vec::new();
-    let mut image = Vec::new();
-    walk_placeholder(items, &mut text, &mut image);
-    let mut all: Vec<String> = text
-        .into_iter()
-        .chain(image)
-        .filter(|t| !is_datetime_param(template, t))
-        .collect();
-    all.sort();
-    all.dedup();
-    all
-}
-
-/// Build non-empty placeholder data for every referenced data field. Image fields get a 1×1 PNG;
-/// other fields get their own name as a stand-in. `{vars.*}`, `{sys.*}`, and declared `datetime`
-/// parameters are excluded (resolved from the store / clock).
-pub fn placeholder_data(template: &TemplateContent) -> HashMap<String, JsonValue> {
-    let Layout::Items(items) = &template.layout;
-    let mut text = Vec::new();
-    let mut image = Vec::new();
-    walk_placeholder(items, &mut text, &mut image);
-    let mut data = HashMap::new();
-    for f in text {
-        if !is_datetime_param(template, &f) {
-            data.entry(f.clone())
-                .or_insert_with(|| JsonValue::String(f));
-        }
-    }
-    for f in image {
-        if !is_datetime_param(template, &f) {
-            // image wins over a same-named text guess
-            data.insert(f, JsonValue::String(SAMPLE_PNG_DATA_URI.to_string()));
-        }
-    }
-    data
-}
-
 /// First allowed value per declared option, or None when the template declares no options.
 pub fn default_option_selection(template: &TemplateContent) -> Option<BTreeMap<String, String>> {
     let options = template.options()?;
@@ -1900,9 +1874,8 @@ pub fn default_option_selection(template: &TemplateContent) -> Option<BTreeMap<S
 #[cfg(test)]
 mod tests {
     use super::{
-        count_pdf_pages, default_option_selection, placeholder_data, render_sheet_pages,
-        render_single_label, render_single_label_pdf, render_thumbnail_png, template_fields,
-        SAMPLE_PNG_DATA_URI,
+        count_pdf_pages, default_option_selection, render_sheet_pages, render_single_label,
+        render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
     };
     use crate::errors::AppError;
     use crate::models::{
@@ -3105,7 +3078,7 @@ layout:
             panic!("expected a dynamic-width single format");
         };
         assert_eq!(*max_w, 120.0, "budget math below assumes width.max: 120");
-        let data = placeholder_data(capped);
+        let data = capped.placeholder_data();
         let capped_png = render_thumbnail_png(capped, &data, None, &no_settings(), &no_datetime())
             .expect("render capped");
 
@@ -4114,10 +4087,13 @@ layout:
     fn template_fields_lists_request_keys_only() {
         let registry = crate::templates::load_all_for_tests().0;
         let t = registry.get("homebox-qr").expect("homebox-qr");
-        assert_eq!(
-            template_fields(t),
-            vec!["id".to_string(), "message".to_string()]
-        );
+        let fields: Vec<String> = t
+            .inputs_all()
+            .into_iter()
+            .filter(|i| i.required)
+            .map(|i| i.name)
+            .collect();
+        assert_eq!(fields, vec!["id".to_string(), "message".to_string()]);
     }
 
     fn no_settings() -> BTreeMap<String, String> {
@@ -4686,7 +4662,7 @@ layout:
         };
         for summary in registry.summaries() {
             let template = registry.get(&summary.id).expect("template");
-            let data = placeholder_data(template);
+            let data = template.placeholder_data();
             let selection = default_option_selection(template);
             let png = render_thumbnail_png(template, &data, selection.as_ref(), &settings, &dt)
                 .unwrap_or_else(|e| panic!("render {}: {e:?}", summary.id));
@@ -4979,7 +4955,7 @@ layout:
             ]),
             version: None,
         };
-        let data = placeholder_data(&template);
+        let data = template.placeholder_data();
         assert_eq!(data.get("title").and_then(|v| v.as_str()), Some("title"));
         assert_eq!(data.get("url").and_then(|v| v.as_str()), Some("url"));
         assert!(!data.contains_key("base"), "vars.* must be excluded");
@@ -5028,7 +5004,7 @@ layout:
             }]),
             version: None,
         };
-        let data = placeholder_data(&template);
+        let data = template.placeholder_data();
         assert!(
             !data.contains_key(""),
             "empty token must not produce an empty-string key"
@@ -5179,7 +5155,7 @@ layout:
         };
         for summary in registry.summaries() {
             let template = registry.get(&summary.id).expect("template");
-            let data = placeholder_data(template);
+            let data = template.placeholder_data();
             // Render every orientation variant explicitly (default_option_selection picks only the
             // first). Start each variant from the FULL default selection and override orientation,
             // so other option defaults (avery's `outline: yes`) stay in effect.
@@ -6205,10 +6181,15 @@ layout:
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let fields = template_fields(&template);
+        let fields: Vec<String> = template
+            .inputs_all()
+            .into_iter()
+            .filter(|i| i.required)
+            .map(|i| i.name)
+            .collect();
         assert_eq!(fields, vec!["title".to_string()]);
 
-        let ph = placeholder_data(&template);
+        let ph = template.placeholder_data();
         assert!(ph.contains_key("title"));
         assert!(!ph.contains_key("printed_on"));
         assert!(!ph.contains_key("printed_on:short_date"));
@@ -6306,7 +6287,7 @@ layout:
         let formats = short_date_formats();
         let resolver = dt_resolver(&formats, fixed_instant());
 
-        let data = placeholder_data(&template);
+        let data = template.placeholder_data();
         assert_eq!(
             interpolated(&template, &data, &resolver).unwrap(),
             "06/25/2026"
@@ -6343,7 +6324,12 @@ layout:
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let fields = template_fields(&template);
+        let fields: Vec<String> = template
+            .inputs_all()
+            .into_iter()
+            .filter(|i| i.required)
+            .map(|i| i.name)
+            .collect();
         assert_eq!(fields, vec!["datetime".to_string(), "vars".to_string()]);
     }
 
@@ -6407,6 +6393,27 @@ layout:
                 .data["printed_on"],
             json!("2026-08-19")
         );
+    }
+
+    #[test]
+    fn avery5163_asset_tag_thumbnail_renders_horizontal_branch() {
+        let registry = crate::templates::load_all_for_tests().0;
+        let template = registry
+            .get("avery5163_asset_tag")
+            .expect("avery5163_asset_tag template");
+        let data = template.placeholder_data();
+        assert!(!data.contains_key("orientation"));
+        assert!(!data.contains_key("outline"));
+        let option = default_option_selection(template);
+        let settings = BTreeMap::new();
+        let dt_formats = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now: chrono::Local::now(),
+        };
+        let png = render_thumbnail_png(template, &data, option.as_ref(), &settings, &dt)
+            .expect("render thumbnail");
+        assert!(!png.is_empty());
     }
 
     #[test]

@@ -63,6 +63,12 @@ pub struct TemplateSummary {
     pub format: TemplateFormat,
 }
 
+#[derive(Serialize, Deserialize, ToSchema, Clone, Debug, PartialEq)]
+pub struct TemplateInputs {
+    pub default: Vec<InputSpec>,
+    pub all: Vec<InputSpec>,
+}
+
 #[derive(Serialize, ToSchema, Clone)]
 pub struct TemplateDetail {
     pub id: String,
@@ -77,6 +83,54 @@ pub struct TemplateDetail {
     pub layout: Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    pub inputs: TemplateInputs,
+    pub variables: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputControl {
+    Text,
+    Textarea,
+    Integer,
+    Number,
+    Select,
+    Checkbox,
+    Date,
+    Datetime,
+    Image,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+pub struct InputSpec {
+    pub name: String,
+    pub control: InputControl,
+    pub slider: bool,
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<ParamValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub interpolated: bool,
+    pub truncated_elsewhere: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TemplateInputsRequest {
+    pub labels: Vec<LabelInput>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TemplateInputsResponse {
+    pub inputs: Vec<Vec<InputSpec>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -12,7 +12,10 @@ const detail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  layout: [{ type: "text", value: "{message}" }],
+  inputs: {
+    all: [{ name: "message", control: "text" }],
+    default: [{ name: "message", control: "text" }],
+  },
 };
 
 const detail2 = {
@@ -22,7 +25,10 @@ const detail2 = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  layout: [{ type: "text", value: "{message}" }],
+  inputs: {
+    all: [{ name: "message", control: "text" }],
+    default: [{ name: "message", control: "text" }],
+  },
 };
 
 const list = {
@@ -43,6 +49,28 @@ const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 function stubFetch() {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("test_tpl/inputs")) {
+      return new Response(
+        JSON.stringify({
+          inputs: [
+            [
+              { name: "message", control: "text", description: "Single line" },
+              { name: "notes", control: "textarea", default: "", description: "Notes" },
+              { name: "target_width", control: "number", slider: true, default: 80, min: 25, max: 200, description: "Target width" },
+              { name: "show_border", control: "checkbox", default: false, description: "Show border" },
+              { name: "orientation", control: "select", values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
+            ],
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
+    if (url.includes("/inputs")) {
+      return new Response(
+        JSON.stringify({ inputs: [[{ name: "message", control: "text" }]] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     // Detail BEFORE list so the broad /api/templates branch doesn't swallow it.
     if (url.startsWith("/api/templates/nope")) {
       return new Response(
@@ -144,12 +172,21 @@ describe("Print screen", () => {
       description: "",
       unit: "mm",
       dpi: 300,
-      params: {
-        message: { type: "string" as const, multiline: false, description: "Single line" },
-        notes: { type: "string" as const, multiline: true, default: "", description: "Notes" },
-        target_width: { type: "length" as const, default: 80, min: 25, max: 200, description: "Target width" },
-        show_border: { type: "boolean" as const, default: false, description: "Show border" },
-        orientation: { type: "enum" as const, values: ["horizontal", "vertical"], default: "horizontal" },
+      inputs: {
+        all: [
+          { name: "message", control: "text" as const, description: "Single line" },
+          { name: "notes", control: "textarea" as const, default: "", description: "Notes" },
+          { name: "target_width", control: "number" as const, slider: true, default: 80, min: 25, max: 200, description: "Target width" },
+          { name: "show_border", control: "checkbox" as const, default: false, description: "Show border" },
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
+        ],
+        default: [
+          { name: "message", control: "text" as const, description: "Single line" },
+          { name: "notes", control: "textarea" as const, default: "", description: "Notes" },
+          { name: "target_width", control: "number" as const, slider: true, default: 80, min: 25, max: 200, description: "Target width" },
+          { name: "show_border", control: "checkbox" as const, default: false, description: "Show border" },
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], default: "horizontal", description: "orientation" },
+        ],
       },
       format: { type: "single" as const, height: 18, width: { min: 25, max: 80 } },
       layout: [],

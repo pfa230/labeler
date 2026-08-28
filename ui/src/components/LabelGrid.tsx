@@ -8,8 +8,9 @@ const rowKeyGetter = (r: LabelGridRow) => r.id; // stable module-level identity 
 export interface LabelGridProps {
   rows: LabelGridRow[];
   fields: string[];
-  optionNames: string[];
-  optionValues: Record<string, string[]>; // allowed values per declared option
+  optionNames?: string[];
+  optionValues?: Record<string, string[]>; // allowed values per declared option
+  isCellEditable?: (row: LabelGridRow, field: string) => boolean;
   // RDG passes the full updated rows plus which indexes changed, so the caller can normalize edited rows.
   onRowsChange: (rows: LabelGridRow[], data: RowsChangeData<LabelGridRow>) => void;
   onDuplicate: (id: string) => void;
@@ -64,7 +65,19 @@ function OptionEditCell(
   );
 }
 
-export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChange, onDuplicate, onRemove, disabled, selectedRowId, onSelectRow }: LabelGridProps) {
+export function LabelGrid({
+  rows,
+  fields,
+  optionNames = [],
+  optionValues = {},
+  isCellEditable,
+  onRowsChange,
+  onDuplicate,
+  onRemove,
+  disabled,
+  selectedRowId,
+  onSelectRow,
+}: LabelGridProps) {
   // Memoized so react-data-grid does not recalculate columns on every render (it keys off array identity).
   const columns = useMemo<Column<LabelGridRow>[]>(() => {
     const selectColumn: Column<LabelGridRow> | null = onSelectRow
@@ -93,7 +106,12 @@ export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChang
     ...fields.map<Column<LabelGridRow>>((field) => ({
       key: `${DATA_PREFIX}${field}`,
       name: field,
+      editable: (row: LabelGridRow) => !disabled && (!isCellEditable || isCellEditable(row, field)),
       renderCell: ({ row }: RenderCellProps<LabelGridRow>) => {
+        const active = !isCellEditable || isCellEditable(row, field);
+        if (!active) {
+          return <span style={{ color: "var(--muted)", opacity: 0.35 }}>—</span>;
+        }
         const err = row.validation.field?.[field];
         const value = row.data[field] ?? "";
         // An empty required field renders an explicit, accessible marker (not just a tooltip on empty text).
@@ -106,7 +124,10 @@ export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChang
         }
         return <span style={err ? cellErrorStyle : undefined} title={err}>{value}</span>;
       },
-      renderEditCell: disabled ? undefined : DataEditCell,
+      renderEditCell: (p: RenderEditCellProps<LabelGridRow>) => {
+        if (disabled || (isCellEditable && !isCellEditable(p.row, field))) return null;
+        return <DataEditCell {...p} />;
+      },
     })),
     ...optionNames.map<Column<LabelGridRow>>((name) => ({
       key: `${OPTION_PREFIX}${name}`,
@@ -146,7 +167,7 @@ export function LabelGrid({ rows, fields, optionNames, optionValues, onRowsChang
       ),
     },
     ];
-  }, [fields, optionNames, optionValues, onDuplicate, onRemove, disabled, rows, selectedRowId, onSelectRow]);
+  }, [fields, optionNames, optionValues, isCellEditable, onDuplicate, onRemove, disabled, rows, selectedRowId, onSelectRow]);
 
   return (
     <DataGrid
