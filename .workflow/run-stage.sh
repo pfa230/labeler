@@ -3,6 +3,9 @@
 #
 #   .workflow/run-stage.sh <role> <agent> <change> [--resume] [extra prompt...]
 #
+# Exit 5 = the reviewer edited files. 7 = the review produced no structured result,
+# so its log is a transcript rather than a review. 3 = implement changed nothing.
+#
 #   role   implement | review
 #   agent  see .workflow/agents.sh
 #
@@ -24,8 +27,13 @@ extra="$*"
 
 case "$role" in implement|review) ;; *) echo "role must be implement or review: $role" >&2; exit 2 ;; esac
 
-root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
-. "$root/.workflow/agents.sh"
+# Siblings are resolved beside this script, and .worktrees/ hangs off the main
+# checkout rather than whichever worktree we were called from: --show-toplevel
+# answers the latter, so it cannot locate either one (#264, same defect as #256).
+here=$(cd "$(dirname "$0")" && pwd)
+common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
+root=$(dirname "$common")
+. "$here/agents.sh"
 
 agent_known "$agent" || { echo "unknown agent: $agent" >&2; exit 2; }
 command -v "$agent" >/dev/null 2>&1 || { echo "$agent is not on PATH; nothing would run." >&2; exit 2; }
@@ -39,9 +47,9 @@ wt="$root/.worktrees/$issue"
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
 # --plan-only because this fires before the diff review exists: demanding one here
 # would refuse to start the very run that produces it.
-if [ "$role" = "implement" ] && ! "$root/.workflow/review-gate-check.sh" --plan-only "$wt" src/_probe >/dev/null 2>&1; then
+if [ "$role" = "implement" ] && ! "$here/review-gate-check.sh" --plan-only "$wt" src/_probe >/dev/null 2>&1; then
   echo "review gate refuses this change; not starting:" >&2
-  "$root/.workflow/review-gate-check.sh" --plan-only "$wt" src/_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
+  "$here/review-gate-check.sh" --plan-only "$wt" src/_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
   exit 1
 fi
 
@@ -113,6 +121,17 @@ echo "log: $log"
 echo "--- last 30 lines ---"
 tail -30 "$log"
 
+# Without a structured result the log is the raw console capture, not the agent's
+# answer. For a review that is not a small problem: the caller would read a verdict
+# out of a transcript, hand the transcript to the implementer, and commit it as the
+# review artifact (#264). Stop instead; a review that cannot be extracted did not
+# happen.
+if [ "$role" = "review" ] && [ "$agent_status" = "NO_STRUCTURED_RESULT" ]; then
+  echo >&2
+  echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2
+  echo "Refusing to treat a transcript as a review. The capture is at $raw." >&2
+  exit 7
+fi
 # A reviewer that changed files has broken the rule it was told to follow. Judged by
 # whether this stage altered the tree, not by whether the tree was already dirty.
 if [ "$role" = "review" ] && [ "$before_digest" != "$after_digest" ]; then

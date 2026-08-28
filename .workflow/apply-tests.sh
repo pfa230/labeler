@@ -115,5 +115,34 @@ else
 fi
 teardown
 
+# --- run-stage.sh refuses a review it could not extract -----------------------------
+# The one case that can be driven without a real agent: a stand-in on PATH that
+# prints something and never emits the JSON envelope, which is exactly the
+# NO_STRUCTURED_RESULT shape that used to hand a transcript back as a review (#264).
+setup
+add_change issue-9-delta
+bin=$(mktemp -d)
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo "OpenAI Codex v0.0.0"
+echo "some console noise, and no structured result anywhere"
+echo "VERDICT: APPROVE"
+FAKE
+chmod +x "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$here/run-stage.sh" review codex issue-9-delta 2>&1); rc=$?
+if [ "$rc" = "7" ]; then
+  pass=$((pass + 1)); printf 'ok    a review with no structured result exits 7\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  a review with no structured result exits 7 (got %s)\n' "$rc"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -4
+fi
+if printf '%s\n' "$out" | grep -q 'Refusing to treat a transcript as a review'; then
+  pass=$((pass + 1)); printf 'ok    and says why\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  and says why\n'
+fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]
