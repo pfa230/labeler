@@ -60,7 +60,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0047](0047-starter-template-set.md) | The catalog is a designed five-template starter set | Accepted |
 | [0048](0048-template-delete-prunes-favorites.md) | Deleting a template prunes favorites, not recents | Accepted |
 | [0049](0049-weight-aware-text-measurement.md) | Text measurement tracks the font instance Typst renders | Accepted |
-| [0050](0050-ink-reservation-at-slot-edges.md) | Reserve ink room at slot edges instead of changing the line box | Accepted |
+| [0050](0050-ink-reservation-at-slot-edges.md) | Reserve ink room at slot edges instead of changing the line box | Accepted (center clause superseded by [0084](0084-centred-text-reserves-its-ink.md)) |
 | [0051](0051-edge-relative-and-corner-placement.md) | Edge-relative coordinates and `to:` opposite-corner placement | Accepted (amended by [0080](0080-unify-size-resolution.md)) |
 | [0052](0052-error-reason-discriminator.md) | A `details.reason` discriminator for `AppError` | Accepted |
 | [0053](0053-max-bounds-cap.md) | `max_w`/`max_h` cap an `auto` size, not substitute for its fallback | Superseded by [0080](0080-unify-size-resolution.md) |
@@ -89,6 +89,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0080](0080-unify-size-resolution.md) | One size-resolution protocol across validation, measurement, and rendering | Accepted |
 | [0081](0081-size-vocabulary-content-and-fill.md) | Sizing vocabulary is `content` and `fill` | Accepted |
 | [0082](0082-text-overflow-policy.md) | Text overflow is an authored policy (`ellipsis` or `fail`) | Accepted |
+| [0084](0084-centred-text-reserves-its-ink.md) | Centred text reserves its ink | Accepted |
 
 ## Adding an ADR
 
