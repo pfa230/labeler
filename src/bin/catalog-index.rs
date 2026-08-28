@@ -10,7 +10,6 @@
 
 use labeler::models::TemplateFormat;
 use labeler::parse::parse_template;
-use labeler::render::template_fields;
 use labeler::templates::TemplateDefinition;
 use std::path::{Path, PathBuf};
 
@@ -94,7 +93,12 @@ fn main() {
             "vendor": vendor,
             "format": format_kind(&template),
             "media_width_mm": media_width(&template),
-            "fields": template_fields(&template),
+            "fields": template
+                .inputs_all()
+                .into_iter()
+                .filter(|i| i.required)
+                .map(|i| i.name)
+                .collect::<Vec<_>>(),
         }));
     }
 

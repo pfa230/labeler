@@ -600,11 +600,12 @@ mod tests {
     use axum::http::StatusCode;
 
     #[test]
-    fn container_padding_no_room_reason_is_registered() {
+    fn new_size_resolution_reasons_are_registered() {
         assert_eq!(
-            Reason::ContainerPaddingNoRoom.as_slug(),
-            "container_padding_no_room"
+            Reason::IntrinsicSizeUndefined.as_slug(),
+            "intrinsic_size_undefined"
         );
+        assert_eq!(Reason::TextDoesNotFit.as_slug(), "text_does_not_fit");
     }
 
     /// The SPEC §10.1 table is the published contract; the enum is what the code emits. If they
@@ -677,6 +678,43 @@ mod tests {
                 }
             }
         }
+
+        fn scan_canonical_withdrawals(dir: &std::path::Path, out: &mut HashSet<String>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan_canonical_withdrawals(&path, out);
+                } else if path.file_name().and_then(|n| n.to_str()) == Some("spec.md") {
+                    let Ok(content) = std::fs::read_to_string(&path) else {
+                        continue;
+                    };
+                    let mut in_withdrawn_section = false;
+                    for line in content.lines() {
+                        if line.to_lowercase().contains("withdrawn") {
+                            in_withdrawn_section = true;
+                        } else if line.starts_with('#') {
+                            in_withdrawn_section = false;
+                        }
+                        if in_withdrawn_section && line.starts_with('|') {
+                            if let Some(cell) = line.split('|').nth(1) {
+                                let trimmed = cell.trim();
+                                if let Some(slug) =
+                                    trimmed.strip_prefix('`').and_then(|s| s.strip_suffix('`'))
+                                {
+                                    if slug != "Reason" && slug != "Slug" && !slug.is_empty() {
+                                        out.insert(slug.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut documented: HashSet<String> =
             spec_table.iter().map(|slug| (*slug).to_string()).collect();
         scan_specs(&specs_dir, &declared, &mut documented);
@@ -692,9 +730,24 @@ mod tests {
             "reasons documented in neither SPEC \u{a7}10.1 nor openspec/specs: {undocumented:?}"
         );
 
-        // Phantom check: §10.1 only. `documented` also holds slugs harvested from OpenSpec specs,
-        // but those are filtered through `declared` on the way in, so they can never be phantoms.
-        let mut phantom: Vec<_> = spec_table.difference(&declared).collect();
+        // Canonical withdrawals check: canonical specs in `openspec/specs` can withdraw reasons.
+        let mut canonical_withdrawals = HashSet::new();
+        scan_canonical_withdrawals(&specs_dir, &mut canonical_withdrawals);
+        let canonical_withdrawn_refs: HashSet<&str> =
+            canonical_withdrawals.iter().map(String::as_str).collect();
+
+        let mut reintroduced: Vec<_> = declared.intersection(&canonical_withdrawn_refs).collect();
+        reintroduced.sort_unstable();
+        assert!(
+            reintroduced.is_empty(),
+            "reasons that were canonically withdrawn are present in Reason enum: {reintroduced:?}"
+        );
+
+        // Phantom check: §10.1 only, minus canonical withdrawals.
+        let mut phantom: Vec<_> = spec_table
+            .difference(&declared)
+            .filter(|slug| !canonical_withdrawn_refs.contains(*slug))
+            .collect();
         phantom.sort_unstable();
         assert!(
             phantom.is_empty(),

@@ -104,7 +104,12 @@ before_digest=$(worktree_digest)
 status=$?
 after_digest=$(worktree_digest)
 
-json=$(grep -o '{"conversation_id".*}' "$raw" | tail -1 || true)
+# Only the FINAL lines are searched for the agent's own result envelope. An agent
+# that reads another agent's `.agent-*.json` echoes that file's envelope into its
+# transcript, and a whole-file grep then stored the wrong agent's id: a codex review
+# that had read `.agent-implement-agy.json` recorded agy's conversation as its own,
+# so `--resume` would have continued the implementer's session instead.
+json=$(tail -5 "$raw" | grep -o '{"conversation_id".*}' | tail -1 || true)
 if [ -n "$json" ]; then
   printf '%s' "$json" | jq -r '.response // ""' > "$log"
   printf '%s' "$json" | jq -r '.conversation_id // empty' > "$conv_file"
@@ -112,6 +117,10 @@ if [ -n "$json" ]; then
 else
   cp "$raw" "$log"
   agent_status="NO_STRUCTURED_RESULT"
+  # codex emits no envelope, but prints its own session id, so `--resume` can still
+  # continue it rather than starting the round from scratch.
+  codex_session=$(grep -o 'session id: [0-9a-f-]\{36\}' "$raw" | tail -1 | sed 's/session id: //')
+  [ -n "$codex_session" ] && printf '%s' "$codex_session" > "$conv_file"
 fi
 
 changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agent-*' | wc -l | tr -d ' ')

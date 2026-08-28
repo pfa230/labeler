@@ -1,14 +1,12 @@
 import { useMemo, useRef, useState } from "react";
 import { useTemplates, useTemplate, usePrinters } from "../api/queries";
-import { datetimeCellError, defaultParamValues, hasServerDefault, reconcileRowOptions, referencedFields } from "../lib/templateFields";
+import { datetimeCellError } from "../lib/templateFields";
 import {
   MAX_BATCH_LABELS,
   expandedCount,
-  resolveLabels,
   sourceRowForExpandedIndex,
   duplicateRow,
   removeRow,
-  validateOptionCell,
   newId,
   type LabelGridRow,
 } from "../lib/labelGrid";
@@ -16,6 +14,7 @@ import { parseCsv } from "../lib/csv";
 import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
+import { useBatchRowInputs, pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
@@ -93,9 +92,7 @@ function CsvEditor({
     setRows(next);
   };
   const [csvFields, setCsvFields] = useState<string[]>([]);
-  const [csvOptionCols, setCsvOptionCols] = useState<string[]>([]); // option.<name> columns parsed from the loaded CSV
   const [issues, setIssues] = useState<string[]>([]);
-  const [applyValue, setApplyValue] = useState<Record<string, string>>({}); // chosen "Apply to all" value per option
   const [copies, setCopies] = useState(1);
   const [startSlot, setStartSlot] = useState(0);
   const [printer, setPrinter] = useState<string | undefined>(undefined);
@@ -103,106 +100,74 @@ function CsvEditor({
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
-  const declaredOptions = useMemo(() => {
-    const opts: Record<string, string[]> = { ...(detail?.options ?? {}) };
-    if (detail?.params) {
-      for (const [name, spec] of Object.entries(detail.params)) {
-        if (spec.type === "enum" && spec.values) {
-          opts[name] = spec.values;
-        }
-      }
-    }
-    return opts;
-  }, [detail]);
-  const declaredNames = Object.keys(declaredOptions);
-  const optionNames = declaredNames; // every declared option is an always-present per-row column
-  const isSingleValued = (name: string) => (declaredOptions[name]?.length ?? 0) <= 1;
+  const { getRowInputs, pending: rowsPending } = useBatchRowInputs(
+    detail?.id,
+    rows,
+    detail?.inputs?.default,
+  );
+
   const isSheet = detail?.format.type === "sheet";
 
-  // SUBMIT/validation view of a row's options against the CURRENT template: declared options only, missing
-  // ones default to first-allowed, values for options the current template no longer declares are dropped.
-  // Extra keys would be harmless to referencedFields/validation, but the backend wants a clean declared map.
-  const effectiveOption = (row: LabelGridRow): Record<string, string> => reconcileRowOptions(row.option, declaredOptions);
-  // DISPLAY view: preserve the row's raw option map (so values for options not declared by the current
-  // template, e.g. from a CSV loaded before a template was picked, survive an edit and a switch-back),
-  // then overlay the declared options with their value-or-default. Spread raw FIRST so declared wins.
-  const displayOption = (row: LabelGridRow): Record<string, string> => ({ ...row.option, ...reconcileRowOptions(row.option, declaredOptions) });
-
-  // Fields required for a row depend on THAT row's effective options (a CSV option.<name> column can
-  // vary per row and gate different containers), so this is computed per row. With no template, no fields.
-  const paramKeys = detail?.params ? Object.keys(detail.params) : [];
-  const requiredForRow = (row: LabelGridRow): string[] =>
-    detail ? [...new Set([...referencedFields(detail.layout, effectiveOption(row), detail.params), ...paramKeys])] : [];
-  // Grid columns: CSV columns plus any required field (across all row variants) the CSV omits.
-  const requiredUnion = new Set<string>();
-  for (const row of rows) for (const f of requiredForRow(row)) requiredUnion.add(f);
-  const baseRequired = !detail
-    ? []
-    : rows.length
-      ? [...requiredUnion]
-      : [...new Set([...referencedFields(detail.layout, reconcileRowOptions({}, declaredOptions), detail.params), ...paramKeys])];
-  const displayedFields = [...csvFields, ...baseRequired.filter((f) => !csvFields.includes(f))];
-
-  // One validation function, used both for render (viewRows) and as the run() submit guard, so a value
-  // committed on blur right before a click cannot be submitted while the button is still showing enabled.
-  const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
-    const field: Record<string, string> = {};
-    for (const f of requiredForRow(row)) {
-      const spec = detail?.params?.[f];
-      const valStr = row.data[f] !== undefined ? String(row.data[f]) : "";
-      if (spec?.type === "datetime") {
-        const dtErr = datetimeCellError(valStr);
-        if (dtErr) field[f] = dtErr;
-      } else {
-        const hasDefault = spec ? hasServerDefault(spec) : false;
-        if (!hasDefault && valStr.length === 0) field[f] = "required";
+  const requiredUnion = useMemo(() => {
+    const set = new Set<string>();
+    if (rows.length === 0 && detail) {
+      for (const input of detail.inputs?.default ?? []) set.add(input.name);
+    } else {
+      for (const row of rows) {
+        const inputs = getRowInputs(row.id) ?? detail?.inputs?.default ?? [];
+        for (const input of inputs) set.add(input.name);
       }
     }
-    const eff = effectiveOption(row);
-    const option: Record<string, string> = {};
-    for (const name of optionNames) {
-      const err = validateOptionCell(eff[name] ?? "", declaredOptions[name]);
-      if (err) option[name] = err;
-    }
-    const v: LabelGridRow["validation"] = {};
-    if (Object.keys(field).length) v.field = field;
-    if (Object.keys(option).length) v.option = option;
-    return v;
+    return [...set];
+  }, [rows, detail, getRowInputs]);
+
+  const displayedFields = useMemo(() => {
+    const set = new Set(csvFields);
+    for (const f of requiredUnion) set.add(f);
+    return [...set];
+  }, [csvFields, requiredUnion]);
+
+  const isCellEditable = (row: LabelGridRow, field: string): boolean => {
+    if (!detail) return true;
+    const inputs = getRowInputs(row.id);
+    if (!inputs) return true;
+    return inputs.some((i) => i.name === field);
   };
+
+  const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
+    if (!detail) return {};
+    const field: Record<string, string> = {};
+    const inputs = getRowInputs(row.id) ?? detail.inputs?.default ?? [];
+    for (const input of inputs) {
+      const valStr = row.data[input.name] !== undefined && row.data[input.name] !== null ? String(row.data[input.name]) : "";
+      if (input.control === "datetime" || input.control === "date") {
+        const dtErr = datetimeCellError(valStr);
+        if (dtErr) field[input.name] = dtErr;
+      } else if (input.required) {
+        if (valStr.length === 0) field[input.name] = "required";
+      }
+    }
+    return Object.keys(field).length ? { field } : {};
+  };
+
   const rowInvalid = (row: LabelGridRow): boolean => {
     const v = validateRow(row);
     return !!v.field || !!v.option;
   };
-  // Validation is derived fresh each render (never stored), so it cannot go stale when options change.
-  // Options are displayed via displayOption: declared options show their value-or-default while raw
-  // values for not-currently-declared options are preserved, so an edit (which commits the displayed
-  // option map) does not drop CSV option values the current template happens not to declare.
-  const viewRows: LabelGridRow[] = rows.map((row) => ({ ...row, option: displayOption(row), validation: validateRow(row) }));
+
+  const viewRows: LabelGridRow[] = rows.map((row) => ({ ...row, validation: validateRow(row) }));
   const hasErrors = viewRows.some(rowInvalid);
 
-  // Keep selectedRowId pointing at a valid row. If the current selection has been removed or is no
-  // longer in rows, fall back to the first valid row (or undefined when none exist). This is a derived
-  // fallback computed each render so no effect is needed: the canonical state is `selectedRowId`.
+  // Keep selectedRowId pointing at a valid row. Fall back to first valid (or undefined).
   const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
   const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
 
-  // Build the resolved label for the selected row using the same resolution the submit path uses,
-  // so the preview matches the actual rendered output.
-  const defaults = defaultParamValues(detail?.params);
+  // Build the resolved label for the selected row using the same resolution the submit path uses.
   const selRow = rows.find((r) => r.id === resolvedSelectedId);
-  const previewLabel = selRow
-    ? resolveLabels(
-        [
-          {
-            ...selRow,
-            data: { ...defaults, ...selRow.data },
-            option: effectiveOption(selRow),
-          },
-        ],
-        {},
-        1,
-      )[0]
+  const previewData = (detail && selRow)
+    ? pruneDataForSubmit(selRow.data, getRowInputs(selRow.id) ?? detail.inputs?.default ?? [])
     : undefined;
+  const previewLabel = previewData ? { data: previewData } : undefined;
 
   const preview = useRowPreview({
     templateId: detail?.id ?? "",
@@ -211,11 +176,7 @@ function CsvEditor({
     startSlot: isSheet ? startSlot : undefined,
   });
 
-  // "Ignored" notices for CSV option.<name> columns the chosen template does not declare. Derived at
-  // render (not in loadFrom) so loading a CSV with no template then picking a template surfaces them.
-  const ignoredNotices = detail
-    ? csvOptionCols.filter((n) => !declaredNames.includes(n)).map((n) => `Column option.${n} is not a declared option and is ignored.`)
-    : [];
+  const ignoredNotices: string[] = [];
 
   const total = expandedCount(rows.length, copies);
   const overCap = total > MAX_BATCH_LABELS;
@@ -223,7 +184,6 @@ function CsvEditor({
   const clearGrid = () => {
     commitRows([]);
     setCsvFields([]);
-    setCsvOptionCols([]);
     setLoadedSource("");
   };
 
@@ -243,16 +203,13 @@ function CsvEditor({
       clearGrid();
       return;
     }
-    // The "ignored option column" notice is derived at render from csvOptionCols (so it reacts to the
-    // template choice); here we only record parse issues and the parsed option columns.
     setCsvFields(parsed.fields);
-    setCsvOptionCols(parsed.optionColumns);
     setIssues(parsed.issues);
     const built = parsed.rows.map<LabelGridRow>((r) => ({
       id: newId(),
       origin: "csv",
-      data: { ...r.data },
-      option: { ...r.option }, // raw CSV option values; effectiveOption reconciles them against the current template at render
+      data: { ...r.option, ...r.data },
+      option: { ...r.option },
       validation: {},
     }));
     commitRows(built);
@@ -275,6 +232,10 @@ function CsvEditor({
     // disabled state lags a blur-commit by one render). Validate the live snapshot and the cap/printer.
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
+    if (rowsPending) {
+      setFormError("Resolving row inputs; please wait.");
+      return;
+    }
     if (snapshot.some(rowInvalid)) {
       setFormError("Fix the highlighted rows before running.");
       return;
@@ -297,15 +258,10 @@ function CsvEditor({
     const submittedCopies = copies;
     const idForExpandedIndex = (index: number): string | undefined => submittedIds[sourceRowForExpandedIndex(index, submittedCopies)];
     try {
-      // Reconcile each row's options against the current template before submit (ids unchanged), then
-      // resolve with no global overlay (per-row options already carry the effective value).
-      const defaults = defaultParamValues(detail.params);
-      const submitRows = rowsRef.current.map((r) => ({
-        ...r,
-        data: { ...defaults, ...r.data },
-        option: effectiveOption(r),
-      }));
-      const labels = resolveLabels(submitRows, {}, submittedCopies);
+      const labels = rowsRef.current.flatMap((r) => {
+        const pruned = pruneDataForSubmit(r.data, getRowInputs(r.id) ?? detail.inputs?.default ?? []);
+        return Array.from({ length: submittedCopies }, () => ({ data: pruned }));
+      });
       const r = await submitBatch({
         template: detail.id,
         labels,
@@ -417,42 +373,6 @@ function CsvEditor({
 
       {rows.length > 0 && (
         <>
-          {detail && optionNames.filter((n) => !isSingleValued(n)).length > 0 && (
-            <div className="flex flex-wrap gap-3">
-              {optionNames.filter((n) => !isSingleValued(n)).map((name) => (
-                <div key={name} className="flex items-end gap-2">
-                  <label className="flex flex-col gap-1">
-                    <span className="text-sm font-medium">{name} (all rows)</span>
-                    <select
-                      aria-label={`set all ${name}`}
-                      value={declaredOptions[name].includes(applyValue[name]) ? applyValue[name] : declaredOptions[name][0] ?? ""}
-                      disabled={busy}
-                      onChange={(e) => setApplyValue({ ...applyValue, [name]: e.target.value })}
-                      className={inputClass}
-                      style={inputStyle}
-                    >
-                      {declaredOptions[name].map((v) => (<option key={v} value={v}>{v}</option>))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    aria-label={`apply ${name} to all rows`}
-                    disabled={busy}
-                    onClick={() => {
-                      const v = declaredOptions[name].includes(applyValue[name]) ? applyValue[name] : declaredOptions[name][0] ?? "";
-                      commitRows(rowsRef.current.map((r) => ({ ...r, option: { ...displayOption(r), [name]: v }, annotation: undefined })));
-                      setFormError(null);
-                    }}
-                    className={`${buttonBase} border`}
-                    style={{ borderColor: "var(--border)", color: "var(--ink)" }}
-                  >
-                    Apply to all
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
           {detail && (
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1">
@@ -522,8 +442,7 @@ function CsvEditor({
           <LabelGrid
             rows={viewRows}
             fields={displayedFields}
-            optionNames={optionNames}
-            optionValues={declaredOptions}
+            isCellEditable={isCellEditable}
             onRowsChange={(next, { indexes }) => {
               // viewRows carries derived validation (and rows may carry a prior run's annotation); store
               // only canonical data: drop validation everywhere and clear annotation on the edited rows.

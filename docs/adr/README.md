@@ -36,7 +36,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0023](0023-template-thumbnail-endpoint.md) | Template thumbnail endpoint | Accepted |
 | [0024](0024-app-settings-storage-and-api.md) | App settings storage and API | Accepted |
 | [0025](0025-optional-no-auth-mode.md) | Optional no-auth mode for homelab | Accepted |
-| [0026](0026-auto-length-dynamic-width.md) | Auto-length dynamic-width single labels (continuous tape) | Accepted |
+| [0026](0026-auto-length-dynamic-width.md) | Auto-length dynamic-width single labels (continuous tape) | Superseded by [0080](0080-unify-size-resolution.md) |
 | [0027](0027-multi-arch-image-publishing.md) | Multi-arch image publishing (amd64 + arm64) | Accepted |
 | [0028](0028-datetime-interpolation-token.md) | Current-time interpolation token ({datetime.*}) | Accepted (syntax superseded in part by [0079](0079-token-grammar.md)) |
 | [0029](0029-runtime-base-debian-slim.md) | Runtime base image: debian-slim, not distroless | Accepted |
@@ -46,7 +46,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0033](0033-capability-aware-rendering.md) | Capability-aware rendering (bi-level/resolution; media gate) | Accepted |
 | [0034](0034-single-config-dir.md) | Single config dir (LABELER_CONFIG_DIR; first-run template seeding) | Accepted (seeding superseded by [0046](0046-template-catalog.md)) |
 | [0035](0035-font-weight-via-variable-font.md) | Font weight via the bundled variable font | Accepted |
-| [0036](0036-container-rotation.md) | Layout-aware container rotation | Accepted |
+| [0036](0036-container-rotation.md) | Layout-aware container rotation | Accepted (amended by [0080](0080-unify-size-resolution.md)) |
 | [0037](0037-effortless-print-form.md) | Effortless print form: copies routing + global default printer | Accepted |
 | [0038](0038-print-first-landing.md) | Print-first landing: grid as the print picker | Accepted |
 | [0039](0039-per-field-render-override.md) | Per-field render override (color and resolution) | Accepted |
@@ -61,15 +61,15 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0048](0048-template-delete-prunes-favorites.md) | Deleting a template prunes favorites, not recents | Accepted |
 | [0049](0049-weight-aware-text-measurement.md) | Text measurement tracks the font instance Typst renders | Accepted |
 | [0050](0050-ink-reservation-at-slot-edges.md) | Reserve ink room at slot edges instead of changing the line box | Accepted |
-| [0051](0051-edge-relative-and-corner-placement.md) | Edge-relative coordinates and `to:` opposite-corner placement | Accepted |
+| [0051](0051-edge-relative-and-corner-placement.md) | Edge-relative coordinates and `to:` opposite-corner placement | Accepted (amended by [0080](0080-unify-size-resolution.md)) |
 | [0052](0052-error-reason-discriminator.md) | A `details.reason` discriminator for `AppError` | Accepted |
-| [0053](0053-max-bounds-cap.md) | `max_w`/`max_h` cap an `auto` size, not substitute for its fallback | Accepted |
-| [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Accepted |
+| [0053](0053-max-bounds-cap.md) | `max_w`/`max_h` cap an `auto` size, not substitute for its fallback | Superseded by [0080](0080-unify-size-resolution.md) |
+| [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Superseded by [0080](0080-unify-size-resolution.md) |
 | [0055](0055-standardize-on-value-interpolation.md) | Standardize on value interpolation for text and QR items | Accepted |
 | [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted |
 | [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted |
 | [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
-| [0059](0059-auto-length-text-box-is-the-alignment-slot.md) | Auto-length text box is the alignment slot | Accepted |
+| [0059](0059-auto-length-text-box-is-the-alignment-slot.md) | Auto-length text box is the alignment slot | Superseded by [0080](0080-unify-size-resolution.md) |
 | [0060](0060-connection-scoped-field-transforms.md) | Connection-scoped field transforms | Accepted |
 | [0061](0061-template-group-yaml-field.md) | A template's group is a YAML field, not its directory | Superseded by [0073](0073-group-is-a-directory-id-is-the-filename.md) |
 | [0062](0062-service-may-rewrite-single-template-key.md) | The service may rewrite one key of a hand-authored template | Superseded by [0073](0073-group-is-a-directory-id-is-the-filename.md) |
@@ -79,12 +79,16 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0066](0066-format-badge-carries-icon-colour-and-count.md) | The format badge carries an icon, its own colour and a position count, and is delineated by a border | Accepted (the --accent-deep token decision superseded by [0071]) |
 | [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted (token list and formatting syntax superseded by [0079](0079-token-grammar.md)) |
 | [0069](0069-connect-opens-on-a-default-connection.md) | Connect opens on a default connection named by an instance-wide setting | Accepted |
+| [0070](0070-service-derives-the-input-list.md) | Service derives the input list | Accepted |
 | [0071](0071-one-accent-colour-with-a-defined-ink.md) | One accent colour, dark enough to carry text, with a defined ink on its fill | Accepted |
 | [0072](0072-two-filter-scopes-named-not-merged.md) | Two filter scopes named, not merged | Accepted |
 | [0073](0073-group-is-a-directory-id-is-the-filename.md) | Group is a directory; ID is the filename | Accepted |
 | [0075](0075-request-rejections-use-the-error-envelope.md) | Request rejections use the standard JSON error envelope | Accepted |
 | [0076](0076-the-filesystem-answers-the-case-question.md) | The filesystem answers the case question | Accepted |
 | [0079](0079-token-grammar.md) | Token grammar: namespaces, system values, and format syntax | Accepted |
+| [0080](0080-unify-size-resolution.md) | One size-resolution protocol across validation, measurement, and rendering | Accepted |
+| [0081](0081-size-vocabulary-content-and-fill.md) | Sizing vocabulary is `content` and `fill` | Accepted |
+| [0082](0082-text-overflow-policy.md) | Text overflow is an authored policy (`ellipsis` or `fail`) | Accepted |
 
 ## Adding an ADR
 

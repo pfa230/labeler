@@ -1,8 +1,8 @@
-import type { ParamSpec, ParamValue } from "../api/types";
+import type { InputSpec, ParamSpec, ParamValue } from "../api/types";
 
 export interface ParamInputProps {
   name: string;
-  spec: ParamSpec;
+  spec: InputSpec | ParamSpec;
   value: ParamValue | undefined;
   onChange: (value: ParamValue) => void;
   disabled?: boolean;
@@ -41,68 +41,64 @@ export function ParamInput({
   noteId,
 }: ParamInputProps) {
   const label = spec.description || name;
+  const inputSpec = spec as InputSpec;
+  const paramSpec = spec as ParamSpec;
+  const control = inputSpec.control;
 
-  if (spec.type === "string") {
-    if (isImage) {
-      const current = typeof value === "string" ? value : "";
-      return (
-        <div className="flex flex-col gap-1">
-          <input
-            type="file"
-            accept="image/*"
-            aria-label={label}
-            aria-invalid={invalid}
-            aria-describedby={noteId}
-            disabled={disabled}
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (file) onChange(await readFileAsDataUrl(file));
-            }}
-            className="text-sm"
-          />
-          {current && (
-            <span className="text-xs" style={{ color: "var(--muted)" }}>
-              image selected
-            </span>
-          )}
-        </div>
-      );
-    }
-
-    if (spec.multiline) {
-      return (
-        <textarea
+  if (control === "image" || isImage) {
+    const current = typeof value === "string" ? value : "";
+    return (
+      <div className="flex flex-col gap-1">
+        <input
+          type="file"
+          accept="image/*"
           aria-label={label}
           aria-invalid={invalid}
           aria-describedby={noteId}
-          rows={3}
           disabled={disabled}
-          value={value !== undefined ? String(value) : ""}
-          onChange={(e) => onChange(e.target.value)}
-          className={`${inputClass} resize-y`}
-          style={inputStyle}
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (file) onChange(await readFileAsDataUrl(file));
+          }}
+          className="text-sm"
         />
-      );
-    }
+        {current && (
+          <span className="text-xs" style={{ color: "var(--muted)" }}>
+            image selected
+          </span>
+        )}
+      </div>
+    );
+  }
 
+  if (control === "textarea" || (paramSpec.type === "string" && paramSpec.multiline)) {
     return (
-      <input
-        type="text"
+      <textarea
         aria-label={label}
         aria-invalid={invalid}
         aria-describedby={noteId}
+        rows={3}
         disabled={disabled}
         value={value !== undefined ? String(value) : ""}
         onChange={(e) => onChange(e.target.value)}
-        className={inputClass}
+        className={`${inputClass} resize-y`}
         style={inputStyle}
       />
     );
   }
 
-  if (spec.type === "length" || spec.type === "number" || spec.type === "integer") {
-    const isSlider = spec.min !== undefined && spec.max !== undefined;
-    const isInteger = spec.type === "integer";
+  if (
+    control === "number" ||
+    control === "integer" ||
+    inputSpec.slider === true ||
+    paramSpec.type === "length" ||
+    paramSpec.type === "number" ||
+    paramSpec.type === "integer"
+  ) {
+    const isInteger = control === "integer" || paramSpec.type === "integer";
+    const isSlider =
+      inputSpec.slider === true ||
+      (!control && spec.min !== undefined && spec.max !== undefined);
 
     if (isSlider) {
       const currentVal =
@@ -133,7 +129,7 @@ export function ParamInput({
           />
           <span className="min-w-12 text-right font-mono text-sm" style={{ color: "var(--ink)" }}>
             {currentVal}
-            {spec.type === "length" && unit ? ` ${unit}` : ""}
+            {(inputSpec.unit || (paramSpec.type === "length" && unit)) ? ` ${inputSpec.unit || unit}` : ""}
           </span>
         </div>
       );
@@ -165,7 +161,7 @@ export function ParamInput({
     );
   }
 
-  if (spec.type === "boolean") {
+  if (control === "checkbox" || paramSpec.type === "boolean") {
     const isChecked = Boolean(
       value !== undefined ? value : (spec.default ?? false),
     );
@@ -189,7 +185,7 @@ export function ParamInput({
     );
   }
 
-  if (spec.type === "enum") {
+  if (control === "select" || paramSpec.type === "enum") {
     const currentVal = String(
       value !== undefined ? value : (spec.default ?? spec.values?.[0] ?? ""),
     );
@@ -204,7 +200,7 @@ export function ParamInput({
         className={inputClass}
         style={inputStyle}
       >
-        {(spec.values ?? []).map((v) => (
+        {(spec.values ?? []).map((v: string) => (
           <option key={v} value={v}>
             {v}
           </option>
@@ -213,8 +209,9 @@ export function ParamInput({
     );
   }
 
-  if (spec.type === "datetime") {
-    const inputType = spec.time ? "datetime-local" : "date";
+  if (control === "date" || control === "datetime" || paramSpec.type === "datetime") {
+    const inputType =
+      control === "datetime" || (control === undefined && paramSpec.time) ? "datetime-local" : "date";
     return (
       <input
         type={inputType}

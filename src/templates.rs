@@ -7,11 +7,50 @@ use thiserror::Error;
 
 use crate::errors::TemplateError;
 use crate::models::{
-    resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, Layout, LayoutItem, Options,
-    ParamSpec, ParamType, Point, Position, Size, SizeValue, TemplateDetail, TemplateFormat,
-    TemplateSummary,
+    resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, InputControl, InputSpec,
+    Layout, LayoutItem, Options, ParamSpec, ParamType, ParamValue, Placement, Point, Size,
+    SizeValue, TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
 };
 use crate::parse::parse_template;
+use crate::resolver;
+
+/// The bare `{token}` names an interpolated string reads: its request fields and parameters.
+/// `{vars.*}` and `{sys.*}` resolve without caller input, and a token whose grammar is invalid is
+/// left to validation, so neither is an input (ADR-0079).
+fn bare_token_names(s: &str) -> Vec<&str> {
+    crate::interpolation::scan_tokens(s)
+        .into_iter()
+        .filter_map(|scanned| match crate::interpolation::parse(scanned.raw) {
+            Ok(token) => match token.source {
+                crate::interpolation::Source::Bare(name) => Some(name),
+                _ => None,
+            },
+            Err(_) => None,
+        })
+        .collect()
+}
+
+/// The `{vars.<key>}` keys an interpolated string reads.
+fn vars_token_keys(s: &str) -> Vec<&str> {
+    crate::interpolation::scan_tokens(s)
+        .into_iter()
+        .filter_map(|scanned| match crate::interpolation::parse(scanned.raw) {
+            Ok(token) => match token.source {
+                crate::interpolation::Source::Vars(key) => Some(key),
+                _ => None,
+            },
+            Err(_) => None,
+        })
+        .collect()
+}
+
+/// Whether a name is a declared `datetime` parameter, which the service supplies from the render
+/// instant and which no single-line item can truncate.
+fn is_datetime_param(params: &std::collections::BTreeMap<String, ParamSpec>, name: &str) -> bool {
+    params
+        .get(name)
+        .is_some_and(|spec| matches!(spec.param_type, ParamType::Datetime { .. }))
+}
 
 #[derive(Debug, Clone)]
 pub struct TemplateContent {
@@ -60,6 +99,417 @@ impl TemplateContent {
             Some(Options(map))
         }
     }
+
+    pub fn variables(&self) -> Vec<String> {
+        let mut vars = HashSet::new();
+        let Layout::Items(items) = &self.layout;
+        fn walk(items: &[LayoutItem], vars: &mut HashSet<String>) {
+            for item in items {
+                match item {
+                    LayoutItem::Text { value, .. } | LayoutItem::Qr { value, .. } => {
+                        for key in vars_token_keys(value) {
+                            vars.insert(key.to_string());
+                        }
+                    }
+                    LayoutItem::Image { src: Some(src), .. } => {
+                        for key in vars_token_keys(src) {
+                            vars.insert(key.to_string());
+                        }
+                    }
+                    LayoutItem::Container { items, .. } => {
+                        walk(items, vars);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        walk(items, &mut vars);
+        let mut res: Vec<String> = vars.into_iter().collect();
+        res.sort();
+        res
+    }
+
+    pub fn inputs_all(&self) -> Vec<InputSpec> {
+        self.derive_inputs_internal(None)
+    }
+
+    pub fn inputs_default(&self) -> Vec<InputSpec> {
+        self.derive_inputs_for_label(&HashMap::new(), chrono::Local::now())
+    }
+
+    pub fn derive_inputs_for_label(
+        &self,
+        data: &HashMap<String, serde_json::Value>,
+        now: chrono::DateTime<chrono::Local>,
+    ) -> Vec<InputSpec> {
+        let resolved = crate::render::resolve_parameters_mode(
+            self,
+            data,
+            None,
+            now,
+            crate::render::ResolveMode::Lenient,
+        )
+        .expect("lenient resolution never fails");
+        self.derive_inputs_internal(Some(&resolved.data))
+    }
+
+    pub fn placeholder_data(&self) -> HashMap<String, serde_json::Value> {
+        let mut data = HashMap::new();
+        for input in self.inputs_all() {
+            if input.interpolated && input.required {
+                let val = match input.control {
+                    InputControl::Image => {
+                        serde_json::Value::String(crate::render::SAMPLE_PNG_DATA_URI.to_string())
+                    }
+                    InputControl::Text | InputControl::Textarea => {
+                        serde_json::Value::String(input.name.clone())
+                    }
+                    InputControl::Integer => {
+                        let n = input.min.map(|m| m as i64).unwrap_or(1);
+                        serde_json::json!(n)
+                    }
+                    InputControl::Number => {
+                        let n = input.min.unwrap_or(1.0);
+                        serde_json::json!(n)
+                    }
+                    _ => continue,
+                };
+                data.insert(input.name, val);
+            }
+        }
+        data
+    }
+
+    fn derive_inputs_internal(
+        &self,
+        resolved_data: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Vec<InputSpec> {
+        let single_line_names = collect_single_line_names(&self.layout);
+        let mut collected: HashMap<String, NameInfo> = HashMap::new();
+        let mut next_order = 0;
+
+        let mut record_ref =
+            |name: &str, interpolated: bool, image_bound: bool, multiline_text: bool| {
+                let entry = collected.entry(name.to_string()).or_insert_with(|| {
+                    let order = next_order;
+                    next_order += 1;
+                    NameInfo {
+                        order,
+                        interpolated: false,
+                        image_bound: false,
+                        multiline_text: false,
+                    }
+                });
+                if interpolated {
+                    entry.interpolated = true;
+                }
+                if image_bound {
+                    entry.image_bound = true;
+                }
+                if multiline_text {
+                    entry.multiline_text = true;
+                }
+            };
+
+        // 1. format dynamic dimensions
+        if let TemplateFormat::Single { width, height, .. } = &self.format {
+            for dim in [width, height] {
+                match dim {
+                    DynamicDimension::Fixed(DynamicValue::Ref(r)) => {
+                        record_ref(r, false, false, false);
+                    }
+                    DynamicDimension::Dynamic { min, max } => {
+                        if let Some(DynamicValue::Ref(r)) = min {
+                            record_ref(r, false, false, false);
+                        }
+                        if let Some(DynamicValue::Ref(r)) = max {
+                            record_ref(r, false, false, false);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 2. layout items walk
+        let Layout::Items(items) = &self.layout;
+        fn walk_items<F>(
+            items: &[LayoutItem],
+            params: &std::collections::BTreeMap<String, ParamSpec>,
+            resolved_data: Option<&HashMap<String, serde_json::Value>>,
+            record_ref: &mut F,
+        ) where
+            F: FnMut(&str, bool, bool, bool),
+        {
+            for item in items {
+                // Record when: keys unconditionally for any item encountered in this active scope
+                if let Some(when) = item.when() {
+                    for key in when.keys() {
+                        record_ref(key, false, false, false);
+                    }
+                }
+
+                // Check active state
+                let is_active = if let Some(data) = resolved_data {
+                    if let Some(when) = item.when() {
+                        when.iter().all(|(param_name, expected_val)| {
+                            data.get(param_name)
+                                .map(|v| &crate::render::value_to_string(v) == expected_val)
+                                .unwrap_or(false)
+                        })
+                    } else {
+                        true
+                    }
+                } else {
+                    true
+                };
+
+                if !is_active {
+                    continue;
+                }
+
+                // Process active item
+                match item {
+                    LayoutItem::Text {
+                        placement,
+                        font_weight,
+                        value,
+                        multiline,
+                        ..
+                    } => {
+                        if let Extent::Size(size) = &placement.extent {
+                            for sv in &size.0 {
+                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                    record_ref(r, false, false, false);
+                                }
+                            }
+                        }
+                        if let Some(DynamicValue::Ref(r)) = font_weight {
+                            record_ref(r, false, false, false);
+                        }
+                        for name in bare_token_names(value) {
+                            record_ref(
+                                name,
+                                true,
+                                false,
+                                *multiline && !is_datetime_param(params, name),
+                            );
+                        }
+                    }
+                    LayoutItem::Qr {
+                        placement, value, ..
+                    } => {
+                        if let Extent::Size(size) = &placement.extent {
+                            for sv in &size.0 {
+                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                    record_ref(r, false, false, false);
+                                }
+                            }
+                        }
+                        for name in bare_token_names(value) {
+                            record_ref(name, true, false, false);
+                        }
+                    }
+                    LayoutItem::Image {
+                        placement,
+                        name,
+                        src,
+                        ..
+                    } => {
+                        if let Extent::Size(size) = &placement.extent {
+                            for sv in &size.0 {
+                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                    record_ref(r, false, false, false);
+                                }
+                            }
+                        }
+                        if let Some(n) = name {
+                            record_ref(n, true, true, false);
+                        }
+                        if let Some(s) = src {
+                            for name in bare_token_names(s) {
+                                record_ref(name, true, false, false);
+                            }
+                        }
+                    }
+                    LayoutItem::Line { .. } => {}
+                    LayoutItem::Container {
+                        placement, items, ..
+                    } => {
+                        if let Extent::Size(size) = &placement.extent {
+                            for sv in &size.0 {
+                                if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                    record_ref(r, false, false, false);
+                                }
+                            }
+                        }
+                        walk_items(items, params, resolved_data, record_ref);
+                    }
+                }
+            }
+        }
+
+        walk_items(items, &self.params, resolved_data, &mut record_ref);
+
+        let mut declared_specs = Vec::new();
+        let mut undeclared_specs = Vec::new();
+
+        for (name, info) in collected {
+            let truncated_elsewhere = single_line_names.contains(&name);
+            if let Some(spec) = self.params.get(&name) {
+                let control = if info.image_bound {
+                    InputControl::Image
+                } else {
+                    match &spec.param_type {
+                        ParamType::Enum { .. } => InputControl::Select,
+                        ParamType::Boolean => InputControl::Checkbox,
+                        ParamType::Datetime { time } => {
+                            if *time {
+                                InputControl::Datetime
+                            } else {
+                                InputControl::Date
+                            }
+                        }
+                        ParamType::Integer => InputControl::Integer,
+                        ParamType::Number | ParamType::Length => InputControl::Number,
+                        ParamType::String { multiline } => {
+                            if *multiline {
+                                InputControl::Textarea
+                            } else {
+                                InputControl::Text
+                            }
+                        }
+                    }
+                };
+                let slider = matches!(
+                    spec.param_type,
+                    ParamType::Integer | ParamType::Number | ParamType::Length
+                ) && spec.min.is_some()
+                    && spec.max.is_some();
+                let required = spec.default.is_none()
+                    && !matches!(
+                        spec.param_type,
+                        ParamType::Boolean | ParamType::Enum { .. } | ParamType::Datetime { .. }
+                    );
+                let default = if spec.default.is_some() {
+                    spec.default.clone()
+                } else if matches!(spec.param_type, ParamType::Boolean) {
+                    Some(ParamValue::Boolean(false))
+                } else if let ParamType::Enum { values } = &spec.param_type {
+                    values.first().map(|v| ParamValue::String(v.clone()))
+                } else {
+                    None
+                };
+                let values = if let ParamType::Enum { values } = &spec.param_type {
+                    Some(values.clone())
+                } else {
+                    None
+                };
+                let min = if matches!(
+                    spec.param_type,
+                    ParamType::Integer | ParamType::Number | ParamType::Length
+                ) {
+                    spec.min
+                } else {
+                    None
+                };
+                let max = if matches!(
+                    spec.param_type,
+                    ParamType::Integer | ParamType::Number | ParamType::Length
+                ) {
+                    spec.max
+                } else {
+                    None
+                };
+                let unit = if matches!(spec.param_type, ParamType::Length) {
+                    Some(self.unit.clone())
+                } else {
+                    None
+                };
+
+                declared_specs.push(InputSpec {
+                    name,
+                    control,
+                    slider,
+                    required,
+                    default,
+                    values,
+                    min,
+                    max,
+                    unit,
+                    description: spec.description.clone(),
+                    interpolated: info.interpolated,
+                    truncated_elsewhere,
+                });
+            } else {
+                let control = if info.image_bound {
+                    InputControl::Image
+                } else if info.multiline_text {
+                    InputControl::Textarea
+                } else {
+                    InputControl::Text
+                };
+                undeclared_specs.push((
+                    info.order,
+                    InputSpec {
+                        name,
+                        control,
+                        slider: false,
+                        required: true,
+                        default: None,
+                        values: None,
+                        min: None,
+                        max: None,
+                        unit: None,
+                        description: None,
+                        interpolated: info.interpolated,
+                        truncated_elsewhere,
+                    },
+                ));
+            }
+        }
+
+        declared_specs.sort_by(|a, b| a.name.cmp(&b.name));
+        undeclared_specs.sort_by_key(|(order, _)| *order);
+
+        let mut result = declared_specs;
+        result.extend(undeclared_specs.into_iter().map(|(_, spec)| spec));
+        result
+    }
+}
+
+#[derive(Default, Debug)]
+struct NameInfo {
+    order: usize,
+    interpolated: bool,
+    image_bound: bool,
+    multiline_text: bool,
+}
+
+fn collect_single_line_names(layout: &Layout) -> HashSet<String> {
+    let mut names = HashSet::new();
+    let Layout::Items(items) = layout;
+    fn walk(items: &[LayoutItem], names: &mut HashSet<String>) {
+        for item in items {
+            match item {
+                LayoutItem::Text {
+                    value, multiline, ..
+                } => {
+                    if !*multiline {
+                        for name in bare_token_names(value) {
+                            names.insert(name.to_string());
+                        }
+                    }
+                }
+                LayoutItem::Container { items, .. } => {
+                    walk(items, names);
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(items, &mut names);
+    names
 }
 
 /// A template file that could not be parsed, failed validation, or lost an id collision.
@@ -620,19 +1070,37 @@ impl TemplateContent {
             }
         }
 
-        let bounds = layout_bounds(&instantiated.format)?;
-        let is_dynamic_width = matches!(
-            &instantiated.format,
-            TemplateFormat::Single {
-                width: DynamicDimension::Dynamic { .. },
+        let geometry_values = load_geometry_values(self);
+        let (val_frame, axes_resolved) = match &instantiated.format {
+            TemplateFormat::Sheet {
+                label_width,
+                label_height,
                 ..
+            } => (Some((*label_width, *label_height)), [true, true]),
+            TemplateFormat::Single { width, height, .. } => {
+                let w = match width {
+                    DynamicDimension::Fixed(DynamicValue::Literal(v)) => *v,
+                    DynamicDimension::Dynamic {
+                        max: Some(DynamicValue::Literal(v)),
+                        ..
+                    } => *v,
+                    _ => 0.0,
+                };
+                let h = match height {
+                    DynamicDimension::Fixed(DynamicValue::Literal(v)) => *v,
+                    _ => 0.0,
+                };
+                let is_dynamic = matches!(width, DynamicDimension::Dynamic { .. });
+                (Some((w, h)), [!is_dynamic, true])
             }
-        );
+        };
+
         validate_layout(
             &instantiated.layout,
             instantiated.options().as_ref(),
-            bounds.as_ref(),
-            is_dynamic_width,
+            val_frame,
+            axes_resolved,
+            &geometry_values,
         )?;
 
         if let TemplateFormat::Single {
@@ -1043,6 +1511,23 @@ fn validate_item_references(
     Ok(())
 }
 
+fn load_geometry_values(template: &TemplateContent) -> HashMap<String, f32> {
+    let mut map = HashMap::new();
+    for (name, spec) in &template.params {
+        let val = match &spec.default {
+            Some(crate::models::ParamValue::Float(f)) => *f,
+            Some(crate::models::ParamValue::Integer(i)) => *i as f32,
+            _ => match (spec.min, spec.max) {
+                (Some(min), _) => min,
+                (_, Some(max)) => max,
+                _ => 0.0,
+            },
+        };
+        map.insert(name.clone(), val);
+    }
+    map
+}
+
 fn resolve_f32_default(params: &std::collections::BTreeMap<String, ParamSpec>, name: &str) -> f32 {
     if let Some(spec) = params.get(name) {
         match &spec.default {
@@ -1166,6 +1651,7 @@ fn instantiate_item_defaults(
             font_weight,
             multiline,
             alignment,
+            overflow,
             when,
         } => {
             let fw = font_weight.as_ref().map(|w| match w {
@@ -1179,6 +1665,7 @@ fn instantiate_item_defaults(
                 font_weight: fw,
                 multiline: *multiline,
                 alignment: alignment.clone(),
+                overflow: *overflow,
                 when: when.clone(),
             }
         }
@@ -1272,19 +1759,23 @@ fn validate_dimension(name: &str, dimension: &DynamicDimension) -> Result<(), St
 fn validate_layout(
     layout: &Layout,
     options: Option<&Options>,
-    bounds: Option<&LayoutBounds>,
-    is_dynamic_width: bool,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     match layout {
-        Layout::Items(items) => validate_layout_items(items, bounds, options, is_dynamic_width),
+        Layout::Items(items) => {
+            validate_layout_items(items, frame, axes_resolved, options, geometry_values)
+        }
     }
 }
 
 fn validate_layout_items(
     items: &[LayoutItem],
-    bounds: Option<&LayoutBounds>,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
     options: Option<&Options>,
-    is_dynamic_width: bool,
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     let mut seen_names = HashSet::new();
     for item in items {
@@ -1296,7 +1787,7 @@ fn validate_layout_items(
                 return Err(format!("duplicate layout item name '{}'", name));
             }
         }
-        validate_layout_item(item, bounds, options, is_dynamic_width)?;
+        validate_layout_item(item, frame, axes_resolved, options, geometry_values)?;
     }
     Ok(())
 }
@@ -1313,70 +1804,83 @@ fn layout_item_name(item: &LayoutItem) -> Option<&str> {
 
 fn validate_layout_item(
     item: &LayoutItem,
-    layout_bounds: Option<&LayoutBounds>,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
     options: Option<&Options>,
-    is_dynamic_width: bool,
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     match item {
+        LayoutItem::Line {
+            at,
+            to,
+            thickness,
+            when,
+        } => {
+            validate_when(when.as_ref())?;
+            const LINE_EPSILON: f32 = 1.0e-4;
+            if *thickness <= 0.0 {
+                return Err("line thickness must be greater than 0".to_string());
+            }
+            let (start, end) = match frame {
+                Some((fw, fh)) => (
+                    Point {
+                        x: resolve_coord(at.x(), fw),
+                        y: resolve_coord(at.y(), fh),
+                    },
+                    Point {
+                        x: resolve_coord(to.x(), fw),
+                        y: resolve_coord(to.y(), fh),
+                    },
+                ),
+                None => (at.point(), to.point()),
+            };
+            let x_comparable =
+                axes_resolved[0] || at.x().is_sign_negative() == to.x().is_sign_negative();
+            let y_comparable =
+                axes_resolved[1] || at.y().is_sign_negative() == to.y().is_sign_negative();
+            let same_x = x_comparable && (start.x - end.x).abs() < LINE_EPSILON;
+            let same_y = y_comparable && (start.y - end.y).abs() < LINE_EPSILON;
+            if same_x && same_y {
+                return Err("line start and end must differ".to_string());
+            }
+            if let Some((fw, fh)) = frame {
+                for point in [start, end] {
+                    if point.x < -LINE_EPSILON || point.y < -LINE_EPSILON {
+                        return Err("line must fit within layout bounds".to_string());
+                    }
+                    if point.x > fw + LINE_EPSILON || point.y > fh + LINE_EPSILON {
+                        return Err("line must fit within layout bounds".to_string());
+                    }
+                }
+            }
+        }
         LayoutItem::Text {
             value,
             placement,
             font_size,
             font_weight,
+            when,
             ..
         } => {
             if value.trim().is_empty() {
                 return Err("text value must not be empty".to_string());
             }
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
+            validate_when(when.as_ref())?;
             validate_font_weight(font_weight.as_ref())?;
-            validate_rotation(&placement.rotate, false)?;
-            // `allow_auto_fill` is always `true` for text: this axis asks whether the item type has
-            // a frame to fall back on (it does), not whether this template's width is dynamic. Keying
-            // it off `is_dynamic_width` instead was #155: it let validation accept a `max_h` above the
-            // frame on the strength of a fallback the render path (keyed off the item's own
-            // frame-dependence) did not have.
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                true,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
             validate_font_size(font_size)?;
+            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
         LayoutItem::Qr {
             value,
             placement,
             params,
+            when,
             ..
         } => {
             if value.trim().is_empty() {
                 return Err("qr value must not be empty".to_string());
             }
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
-            validate_rotation(&placement.rotate, false)?;
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                false,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
+            validate_when(when.as_ref())?;
             if let Some(params) = params {
                 if let Some(module_size) = params.module_size {
                     if module_size <= 0.0 {
@@ -1389,215 +1893,146 @@ fn validate_layout_item(
                     }
                 }
             }
+            let spec_0 = resolver::source_of(placement, 0, geometry_values);
+            let spec_1 = resolver::source_of(placement, 1, geometry_values);
+            if (spec_0.demands_intrinsic() || spec_1.demands_intrinsic())
+                && params.as_ref().and_then(|p| p.module_size).is_none()
+            {
+                return Err("qr content or fill extent requires module_size".to_string());
+            }
+            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
-        LayoutItem::Image { placement, .. } => {
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
-            validate_rotation(&placement.rotate, false)?;
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                false,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
-        }
-        LayoutItem::Line {
-            at,
-            to,
-            thickness,
-            when,
+        LayoutItem::Image {
+            placement, when, ..
         } => {
             validate_when(when.as_ref())?;
-            const LINE_EPSILON: f32 = 1.0e-4;
-            if *thickness <= 0.0 {
-                return Err("line thickness must be greater than 0".to_string());
-            }
-            // Endpoints resolve against the frame before any comparison: `-0.0 == 0.0`, so raw
-            // coordinates would reject a full-width divider as zero-length.
-            let (start, end) = match layout_bounds {
-                Some(bounds) => (
-                    Point {
-                        x: resolve_coord(at.x(), bounds.width),
-                        y: resolve_coord(at.y(), bounds.height),
-                    },
-                    Point {
-                        x: resolve_coord(to.x(), bounds.width),
-                        y: resolve_coord(to.y(), bounds.height),
-                    },
-                ),
-                None => (at.point(), to.point()),
-            };
-            // On a dynamic-width single an x resolved from an edge-relative component is
-            // provisional: it was computed against `max`. Compare x only when both endpoints are
-            // comparable, and let the render pass re-check the rest.
-            let x_comparable =
-                !is_dynamic_width || at.x().is_sign_negative() == to.x().is_sign_negative();
-            let same_x = x_comparable && (start.x - end.x).abs() < LINE_EPSILON;
-            let same_y = (start.y - end.y).abs() < LINE_EPSILON;
-            if same_x && same_y {
-                return Err("line start and end must differ".to_string());
-            }
-            if let Some(bounds) = layout_bounds {
-                for point in [start, end] {
-                    // A resolved x below zero means the inset exceeds `max`, which no smaller
-                    // final width can rescue, so it is rejected here even on a dynamic label.
-                    if point.x < -LINE_EPSILON || point.y < -LINE_EPSILON {
-                        return Err("line must fit within layout bounds".to_string());
-                    }
-                    // The upper x bound binds only on a plain endpoint: an edge-relative one
-                    // resolves to `bounds.width + x` with `x <= 0`, so it can never exceed the
-                    // frame here. A plain endpoint past `max` is a constant no final width can
-                    // rescue, so it is rejected at load even on a dynamic label.
-                    if point.x > bounds.width + LINE_EPSILON
-                        || point.y > bounds.height + LINE_EPSILON
-                    {
-                        return Err("line must fit within layout bounds".to_string());
-                    }
-                }
-            }
+            validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
         LayoutItem::Container {
             placement,
             when,
-            frame,
+            frame: cont_frame,
             padding,
             items,
         } => {
             validate_when(when.as_ref())?;
-            validate_placement_position(
-                &placement.at,
-                placement.width_is_frame_dependent(),
-                layout_bounds,
-                is_dynamic_width,
-            )?;
-            validate_rotation(&placement.rotate, true)?;
-            let rotation = placement
-                .rotate
-                .and_then(crate::models::Rotation::from_degrees)
-                .unwrap_or(crate::models::Rotation::R0);
-            if rotation.is_rotated() {
-                // §4.2.1: the inner author canvas must be a compile-time constant. `auto` stays
-                // banned outright (ADR-0036, unchanged); a `to` is only a problem when its width is
-                // frame-dependent, which on a fixed frame it never is.
-                let unresolvable = match &placement.extent {
-                    Extent::Size(size) => size.0[0].is_auto() || size.0[1].is_auto(),
-                    Extent::To(_) => placement.width_is_frame_dependent(),
-                };
-                if unresolvable {
-                    return Err(
-                        "rotated container must have fixed size (no auto or dynamic dimensions)"
-                            .to_string(),
-                    );
-                }
-                if subtree_uses_auto(items) {
-                    return Err("auto size is not allowed inside a rotated container".to_string());
-                }
-            }
-            let (width, height) = resolve_size(
-                &placement.at,
-                &placement.extent,
-                placement.max_w,
-                placement.max_h,
-                layout_bounds,
-                true,
-            )?;
-            validate_bounds(&placement.at, width, height, layout_bounds)?;
-
-            if let Some(frame) = frame {
-                if frame.thickness <= 0.0 {
+            if let Some(cf) = cont_frame {
+                if cf.thickness <= 0.0 {
                     return Err("container frame thickness must be greater than 0".to_string());
                 }
             }
+            validate_placement(placement, true, frame, axes_resolved, geometry_values)?;
 
-            // Author canvas = full box, swapped for 90/270. Padding is author-space, so it is
-            // subtracted from the (swapped) author dimensions. For R0 this is the existing math.
-            let (canvas_w, canvas_h) = if rotation.swaps_axes() {
-                (height, width)
-            } else {
-                (width, height)
+            // The frame validation runs against is the declared-default one, so the geometry the
+            // children see is the resolver's, unmeasured, exactly as it is at render.
+            let child_axes_resolved = resolver::container_inner_axes_resolved(
+                placement,
+                axes_resolved,
+                resolver::rotation_of(placement),
+                geometry_values,
+            );
+
+            let child_frame = match frame {
+                Some(outer_frame) => {
+                    let geometry = resolver::container_geometry(
+                        placement,
+                        padding,
+                        outer_frame,
+                        axes_resolved,
+                        geometry_values,
+                    );
+                    if geometry.inner.0 <= resolver::BOUNDS_EPSILON
+                        || geometry.inner.1 <= resolver::BOUNDS_EPSILON
+                    {
+                        return Err("container padding leaves no room for content".to_string());
+                    }
+                    Some(geometry.inner)
+                }
+                None => None,
             };
-            let inner_width = canvas_w - padding.left - padding.right;
-            let inner_height = canvas_h - padding.top - padding.bottom;
-            const CONTENT_EPSILON: f32 = 1.0e-4;
-            if inner_width <= CONTENT_EPSILON || inner_height <= CONTENT_EPSILON {
-                return Err("container padding leaves no room for content".to_string());
-            }
-            let container_bounds = layout_bounds_from_size(inner_width, inner_height)?;
-            // Children of a frame-dependent container on a dynamic-width single may also use auto
-            // width; they resolve to the container inner width at render time. A container sized
-            // to the right edge via `to` is exactly as frame-dependent as an `auto` one. Rotated
-            // containers reject a frame-dependent extent entirely (above), so child_dynamic is
-            // false there.
-            let child_dynamic =
-                is_dynamic_width && !rotation.is_rotated() && placement.width_is_frame_dependent();
-            validate_layout_items(items, Some(&container_bounds), options, child_dynamic)?;
+
+            validate_layout_items(
+                items,
+                child_frame,
+                child_axes_resolved,
+                options,
+                geometry_values,
+            )?;
         }
     }
     Ok(())
 }
 
-/// Bounds-check a placement's anchor. A sign-negative component is edge-relative (#146) and
-/// resolves against the frame first. On a dynamic-width single the final width is unknown but
-/// bounded by `max`, so an inset larger than `max` is rejected here and a merely provisional
-/// result is deferred to the render pass.
-fn validate_placement_position(
-    at: &Position,
-    frame_dependent_width: bool,
-    bounds: Option<&LayoutBounds>,
-    is_dynamic_width: bool,
+fn validate_placement(
+    placement: &Placement,
+    is_container: bool,
+    frame: Option<(f32, f32)>,
+    axes_resolved: [bool; 2],
+    geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
-    const BOUNDS_EPSILON: f32 = 1.0e-4;
-    if at.x().is_sign_negative() && frame_dependent_width && is_dynamic_width {
-        return Err(
-            "an edge-relative x cannot be combined with an auto or edge-relative width on a \
-             dynamic-width template: both would depend on the label width"
-                .to_string(),
-        );
+    validate_rotation(&placement.rotate, is_container)?;
+
+    if let Some(max_w) = placement.max_w {
+        if max_w <= 0.0 {
+            return Err("max_w must be greater than 0".to_string());
+        }
     }
-    let Some(bounds) = bounds else {
-        return Ok(());
-    };
-    if resolve_coord(at.x(), bounds.width) < -BOUNDS_EPSILON
-        || resolve_coord(at.y(), bounds.height) < -BOUNDS_EPSILON
-    {
-        return Err("at resolves outside the frame".to_string());
+    if let Some(max_h) = placement.max_h {
+        if max_h <= 0.0 {
+            return Err("max_h must be greater than 0".to_string());
+        }
     }
-    Ok(())
+
+    for (axis, &is_resolved) in axes_resolved.iter().enumerate() {
+        let spec = resolver::source_of(placement, axis, geometry_values);
+        if spec.is_shrinking_to() && !is_resolved {
+            return Err("extent shrinks as the label grows".to_string());
+        }
+    }
+
+    // Every remaining rule about where a box lands is the resolver's, so load reports the same
+    // refusals render does; only the words differ.
+    match frame {
+        Some(frame) => resolver::place(placement, frame, geometry_values, [None, None])
+            .map(|_| ())
+            .map_err(violation_message),
+        None => resolver::precheck(placement, None, geometry_values).map_err(violation_message),
+    }
 }
 
-/// True if any item in the subtree uses an `auto` width or height. Used to forbid auto sizing
-/// anywhere inside a rotated container (#98), where author-horizontal maps to physical-vertical
-/// and the dynamic-width measurement model does not apply.
-fn subtree_uses_auto(items: &[LayoutItem]) -> bool {
-    items.iter().any(|item| match item {
-        LayoutItem::Text { placement, .. }
-        | LayoutItem::Qr { placement, .. }
-        | LayoutItem::Image { placement, .. } => placement
-            .size_or_auto()
-            .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto()),
-        LayoutItem::Container {
-            placement, items, ..
-        } => {
-            placement
-                .size_or_auto()
-                .is_some_and(|s| s.0[0].is_auto() || s.0[1].is_auto())
-                || subtree_uses_auto(items)
+/// How load words a resolver [`Violation`]. Load has no reason slugs, so the mapping is a table of
+/// messages and nothing else; the rule that produced the violation lives in the resolver.
+fn violation_message(violation: resolver::Violation) -> String {
+    let label = if violation.axis() == 0 {
+        "width"
+    } else {
+        "height"
+    };
+    let inverted = || "to must be above and to the right of at".to_string();
+    match violation {
+        resolver::Violation::AnchorBeforeFrame { .. }
+        | resolver::Violation::AnchorBeyondFrame { .. } => {
+            "at resolves outside the frame".to_string()
         }
-        LayoutItem::Line { .. } => false,
-    })
+        resolver::Violation::AuthoredExtentNotPositive { written_as_to, .. } => {
+            if written_as_to {
+                inverted()
+            } else {
+                format!("size {label} must be greater than 0")
+            }
+        }
+        resolver::Violation::ExtentInverted { .. } => inverted(),
+        resolver::Violation::ExtentNegative { .. } => {
+            format!("size {label} must be greater than 0")
+        }
+        resolver::Violation::ExtentBeyondFrame { .. } => {
+            "item does not fit within layout bounds".to_string()
+        }
+    }
 }
 
 fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), String> {
     if let Some(deg) = rotate {
-        // Rotation is a container-only inner transform (#98); reject it on any other item,
-        // regardless of value (even 0).
         if !is_container {
             return Err("rotation is only supported on containers".to_string());
         }
@@ -1606,67 +2041,6 @@ fn validate_rotation(rotate: &Option<f32>, is_container: bool) -> Result<(), Str
         }
     }
     Ok(())
-}
-
-/// `size = to - at`, both corners resolved against the frame first. Both components must be
-/// strictly positive: `to` is the top-right corner of a box whose bottom-left is `at`.
-fn resolve_to_extent(
-    at: &Position,
-    to: &Position,
-    frame_w: f32,
-    frame_h: f32,
-) -> Result<(f32, f32), String> {
-    let width = resolve_coord(to.x(), frame_w) - resolve_coord(at.x(), frame_w);
-    let height = resolve_coord(to.y(), frame_h) - resolve_coord(at.y(), frame_h);
-    if width <= 0.0 || height <= 0.0 {
-        return Err("to must be above and to the right of at".to_string());
-    }
-    Ok((width, height))
-}
-
-fn resolve_size(
-    at: &Position,
-    extent: &Extent,
-    max_w: Option<f32>,
-    max_h: Option<f32>,
-    layout_bounds: Option<&LayoutBounds>,
-    allow_auto_fill: bool,
-) -> Result<(f32, f32), String> {
-    let size = match extent {
-        Extent::Size(size) => size,
-        Extent::To(to) => {
-            // Every caller resolves against a frame (`layout_bounds` is always `Some`, and
-            // container recursion passes its inner box), so this is an internal invariant, not an
-            // authoring error. Erroring beats silently returning a zero extent if that changes.
-            let Some(layout_bounds) = layout_bounds else {
-                return Err("to cannot be resolved without a frame".to_string());
-            };
-            return resolve_to_extent(at, to, layout_bounds.width, layout_bounds.height);
-        }
-    };
-    if let Some(max_w) = max_w {
-        if max_w <= 0.0 {
-            return Err("max_w must be greater than 0".to_string());
-        }
-    }
-    if let Some(max_h) = max_h {
-        if max_h <= 0.0 {
-            return Err("max_h must be greater than 0".to_string());
-        }
-    }
-    let fallback = if allow_auto_fill {
-        layout_bounds.map(|bounds| {
-            (
-                (bounds.width - resolve_coord(at.x(), bounds.width)).max(0.0),
-                (bounds.height - resolve_coord(at.y(), bounds.height)).max(0.0),
-            )
-        })
-    } else {
-        None
-    };
-    let width = resolve_size_value(&size.0[0], max_w, fallback.map(|value| value.0), "width")?;
-    let height = resolve_size_value(&size.0[1], max_h, fallback.map(|value| value.1), "height")?;
-    Ok((width, height))
 }
 
 fn validate_when(when: Option<&std::collections::BTreeMap<String, String>>) -> Result<(), String> {
@@ -1679,79 +2053,6 @@ fn validate_when(when: Option<&std::collections::BTreeMap<String, String>>) -> R
                 return Err("when must not contain empty values".to_string());
             }
         }
-    }
-    Ok(())
-}
-
-fn resolve_size_value(
-    value: &SizeValue,
-    max: Option<f32>,
-    fallback: Option<f32>,
-    label: &str,
-) -> Result<f32, String> {
-    match value {
-        SizeValue::Dynamic(DynamicValue::Literal(value)) => {
-            if *value <= 0.0 {
-                return Err(format!("size {label} must be greater than 0"));
-            }
-            Ok(*value)
-        }
-        SizeValue::Dynamic(DynamicValue::Ref(_)) => {
-            // Unresolved dynamic parameter reference in template load validation
-            Ok(0.0)
-        }
-        SizeValue::Auto(_) => {
-            // `max_*` caps the resolution of `auto`; it does not replace the fallback. A cap
-            // larger than the room available is simply not binding, so the smaller wins.
-            let resolved = match (max, fallback) {
-                (Some(max), Some(fallback)) => max.min(fallback),
-                (Some(max), None) => max,
-                (None, Some(fallback)) => fallback,
-                (None, None) => {
-                    return Err(format!("size {label} is auto but no max_{label} provided"))
-                }
-            };
-            if resolved <= 0.0 {
-                // Blame whichever of `max`/`fallback` is actually `resolved` (the smaller of the
-                // two, mirroring the `.min()` above): a `max_*` that isn't the binding value is
-                // fine even if it happens to be set, and a fallback of `0` (the anchor leaving no
-                // room) is not a `max_*` authoring error.
-                let max_is_binding = match (max, fallback) {
-                    (Some(max), Some(fallback)) => max <= fallback,
-                    (Some(_), None) => true,
-                    (None, _) => false,
-                };
-                return Err(if max_is_binding {
-                    format!("max_{label} must be greater than 0")
-                } else {
-                    format!("no room left for an auto {label} at this anchor")
-                });
-            }
-            Ok(resolved)
-        }
-    }
-}
-
-/// The x half of this check is frame-independent even when the frame is not: for an edge-relative
-/// `at.x` it reduces to `at.x + width <= 0` once `W` cancels out of `W + at.x + width <= W`, and
-/// `validate_placement_position` guarantees such an item's width is a compile-time constant. So
-/// there is nothing to defer to the render pass on either axis.
-fn validate_bounds(
-    at: &Position,
-    width: f32,
-    height: f32,
-    layout_bounds: Option<&LayoutBounds>,
-) -> Result<(), String> {
-    const BOUNDS_EPSILON: f32 = 1.0e-4;
-    let Some(layout_bounds) = layout_bounds else {
-        return Ok(());
-    };
-    let x = resolve_coord(at.x(), layout_bounds.width);
-    let y = resolve_coord(at.y(), layout_bounds.height);
-    if x + width > layout_bounds.width + BOUNDS_EPSILON
-        || y + height > layout_bounds.height + BOUNDS_EPSILON
-    {
-        return Err("item must fit within layout bounds".to_string());
     }
     Ok(())
 }
@@ -1791,42 +2092,6 @@ fn validate_font_size(font_size: &FontSize) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-struct LayoutBounds {
-    width: f32,
-    height: f32,
-}
-
-fn layout_bounds(format: &TemplateFormat) -> Result<Option<LayoutBounds>, String> {
-    let (width, height) = match format {
-        TemplateFormat::Single { width, height, .. } => {
-            (resolve_dimension(width), resolve_dimension(height))
-        }
-        TemplateFormat::Sheet {
-            label_width,
-            label_height,
-            ..
-        } => (*label_width, *label_height),
-    };
-
-    layout_bounds_from_size(width, height).map(Some)
-}
-
-fn layout_bounds_from_size(width: f32, height: f32) -> Result<LayoutBounds, String> {
-    Ok(LayoutBounds { width, height })
-}
-fn resolve_dimension(dimension: &DynamicDimension) -> f32 {
-    match dimension {
-        DynamicDimension::Fixed(DynamicValue::Literal(value)) => *value,
-        DynamicDimension::Fixed(DynamicValue::Ref(_)) => 0.0,
-        DynamicDimension::Dynamic { min, max } => match (max, min) {
-            (Some(DynamicValue::Literal(v)), _) => *v,
-            (_, Some(DynamicValue::Literal(v))) => *v,
-            _ => 0.0,
-        },
-    }
-}
-
 impl From<&TemplateDefinition> for TemplateSummary {
     fn from(template: &TemplateDefinition) -> Self {
         Self {
@@ -1855,6 +2120,11 @@ impl From<&TemplateDefinition> for TemplateDetail {
             params: template.params.clone(),
             layout: template.layout.clone(),
             version: template.version.clone(),
+            inputs: TemplateInputs {
+                default: template.inputs_default(),
+                all: template.inputs_all(),
+            },
+            variables: template.variables(),
         }
     }
 }
@@ -1912,14 +2182,17 @@ pub(crate) fn load_all_for_tests() -> (TemplateRegistry, std::path::PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::{
-        list_template_groups, validate_group_name, validate_group_segment,
-        validate_template_id_stem, TemplateContent, TemplateRegistry,
+        bare_token_names, list_template_groups, load_all_for_tests, validate_group_name,
+        validate_group_segment, validate_template_id_stem, TemplateContent, TemplateRegistry,
     };
     use crate::models::{
-        Alignment, Dimension, DynamicDimension, DynamicValue, FontSize, Layout, LayoutItem,
-        ParamSpec, ParamType, Position, Size, SizeValue, TemplateFormat,
+        Alignment, Dimension, DynamicDimension, DynamicValue, Extent, FontSize, InputControl,
+        Layout, LayoutItem, ParamSpec, ParamType, ParamValue, Position, Size, SizeValue,
+        TemplateFormat,
     };
-    use std::collections::BTreeMap;
+    use crate::reason::Reason;
+    use serde_json::json;
+    use std::collections::{BTreeMap, HashMap, HashSet};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -1930,6 +2203,12 @@ mod tests {
         crate::parse::parse_template(yaml)
             .map_err(|e| e.to_string())?
             .validate()
+    }
+
+    fn parse_template_ok(yaml: &str) -> TemplateContent {
+        let t = crate::parse::parse_template(yaml).expect("parse template");
+        t.validate().expect("validate template");
+        t
     }
 
     #[test]
@@ -1951,15 +2230,18 @@ mod tests {
     }
 
     #[test]
-    fn rotated_container_rejects_auto_outer_size() {
-        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [auto,40]\n    rotate: 90\n    items: []\n";
-        assert!(parse_and_validate(yaml).is_err());
+    /// The ban on a rotated container sizing itself from its content is gone: rotation composes
+    /// through the resolver, so the outer axes classify and resolve like any other container's.
+    fn rotated_container_accepts_a_content_outer_size() {
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [content,40]\n    rotate: 90\n    items: []\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
+    /// So is the ban on content-sized descendants: the child resolves against the swapped canvas.
     #[test]
-    fn rotated_container_rejects_auto_child() {
-        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [auto,10]\n        font_size: 6\n";
-        assert!(parse_and_validate(yaml).is_err());
+    fn rotated_container_accepts_a_content_child() {
+        let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: container\n    at: [0,0]\n    size: [80,40]\n    rotate: 90\n    items:\n      - type: text\n        value: hi\n        at: [0,0]\n        size: [content,10]\n        font_size: 6\n";
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     #[test]
@@ -1985,11 +2267,11 @@ mod tests {
         assert!(parse_and_validate(yaml).is_err());
     }
 
-    /// §4.2.1: a rotated container's inner canvas has to be known at compile time.
+    /// Rotated container with frame-dependent `to` is accepted under unified resolution.
     #[test]
-    fn validate_rejects_a_rotated_container_with_a_frame_dependent_to() {
+    fn validate_accepts_a_rotated_container_with_a_frame_dependent_to() {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    to: [-0.0, 12.0]\n    rotate: 90\n    items: []\n";
-        assert!(parse_and_validate(yaml).is_err());
+        assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// Both corners edge-relative is a constant 20-unit box, so the canvas is known and it is fine.
@@ -1999,11 +2281,10 @@ mod tests {
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// A container sized to the right edge is frame-dependent, so its children are dynamic too and an
-    /// auto-width child resolves against the container's inner width rather than being rejected.
+    /// A container sized to the right edge is frame-dependent, and a content child resolves inside.
     #[test]
     fn validate_accepts_an_auto_child_inside_a_to_spanned_container() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 20, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [4.0, 0.0]\n    to: [-0.0, 12.0]\n    items:\n      - type: text\n        value: \"x\"\n        at: [2.0, 1.0]\n        size: [auto, 10.0]\n        font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 20, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [4.0, 0.0]\n    to: [-0.0, 12.0]\n    items:\n      - type: text\n        value: \"x\"\n        at: [2.0, 1.0]\n        size: [content, 10.0]\n        font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2026,10 +2307,10 @@ mod tests {
         );
     }
 
-    /// Issue #154 repro 1: an unrotated container with auto width whose padding exceeds the resolved width.
+    /// Issue #154 repro 1: an unrotated container with fill width whose padding exceeds the resolved width.
     #[test]
     fn unrotated_container_with_auto_width_and_excessive_padding_rejected() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 24.0]\n    padding: [0.0, 60.0, 0.0, 60.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2039,7 +2320,7 @@ mod tests {
     /// Issue #154 repro 2: an unrotated container capped by max_w whose padding exceeds the cap.
     #[test]
     fn unrotated_capped_container_with_excessive_padding_rejected() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [auto, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 24\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 24.0]\n    max_w: 50.0\n    padding: [0.0, 30.0, 0.0, 30.0]\n    items: []\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("container padding leaves no room for content".to_string())
@@ -2069,17 +2350,17 @@ mod tests {
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// Position and width would both be chasing the same unknown.
+    /// A shrinking `to` on an unresolved axis is rejected.
     #[test]
-    fn validate_rejects_a_right_anchored_auto_width_box_on_a_dynamic_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    font_size: 6\n";
+    fn validate_rejects_a_shrinking_to_on_an_unresolved_axis() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    to: [10.0, 10.0]\n    font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     /// On a fixed frame everything resolves, so the same shape is fine.
     #[test]
     fn validate_accepts_a_right_anchored_auto_width_box_on_a_fixed_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [auto, 10.0]\n    max_w: 20.0\n    font_size: 6\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-20.0, 1.0]\n    size: [fill, 10.0]\n    max_w: 20.0\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2098,7 +2379,7 @@ mod tests {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 12\nlayout:\n  - type: text\n    value: \"x\"\n    at: [-0.0, 2.0]\n    size: [10.0, 6.0]\n    font_size: 6\n";
         assert_eq!(
             parse_and_validate(yaml),
-            Err("item must fit within layout bounds".to_string())
+            Err("item does not fit within layout bounds".to_string())
         );
     }
 
@@ -2122,259 +2403,106 @@ mod tests {
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// `max_*` is a cap on the resolution of `auto`, not a substitute for the fallback. Discarding the
-    /// fallback is what made validation reject a container the renderer would have fitted (#152).
     #[test]
-    fn resolve_size_value_caps_rather_than_substituting() {
-        use super::resolve_size_value;
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        // Both present: the smaller wins, in both orders.
-        assert_eq!(
-            resolve_size_value(&auto, Some(30.0), Some(10.0), "width"),
-            Ok(10.0)
+    fn auto_spelling_is_rejected_at_parse_with_helpful_migration_message() {
+        let yaml_container = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
+        let err = parse_and_validate(yaml_container)
+            .expect_err("auto on container height must be rejected");
+        assert!(
+            err.contains("`auto` was renamed"),
+            "unexpected message: {err}"
         );
-        assert_eq!(
-            resolve_size_value(&auto, Some(10.0), Some(30.0), "width"),
-            Ok(10.0)
-        );
-        // One present: it is used.
-        assert_eq!(
-            resolve_size_value(&auto, Some(30.0), None, "width"),
-            Ok(30.0)
-        );
-        assert_eq!(
-            resolve_size_value(&auto, None, Some(30.0), "width"),
-            Ok(30.0)
-        );
-        // Neither: the unchanged error.
-        assert!(resolve_size_value(&auto, None, None, "width").is_err());
-        // A numeric size is never clamped by the bound.
-        assert_eq!(
-            resolve_size_value(&SizeValue::fixed(50.0), Some(30.0), Some(30.0), "width"),
-            Ok(50.0)
+
+        let yaml_text = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: text\n    value: \"hello\"\n    at: [0.0, 0.0]\n    size: [auto, 10.0]\n    font_size: 10\n";
+        let err = parse_and_validate(yaml_text).expect_err("auto on text width must be rejected");
+        assert!(
+            err.contains("`auto` was renamed"),
+            "unexpected message: {err}"
         );
     }
 
-    /// A zero (or negative) fallback with no `max_*` set is the anchor leaving no room, not an
-    /// invalid `max_*` — there isn't one. Blaming `max_width` here points the author at a field
-    /// they never wrote.
     #[test]
-    fn a_zero_remainder_with_no_max_blames_the_anchor_not_a_max() {
-        use super::resolve_size_value;
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        assert_eq!(
-            resolve_size_value(&auto, None, Some(0.0), "width"),
-            Err("no room left for an auto width at this anchor".to_string())
+    fn resolver_source_of_and_available_and_claim_behave_consistently() {
+        use crate::models::{Placement, Position, Size, SizeValue};
+        use crate::resolver::{available, claim, requirement, source_of, Anchor, ExtentSource};
+        use std::collections::HashMap;
+
+        let geo = HashMap::new();
+        let p_content = Placement::sized(
+            Position([10.0, 0.0]),
+            Size([SizeValue::content(), SizeValue::fixed(20.0)]),
         );
+        let spec_w = source_of(&p_content, 0, &geo);
+        assert_eq!(spec_w.source, ExtentSource::Content);
+        assert_eq!(spec_w.anchor, Anchor::Plain(10.0));
+        assert_eq!(available(100.0, &spec_w), 90.0);
+
+        let p_fill = Placement::sized(
+            Position([10.0, 0.0]),
+            Size([SizeValue::fill(), SizeValue::fixed(20.0)]),
+        );
+        let spec_fill_w = source_of(&p_fill, 0, &geo);
+        assert_eq!(spec_fill_w.source, ExtentSource::Frame);
+        assert_eq!(available(100.0, &spec_fill_w), 90.0);
+
+        // Claim on content respects intrinsic and cap
+        let cl = claim(&spec_w, 100.0, 90.0, Some(50.0), Some(30.0));
+        assert_eq!(cl, 30.0);
+        let req = requirement(&spec_w, cl);
+        assert_eq!(req, 40.0); // at (10) + claim (30)
     }
 
-    /// A genuinely non-positive `max_*` still gets the original message, whether or not a fallback
-    /// happens to be present, as long as `max_*` is the value that actually resolved (the smaller
-    /// of the two, or the only one set).
     #[test]
-    fn a_non_positive_max_still_blames_the_max() {
-        use super::resolve_size_value;
-        let auto = SizeValue::Auto(crate::models::AutoSize::Auto);
-        assert_eq!(
-            resolve_size_value(&auto, Some(-5.0), None, "width"),
-            Err("max_width must be greater than 0".to_string())
-        );
-        // `max_*` is set and positive but is not the binding value (the fallback is smaller and
-        // is the actual culprit): still a room problem, not a `max_*` problem, even though a
-        // `max_*` happens to be set.
-        assert_eq!(
-            resolve_size_value(&auto, Some(50.0), Some(0.0), "width"),
-            Err("no room left for an auto width at this anchor".to_string())
-        );
-    }
-
-    /// The fallback is the space remaining from the item's own anchor, not the whole frame. An
-    /// `auto` height at a nonzero `at.y` used to resolve to the full frame and get rejected on
-    /// bounds, blaming the author for the resolver's arithmetic.
-    #[test]
-    fn an_auto_axis_falls_back_to_the_space_left_from_its_anchor() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    items: []\n";
+    fn a_fill_axis_falls_back_to_the_space_left_from_its_anchor() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, 10.0]\n    size: [20.0, fill]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// The anchor is resolved before subtracting: an edge-relative `at.y` is measured from the top,
-    /// so `frame - raw_at` would give 45 on a 40mm frame instead of 5.
     #[test]
     fn an_edge_relative_anchor_is_resolved_before_the_subtraction() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, -5.0]\n    size: [20.0, auto]\n    items: []\n";
-        // Resolves to 40 - 35 = 5 and fits. A raw-anchor implementation resolves 45 and is rejected.
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 60\n  height: 40\nlayout:\n  - type: container\n    at: [0.0, -5.0]\n    size: [20.0, fill]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// ADR-0053's double-subtraction, which `extent_auto_bounds` was written to prevent. The
-    /// `Extent::To` early return in `resolve_size` is what prevents it now, so test it directly
-    /// rather than trusting the control flow.
     #[test]
     fn a_to_extent_is_not_narrowed_twice_by_its_anchor() {
         let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [20.0, 0.0]\n    to: [-0.0, 12.0]\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// The fallback's actual value, not merely that something fits. `frame - resolved_at` on each
-    /// axis, with the anchor resolved first so an edge-relative component measures from the far edge.
-    #[test]
-    fn the_auto_fallback_is_the_remaining_space() {
-        use super::{resolve_size, LayoutBounds};
-        use crate::models::{AutoSize, Extent, Position, Size, SizeValue};
-        let bounds = LayoutBounds {
-            width: 100.0,
-            height: 40.0,
-        };
-        let auto_h = Extent::Size(Size([
-            SizeValue::fixed(20.0),
-            SizeValue::Auto(AutoSize::Auto),
-        ]));
-
-        // Plain anchor: 40 - 10 = 30.
-        let (_, h) = resolve_size(
-            &Position([0.0, 10.0]),
-            &auto_h,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 30.0);
-
-        // Origin: the subtraction is inert, but the fallback still applies.
-        let (_, h) = resolve_size(
-            &Position([0.0, 0.0]),
-            &auto_h,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 40.0);
-
-        // Edge-relative: at.y -5 resolves to 35, leaving 5. A raw-anchor implementation gives 45.
-        let (_, h) = resolve_size(
-            &Position([0.0, -5.0]),
-            &auto_h,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 5.0);
-
-        // The cap still binds when it is the smaller of the two: min(6, 30).
-        let (_, h) = resolve_size(
-            &Position([0.0, 10.0]),
-            &auto_h,
-            None,
-            Some(6.0),
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 6.0);
-
-        // And #155's shape: min(200, 40) = 40, not 200.
-        let (_, h) = resolve_size(
-            &Position([0.0, 0.0]),
-            &auto_h,
-            None,
-            Some(200.0),
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(h, 40.0);
-
-        // Spec §7, the far-edge zero: an anchor exactly on the far edge leaves no room, and the
-        // helper's existing `resolved <= 0.0` rejection is the right outcome here. This is the
-        // helper path only; the dynamic auto-width container's zero remainder is deliberately
-        // allowed elsewhere and is pinned separately by
-        // `a_zero_remainder_container_renders_an_empty_box`.
-        assert!(
-            resolve_size(
-                &Position([0.0, 40.0]),
-                &auto_h,
-                None,
-                None,
-                Some(&bounds),
-                true
-            )
-            .is_err(),
-            "an auto axis with no room left is an authoring error at the helper"
-        );
-
-        // Spec §7, the width axis for a container on a fixed label: 100 - 10 = 90.
-        let auto_w = Extent::Size(Size([
-            SizeValue::Auto(AutoSize::Auto),
-            SizeValue::fixed(12.0),
-        ]));
-        let (w, _) = resolve_size(
-            &Position([10.0, 0.0]),
-            &auto_w,
-            None,
-            None,
-            Some(&bounds),
-            true,
-        )
-        .expect("resolves");
-        assert_eq!(
-            w, 90.0,
-            "a container at x=10 fills the remaining width, not the whole frame"
-        );
-    }
-
-    /// The #152 disagreement, from the validation side: a container whose cap exceeds the room left
-    /// must resolve to the room left and fit, not to the cap and overflow.
     #[test]
     fn validate_accepts_a_capped_container_that_fits_the_remaining_width() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [auto, 12.0]\n    max_w: 30.0\n    items: []\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items: []\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// #155's validation half, which **passes before this task** — that is the bug: validation caps
-    /// `max_h: 200` against its full-frame fallback while the render path has no fallback at all.
-    /// Kept as the pin that the two layers stay agreed, not as a red for this step. The red is
-    /// `the_155_repro_renders`.
     #[test]
     fn the_155_repro_validates_and_its_height_is_capped() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    max_h: 200.0\n    font_size: 8\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 60 }\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, fill]\n    max_h: 200.0\n    font_size: 8\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// A fixed label, where text validation previously had no fallback at all.
     #[test]
-    fn text_auto_height_on_a_fixed_label_falls_back_to_the_remainder() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    font_size: 6\n";
+    fn text_fill_height_on_a_fixed_label_falls_back_to_the_remainder() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, fill]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// The false rejection this closes: it would have rendered at min(35, 30) = 30.
     #[test]
-    fn text_auto_height_with_an_oversized_max_h_is_not_rejected_on_a_fixed_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, auto]\n    max_h: 35.0\n    font_size: 6\n";
+    fn text_fill_height_with_an_oversized_max_h_is_not_rejected_on_a_fixed_label() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 10.0]\n    size: [20.0, fill]\n    max_h: 35.0\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// Sheets render with LengthMode::Fixed and are easy to forget in a change that started on
-    /// auto-length tape. An auto width with no max_w previously errored here.
     #[test]
-    fn text_auto_width_on_a_sheet_falls_back_to_the_slot_remainder() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [auto, 8.0]\n    font_size: 6\n";
+    fn text_content_width_on_a_sheet_validates_ok() {
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: sheet\n  paper_width: 100\n  paper_height: 100\n  label_width: 40\n  label_height: 20\n  positions: [[0.0, 0.0]]\nlayout:\n  - type: text\n    value: \"x\"\n    at: [5.0, 2.0]\n    size: [content, 8.0]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
-    /// `frame - 0 == frame`, so the anchor subtraction is inert at the origin — but the fallback
-    /// itself is new for text on fixed formats, and #155's repro is an origin case. This test
-    /// exists because "origin items are unaffected" is the first wrong thing a reader assumes.
     #[test]
     fn the_origin_is_not_exempt() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, auto]\n    font_size: 6\n";
-        // No max_h, at the origin, on a fixed label: rejected before this branch, resolves to 40 now.
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 100\n  height: 40\nlayout:\n  - type: text\n    value: \"x\"\n    at: [0.0, 0.0]\n    size: [20.0, fill]\n    font_size: 6\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -2597,7 +2725,7 @@ layout:
   - type: text
     value: "{datetime.long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         write_template(&dir, "valid.yaml", &valid_yaml);
@@ -2699,6 +2827,7 @@ layout: []
                 font_weight: Some(DynamicValue::Literal(350)),
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -2802,6 +2931,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -2947,6 +3077,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -2959,9 +3090,7 @@ layout:
     }
 
     #[test]
-    fn dynamic_width_single_auto_width_item_at_offset_validates_ok() {
-        // Dynamic-width single with both bounds; a container at at.x=5 with auto width.
-        // Auto width should resolve to max_width - at.x = 100 - 5 = 95, which fits.
+    fn dynamic_width_single_fill_width_item_at_offset_validates_ok() {
         let template = TemplateContent {
             name: "Tape2".to_string(),
             description: "tape".to_string(),
@@ -2979,10 +3108,7 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: crate::models::Placement::sized(
                     Position([5.0, 0.0]),
-                    Size([
-                        SizeValue::Auto(crate::models::AutoSize::Auto),
-                        SizeValue::fixed(12.0),
-                    ]),
+                    Size([SizeValue::fill(), SizeValue::fixed(12.0)]),
                 ),
                 when: None,
                 frame: None,
@@ -2993,7 +3119,7 @@ layout:
         };
         template
             .validate()
-            .expect("dynamic-width single with auto-width container at offset should validate OK");
+            .expect("dynamic-width single with fill-width container at offset should validate OK");
     }
 
     #[test]
@@ -3022,6 +3148,7 @@ layout:
                 font_weight: None,
                 multiline: true,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -3057,6 +3184,7 @@ layout:
                 font_weight: None,
                 multiline: false,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -3089,6 +3217,7 @@ layout:
                 font_weight: None,
                 multiline: true,
                 alignment: Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
                 when: None,
             }]),
             version: None,
@@ -3178,7 +3307,7 @@ format:
 layout:
   - type: text
     value: "{message}"
-    size: [auto, auto]
+    size: [content, fill]
     font_size: 10
     font_weight: "{weight}"
     when:
@@ -3250,7 +3379,7 @@ layout:
   - type: text
     value: "{datetime.long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3270,7 +3399,7 @@ layout:
   - type: text
     value: "{sys.nwo}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3289,7 +3418,7 @@ layout:
   - type: text
     value: "{sys.now.long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3312,7 +3441,7 @@ layout:
   - type: text
     value: "{title:long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3331,7 +3460,7 @@ layout:
   - type: text
     value: "{vars.qr_base_url:long_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3353,7 +3482,7 @@ layout:
   - type: text
     value: "{printed_on:}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3393,7 +3522,7 @@ layout:
   - type: text
     value: "{printed_on.short_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         let err = parse_and_validate(yaml).unwrap_err();
@@ -3439,7 +3568,7 @@ layout:
   - type: text
     value: "{printed_on:short_date} {sys.now:iso_date}"
     at: [0, 0]
-    size: [auto, 10]
+    size: [content, 10]
     font_size: 10
 "#;
         assert!(parse_and_validate(yaml).is_ok());
@@ -3831,5 +3960,793 @@ layout:
         assert!(broken[0].error.contains("not valid UTF-8"));
 
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn line_validation_with_unresolved_vertical_axis_is_not_rejected() {
+        let yaml = r#"
+name: Unresolved Vertical Line
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, content]
+    items:
+      - type: line
+        at: [10, 10]
+        to: [20, -10]
+        thickness: 0.5
+      - type: text
+        value: "Hello"
+        at: [0, 0]
+        size: [100, 30]
+        font_size: 12
+"#;
+        let template = parse_and_validate(yaml);
+        assert!(
+            template.is_ok(),
+            "unresolved vertical line must validate: {template:?}"
+        );
+    }
+
+    #[test]
+    fn reference_site_guard_all_validation_params_appear_in_inputs_all() {
+        let registry = load_all_for_tests().0;
+        for summary in registry.summaries() {
+            let template = registry.get(&summary.id).expect("template");
+            let inputs_all_names: HashSet<String> =
+                template.inputs_all().into_iter().map(|i| i.name).collect();
+
+            // Check format refs
+            if let TemplateFormat::Single { width, height, .. } = &template.format {
+                for dim in [width, height] {
+                    match dim {
+                        DynamicDimension::Fixed(DynamicValue::Ref(r)) => {
+                            assert!(
+                                inputs_all_names.contains(r),
+                                "template {} missing format ref {r} in inputs.all",
+                                template.id
+                            );
+                        }
+                        DynamicDimension::Dynamic { min, max } => {
+                            if let Some(DynamicValue::Ref(r)) = min {
+                                assert!(
+                                    inputs_all_names.contains(r),
+                                    "template {} missing format min ref {r} in inputs.all",
+                                    template.id
+                                );
+                            }
+                            if let Some(DynamicValue::Ref(r)) = max {
+                                assert!(
+                                    inputs_all_names.contains(r),
+                                    "template {} missing format max ref {r} in inputs.all",
+                                    template.id
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            // Check layout items refs and when keys
+            fn check_items(
+                items: &[LayoutItem],
+                inputs_all_names: &HashSet<String>,
+                template_id: &str,
+            ) {
+                for item in items {
+                    if let Some(when) = item.when() {
+                        for k in when.keys() {
+                            assert!(
+                                inputs_all_names.contains(k),
+                                "template {template_id} missing when key {k} in inputs.all"
+                            );
+                        }
+                    }
+                    match item {
+                        LayoutItem::Text {
+                            placement,
+                            font_weight,
+                            value,
+                            ..
+                        } => {
+                            if let Extent::Size(size) = &placement.extent {
+                                for sv in &size.0 {
+                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                        assert!(
+                                            inputs_all_names.contains(r),
+                                            "template {template_id} missing text size ref {r} in inputs.all"
+                                        );
+                                    }
+                                }
+                            }
+                            if let Some(DynamicValue::Ref(r)) = font_weight {
+                                assert!(
+                                    inputs_all_names.contains(r),
+                                    "template {template_id} missing font_weight ref {r} in inputs.all"
+                                );
+                            }
+                            for name in bare_token_names(value) {
+                                assert!(
+                                    inputs_all_names.contains(name),
+                                    "template {template_id} missing token {name} in inputs.all"
+                                );
+                            }
+                        }
+                        LayoutItem::Qr {
+                            placement, value, ..
+                        } => {
+                            if let Extent::Size(size) = &placement.extent {
+                                for sv in &size.0 {
+                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                        assert!(
+                                            inputs_all_names.contains(r),
+                                            "template {template_id} missing qr size ref {r} in inputs.all"
+                                        );
+                                    }
+                                }
+                            }
+                            for name in bare_token_names(value) {
+                                assert!(
+                                    inputs_all_names.contains(name),
+                                    "template {template_id} missing token {name} in inputs.all"
+                                );
+                            }
+                        }
+                        LayoutItem::Image {
+                            placement,
+                            name,
+                            src,
+                            ..
+                        } => {
+                            if let Extent::Size(size) = &placement.extent {
+                                for sv in &size.0 {
+                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                        assert!(
+                                            inputs_all_names.contains(r),
+                                            "template {template_id} missing image size ref {r} in inputs.all"
+                                        );
+                                    }
+                                }
+                            }
+                            if let Some(n) = name {
+                                assert!(
+                                    inputs_all_names.contains(n),
+                                    "template {template_id} missing image name {n} in inputs.all"
+                                );
+                            }
+                            if let Some(s) = src {
+                                for name in bare_token_names(s) {
+                                    assert!(
+                                        inputs_all_names.contains(name),
+                                        "template {template_id} missing token {name} in inputs.all"
+                                    );
+                                }
+                            }
+                        }
+                        LayoutItem::Line { .. } => {}
+                        LayoutItem::Container {
+                            placement, items, ..
+                        } => {
+                            if let Extent::Size(size) = &placement.extent {
+                                for sv in &size.0 {
+                                    if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
+                                        assert!(
+                                            inputs_all_names.contains(r),
+                                            "template {template_id} missing container size ref {r} in inputs.all"
+                                        );
+                                    }
+                                }
+                            }
+                            check_items(items, inputs_all_names, template_id);
+                        }
+                    }
+                }
+            }
+            let Layout::Items(items) = &template.layout;
+            check_items(items, &inputs_all_names, &template.id);
+        }
+    }
+
+    fn whole_manifest_yaml() -> &'static str {
+        r#"
+name: Whole Manifest Fixture
+unit: mm
+dpi: 200
+params:
+  branch:
+    type: enum
+    values: [alpha, beta]
+    default: alpha
+  sub_branch:
+    type: enum
+    values: [sub1, sub2]
+    default: sub1
+  dyn_w:
+    type: length
+    min: 20
+    max: 100
+  weight:
+    type: integer
+    min: 100
+    max: 900
+    default: 400
+  text_w:
+    type: length
+    min: 10
+    max: 30
+  qr_dim:
+    type: length
+    min: 10
+    max: 40
+  img_dim:
+    type: length
+    min: 10
+    max: 30
+  cont_dim:
+    type: length
+    min: 10
+    max: 50
+  img_param:
+    type: string
+  single_title:
+    type: string
+format:
+  type: single
+  width:
+    min: "{dyn_w}"
+    max: 100
+  height: 50
+layout:
+  - type: line
+    at: [0, 0]
+    to: [10, 0]
+    thickness: 0.5
+  - type: container
+    when:
+      branch: alpha
+    at: [0, 0]
+    size: [50, 50]
+    items:
+      - type: text
+        value: "{single_title} {alpha_text}"
+        at: [0, 0]
+        size: ["{text_w}", 10]
+        font_size: 10
+        font_weight: "{weight}"
+      - type: image
+        name: img_param
+        at: [0, 10]
+        size: ["{img_dim}", "{img_dim}"]
+      - type: container
+        when:
+          sub_branch: sub1
+        at: [0, 20]
+        size: [30, 20]
+        items:
+          - type: qr
+            value: "https://example.com/{qr_code_val}"
+            at: [0, 0]
+            size: ["{qr_dim}", "{qr_dim}"]
+  - type: container
+    when:
+      branch: beta
+    at: [0, 0]
+    size: ["{cont_dim}", 50]
+    items: []
+  - type: container
+    when:
+      branch: beta
+    at: [0, 0]
+    size: [40, 50]
+    items:
+      - type: text
+        value: "{beta_multiline}\n{vars.secret}"
+        multiline: true
+        at: [0, 0]
+        size: [40, 20]
+        font_size: 10
+      - type: image
+        src: "{asset_path}"
+        at: [0, 20]
+        size: [20, 20]
+"#
+    }
+
+    #[test]
+    fn whole_manifest_inputs_default_and_inputs_all() {
+        let template = parse_template_ok(whole_manifest_yaml());
+
+        let defaults = template.inputs_default();
+        let default_names: Vec<&str> = defaults.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(
+            default_names,
+            vec![
+                "branch",
+                "dyn_w",
+                "img_dim",
+                "img_param",
+                "qr_dim",
+                "single_title",
+                "sub_branch",
+                "text_w",
+                "weight",
+                "alpha_text",
+                "qr_code_val"
+            ]
+        );
+
+        // Check controls and properties on default list
+        let get_def = |name: &str| defaults.iter().find(|i| i.name == name).unwrap();
+        assert_eq!(get_def("branch").control, InputControl::Select);
+        assert!(!get_def("branch").required);
+        assert_eq!(
+            get_def("branch").default,
+            Some(ParamValue::String("alpha".to_string()))
+        );
+
+        assert_eq!(get_def("text_w").control, InputControl::Number);
+        assert!(get_def("text_w").slider);
+        assert_eq!(get_def("text_w").unit, Some("mm".to_string()));
+
+        assert_eq!(get_def("img_param").control, InputControl::Image);
+        assert!(get_def("img_param").interpolated);
+
+        assert_eq!(get_def("single_title").control, InputControl::Text);
+        assert!(get_def("single_title").truncated_elsewhere);
+
+        assert_eq!(get_def("weight").control, InputControl::Integer);
+        assert!(get_def("weight").slider);
+        assert!(!get_def("weight").required);
+
+        assert_eq!(get_def("alpha_text").control, InputControl::Text);
+        assert!(get_def("alpha_text").required);
+        assert!(get_def("alpha_text").truncated_elsewhere);
+
+        assert_eq!(get_def("qr_code_val").control, InputControl::Text);
+        assert!(get_def("qr_code_val").required);
+
+        let all = template.inputs_all();
+        let all_names: Vec<&str> = all.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(
+            all_names,
+            vec![
+                "branch",
+                "cont_dim",
+                "dyn_w",
+                "img_dim",
+                "img_param",
+                "qr_dim",
+                "single_title",
+                "sub_branch",
+                "text_w",
+                "weight",
+                "alpha_text",
+                "qr_code_val",
+                "beta_multiline",
+                "asset_path"
+            ]
+        );
+
+        let get_all = |name: &str| all.iter().find(|i| i.name == name).unwrap();
+        assert_eq!(get_all("cont_dim").control, InputControl::Number);
+        assert_eq!(get_all("beta_multiline").control, InputControl::Textarea);
+        assert_eq!(get_all("asset_path").control, InputControl::Text);
+        assert!(get_all("asset_path").interpolated);
+
+        assert_eq!(template.variables(), vec!["secret".to_string()]);
+    }
+
+    #[test]
+    fn endpoint_matches_render_for_whole_manifest() {
+        let template = parse_template_ok(whole_manifest_yaml());
+        let now = chrono::Local::now();
+
+        // Label 1: branch alpha, sub_branch sub1
+        let mut data1 = HashMap::new();
+        data1.insert("dyn_w".to_string(), json!(50.0));
+        data1.insert("text_w".to_string(), json!(20.0));
+        data1.insert("single_title".to_string(), json!("Title"));
+        data1.insert("alpha_text".to_string(), json!("Alpha"));
+        data1.insert(
+            "img_param".to_string(),
+            json!(crate::render::SAMPLE_PNG_DATA_URI),
+        );
+        data1.insert("img_dim".to_string(), json!(15.0));
+        data1.insert("qr_dim".to_string(), json!(15.0));
+        data1.insert("qr_code_val".to_string(), json!("123"));
+
+        let inputs1 = template.derive_inputs_for_label(&data1, now);
+        let input_names1: HashSet<String> = inputs1.into_iter().map(|i| i.name).collect();
+
+        let resolved1 = crate::render::resolve_parameters(&template, &data1, None, now)
+            .expect("resolve label 1");
+        for k in data1.keys() {
+            assert!(
+                input_names1.contains(k),
+                "data key {k} must be reported in inputs"
+            );
+        }
+        for name in &input_names1 {
+            assert!(
+                resolved1.data.contains_key(name),
+                "reported input {name} must be resolved by render"
+            );
+        }
+
+        // Label 2: branch beta
+        let mut data2 = HashMap::new();
+        data2.insert("branch".to_string(), json!("beta"));
+        data2.insert("dyn_w".to_string(), json!(60.0));
+        data2.insert("cont_dim".to_string(), json!(35.0));
+        data2.insert("beta_multiline".to_string(), json!("Multi\nLine"));
+        data2.insert(
+            "asset_path".to_string(),
+            json!(crate::render::SAMPLE_PNG_DATA_URI),
+        );
+
+        let inputs2 = template.derive_inputs_for_label(&data2, now);
+        let input_names2: HashSet<String> = inputs2.into_iter().map(|i| i.name).collect();
+        assert!(!input_names2.contains("alpha_text"));
+        assert!(!input_names2.contains("qr_code_val"));
+        assert!(!input_names2.contains("img_param"));
+        assert!(input_names2.contains("cont_dim"));
+        assert!(input_names2.contains("beta_multiline"));
+        assert!(input_names2.contains("asset_path"));
+        assert!(input_names2.contains("dyn_w"));
+
+        let resolved2 = crate::render::resolve_parameters(&template, &data2, None, now)
+            .expect("resolve label 2");
+        for k in data2.keys() {
+            assert!(
+                input_names2.contains(k),
+                "data key {k} must be reported in inputs"
+            );
+        }
+        for name in &input_names2 {
+            assert!(
+                resolved2.data.contains_key(name),
+                "reported input {name} must be resolved by render"
+            );
+        }
+    }
+
+    #[test]
+    fn thumbnail_closure_renders_required_and_min_values() {
+        let yaml = r#"
+name: Thumbnail Closure
+unit: mm
+dpi: 200
+params:
+  mode:
+    type: string
+  subtitle:
+    type: string
+  length_param:
+    type: length
+    min: 15
+    max: 50
+  style:
+    type: enum
+    values: [normal, special]
+    default: normal
+  str_with_default:
+    type: string
+    default: my_default
+  gate_only:
+    type: string
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "{mode}"
+    at: [0, 0]
+    size: [50, 5]
+    font_size: 8
+  - type: container
+    when:
+      mode: mode
+    at: [0, 5]
+    size: [50, 15]
+    items:
+      - type: text
+        value: "{subtitle} {style} {length_param} {str_with_default}"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 10
+  - type: container
+    when:
+      gate_only: gate_only
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Never rendered"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let ph = template.placeholder_data();
+        assert_eq!(ph.get("mode"), Some(&json!("mode")));
+        assert_eq!(ph.get("subtitle"), Some(&json!("subtitle")));
+        assert_eq!(ph.get("length_param"), Some(&json!(15.0)));
+        assert_eq!(ph.get("style"), None);
+        assert_eq!(ph.get("str_with_default"), None);
+        assert_eq!(ph.get("gate_only"), None);
+
+        let dt_formats = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now: chrono::Local::now(),
+        };
+        let selection = crate::render::default_option_selection(&template);
+        let png = crate::render::render_thumbnail_png(
+            &template,
+            &ph,
+            selection.as_ref(),
+            &BTreeMap::new(),
+            &dt,
+        )
+        .expect("thumbnail must render without missing data");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn gate_key_not_interpolated_is_never_invented_for() {
+        let yaml = r#"
+name: Gate Not Interpolated
+unit: mm
+dpi: 200
+params:
+  branch_mode:
+    type: string
+    default: standard
+  uninterpolated_req:
+    type: string
+  message:
+    type: string
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: container
+    when:
+      branch_mode: standard
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Active: {message}"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 10
+  - type: container
+    when:
+      uninterpolated_req: uninterpolated_req
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Should not be active"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let ph = template.placeholder_data();
+        assert_eq!(ph.get("uninterpolated_req"), None);
+        assert_eq!(ph.get("branch_mode"), None);
+        assert_eq!(ph.get("message"), Some(&json!("message")));
+
+        let dt_formats = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now: chrono::Local::now(),
+        };
+        let selection = crate::render::default_option_selection(&template);
+        let png = crate::render::render_thumbnail_png(
+            &template,
+            &ph,
+            selection.as_ref(),
+            &BTreeMap::new(),
+            &dt,
+        )
+        .expect("thumbnail must render active default branch");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn name_service_resolves_on_its_own_is_never_invented_for() {
+        let yaml = r#"
+name: Service Resolved Enum
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: horizontal
+  prefix:
+    type: string
+    default: custom_prefix
+  count:
+    type: integer
+    default: 42
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "{orientation} {prefix} {count}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+  - type: container
+    when:
+      prefix: custom_prefix
+    at: [0, 10]
+    size: [50, 10]
+    items:
+      - type: text
+        value: "Gated on default prefix"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let ph = template.placeholder_data();
+        assert_eq!(ph.get("orientation"), None);
+        assert_eq!(ph.get("prefix"), None);
+        assert_eq!(ph.get("count"), None);
+
+        let now = chrono::Local::now();
+        let resolved = crate::render::resolve_parameters(&template, &ph, None, now)
+            .expect("resolve placeholder parameters");
+        assert_eq!(resolved.data.get("orientation"), Some(&json!("horizontal")));
+        assert_eq!(resolved.data.get("prefix"), Some(&json!("custom_prefix")));
+        assert_eq!(resolved.data.get("count"), Some(&json!(42)));
+
+        let dt_formats = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now,
+        };
+        let selection = crate::render::default_option_selection(&template);
+        let png = crate::render::render_thumbnail_png(
+            &template,
+            &ph,
+            selection.as_ref(),
+            &BTreeMap::new(),
+            &dt,
+        )
+        .expect("render thumbnail with resolved defaults");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn lenient_versus_strict_resolution() {
+        let yaml = r#"
+name: Lenient Strict
+unit: mm
+dpi: 200
+params:
+  choice:
+    type: enum
+    values: [one, two]
+    default: one
+  count:
+    type: integer
+    default: 5
+  printed_on:
+    type: datetime
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "{choice} {count} {printed_on}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+
+        // 1. Invalid enum value
+        let mut bad_enum = HashMap::new();
+        bad_enum.insert("choice".to_string(), json!("invalid_choice"));
+        let lenient_enum = template.derive_inputs_for_label(&bad_enum, now);
+        assert_eq!(
+            lenient_enum
+                .iter()
+                .find(|i| i.name == "choice")
+                .unwrap()
+                .default,
+            Some(ParamValue::String("one".to_string()))
+        );
+        let strict_enum_err =
+            crate::render::resolve_parameters(&template, &bad_enum, None, now).unwrap_err();
+        assert_eq!(strict_enum_err.code(), "InvalidOptionValue");
+
+        // 2. Non-numeric integer
+        let mut bad_int = HashMap::new();
+        bad_int.insert("count".to_string(), json!("not_a_number"));
+        let lenient_int = template.derive_inputs_for_label(&bad_int, now);
+        assert_eq!(
+            lenient_int
+                .iter()
+                .find(|i| i.name == "count")
+                .unwrap()
+                .default,
+            Some(ParamValue::Integer(5))
+        );
+        let strict_int_err =
+            crate::render::resolve_parameters(&template, &bad_int, None, now).unwrap_err();
+        assert_eq!(
+            strict_int_err.reason(),
+            Some(Reason::RequestBodyInvalid.as_slug())
+        );
+
+        // 3. Unparseable datetime
+        let mut bad_dt = HashMap::new();
+        bad_dt.insert("printed_on".to_string(), json!("not_a_date"));
+        let lenient_dt = template.derive_inputs_for_label(&bad_dt, now);
+        assert!(lenient_dt.iter().any(|i| i.name == "printed_on"));
+        let strict_dt_err =
+            crate::render::resolve_parameters(&template, &bad_dt, None, now).unwrap_err();
+        assert_eq!(
+            strict_dt_err.reason(),
+            Some(Reason::DatetimeParamInvalid.as_slug())
+        );
+    }
+
+    #[test]
+    fn option_key_on_submitted_label_changes_neither_input_list_nor_render() {
+        let yaml = r#"
+name: Option Test
+unit: mm
+dpi: 200
+params:
+  style:
+    type: enum
+    values: [plain, fancy]
+    default: plain
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "{style} {title}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+
+        let mut data = HashMap::new();
+        data.insert("title".to_string(), json!("Hello"));
+
+        let inputs_no_opt = template.derive_inputs_for_label(&data, now);
+
+        let mut opt_map = BTreeMap::new();
+        opt_map.insert("style".to_string(), "fancy".to_string());
+
+        // Derive inputs uses data and lenient resolution
+        let inputs_with_opt = template.derive_inputs_for_label(&data, now);
+        assert_eq!(inputs_no_opt, inputs_with_opt);
+
+        let render_plain = crate::render::resolve_parameters(&template, &data, None, now).unwrap();
+        assert_eq!(render_plain.data["style"], json!("plain"));
     }
 }

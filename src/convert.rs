@@ -1,11 +1,11 @@
 use crate::errors::TemplateError;
 use crate::models::{
-    AutoSize, DynamicDimension, Extent, Layout, LayoutItem, Padding, ParamSpec, ParamType,
-    ParamValue, Placement, Size, SizeValue, TemplateFormat,
+    DynamicDimension, Extent, Layout, LayoutItem, Padding, ParamSpec, ParamType, ParamValue,
+    Placement, Size, SizeValue, TemplateFormat,
 };
 use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
-    RawTemplateFormat, TemplateDefinitionRaw,
+    RawSizeValue, RawTemplateFormat, TemplateDefinitionRaw,
 };
 use crate::templates::TemplateContent;
 
@@ -27,19 +27,29 @@ impl PlacementRaw {
                     msg: "set exactly one of size or to, not both".to_string(),
                 })
             }
-            (Some(size), None) => Extent::Size(size),
+            (Some(raw_size), None) => {
+                let mut size_vals = Vec::with_capacity(2);
+                for (axis, sv) in raw_size.0.into_iter().enumerate() {
+                    match sv {
+                        RawSizeValue::Auto => {
+                            return Err(TemplateError::Validation {
+                                path: format!("size[{axis}]"),
+                                msg: "`auto` was renamed: use `content` to hug the item's own size, or `fill` to stretch to the frame".to_string(),
+                            });
+                        }
+                        RawSizeValue::Content => size_vals.push(SizeValue::Content),
+                        RawSizeValue::Fill => size_vals.push(SizeValue::Fill),
+                        RawSizeValue::Dynamic(dv) => size_vals.push(SizeValue::Dynamic(dv)),
+                    }
+                }
+                Extent::Size(Size([size_vals.remove(0), size_vals.remove(0)]))
+            }
             (None, Some(to)) => Extent::To(to),
             (None, None) => default_extent.ok_or_else(|| TemplateError::Validation {
                 path: kind.to_string(),
                 msg: "must set one of size or to".to_string(),
             })?,
         };
-        if matches!(extent, Extent::To(_)) && (self.max_w.is_some() || self.max_h.is_some()) {
-            return Err(TemplateError::Validation {
-                path: kind.to_string(),
-                msg: "max_w and max_h resolve `auto` and cannot be combined with to".to_string(),
-            });
-        }
         Ok(Placement {
             at: self.at.unwrap_or_default(),
             extent,
@@ -84,11 +94,8 @@ impl TryFrom<ContainerRaw> for LayoutItem {
     type Error = TemplateError;
 
     fn try_from(raw: ContainerRaw) -> Result<Self, Self::Error> {
-        // A container with neither `size` nor `to` keeps today's fill-the-parent default.
-        let default_extent = Some(Extent::Size(Size([
-            SizeValue::Auto(AutoSize::Auto),
-            SizeValue::Auto(AutoSize::Auto),
-        ])));
+        // A container with neither `size` nor `to` defaults to size: [fill, fill]
+        let default_extent = Some(Extent::Size(Size([SizeValue::Fill, SizeValue::Fill])));
         let placement = raw.placement.into_placement("container", default_extent)?;
         let padding = match raw.padding {
             None => Padding::ZERO,
@@ -137,6 +144,7 @@ impl TryFrom<LayoutItemRaw> for LayoutItem {
                     font_weight: raw.font_weight,
                     multiline: raw.multiline,
                     alignment: raw.alignment,
+                    overflow: raw.overflow,
                     when: raw.when,
                 })
             }
@@ -463,11 +471,10 @@ mod tests {
         );
     }
 
-    /// max_w/max_h exist only to resolve `auto`, and a `to` box has no auto axis. Accepting them
-    /// would imply a clamp that never happens.
+    /// max_w/max_h beside `to` is accepted in conversion; resolver binds or ignores caps by source.
     #[test]
-    fn to_with_max_w_errors() {
-        assert!(try_build("  - type: text\n    value: \"x\"\n    at: [0,0]\n    to: [10,5]\n    max_w: 8\n    font_size: 8\n").is_err());
+    fn to_with_max_w_is_accepted() {
+        assert!(try_build("  - type: text\n    value: \"x\"\n    at: [0,0]\n    to: [10,5]\n    max_w: 8\n    font_size: 8\n").is_ok());
     }
 
     /// A container with neither keeps today's fill-the-parent default.

@@ -128,6 +128,11 @@ A `datetime` parameter SHALL NOT be reported as a request field the caller must 
 absent from the field list a template advertises, whether the layout references it as `{<p>}` or as
 `{<p>:<name>}`.
 
+An input list (`template-inputs`) SHALL nevertheless hold an entry for a `datetime` parameter that an
+active item reads, carrying control `date` or `datetime` and `required` false. That entry offers the
+operator an override; it is not a field the caller must supply, and it does not appear in the field
+list above.
+
 A thumbnail or preview render, which substitutes placeholder values for request fields, SHALL render
 a `datetime` parameter as the current instant rather than as a placeholder string.
 
@@ -152,6 +157,11 @@ a `datetime` parameter as the current instant rather than as a placeholder strin
   else that is data-bound
 - **THEN** the field list the template advertises is empty, and neither `printed_on` nor
   `printed_on:long_date` appears in it
+
+#### Scenario: The input list offers the override without requiring it
+
+- **WHEN** a template's layout references `{printed_on.long_date}` unconditionally
+- **THEN** the input list holds an entry for `printed_on` with control `date` and `required` false
 
 #### Scenario: A thumbnail prints a real date
 
@@ -240,8 +250,11 @@ continue to resolve the request's own instant.
 
 ### Requirement: The print form and the row grids carry a datetime parameter
 
-The print form SHALL render a `datetime` parameter as a date control when `time` is `false` and as a
-date-and-time control when `time` is `true`.
+The print form SHALL render a `datetime` parameter the service reports as an input for the current
+selection as a date control when `time` is `false` and as a date-and-time control when `time` is
+`true`. A `datetime` parameter the template reads only inside a branch the current selection
+deactivates is not reported as an input and SHALL NOT be rendered, on the same rule that governs
+every other control (`template-inputs`).
 
 The form SHALL seed the control with the operator's current browser date, and current time when
 `time` is `true`, so that what will print is visible before the operator touches anything. The
@@ -267,6 +280,12 @@ carries a `422 BatchInvalid` failure back to its row in both grids.
 - **WHEN** the print form renders a template declaring `printed_on` with `time: false` and
   `stamped_at` with `time: true`
 - **THEN** `printed_on` is a date control and `stamped_at` is a date-and-time control
+
+#### Scenario: A datetime parameter in an inactive branch has no control
+
+- **WHEN** a template reads `stamped_at` only inside a container gated on `mode: full` and the
+  operator selects `mode: brief`
+- **THEN** the print form renders no control for `stamped_at`, and the label prints
 
 #### Scenario: A cleared control still prints
 
