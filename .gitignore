@@ -31,3 +31,7 @@ ui/dist
 
 # Personal, machine-specific instructions. Loaded alongside CLAUDE.md, never committed.
 /CLAUDE.local.md
+
+# Agent transcripts and scratch
+.agy-*
+.agent-*

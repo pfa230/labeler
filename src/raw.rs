@@ -222,6 +222,15 @@ pub struct LineRaw {
     pub when: Option<BTreeMap<String, String>>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct FlowRaw {
+    #[serde(default)]
+    pub direction: Option<String>,
+    #[serde(default)]
+    pub gap: Option<f32>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerRaw {
@@ -235,6 +244,8 @@ pub struct ContainerRaw {
     pub frame: Option<Frame>,
     #[serde(default)]
     pub padding: Option<PaddingRaw>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub flow: Option<Option<FlowRaw>>,
     pub items: Vec<LayoutItemRaw>,
 }
 

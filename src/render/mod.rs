@@ -533,6 +533,7 @@ fn compile_label_doc(
         &measured,
         (width_units, height_units),
         &geometry_values,
+        None,
         "layout",
     )?;
     source.push_str(&body);
@@ -742,6 +743,7 @@ pub fn render_sheet_pages(
             &measured,
             (*label_width, *label_height),
             &geometry_values,
+            None,
             "layout",
         ) {
             Ok(content) => rendered.push(content),
@@ -980,6 +982,7 @@ struct ContainerRenderArgs<'a> {
     pub placement: &'a Placement,
     pub cont_frame: &'a Option<crate::models::Frame>,
     pub padding: &'a crate::models::Padding,
+    pub flow: &'a Option<crate::models::Flow>,
     pub items: &'a [LayoutItem],
     pub children_measured: &'a [Measured],
     pub pbox: PlacedBox,
@@ -1119,15 +1122,29 @@ impl<'a> RenderContext<'a> {
                     // The rules that do not depend on a measurement hold before one is taken, so a
                     // box a request has already invalidated is refused as such rather than as
                     // whatever its content then fails to do inside it.
-                    crate::resolver::precheck(placement, Some(frame), geometry_values)
+                    let (measure_box, spec_0, spec_1) = if placement.at.is_none() {
+                        let (w, h) = crate::resolver::resolve_packed(
+                            placement,
+                            frame,
+                            geometry_values,
+                            [None, None],
+                        )
                         .map_err(|violation| violation_error(violation, &path))?;
+                        let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
+                        let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
+                        ((w, h), spec_0, spec_1)
+                    } else {
+                        crate::resolver::precheck(placement, Some(frame), geometry_values)
+                            .map_err(|violation| violation_error(violation, &path))?;
 
-                    let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
-                    let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
-                    let measure_box = (
-                        crate::resolver::resolve_unmeasured(&spec_0, frame.0, placement.max_w),
-                        crate::resolver::resolve_unmeasured(&spec_1, frame.1, placement.max_h),
-                    );
+                        let spec_0 = crate::resolver::source_of(placement, 0, geometry_values);
+                        let spec_1 = crate::resolver::source_of(placement, 1, geometry_values);
+                        let measure_box = (
+                            crate::resolver::resolve_unmeasured(&spec_0, frame.0, placement.max_w),
+                            crate::resolver::resolve_unmeasured(&spec_1, frame.1, placement.max_h),
+                        );
+                        (measure_box, spec_0, spec_1)
+                    };
 
                     // A container's children are measured against the frame it gives them, which
                     // is its own unmeasured box less rotation and padding.
@@ -1387,34 +1404,90 @@ impl<'a> RenderContext<'a> {
             LayoutItem::Container {
                 placement,
                 padding,
+                flow,
                 items: child_items,
                 ..
             } => {
                 if !demands[0] && !demands[1] {
                     return Ok(([None, None], None));
                 }
-                let active_children: Vec<_> = child_items
+                let active_children: Vec<(usize, &LayoutItem)> = child_items
                     .iter()
-                    .filter(|i| self.is_item_active(i))
+                    .enumerate()
+                    .filter(|(_, i)| self.is_item_active(i))
                     .collect();
 
-                let mut author = (0.0_f32, 0.0_f32);
-                for (child, measured) in active_children.iter().zip(children.iter()) {
-                    author.0 = author.0.max(self.item_axis_requirement(
-                        child,
-                        0,
-                        child_frame,
-                        geometry_values,
-                        measured,
-                    ));
-                    author.1 = author.1.max(self.item_axis_requirement(
-                        child,
-                        1,
-                        child_frame,
-                        geometry_values,
-                        measured,
-                    ));
-                }
+                let author = match flow {
+                    Some(flow) => {
+                        let mut flow_inputs = Vec::with_capacity(active_children.len());
+                        for ((orig_idx, child), measured) in
+                            active_children.iter().zip(children.iter())
+                        {
+                            let (req_0, req_1) = (
+                                self.item_axis_requirement(
+                                    child,
+                                    0,
+                                    child_frame,
+                                    geometry_values,
+                                    measured,
+                                ),
+                                self.item_axis_requirement(
+                                    child,
+                                    1,
+                                    child_frame,
+                                    geometry_values,
+                                    measured,
+                                ),
+                            );
+                            let resolved_box = if let Some(p) = child.placement() {
+                                crate::resolver::resolve_packed(
+                                    p,
+                                    child_frame,
+                                    geometry_values,
+                                    measured.intrinsic,
+                                )
+                                .map_err(|v| {
+                                    let child_path = format!("{path}.items[{orig_idx}]");
+                                    violation_error(v, &child_path)
+                                })?
+                            } else {
+                                (0.0, 0.0)
+                            };
+                            flow_inputs.push(crate::resolver::FlowChildInput {
+                                resolved_box,
+                                requirement: (req_0, req_1),
+                            });
+                        }
+                        let flow_res =
+                            crate::resolver::arrange_flow(child_frame, flow, &flow_inputs)
+                                .map_err(|(act_idx, v)| {
+                                    let (orig_idx, _) = active_children[act_idx];
+                                    let child_path = format!("{path}.items[{orig_idx}]");
+                                    violation_error(v, &child_path)
+                                })?;
+                        flow_res.assembled
+                    }
+                    None => {
+                        let mut author = (0.0_f32, 0.0_f32);
+                        for ((_, child), measured) in active_children.iter().zip(children.iter()) {
+                            author.0 = author.0.max(self.item_axis_requirement(
+                                child,
+                                0,
+                                child_frame,
+                                geometry_values,
+                                measured,
+                            ));
+                            author.1 = author.1.max(self.item_axis_requirement(
+                                child,
+                                1,
+                                child_frame,
+                                geometry_values,
+                                measured,
+                            ));
+                        }
+                        author
+                    }
+                };
 
                 // The contribution is computed in author space and swapped as a completed pair, so
                 // a quarter turn moves the padded footprint rather than each term separately.
@@ -1433,125 +1506,196 @@ impl<'a> RenderContext<'a> {
         }
     }
 
+    /// Recursively render layout items into the output string
+    #[allow(clippy::too_many_arguments)]
     pub fn render_items(
         &self,
         items: &[LayoutItem],
         measured: &[Measured],
         frame: (f32, f32),
         geometry_values: &HashMap<String, f32>,
+        flow: Option<&crate::models::Flow>,
         path_prefix: &str,
     ) -> Result<String, AppError> {
         let mut out = String::new();
-        let active_items: Vec<_> = items
+        let active_items: Vec<(usize, &LayoutItem)> = items
             .iter()
             .enumerate()
             .filter(|(_, item)| self.is_item_active(item))
             .collect();
 
-        for (measured_node, (idx, item)) in measured.iter().zip(active_items) {
-            let path = format!("{path_prefix}[{idx}]");
-            match item {
-                LayoutItem::Line {
-                    at, to, thickness, ..
-                } => {
-                    self.render_line_item(&mut out, at, to, *thickness, frame, &path)?;
-                }
-                LayoutItem::Text {
-                    placement,
-                    font_weight,
-                    alignment,
-                    ..
-                } => {
-                    let pbox = self.resolve_placement_box(
-                        placement,
-                        frame,
-                        geometry_values,
-                        measured_node.intrinsic,
-                        &path,
-                    )?;
-                    let resolved_weight = match font_weight {
-                        Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
-                        None => None,
-                    };
-                    self.render_text_item(
-                        &mut out,
-                        placement,
-                        resolved_weight,
-                        alignment,
-                        pbox,
-                        measured_node.text.as_ref().unwrap(),
-                    )?;
-                }
-                LayoutItem::Qr {
-                    value,
-                    placement,
-                    params,
-                    ..
-                } => {
-                    let payload = self.resolve_item_text(value)?;
-                    let pbox = self.resolve_placement_box(
-                        placement,
-                        frame,
-                        geometry_values,
-                        measured_node.intrinsic,
-                        &path,
-                    )?;
-                    self.render_qr_item(&mut out, payload, placement, params, pbox)?;
-                }
-                LayoutItem::Image {
-                    name,
-                    src,
-                    placement,
-                    fit,
-                    ..
-                } => {
-                    let pbox = self.resolve_placement_box(
-                        placement,
-                        frame,
-                        geometry_values,
-                        measured_node.intrinsic,
-                        &path,
-                    )?;
-                    self.render_image_item(
-                        &mut out,
-                        name.as_deref(),
-                        src.as_deref(),
-                        placement,
-                        fit,
-                        pbox,
-                    )?;
-                }
-                LayoutItem::Container {
-                    placement,
-                    frame: cont_frame,
-                    padding,
-                    items: child_items,
-                    ..
-                } => {
-                    let pbox = self.resolve_placement_box(
-                        placement,
-                        frame,
-                        geometry_values,
-                        measured_node.intrinsic,
-                        &path,
-                    )?;
-                    self.render_container_item(
-                        &mut out,
-                        ContainerRenderArgs {
-                            placement,
-                            cont_frame,
-                            padding,
-                            items: child_items,
-                            children_measured: &measured_node.children,
-                            pbox,
+        match flow {
+            Some(flow) => {
+                let mut flow_inputs = Vec::with_capacity(active_items.len());
+                for (measured_node, &(orig_idx, item)) in measured.iter().zip(&active_items) {
+                    let (req_0, req_1) = (
+                        self.item_axis_requirement(item, 0, frame, geometry_values, measured_node),
+                        self.item_axis_requirement(item, 1, frame, geometry_values, measured_node),
+                    );
+                    let resolved_box = if let Some(p) = item.placement() {
+                        crate::resolver::resolve_packed(
+                            p,
+                            frame,
                             geometry_values,
-                            path: &path,
+                            measured_node.intrinsic,
+                        )
+                        .map_err(|v| {
+                            let child_path = format!("{path_prefix}[{orig_idx}]");
+                            violation_error(v, &child_path)
+                        })?
+                    } else {
+                        (0.0, 0.0)
+                    };
+                    flow_inputs.push(crate::resolver::FlowChildInput {
+                        resolved_box,
+                        requirement: (req_0, req_1),
+                    });
+                }
+                let flow_res = crate::resolver::arrange_flow(frame, flow, &flow_inputs).map_err(
+                    |(act_idx, v)| {
+                        let (orig_idx, _) = active_items[act_idx];
+                        let child_path = format!("{path_prefix}[{orig_idx}]");
+                        violation_error(v, &child_path)
+                    },
+                )?;
+
+                for (placed, (measured_node, &(orig_idx, item))) in flow_res
+                    .rects
+                    .into_iter()
+                    .zip(measured.iter().zip(&active_items))
+                {
+                    let path = format!("{path_prefix}[{orig_idx}]");
+                    let pbox = PlacedBox {
+                        x: placed.x,
+                        y: placed.y,
+                        w: placed.w,
+                        h: placed.h,
+                        frame,
+                    };
+                    self.render_single_item(
+                        &mut out,
+                        item,
+                        measured_node,
+                        pbox,
+                        frame,
+                        geometry_values,
+                        &path,
+                    )?;
+                }
+            }
+            None => {
+                for (measured_node, &(idx, item)) in measured.iter().zip(&active_items) {
+                    let path = format!("{path_prefix}[{idx}]");
+                    let pbox = match item.placement() {
+                        Some(placement) => self.resolve_placement_box(
+                            placement,
+                            frame,
+                            geometry_values,
+                            measured_node.intrinsic,
+                            &path,
+                        )?,
+                        None => PlacedBox {
+                            x: 0.0,
+                            y: 0.0,
+                            w: 0.0,
+                            h: 0.0,
+                            frame,
                         },
+                    };
+                    self.render_single_item(
+                        &mut out,
+                        item,
+                        measured_node,
+                        pbox,
+                        frame,
+                        geometry_values,
+                        &path,
                     )?;
                 }
             }
         }
         Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_single_item(
+        &self,
+        out: &mut String,
+        item: &LayoutItem,
+        measured_node: &Measured,
+        pbox: PlacedBox,
+        frame: (f32, f32),
+        geometry_values: &HashMap<String, f32>,
+        path: &str,
+    ) -> Result<(), AppError> {
+        match item {
+            LayoutItem::Line {
+                at, to, thickness, ..
+            } => {
+                self.render_line_item(out, at, to, *thickness, frame, path)?;
+            }
+            LayoutItem::Text {
+                placement,
+                font_weight,
+                alignment,
+                ..
+            } => {
+                let resolved_weight = match font_weight {
+                    Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
+                    None => None,
+                };
+                self.render_text_item(
+                    out,
+                    placement,
+                    resolved_weight,
+                    alignment,
+                    pbox,
+                    measured_node.text.as_ref().unwrap(),
+                )?;
+            }
+            LayoutItem::Qr {
+                value,
+                placement,
+                params,
+                ..
+            } => {
+                let payload = self.resolve_item_text(value)?;
+                self.render_qr_item(out, payload, placement, params, pbox)?;
+            }
+            LayoutItem::Image {
+                name,
+                src,
+                placement,
+                fit,
+                ..
+            } => {
+                self.render_image_item(out, name.as_deref(), src.as_deref(), placement, fit, pbox)?;
+            }
+            LayoutItem::Container {
+                placement,
+                frame: cont_frame,
+                padding,
+                flow: child_flow,
+                items: child_items,
+                ..
+            } => {
+                self.render_container_item(
+                    out,
+                    ContainerRenderArgs {
+                        placement,
+                        cont_frame,
+                        padding,
+                        flow: child_flow,
+                        items: child_items,
+                        children_measured: &measured_node.children,
+                        pbox,
+                        geometry_values,
+                        path,
+                    },
+                )?;
+            }
+        }
+        Ok(())
     }
 
     fn resolve_placement_box(
@@ -1781,6 +1925,7 @@ impl<'a> RenderContext<'a> {
             args.children_measured,
             inner,
             args.geometry_values,
+            args.flow.as_ref(),
             &format!("{}.items", args.path),
         )?;
 
@@ -1901,7 +2046,7 @@ mod tests {
         let geometry_values = HashMap::new();
         let (measured, _) =
             ctx.measure_items(items, frame, [true, true], &geometry_values, "layout")?;
-        ctx.render_items(items, &measured, frame, &geometry_values, "layout")
+        ctx.render_items(items, &measured, frame, &geometry_values, None, "layout")
     }
 
     /// Build a one-text-item source. `size_w` of `None` means an auto width, which routes through
@@ -2103,7 +2248,7 @@ mod tests {
         let item = LayoutItem::Text {
             value: "Hi".to_string(),
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: Extent::Size(Size([SizeValue::fill(), SizeValue::fixed(8.0)])),
                 max_w: Some(30.0),
                 max_h: None,
@@ -2133,7 +2278,7 @@ mod tests {
         let child = LayoutItem::Text {
             value: "Hi".to_string(),
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: Extent::Size(Size([SizeValue::fill(), SizeValue::fixed(8.0)])),
                 max_w: None,
                 max_h: None,
@@ -2151,7 +2296,7 @@ mod tests {
         };
         let container = LayoutItem::Container {
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: Extent::Size(Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)])),
                 max_w: None,
                 max_h: None,
@@ -2165,6 +2310,7 @@ mod tests {
                 bottom: 0.0,
                 left: 5.0,
             },
+            flow: None,
             items: vec![child],
         };
         let source = render_test_items(&[container], (80.0, 40.0)).expect("render");
@@ -2244,7 +2390,7 @@ layout:
             let item = LayoutItem::Text {
                 value: "Hi".to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: Extent::Size(Size([SizeValue::fill(), SizeValue::fixed(12.0)])),
                     max_w: None,
                     max_h: None,
@@ -2388,7 +2534,7 @@ layout:
         };
         let make_container = |rotate: Option<f32>| LayoutItem::Container {
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: Extent::Size(Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)])),
                 max_w: None,
                 max_h: None,
@@ -2397,6 +2543,7 @@ layout:
             when: None,
             frame: None,
             padding: Padding::ZERO,
+            flow: None,
             items: vec![auto_text.clone()],
         };
 
@@ -2479,6 +2626,7 @@ layout:
                 bottom: 2.0,
                 left: 0.0,
             },
+            flow: None,
             items: vec![text],
         };
         let outer = LayoutItem::Container {
@@ -2489,6 +2637,7 @@ layout:
             when: None,
             frame: None,
             padding: Padding::ZERO,
+            flow: None,
             items: vec![inner],
         };
 
@@ -2561,7 +2710,7 @@ layout:
     fn capped_container(at_x: f32, max_w: Option<f32>, items: Vec<LayoutItem>) -> LayoutItem {
         LayoutItem::Container {
             placement: Placement {
-                at: Position([at_x, 0.0]),
+                at: Some(Position([at_x, 0.0])),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::fill(),
                     SizeValue::fixed(12.0),
@@ -2573,6 +2722,7 @@ layout:
             when: None,
             frame: None,
             padding: crate::models::Padding::ZERO,
+            flow: None,
             items,
         }
     }
@@ -2585,7 +2735,7 @@ layout:
         let item = LayoutItem::Text {
             value: "hi".to_string(),
             placement: Placement {
-                at: Position([0.0, 10.0]),
+                at: Some(Position([0.0, 10.0])),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::fixed(20.0),
                     SizeValue::fill(),
@@ -2614,7 +2764,7 @@ layout:
         fn nested() -> LayoutItem {
             LayoutItem::Container {
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fixed(60.0),
                         SizeValue::fixed(12.0),
@@ -2626,9 +2776,10 @@ layout:
                 when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
+                flow: None,
                 items: vec![LayoutItem::Container {
                     placement: Placement {
-                        at: Position([-30.0, 0.0]),
+                        at: Some(Position([-30.0, 0.0])),
                         extent: crate::models::Extent::Size(Size([
                             SizeValue::fill(),
                             SizeValue::fixed(12.0),
@@ -2640,6 +2791,7 @@ layout:
                     when: None,
                     frame: None,
                     padding: crate::models::Padding::ZERO,
+                    flow: None,
                     items: vec![],
                 }],
             }
@@ -2678,7 +2830,7 @@ layout:
         let child = LayoutItem::Text {
             value: "a string far wider than any five millimetre cap".to_string(),
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::content(),
                     SizeValue::fixed(8.0),
@@ -2751,7 +2903,7 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "x".to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fixed(20.0),
                         SizeValue::fill(),
@@ -2784,7 +2936,7 @@ layout:
             &[LayoutItem::Text {
                 value: "x".to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fixed(20.0),
                         SizeValue::fill(),
@@ -2819,7 +2971,7 @@ layout:
                 &[LayoutItem::Text {
                     value: "x".to_string(),
                     placement: Placement {
-                        at: Position(at),
+                        at: Some(Position(at)),
                         extent: crate::models::Extent::Size(size),
                         max_w: None,
                         max_h,
@@ -2919,7 +3071,7 @@ layout:
     fn a_cap_smaller_than_the_padding_clamps_the_inner_box() {
         let item = LayoutItem::Container {
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::fill(),
                     SizeValue::fixed(12.0),
@@ -2936,9 +3088,10 @@ layout:
                 bottom: 3.0,
                 left: 3.0,
             },
+            flow: None,
             items: vec![LayoutItem::Container {
                 placement: Placement {
-                    at: Position([-0.0, 0.0]),
+                    at: Some(Position([-0.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fill(),
                         SizeValue::fixed(1.0),
@@ -2950,6 +3103,7 @@ layout:
                 when: Some(BTreeMap::from([("show".to_string(), "yes".to_string())])),
                 frame: None,
                 padding: crate::models::Padding::ZERO,
+                flow: None,
                 items: vec![],
             }],
         };
@@ -2974,7 +3128,7 @@ layout:
             LayoutItem::Text {
                 value: long.to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::content(),
                         SizeValue::fixed(8.0),
@@ -2999,7 +3153,7 @@ layout:
             LayoutItem::Qr {
                 value: "abc".to_string(),
                 placement: Placement {
-                    at: Position([10.0, 0.0]),
+                    at: Some(Position([10.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fill(),
                         SizeValue::fixed(20.0),
@@ -3028,7 +3182,7 @@ layout:
         let child = LayoutItem::Text {
             value: long.to_string(),
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::content(),
                     SizeValue::fixed(8.0),
@@ -3107,7 +3261,7 @@ layout:
         LayoutItem::Text {
             value: value.to_string(),
             placement: Placement {
-                at: Position(at),
+                at: Some(Position(at)),
                 extent: crate::models::Extent::To(Position(to)),
                 max_w: None,
                 max_h: None,
@@ -3176,7 +3330,7 @@ layout:
             LayoutItem::Text {
                 value: value.to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::content(),
                         SizeValue::fixed(8.0),
@@ -3212,7 +3366,7 @@ layout:
         let qr = |max_w: Option<f32>| LayoutItem::Qr {
             value: "abc".to_string(),
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: crate::models::Extent::Size(Size([
                     SizeValue::fill(),
                     SizeValue::fixed(20.0),
@@ -3247,7 +3401,7 @@ layout:
             LayoutItem::Text {
                 value: "Some words that will wrap across several lines".to_string(),
                 placement: Placement {
-                    at: Position(at),
+                    at: Some(Position(at)),
                     extent: crate::models::Extent::To(Position(to)),
                     max_w: None,
                     max_h: None,
@@ -3281,7 +3435,7 @@ layout:
 
         let container = LayoutItem::Container {
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: crate::models::Extent::To(Position([-0.0, 10.0])),
                 max_w: None,
                 max_h: None,
@@ -3295,6 +3449,7 @@ layout:
                 bottom: 0.0,
                 left: 1.0,
             },
+            flow: None,
             items: vec![to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42")],
         };
         let (wrapped, pushed) = measured_extent_of(container, 80.0);
@@ -3317,7 +3472,7 @@ layout:
             LayoutItem::Qr {
                 value: "payload".to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::To(Position([-0.0, 8.0])),
                     max_w: None,
                     max_h: None,
@@ -3344,7 +3499,7 @@ layout:
             LayoutItem::Qr {
                 value: "payload".to_string(),
                 placement: Placement {
-                    at: Position([-5.0, 0.0]),
+                    at: Some(Position([-5.0, 0.0])),
                     extent: crate::models::Extent::Size(Size([
                         SizeValue::fixed(10.0),
                         SizeValue::fixed(10.0),
@@ -3413,7 +3568,7 @@ layout:
             params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
-                    at: Position([-10.0, 0.0]),
+                    at: Some(Position([-10.0, 0.0])),
                     extent: Extent::Size(Size([SizeValue::fixed(8.0), SizeValue::fixed(8.0)])),
                     max_w: None,
                     max_h: None,
@@ -3422,6 +3577,7 @@ layout:
                 when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
+                flow: None,
                 items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
             }]),
             version: None,
@@ -3465,7 +3621,7 @@ layout:
             params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: Extent::Size(Size([SizeValue::fixed(40.0), SizeValue::fill()])),
                     max_w: None,
                     max_h: None,
@@ -3474,6 +3630,7 @@ layout:
                 when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
+                flow: None,
                 items: vec![],
             }]),
             version: None,
@@ -3503,6 +3660,7 @@ layout:
                 rounded: false,
             }),
             padding: Padding::ZERO,
+            flow: None,
             items: vec![],
         };
         let src = render_test_items(&[container], (80.0, 40.0)).expect("render r0 container");
@@ -3530,7 +3688,7 @@ layout:
             params: std::collections::BTreeMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: Extent::Size(Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)])),
                     max_w: None,
                     max_h: None,
@@ -3542,6 +3700,7 @@ layout:
                     rounded: false,
                 }),
                 padding: Padding::ZERO,
+                flow: None,
                 items,
             }]),
             version: None,
@@ -3679,7 +3838,7 @@ layout:
         // container with a text child. Proves nested rotation emits valid, compilable Typst.
         let inner = LayoutItem::Container {
             placement: Placement {
-                at: Position([2.0, 2.0]),
+                at: Some(Position([2.0, 2.0])),
                 extent: Extent::Size(Size([SizeValue::fixed(24.0), SizeValue::fixed(24.0)])),
                 max_w: None,
                 max_h: None,
@@ -3688,6 +3847,7 @@ layout:
             when: None,
             frame: None,
             padding: Padding::ZERO,
+            flow: None,
             items: vec![LayoutItem::Text {
                 value: "inner".to_string(),
                 placement: Placement::sized(
@@ -3704,7 +3864,7 @@ layout:
         };
         let outer = LayoutItem::Container {
             placement: Placement {
-                at: Position([0.0, 0.0]),
+                at: Some(Position([0.0, 0.0])),
                 extent: Extent::Size(Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)])),
                 max_w: None,
                 max_h: None,
@@ -3721,6 +3881,7 @@ layout:
                 bottom: 6.0,
                 left: 8.0,
             },
+            flow: None,
             items: vec![inner],
         };
         let template = TemplateContent {
@@ -4315,6 +4476,7 @@ layout:
                         rounded: true,
                     }),
                     padding: Padding::ZERO,
+                    flow: None,
                     items: Vec::new(),
                 },
             ]),
@@ -5319,6 +5481,7 @@ layout:
                     when: None,
                     frame: None,
                     padding: crate::models::Padding::ZERO,
+                    flow: None,
                     items: vec![LayoutItem::Line {
                         at: Position([0.0, 6.0]),
                         to: Position([20.0, 6.0]),
@@ -5562,7 +5725,7 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "{v}".to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::To(Position([-0.0, 12.0])),
                     max_w: None,
                     max_h: None,
@@ -5621,7 +5784,7 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Qr {
                 value: "payload".to_string(),
                 placement: Placement {
-                    at: Position([x, 0.0]),
+                    at: Some(Position([x, 0.0])),
                     extent: crate::models::Extent::To(Position([-0.0, 12.0])),
                     max_w: None,
                     max_h: None,
@@ -5663,7 +5826,7 @@ layout:
             &[LayoutItem::Text {
                 value: "x".to_string(),
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: crate::models::Extent::To(Position([-0.0, 12.0])),
                     max_w: None,
                     max_h: None,
@@ -6600,7 +6763,7 @@ layout:
         let source = render_test_items(
             &[LayoutItem::Container {
                 placement: Placement {
-                    at: Position([0.0, 0.0]),
+                    at: Some(Position([0.0, 0.0])),
                     extent: Extent::Size(Size([SizeValue::fixed(30.0), SizeValue::fixed(10.0)])),
                     max_w: None,
                     max_h: None,
@@ -6611,6 +6774,7 @@ layout:
                     rounded: false,
                 }),
                 padding: crate::models::Padding::ZERO,
+                flow: None,
                 items: vec![],
                 when: None,
             }],
@@ -6739,5 +6903,512 @@ layout:
         let svg_q = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100q" height="200q" viewBox="0 0 100 200"></svg>"#;
         let w_q = super::helpers::svg_axis_intrinsic(svg_q, 0, "mm", 200, "layout[0]").unwrap();
         assert!((w_q - 25.0).abs() < 1e-3);
+    }
+
+    /// Proves that flow container primary and secondary overruns fail with `item_out_of_frame`
+    /// and identify the offending child index in the error path.
+    #[test]
+    fn flow_row_overflow_errors_with_item_out_of_frame() {
+        let yaml = r#"
+name: Row Overflow
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 20]
+    flow: { direction: row, gap: 5 }
+    items:
+      - type: text
+        value: "A"
+        size: [20, 10]
+        font_size: 8
+      - type: text
+        value: "B"
+        size: [15, 10]
+        font_size: 8
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let err = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("item_out_of_frame"));
+        assert!(
+            err.message_text().contains("items[1]"),
+            "expected error at child index 1, got: {}",
+            err.message_text()
+        );
+    }
+
+    #[test]
+    fn flow_column_overflow_errors_with_item_out_of_frame() {
+        let yaml = r#"
+name: Column Overflow
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 20]
+    flow: { direction: column, gap: 5 }
+    items:
+      - type: text
+        value: "A"
+        size: [10, 15]
+        font_size: 8
+      - type: text
+        value: "B"
+        size: [10, 10]
+        font_size: 8
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let err = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("item_out_of_frame"));
+        assert!(
+            err.message_text().contains("items[1]"),
+            "expected error at child index 1, got: {}",
+            err.message_text()
+        );
+    }
+
+    #[test]
+    fn flow_secondary_axis_overflow_errors_with_item_out_of_frame() {
+        let yaml = r#"
+name: Too Tall Child
+unit: mm
+dpi: 200
+params:
+  h:
+    type: number
+    default: 15
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    flow: { direction: row }
+    items:
+      - type: text
+        value: "A"
+        size: [20, "{h}"]
+        font_size: 8
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("h".to_string(), serde_json::json!(25));
+        let err =
+            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        assert_eq!(err.reason(), Some("item_out_of_frame"));
+    }
+
+    #[test]
+    fn flow_overflow_in_measurement_with_gated_sibling_names_correct_child_index() {
+        let yaml = r#"
+name: Measurement Gated Overflow
+unit: mm
+dpi: 200
+params:
+  show_first:
+    type: enum
+    values: ["yes", "no"]
+    default: "no"
+format: { type: single, width: 40, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [fill, fill]
+    flow: { direction: row, gap: 5 }
+    items:
+      - type: text
+        when: { show_first: "yes" }
+        value: "Gated Off"
+        size: [10, 10]
+        font_size: 8
+      - type: text
+        value: "First Active"
+        size: [25, 10]
+        font_size: 8
+      - type: text
+        value: "Second Active Overrun"
+        size: [25, 10]
+        font_size: 8
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let err = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("item_out_of_frame"));
+        assert!(
+            err.message_text().contains("items[2]"),
+            "expected error to name items[2], got: {}",
+            err.message_text()
+        );
+    }
+
+    /// Proves that packed children inside flow containers size consistently against their padded
+    /// inner box and interact with dynamic and fixed layouts identically to anchored children at origin.
+    #[test]
+    fn packed_child_sized_identically_to_unpacked_at_origin() {
+        let yaml_abs = r#"
+name: Abs Container
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 30 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 30]
+    items:
+      - type: text
+        value: "Hello"
+        at: [0, 0]
+        size: [fill, fill]
+        font_size: 8
+"#;
+        let yaml_flow = r#"
+name: Flow Container
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 30 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 30]
+    flow: { direction: row }
+    items:
+      - type: text
+        value: "Hello"
+        size: [fill, fill]
+        font_size: 8
+"#;
+        let t_abs = parse_and_validate(yaml_abs).unwrap();
+        let t_flow = parse_and_validate(yaml_flow).unwrap();
+        let src_abs =
+            render_single_label(&t_abs, &HashMap::new(), None, &BTreeMap::new(), &resolver())
+                .unwrap();
+        let src_flow = render_single_label(
+            &t_flow,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap();
+        assert_eq!(src_abs, src_flow);
+    }
+
+    #[test]
+    fn uncapped_and_capped_fill_child_in_flow() {
+        // Uncapped fill child alone: gets full width (80mm)
+        let yaml_alone = r#"
+name: Fill Alone
+unit: mm
+dpi: 200
+format: { type: single, width: 80, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [80, 20]
+    flow: { direction: row }
+    items:
+      - type: text
+        value: "Alone"
+        size: [fill, 10]
+        font_size: 8
+"#;
+        let t_alone = parse_and_validate(yaml_alone).unwrap();
+        let res_alone = render_single_label(
+            &t_alone,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        );
+        assert!(res_alone.is_ok());
+
+        // Uncapped fill child beside sibling: overruns because fill claims full 80mm
+        let yaml_overrun = r#"
+name: Fill Overrun
+unit: mm
+dpi: 200
+format: { type: single, width: 80, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [80, 20]
+    flow: { direction: row, gap: 5 }
+    items:
+      - type: text
+        value: "First"
+        size: [20, 10]
+        font_size: 8
+      - type: text
+        value: "Second"
+        size: [fill, 10]
+        font_size: 8
+"#;
+        let t_overrun = parse_and_validate(yaml_overrun).unwrap();
+        let err_overrun = render_single_label(
+            &t_overrun,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap_err();
+        assert_eq!(err_overrun.reason(), Some("item_out_of_frame"));
+
+        // Capped fill child sharing line: fits within 80mm
+        let yaml_capped = r#"
+name: Capped Fill
+unit: mm
+dpi: 200
+format: { type: single, width: 80, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [80, 20]
+    flow: { direction: row, gap: 5 }
+    items:
+      - type: text
+        value: "First"
+        size: [20, 10]
+        font_size: 8
+      - type: text
+        value: "Second"
+        size: [fill, 10]
+        max_w: 55
+        font_size: 8
+"#;
+        let t_capped = parse_and_validate(yaml_capped).unwrap();
+        let res_capped = render_single_label(
+            &t_capped,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        );
+        assert!(res_capped.is_ok());
+    }
+
+    #[test]
+    fn content_flow_container_hugs_children_in_both_directions() {
+        let yaml_row = r#"
+name: Content Row
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [content, content]
+    padding: 2
+    flow: { direction: row, gap: 4 }
+    items:
+      - type: text
+        value: "A"
+        size: [20, 10]
+        font_size: 8
+      - type: text
+        value: "B"
+        size: [30, 15]
+        font_size: 8
+"#;
+        let t_row = parse_and_validate(yaml_row).unwrap();
+        let source_row = render_test_items(
+            match &t_row.layout {
+                Layout::Items(items) => items,
+            },
+            (100.0, 100.0),
+        )
+        .expect("render");
+        // w: 20 + 30 + 4 + 4(pad) = 58mm; h: 15 + 4(pad) = 19mm
+        assert!(
+            source_row.contains("width: 58mm"),
+            "expected 58mm width in: {source_row}"
+        );
+        assert!(
+            source_row.contains("height: 19mm"),
+            "expected 19mm height in: {source_row}"
+        );
+
+        let yaml_col = r#"
+name: Content Col
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [content, content]
+    padding: 2
+    flow: { direction: column, gap: 4 }
+    items:
+      - type: text
+        value: "A"
+        size: [20, 10]
+        font_size: 8
+      - type: text
+        value: "B"
+        size: [30, 15]
+        font_size: 8
+"#;
+        let t_col = parse_and_validate(yaml_col).unwrap();
+        let source_col = render_test_items(
+            match &t_col.layout {
+                Layout::Items(items) => items,
+            },
+            (100.0, 100.0),
+        )
+        .expect("render");
+        // w: 30 + 4(pad) = 34mm; h: 10 + 15 + 4 + 4(pad) = 33mm
+        assert!(
+            source_col.contains("width: 34mm"),
+            "expected 34mm width in: {source_col}"
+        );
+        assert!(
+            source_col.contains("height: 33mm"),
+            "expected 33mm height in: {source_col}"
+        );
+    }
+
+    #[test]
+    fn flow_container_sizes_dynamic_width_label() {
+        let yaml = r#"
+name: Dynamic Flow
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: { min: 10, max: 100 }
+  height: 20
+layout:
+  - type: container
+    at: [0, 0]
+    size: [content, 20]
+    flow: { direction: row, gap: 5 }
+    items:
+      - type: text
+        value: "Hello"
+        size: [content, 10]
+        font_size: 8
+      - type: text
+        value: "World"
+        size: [content, 10]
+        font_size: 8
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let png = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap();
+        let img = image::load_from_memory(&png).unwrap();
+        // Sized to sum of content + gap, not min (10mm) or max (100mm)
+        let min_px = (10.0_f32 / 25.4 * 200.0).round() as u32;
+        let max_px = (100.0_f32 / 25.4 * 200.0).round() as u32;
+        assert!(img.width() > min_px);
+        assert!(img.width() < max_px);
+    }
+
+    #[test]
+    fn nested_flow_containers_render_in_both_directions() {
+        let yaml = r#"
+name: Nested Flow
+unit: mm
+dpi: 200
+format: { type: single, width: 80, height: 40 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [80, 40]
+    flow: { direction: row, gap: 4 }
+    padding: 2
+    items:
+      - type: container
+        size: [30, fill]
+        flow: { direction: column, gap: 2 }
+        items:
+          - type: text
+            value: "Line 1"
+            size: [fill, 10]
+            font_size: 8
+          - type: text
+            value: "Line 2"
+            size: [fill, 10]
+            font_size: 8
+      - type: qr
+        value: "NESTED"
+        size: [20, 20]
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let png = render_single_label(
+            &template,
+            &HashMap::new(),
+            None,
+            &BTreeMap::new(),
+            &resolver(),
+        )
+        .unwrap();
+        assert!(!png.is_empty());
+    }
+
+    #[test]
+    fn flow_container_at_sheet_slot_root() {
+        let yaml = r#"
+name: Sheet Flow Root
+unit: mm
+dpi: 200
+format:
+  type: sheet
+  paper_width: 210
+  paper_height: 297
+  label_width: 60
+  label_height: 30
+  positions: [[10, 10], [80, 10]]
+layout:
+  - type: container
+    at: [0, 0]
+    size: [60, 30]
+    flow: { direction: row, gap: 4 }
+    padding: 2
+    items:
+      - type: text
+        value: "Slot Label"
+        size: [20, 10]
+        font_size: 8
+      - type: qr
+        value: "DATA"
+        size: [10, 10]
+"#;
+        let template = parse_and_validate(yaml).unwrap();
+        let labels = vec![LabelInput {
+            data: HashMap::new(),
+        }];
+        let pdf =
+            render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime()).unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
     }
 }

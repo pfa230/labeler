@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::models::{DynamicValue, Extent, Padding, Placement, Rotation, SizeValue};
+use crate::models::{
+    DynamicValue, Extent, Flow, FlowDirection, Padding, Placement, Rotation, SizeValue,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Anchor {
@@ -9,6 +11,8 @@ pub enum Anchor {
     /// Sign-negative coordinate with inset `a = -v` (e.g. -0.0 has inset 0.0, -2.0 has inset 2.0).
     /// Low edge is at `frame - a`.
     EdgeRelative(f32),
+    /// An item with no anchor (a packed child).
+    Absent,
 }
 
 impl Anchor {
@@ -18,7 +22,7 @@ impl Anchor {
 
     pub fn inset(&self) -> Option<f32> {
         match self {
-            Anchor::Plain(_) => None,
+            Anchor::Plain(_) | Anchor::Absent => None,
             Anchor::EdgeRelative(a) => Some(*a),
         }
     }
@@ -27,6 +31,7 @@ impl Anchor {
         match self {
             Anchor::Plain(v) => *v,
             Anchor::EdgeRelative(a) => frame - *a,
+            Anchor::Absent => panic!("Anchor::Absent has no coordinate"),
         }
     }
 }
@@ -77,13 +82,16 @@ pub fn source_of(
     axis: usize,
     geometry_values: &HashMap<String, f32>,
 ) -> AxisSpec {
-    let at_raw = placement.at.0[axis];
-    let at_sign_neg = at_raw.is_sign_negative();
-    let a = if at_sign_neg { -at_raw } else { 0.0 };
-    let anchor = if at_sign_neg {
-        Anchor::EdgeRelative(a)
-    } else {
-        Anchor::Plain(at_raw)
+    let anchor = match &placement.at {
+        Some(pos) => {
+            let raw = pos.0[axis];
+            if raw.is_sign_negative() {
+                Anchor::EdgeRelative(-raw)
+            } else {
+                Anchor::Plain(raw)
+            }
+        }
+        None => Anchor::Absent,
     };
 
     match &placement.extent {
@@ -94,7 +102,10 @@ pub fn source_of(
                 SizeValue::Fill => ExtentSource::Frame,
                 SizeValue::Dynamic(DynamicValue::Literal(v)) => ExtentSource::Author(*v),
                 SizeValue::Dynamic(DynamicValue::Ref(ref_name)) => {
-                    let v = geometry_values.get(ref_name).copied().unwrap_or(0.0);
+                    let v = geometry_values
+                        .get(ref_name)
+                        .copied()
+                        .expect("validated parameter must have a value in geometry_values");
                     ExtentSource::Author(v)
                 }
             };
@@ -106,6 +117,16 @@ pub fn source_of(
             }
         }
         Extent::To(to_pos) => {
+            // Like `Anchor::resolve`'s deliberate panic on `Anchor::Absent`, an `Extent::To` on a placement
+            // with no anchor reaching `source_of` is an invariant violation, not a coordinate. `convert.rs`
+            // refuses `to` on packed (anchorless) children at template load time, making this unreachable
+            // in valid execution; we panic with an explicit invariant message rather than returning a silent default.
+            let at_pos = placement.at.as_ref().unwrap_or_else(|| {
+                panic!("invariant violation: Extent::To placement must have an anchor: a packed child is anchorless and cannot carry `to:`");
+            });
+            let at_raw = at_pos.0[axis];
+            let at_sign_neg = at_raw.is_sign_negative();
+            let a = if at_sign_neg { -at_raw } else { 0.0 };
             let to_raw = to_pos.0[axis];
             let to_sign_neg = to_raw.is_sign_negative();
             let b = if to_sign_neg { -to_raw } else { 0.0 };
@@ -140,6 +161,7 @@ pub fn available(frame: f32, axis_spec: &AxisSpec) -> f32 {
     match axis_spec.anchor {
         Anchor::Plain(at) => frame - at - axis_spec.inset,
         Anchor::EdgeRelative(a) => a - axis_spec.inset,
+        Anchor::Absent => frame,
     }
 }
 
@@ -204,6 +226,7 @@ pub fn requirement(axis_spec: &AxisSpec, claim: f32) -> f32 {
         (Anchor::EdgeRelative(a), ExtentSource::Content) => a,
         (Anchor::Plain(at), ExtentSource::Frame) => at + claim + axis_spec.inset,
         (Anchor::EdgeRelative(a), ExtentSource::Frame) => a,
+        (Anchor::Absent, _) => claim,
     }
 }
 
@@ -314,6 +337,17 @@ fn frame_axis(frame: (f32, f32), axis: usize) -> f32 {
     }
 }
 
+/// The far-edge bounds comparison checking whether a span `[low, low + extent]` ends within `limit`.
+pub fn fits_frame(axis: usize, low: f32, extent: f32, limit: f32) -> Result<(), Violation> {
+    if low > limit + BOUNDS_EPSILON {
+        return Err(Violation::AnchorBeyondFrame { axis });
+    }
+    if low + extent > limit + BOUNDS_EPSILON {
+        return Err(Violation::ExtentBeyondFrame { axis });
+    }
+    Ok(())
+}
+
 /// The rules that hold whatever an item measures to: where its anchor lands, and whether an extent
 /// it wrote down is a positive length. A stage that has not measured yet applies them in the same
 /// order [`place`] does, so the first thing wrong with a placement is reported the same way at both.
@@ -411,15 +445,8 @@ pub fn place(
 
     let x = spec_0.anchor.resolve(frame.0);
     let y = spec_1.anchor.resolve(frame.1);
-    for (axis, anchor, extent) in [(0usize, x, w), (1usize, y, h)] {
-        let limit = frame_axis(frame, axis);
-        if anchor > limit + BOUNDS_EPSILON {
-            return Err(Violation::AnchorBeyondFrame { axis });
-        }
-        if anchor + extent > limit + BOUNDS_EPSILON {
-            return Err(Violation::ExtentBeyondFrame { axis });
-        }
-    }
+    fits_frame(0, x, w, frame.0)?;
+    fits_frame(1, y, h, frame.1)?;
 
     Ok(Placed {
         x,
@@ -427,6 +454,191 @@ pub fn place(
         w: w.max(0.0),
         h: h.max(0.0),
     })
+}
+
+/// Resolve a packed child's extents against its padded inner box and verify it fits.
+pub fn resolve_packed(
+    placement: &Placement,
+    inner: (f32, f32),
+    geometry_values: &HashMap<String, f32>,
+    intrinsic: [Option<f32>; 2],
+) -> Result<(f32, f32), Violation> {
+    for axis in 0..2 {
+        let spec = source_of(placement, axis, geometry_values);
+        if let ExtentSource::Author(val) = spec.source {
+            if val <= 0.0 {
+                return Err(Violation::AuthoredExtentNotPositive {
+                    axis,
+                    written_as_to: spec.written_as_to,
+                });
+            }
+        }
+    }
+
+    let spec_0 = source_of(placement, 0, geometry_values);
+    let spec_1 = source_of(placement, 1, geometry_values);
+
+    let w = match intrinsic[0] {
+        Some(measured) => resolve(
+            &spec_0,
+            inner.0,
+            available(inner.0, &spec_0),
+            placement.max_w,
+            Some(measured),
+        ),
+        None => resolve_unmeasured(&spec_0, inner.0, placement.max_w),
+    };
+    let h = match intrinsic[1] {
+        Some(measured) => resolve(
+            &spec_1,
+            inner.1,
+            available(inner.1, &spec_1),
+            placement.max_h,
+            Some(measured),
+        ),
+        None => resolve_unmeasured(&spec_1, inner.1, placement.max_h),
+    };
+
+    for (axis, extent) in [(0usize, w), (1usize, h)] {
+        if extent < -BOUNDS_EPSILON {
+            return Err(Violation::ExtentNegative { axis });
+        }
+    }
+
+    fits_frame(0, 0.0, w, inner.0)?;
+    fits_frame(1, 0.0, h, inner.1)?;
+
+    Ok((w.max(0.0), h.max(0.0)))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlowChildInput {
+    pub resolved_box: (f32, f32),
+    pub requirement: (f32, f32),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlowResult {
+    pub rects: Vec<Placed>,
+    pub assembled: (f32, f32),
+}
+
+/// Compute the flow arrangement for packed children inside a padded inner box.
+/// Check accumulation in packing coordinates, then convert to drawing coordinates.
+pub fn arrange_flow(
+    inner: (f32, f32),
+    flow: &Flow,
+    children: &[FlowChildInput],
+) -> Result<FlowResult, (usize, Violation)> {
+    let is_row = matches!(flow.direction, FlowDirection::Row);
+    let primary_axis = if is_row { 0 } else { 1 };
+    let inner_primary = if is_row { inner.0 } else { inner.1 };
+
+    let n = children.len();
+    let mut has_occupying_after = vec![false; n];
+    let mut occ_after = false;
+    for i in (0..n).rev() {
+        has_occupying_after[i] = occ_after;
+        let ext_p = if is_row {
+            children[i].resolved_box.0
+        } else {
+            children[i].resolved_box.1
+        };
+        if ext_p > 0.0 {
+            occ_after = true;
+        }
+    }
+
+    let mut cursor = 0.0_f32;
+    let mut is_first_occupying = true;
+    let mut num_occupying = 0usize;
+    let mut sum_occupying_req_primary = 0.0_f32;
+    let mut max_active_req_secondary = 0.0_f32;
+
+    let mut rects = Vec::with_capacity(children.len());
+
+    for (idx, child) in children.iter().enumerate() {
+        let ext_p = if is_row {
+            child.resolved_box.0
+        } else {
+            child.resolved_box.1
+        };
+        let ext_s = if is_row {
+            child.resolved_box.1
+        } else {
+            child.resolved_box.0
+        };
+        let req_p = if is_row {
+            child.requirement.0
+        } else {
+            child.requirement.1
+        };
+        let req_s = if is_row {
+            child.requirement.1
+        } else {
+            child.requirement.0
+        };
+
+        max_active_req_secondary = max_active_req_secondary.max(req_s);
+
+        let occupies = ext_p > 0.0;
+
+        let child_lead_p = if occupies {
+            if !is_first_occupying {
+                cursor += flow.gap;
+            }
+            is_first_occupying = false;
+
+            fits_frame(primary_axis, cursor, ext_p, inner_primary).map_err(|v| (idx, v))?;
+
+            let lead = cursor;
+            cursor += ext_p;
+            num_occupying += 1;
+            sum_occupying_req_primary += req_p;
+            lead
+        } else {
+            let lead = if !is_first_occupying && has_occupying_after[idx] {
+                cursor + flow.gap
+            } else {
+                cursor
+            };
+            fits_frame(primary_axis, lead, 0.0, inner_primary).map_err(|v| (idx, v))?;
+            lead
+        };
+
+        let placed = if is_row {
+            Placed {
+                x: child_lead_p,
+                y: inner.1 - ext_s,
+                w: ext_p.max(0.0),
+                h: ext_s.max(0.0),
+            }
+        } else {
+            Placed {
+                x: 0.0,
+                y: inner.1 - (child_lead_p + ext_p),
+                w: ext_s.max(0.0),
+                h: ext_p.max(0.0),
+            }
+        };
+
+        rects.push(placed);
+    }
+
+    let assembled_primary = if num_occupying == 0 {
+        0.0
+    } else {
+        sum_occupying_req_primary + (num_occupying - 1) as f32 * flow.gap
+    };
+    let assembled_secondary = max_active_req_secondary;
+
+    let assembled = if is_row {
+        (assembled_primary, assembled_secondary)
+    } else {
+        (assembled_secondary, assembled_primary)
+    };
+
+    Ok(FlowResult { rects, assembled })
 }
 
 /// A container's outer box, the canvas its children are laid out on once rotation has swapped the
@@ -527,7 +739,7 @@ mod tests {
 
     fn to_placement(at: [f32; 2], to: [f32; 2]) -> Placement {
         Placement {
-            at: Position(at),
+            at: Some(Position(at)),
             extent: Extent::To(Position(to)),
             max_w: None,
             max_h: None,
@@ -647,5 +859,229 @@ mod tests {
                 "{rotation:?} must swap the pair"
             );
         }
+    }
+
+    /// Proves that `Anchor::Absent` resolves `available` as the full frame, reports `requirement`
+    /// without anchor arithmetic, and panics if `resolve` is reached directly.
+    #[test]
+    fn anchor_absent_and_packed_resolution() {
+        let geo = HashMap::new();
+        let packed = Placement::packed(Size([SizeValue::fill(), SizeValue::fixed(20.0)]));
+
+        let spec_0 = source_of(&packed, 0, &geo);
+        assert_eq!(spec_0.anchor, Anchor::Absent);
+        assert_eq!(available(100.0, &spec_0), 100.0);
+        assert_eq!(requirement(&spec_0, 45.0), 45.0);
+
+        let panic_res = std::panic::catch_unwind(|| spec_0.anchor.resolve(100.0));
+        assert!(panic_res.is_err(), "Anchor::Absent must panic on resolve()");
+
+        assert_eq!(fits_frame(0, 10.0, 50.0, 100.0), Ok(()));
+        assert_eq!(
+            fits_frame(0, 110.0, 10.0, 100.0),
+            Err(Violation::AnchorBeyondFrame { axis: 0 })
+        );
+        assert_eq!(
+            fits_frame(0, 90.0, 20.0, 100.0),
+            Err(Violation::ExtentBeyondFrame { axis: 0 })
+        );
+
+        // resolve_packed checks
+        let res_ok = resolve_packed(
+            &Placement::packed(Size([SizeValue::fixed(30.0), SizeValue::fixed(20.0)])),
+            (50.0, 50.0),
+            &geo,
+            [None, None],
+        );
+        assert_eq!(res_ok, Ok((30.0, 20.0)));
+
+        let res_nonpositive = resolve_packed(
+            &Placement::packed(Size([SizeValue::fixed(-5.0), SizeValue::fixed(20.0)])),
+            (50.0, 50.0),
+            &geo,
+            [None, None],
+        );
+        assert_eq!(
+            res_nonpositive,
+            Err(Violation::AuthoredExtentNotPositive {
+                axis: 0,
+                written_as_to: false,
+            })
+        );
+
+        let res_overrun = resolve_packed(
+            &Placement::packed(Size([SizeValue::fixed(60.0), SizeValue::fixed(20.0)])),
+            (50.0, 50.0),
+            &geo,
+            [None, None],
+        );
+        assert_eq!(res_overrun, Err(Violation::ExtentBeyondFrame { axis: 0 }));
+    }
+
+    /// Proves that `arrange_flow` accumulates extents along the primary axis, spaces occupying
+    /// children with gaps without leading or trailing margins, and preserves secondary axis extents.
+    #[test]
+    fn flow_row_arrangement_with_gaps_and_zero_extent() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 5.0,
+        };
+        // 3 active children (caller filters inactive children before calling arrange_flow)
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (20.0, 30.0),
+                requirement: (20.0, 30.0),
+            },
+            FlowChildInput {
+                resolved_box: (0.0, 25.0),
+                requirement: (0.0, 25.0),
+            },
+            FlowChildInput {
+                resolved_box: (30.0, 40.0),
+                requirement: (30.0, 40.0),
+            },
+        ];
+
+        let res = arrange_flow((100.0, 50.0), &flow, &children).expect("arrange row");
+        assert_eq!(res.rects.len(), 3);
+        assert_eq!(
+            res.rects[0],
+            Placed {
+                x: 0.0,
+                y: 20.0,
+                w: 20.0,
+                h: 30.0,
+            }
+        );
+        // Middle zero-extent child sits at the leading edge the next occupying child takes (25.0)
+        assert_eq!(
+            res.rects[1],
+            Placed {
+                x: 25.0,
+                y: 25.0,
+                w: 0.0,
+                h: 25.0,
+            }
+        );
+        assert_eq!(
+            res.rects[2],
+            Placed {
+                x: 25.0,
+                y: 10.0,
+                w: 30.0,
+                h: 40.0,
+            }
+        );
+        assert_eq!(res.assembled, (55.0, 40.0));
+    }
+
+    /// Proves that a trailing zero-extent child is placed at `cursor` (without a trailing gap)
+    /// and does not cause an overrun in a frame sized exactly to the occupying children.
+    #[test]
+    fn flow_trailing_zero_extent_child_places_at_cursor_without_gap() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 4.0,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (20.0, 10.0),
+                requirement: (20.0, 10.0),
+            },
+            FlowChildInput {
+                resolved_box: (20.0, 10.0),
+                requirement: (20.0, 10.0),
+            },
+            FlowChildInput {
+                resolved_box: (0.0, 10.0),
+                requirement: (0.0, 10.0),
+            },
+        ];
+
+        // Inner width 44.0 exactly matches occupying children (20 + 4 + 20 = 44)
+        let res = arrange_flow((44.0, 20.0), &flow, &children).expect("trailing zero extent");
+        assert_eq!(res.rects.len(), 3);
+        assert_eq!(res.rects[0].x, 0.0);
+        assert_eq!(res.rects[1].x, 24.0);
+        // Trailing zero-extent child sits at cursor (44.0), not cursor + gap (48.0)
+        assert_eq!(res.rects[2].x, 44.0);
+        assert_eq!(res.assembled, (44.0, 10.0));
+    }
+
+    #[test]
+    fn flow_column_arrangement_with_gaps_and_drawing_coords() {
+        let flow = Flow {
+            direction: FlowDirection::Column,
+            gap: 10.0,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (30.0, 20.0),
+                requirement: (30.0, 20.0),
+            },
+            FlowChildInput {
+                resolved_box: (35.0, 30.0),
+                requirement: (35.0, 30.0),
+            },
+        ];
+
+        let res = arrange_flow((40.0, 100.0), &flow, &children).expect("arrange column");
+        assert_eq!(res.rects.len(), 2);
+        assert_eq!(
+            res.rects[0],
+            Placed {
+                x: 0.0,
+                y: 80.0,
+                w: 30.0,
+                h: 20.0,
+            }
+        );
+        assert_eq!(
+            res.rects[1],
+            Placed {
+                x: 0.0,
+                y: 40.0,
+                w: 35.0,
+                h: 30.0,
+            }
+        );
+        assert_eq!(res.assembled, (35.0, 60.0));
+    }
+
+    #[test]
+    fn flow_overflow_reports_child_index_and_axis() {
+        let row_flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 5.0,
+        };
+        let row_children = vec![
+            FlowChildInput {
+                resolved_box: (20.0, 10.0),
+                requirement: (20.0, 10.0),
+            },
+            FlowChildInput {
+                resolved_box: (15.0, 10.0),
+                requirement: (15.0, 10.0),
+            },
+        ];
+        let row_err = arrange_flow((30.0, 50.0), &row_flow, &row_children).expect_err("overflow");
+        assert_eq!(row_err, (1, Violation::ExtentBeyondFrame { axis: 0 }));
+
+        let col_flow = Flow {
+            direction: FlowDirection::Column,
+            gap: 5.0,
+        };
+        let col_children = vec![
+            FlowChildInput {
+                resolved_box: (10.0, 20.0),
+                requirement: (10.0, 20.0),
+            },
+            FlowChildInput {
+                resolved_box: (10.0, 15.0),
+                requirement: (10.0, 15.0),
+            },
+        ];
+        let col_err = arrange_flow((50.0, 30.0), &col_flow, &col_children).expect_err("overflow");
+        assert_eq!(col_err, (1, Violation::ExtentBeyondFrame { axis: 1 }));
     }
 }

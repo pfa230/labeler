@@ -1709,12 +1709,14 @@ fn instantiate_item_defaults(
             when,
             frame,
             padding,
+            flow,
             items,
         } => LayoutItem::Container {
             placement: inst_placement(placement),
             when: when.clone(),
             frame: frame.clone(),
             padding: *padding,
+            flow: flow.clone(),
             items: items
                 .iter()
                 .map(|child| instantiate_item_defaults(child, params))
@@ -1913,12 +1915,18 @@ fn validate_layout_item(
             when,
             frame: cont_frame,
             padding,
+            flow,
             items,
         } => {
             validate_when(when.as_ref())?;
             if let Some(cf) = cont_frame {
                 if cf.thickness <= 0.0 {
                     return Err("container frame thickness must be greater than 0".to_string());
+                }
+            }
+            if let Some(fl) = flow {
+                if !fl.gap.is_finite() || fl.gap < 0.0 {
+                    return Err("flow gap must be >= 0".to_string());
                 }
             }
             validate_placement(placement, true, frame, axes_resolved, geometry_values)?;
@@ -1993,9 +2001,17 @@ fn validate_placement(
     // Every remaining rule about where a box lands is the resolver's, so load reports the same
     // refusals render does; only the words differ.
     match frame {
-        Some(frame) => resolver::place(placement, frame, geometry_values, [None, None])
-            .map(|_| ())
-            .map_err(violation_message),
+        Some(frame) => {
+            if placement.at.is_none() {
+                resolver::resolve_packed(placement, frame, geometry_values, [None, None])
+                    .map(|_| ())
+                    .map_err(violation_message)
+            } else {
+                resolver::place(placement, frame, geometry_values, [None, None])
+                    .map(|_| ())
+                    .map_err(violation_message)
+            }
+        }
         None => resolver::precheck(placement, None, geometry_values).map_err(violation_message),
     }
 }
@@ -3113,6 +3129,7 @@ layout:
                 when: None,
                 frame: None,
                 padding: crate::models::Padding::ZERO,
+                flow: None,
                 items: vec![],
             }]),
             version: None,
@@ -4748,5 +4765,200 @@ layout:
 
         let render_plain = crate::render::resolve_parameters(&template, &data, None, now).unwrap();
         assert_eq!(render_plain.data["style"], json!("plain"));
+    }
+
+    /// Proves that structural flow schema violations (missing/invalid direction, negative gaps,
+    /// authored anchors or lines on packed children, bare or null flow) are refused at template
+    /// load and quarantined with the exact JSON path.
+    #[test]
+    fn flow_load_refusals_and_quarantine() {
+        let cases = [
+            (
+                "no_direction",
+                r#"
+name: No Direction
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { gap: 5 }
+    items:
+      - type: text
+        value: "hi"
+        size: [10, 10]
+        font_size: 8
+"#,
+                "layout[0].flow.direction",
+            ),
+            (
+                "bare_flow",
+                r#"
+name: Bare Flow
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow:
+    items:
+      - type: text
+        value: "hi"
+        size: [10, 10]
+        font_size: 8
+"#,
+                "layout[0].flow.direction",
+            ),
+            (
+                "null_flow",
+                r#"
+name: Null Flow
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: null
+    items:
+      - type: text
+        value: "hi"
+        size: [10, 10]
+        font_size: 8
+"#,
+                "layout[0].flow.direction",
+            ),
+            (
+                "unknown_direction",
+                r#"
+name: Unknown Direction
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: diagonal }
+    items:
+      - type: text
+        value: "hi"
+        size: [10, 10]
+        font_size: 8
+"#,
+                "layout[0].flow.direction",
+            ),
+            (
+                "negative_gap",
+                r#"
+name: Negative Gap
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: row, gap: -2 }
+    items:
+      - type: text
+        value: "hi"
+        size: [10, 10]
+        font_size: 8
+"#,
+                "layout[0].flow.gap",
+            ),
+            (
+                "packed_with_at",
+                r#"
+name: Packed With At
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: row }
+    items:
+      - type: text
+        value: "hi"
+        at: [5, 5]
+        size: [10, 10]
+        font_size: 8
+"#,
+                "layout[0].items[0].at",
+            ),
+            (
+                "packed_with_to",
+                r#"
+name: Packed With To
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: row }
+    items:
+      - type: text
+        value: "hi"
+        to: [10, 10]
+        font_size: 8
+"#,
+                "layout[0].items[0].to",
+            ),
+            (
+                "packed_line",
+                r#"
+name: Packed Line
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: row }
+    items:
+      - type: line
+        at: [0, 0]
+        to: [10, 0]
+        thickness: 0.2
+"#,
+                "layout[0].items[0]",
+            ),
+        ];
+
+        for (name, yaml, expected_fragment) in cases {
+            let dir = temp_dir(&format!("flow_refusal_{name}"));
+            write_template(&dir, &format!("{name}.yaml"), yaml);
+
+            let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
+            assert_eq!(
+                registry.len(),
+                0,
+                "{name}: template with structural error must not be served"
+            );
+            let broken = registry.broken();
+            assert_eq!(
+                broken.len(),
+                1,
+                "{name}: template with structural error must be quarantined"
+            );
+            assert!(
+                broken[0].error.contains(expected_fragment),
+                "{name}: expected error to contain '{expected_fragment}', got '{}'",
+                broken[0].error
+            );
+
+            fs::remove_dir_all(&dir).ok();
+        }
     }
 }

@@ -595,19 +595,34 @@ impl Rotation {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowDirection {
+    Row,
+    Column,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Flow {
+    pub direction: FlowDirection,
+    #[serde(default)]
+    pub gap: f32,
+}
+
 /// How a box item's extent is expressed on the wire: `size:` (width and height) xor `to:` (the
 /// opposite corner). An enum rather than two `Option`s so "exactly one" is a type invariant.
-#[derive(Debug, Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Extent {
     Size(Size),
     To(Position),
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone)]
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
 pub struct Placement {
-    #[serde(default)]
-    pub at: Position,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Position>,
     #[serde(flatten)]
     pub extent: Extent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -622,7 +637,18 @@ impl Placement {
     /// The common case: an `at`/`size` placement with no bounds or rotation.
     pub fn sized(at: Position, size: Size) -> Self {
         Self {
-            at,
+            at: Some(at),
+            extent: Extent::Size(size),
+            max_w: None,
+            max_h: None,
+            rotate: None,
+        }
+    }
+
+    /// A packed child placement: no anchor, sized with no bounds or rotation.
+    pub fn packed(size: Size) -> Self {
+        Self {
+            at: None,
             extent: Extent::Size(size),
             max_w: None,
             max_h: None,
@@ -808,6 +834,8 @@ pub enum LayoutItem {
         frame: Option<Frame>,
         #[serde(default)]
         padding: Padding,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        flow: Option<Flow>,
         #[schema(no_recursion)]
         items: Vec<LayoutItem>,
     },
@@ -1038,7 +1066,7 @@ mod placement_tests {
         assert!(!json.contains("\"to\""), "got {json}");
 
         let cornered = Placement {
-            at: Position([0.0, 0.0]),
+            at: Some(Position([0.0, 0.0])),
             extent: super::Extent::To(Position([10.0, 5.0])),
             max_w: None,
             max_h: None,

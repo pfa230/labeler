@@ -573,6 +573,44 @@ What to know:
 - **`time:` picks the control, not the output.** Nothing stops a template from declaring `time: false` and then printing `{printed_on:time}`; the date picker has no time to give, so that prints `00:00`. Pair a token that shows a time with `time: true`, and check the result the way you check any other template: render it and look.
 - **Which one to reach for.** Use `{sys.now}` / `{sys.now:<name>}` when the label should always say when it was printed and the caller has no say in it. Declare a `datetime` parameter when the caller must be able to choose the instant. Both use the same `datetime_formats` patterns.
 
+### Flow layout (`flow: { direction, gap }`)
+
+A `container` may declare a `flow` block to pack its children sequentially in order rather than positioning each child with absolute `at` or `to` coordinates ([ADR-0083](adr/0083-packed-children-flow-layout.md)):
+
+```yaml
+- type: container
+  at: [0.0, 0.0]
+  size: [fill, 18.1]
+  padding: 1.0
+  flow:
+    direction: row             # required: row | column
+    gap: 2.0                   # optional: space between adjacent children (default 0)
+  items:
+    - type: qr
+      value: "{code}"
+      size: [14.0, 14.0]
+    - type: text
+      value: "{title}"
+      size: [content, 14.0]
+      font_size: { min: 8.0, max: 14.0 }
+```
+
+What to know:
+
+- **`direction: row` vs `direction: column`.**
+  - `direction: row` makes the horizontal axis primary: packs along `+x` from the padded inner box's left edge, aligning items to the top edge.
+  - `direction: column` makes the vertical axis primary: packs along `−y` from the padded inner box's top edge downward (top-to-bottom), aligning items to the left edge.
+- **Packed children carry no coordinates.** Direct children of a flow container are anchorless:
+  - They **must not** specify `at` or `to` (rejected at load time).
+  - A `line` item cannot be a packed child (rejected at load time).
+  - They can specify `size` (`content`, `fill`, or numeric constants), `max_w`, `max_h`, `when`, and container properties (`padding`, `frame`, nested `flow`).
+- **Gaps appear only between occupying children.** Gaps are placed between active children with positive primary extent. Gated-off children (`when`) leave no hole. Active zero-extent children (e.g. empty strings) advance nothing and add no extra gap.
+- **The two `fill` outcomes on packed children:**
+  - **Alone in a container:** An uncapped `size: [fill, ...]` child stretches to the container's padded inner extent.
+  - **Beside a sibling:** An uncapped `fill` child claims the entire inner extent, advancing the cursor past the container frame and failing at render with `item_out_of_frame`. When pairing `fill` with siblings, cap it using `max_w` (in a row) or `max_h` (in a column).
+- **Multiline `content`-sized text in a row:** A text child with `multiline: true` and `size: [content, ...]` measures its wrapped line box against the container's full padded inner width, so its content width equals the inner width. Consequently, it can only be packed first or alone; placed after a sibling (e.g. following a QR code), its width plus the preceding sibling's width overruns the container and fails with `item_out_of_frame`. To place multiline text beside a sibling, give it an explicit numeric width (or cap it).
+- **Nested flow containers.** A flow container inside another flow container packs its assembled extent (sum of child sizes + gaps) into the parent flow.
+
 ### Rotation
 
 A container may set `rotate` to turn a portrait design onto a landscape slot: the "read by turning the
@@ -606,7 +644,8 @@ What to know:
   author-space and rotates with the design; the drawn `frame` outline does not rotate.
 - **Sizing under rotation.** Rotated containers and their descendants support `content` and `fill` as
   long as required parent axes are resolved. When axes swap (90° and 270°), child width resolves against
-  inner container height and child height against inner container width.
+  inner container height and child height against inner container width. Flow containers beneath rotation
+  pack in author space.
 
 ## 10. Why some mistakes are caught at startup and others at print time
 
