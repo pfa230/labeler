@@ -11,13 +11,13 @@ params:
 layout:
   - type: container
     at: [0.0, 0.0]
-    size: [auto, 18.1]
+    size: [fill, 18.1]
     padding: 1.0
     items:
       - type: text
         value: "{message}"
         at: [0.0, 8.1]
-        size: [auto, 8.0]
+        size: [fill, 8.0]
         font_size:
           min: 10.0
           max: 24.0
@@ -27,7 +27,7 @@ layout:
       - type: text
         value: "Printed {printed_on:short_date}"
         at: [0.0, 0.0]
-        size: [auto, 8.0]
+        size: [fill, 8.0]
         font_size:
           min: 7.0
           max: 14.0

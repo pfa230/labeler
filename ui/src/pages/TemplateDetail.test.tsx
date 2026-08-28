@@ -13,6 +13,16 @@ const detail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: { min: 10, max: 120 }, height: 24 },
+  inputs: {
+    all: [
+      { name: "code", control: "text" },
+      { name: "message", control: "text" },
+    ],
+    default: [
+      { name: "code", control: "text" },
+      { name: "message", control: "text" },
+    ],
+  },
   layout: [
     { type: "qr", value: "{code}" },
     { type: "text", value: "{message}" },
@@ -143,6 +153,10 @@ const sheetDetail = {
       [0, 4],
       [4.25, 4],
     ],
+  },
+  inputs: {
+    all: [{ name: "message", control: "text" }],
+    default: [{ name: "message", control: "text" }],
   },
   layout: [{ type: "text", value: "{message}" }],
 };

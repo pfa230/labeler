@@ -28,7 +28,8 @@ use crate::{
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, PrintRequest,
         ReloadResponse, RenameGroupRequest, RenameGroupResponse, RenderLabelRequest,
-        TemplateDetail, TemplateGroupUpdate, TemplateList, VariableValue,
+        TemplateDetail, TemplateGroupUpdate, TemplateInputsRequest, TemplateInputsResponse,
+        TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -236,6 +237,7 @@ fn api_router() -> Router<Arc<AppState>> {
         .route("/templates/{id}/group", put(update_template_group))
         .route("/templates/{id}/source", get(template_source))
         .route("/templates/{id}/thumbnail", get(thumbnail))
+        .route("/templates/{id}/inputs", post(template_inputs))
         .route("/printers", get(list_printers).post(create_printer))
         .route("/printers/probe", post(probe_printer))
         .route(
@@ -1201,7 +1203,7 @@ pub async fn thumbnail(
     let template = registry
         .get(&id)
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let data = crate::render::placeholder_data(template);
+    let data = template.placeholder_data();
     let option = crate::render::default_option_selection(template);
     let variables = state.store().all_variables().await?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
@@ -1242,6 +1244,41 @@ pub async fn thumbnail(
         png,
     )
         .into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/templates/{id}/inputs",
+    params(("id" = String, Path, description = "Template id")),
+    request_body = TemplateInputsRequest,
+    responses(
+        (status = 200, description = "Derived input lists per label", body = TemplateInputsResponse),
+        (status = 404, description = "Template not found", body = ErrorResponse),
+        (status = 422, description = "Batch too large", body = ErrorResponse),
+    )
+)]
+pub async fn template_inputs(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<TemplateInputsRequest>,
+) -> Result<Json<TemplateInputsResponse>, AppError> {
+    if req.labels.len() > MAX_BATCH_LABELS {
+        return Err(AppError::batch_too_large(
+            req.labels.len(),
+            MAX_BATCH_LABELS,
+        ));
+    }
+    let registry = state.templates.load_full();
+    let template = registry
+        .get(&id)
+        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+
+    let now = chrono::Local::now();
+    let mut inputs = Vec::with_capacity(req.labels.len());
+    for label in &req.labels {
+        inputs.push(template.derive_inputs_for_label(&label.data, now));
+    }
+    Ok(Json(TemplateInputsResponse { inputs }))
 }
 
 fn validate_printer(printer: &Printer) -> Result<(), AppError> {

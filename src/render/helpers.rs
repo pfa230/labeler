@@ -1,5 +1,7 @@
 use crate::errors::AppError;
-use crate::models::{Alignment, FontSize, HorizontalAlign, Point, QrParams, VerticalAlign};
+use crate::models::{
+    Alignment, FontSize, HorizontalAlign, Overflow, Point, QrParams, VerticalAlign,
+};
 use crate::reason::Reason;
 use base64::Engine as _;
 use qrcode::render::svg;
@@ -24,7 +26,7 @@ pub(super) fn binarize_rgba(data: &mut [u8]) {
     }
 }
 
-pub(super) fn value_to_string(value: &JsonValue) -> String {
+pub fn value_to_string(value: &JsonValue) -> String {
     match value {
         JsonValue::String(value) => value.clone(),
         JsonValue::Number(value) => value.to_string(),
@@ -311,21 +313,168 @@ pub(super) fn build_qr_svg(payload: &[u8], params: &Option<QrParams>) -> Result<
         )
     })?;
 
+    let qz = params
+        .as_ref()
+        .and_then(|params| params.quiet_zone)
+        .unwrap_or(0.0);
+
     let mut renderer = code.render::<svg::Color>();
     renderer.quiet_zone(false);
-    if let Some(params) = params {
-        if let Some(module_size) = params.module_size {
-            if module_size > 0.0 {
-                let target = (module_size * code.width() as f32).ceil() as u32;
-                renderer.min_dimensions(target, target);
-            }
+    let svg = renderer.build();
+
+    if qz > 0.0 {
+        let w = code.width() as f32;
+        let total = w + 2.0 * qz;
+        let neg_qz = -qz;
+        let old_vb = format!("viewBox=\"0 0 {w} {w}\"");
+        let new_vb = format!("viewBox=\"{neg_qz} {neg_qz} {total} {total}\"");
+        if svg.contains(&old_vb) {
+            Ok(svg.replace(&old_vb, &new_vb))
+        } else {
+            let re = regex::Regex::new(r#"viewBox="0 0 \d+ \d+""#).unwrap();
+            Ok(re.replace(&svg, new_vb.as_str()).into_owned())
         }
-        if let Some(quiet_zone) = params.quiet_zone {
-            renderer.quiet_zone(quiet_zone > 0.0);
+    } else {
+        Ok(svg)
+    }
+}
+
+pub(super) fn raster_image_dimensions(
+    bytes: &[u8],
+    fmt: ImageFmt,
+    dpi: u32,
+    unit: &str,
+    path: &str,
+) -> Result<(f32, f32), AppError> {
+    let format = match fmt {
+        ImageFmt::Png => image::ImageFormat::Png,
+        ImageFmt::Jpg => image::ImageFormat::Jpeg,
+        ImageFmt::Svg => unreachable!("svg is not a raster format"),
+    };
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes));
+    reader.set_format(format);
+    let (px_w, px_h) = reader.into_dimensions().map_err(|e| {
+        AppError::unsupported_layout_item(
+            Reason::IntrinsicSizeUndefined,
+            format!("at {path}: failed to read image dimensions: {e}"),
+        )
+    })?;
+
+    let scale = if unit == "in" {
+        1.0 / (dpi as f32)
+    } else {
+        25.4 / (dpi as f32)
+    };
+
+    Ok((px_w as f32 * scale, px_h as f32 * scale))
+}
+
+pub(super) fn svg_axis_intrinsic(
+    svg_str: &str,
+    axis: usize, // 0 = width, 1 = height
+    unit: &str,
+    dpi: u32,
+    path: &str,
+) -> Result<f32, AppError> {
+    let root_svg_re = regex::Regex::new(r#"<svg\b([^>]*)>"#).unwrap();
+    let Some(caps) = root_svg_re.captures(svg_str) else {
+        return Err(AppError::unsupported_layout_item(
+            Reason::IntrinsicSizeUndefined,
+            format!("at {path}: svg root tag not found"),
+        ));
+    };
+    let attrs = caps.get(1).map_or("", |m| m.as_str());
+
+    let attr_name = if axis == 0 { "width" } else { "height" };
+    let attr_re = regex::Regex::new(&format!(r#"\b{attr_name}\s*=\s*["']([^"']+)["']"#)).unwrap();
+
+    let scale_px = if unit == "in" {
+        1.0 / (dpi as f32)
+    } else {
+        25.4 / (dpi as f32)
+    };
+
+    if let Some(c) = attr_re.captures(attrs) {
+        let val_str = c.get(1).unwrap().as_str().trim();
+        if !val_str.ends_with('%')
+            && !val_str.ends_with("em")
+            && !val_str.ends_with("rem")
+            && !val_str.ends_with("ex")
+            && !val_str.ends_with("ch")
+        {
+            if let Some(num_str) = val_str.strip_suffix("in") {
+                if let Ok(num) = num_str.trim().parse::<f32>() {
+                    let val_in_unit = if unit == "in" { num } else { num * 25.4 };
+                    return Ok(val_in_unit);
+                }
+            } else if let Some(num_str) = val_str.strip_suffix("mm") {
+                if let Ok(num) = num_str.trim().parse::<f32>() {
+                    let val_in_unit = if unit == "mm" { num } else { num / 25.4 };
+                    return Ok(val_in_unit);
+                }
+            } else if let Some(num_str) = val_str.strip_suffix("cm") {
+                if let Ok(num) = num_str.trim().parse::<f32>() {
+                    let num_mm = num * 10.0;
+                    let val_in_unit = if unit == "mm" { num_mm } else { num_mm / 25.4 };
+                    return Ok(val_in_unit);
+                }
+            } else if let Some(num_str) = val_str.strip_suffix("pt") {
+                if let Ok(num) = num_str.trim().parse::<f32>() {
+                    let val_in_unit = if unit == "in" {
+                        num / 72.0
+                    } else {
+                        num * 25.4 / 72.0
+                    };
+                    return Ok(val_in_unit);
+                }
+            } else if let Some(num_str) = val_str.strip_suffix("pc") {
+                if let Ok(num) = num_str.trim().parse::<f32>() {
+                    let num_pt = num * 12.0;
+                    let val_in_unit = if unit == "in" {
+                        num_pt / 72.0
+                    } else {
+                        num_pt * 25.4 / 72.0
+                    };
+                    return Ok(val_in_unit);
+                }
+            } else if let Some(num_str) = val_str
+                .strip_suffix('q')
+                .or_else(|| val_str.strip_suffix('Q'))
+            {
+                if let Ok(num) = num_str.trim().parse::<f32>() {
+                    let num_mm = num * 0.25;
+                    let val_in_unit = if unit == "mm" { num_mm } else { num_mm / 25.4 };
+                    return Ok(val_in_unit);
+                }
+            } else if let Some(num_str) = val_str.strip_suffix("px") {
+                if let Ok(num) = num_str.trim().parse::<f32>() {
+                    return Ok(num * scale_px);
+                }
+            } else if let Ok(num) = val_str.parse::<f32>() {
+                return Ok(num * scale_px);
+            }
         }
     }
 
-    Ok(renderer.build())
+    let vb_re = regex::Regex::new(r#"\bviewBox\s*=\s*["']([^"']+)["']"#).unwrap();
+    if let Some(c) = vb_re.captures(attrs) {
+        let vb_str = c.get(1).unwrap().as_str().trim();
+        let parts: Vec<&str> = vb_str
+            .split(|ch: char| ch.is_whitespace() || ch == ',')
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.len() == 4 {
+            let vb_dim_str = if axis == 0 { parts[2] } else { parts[3] };
+            if let Ok(num) = vb_dim_str.parse::<f32>() {
+                return Ok(num * scale_px);
+            }
+        }
+    }
+
+    Err(AppError::unsupported_layout_item(
+        Reason::IntrinsicSizeUndefined,
+        format!("at {path}: svg has no absolute dimension or viewBox on requested axis"),
+    ))
 }
 
 pub(super) fn to_page_coords(point: &Point, page_height_units: f32) -> (f32, f32) {
@@ -413,6 +562,33 @@ fn instance(weight: u16, size_pt: f32) -> Result<ttf_parser::Face<'static>, AppE
     Ok(face)
 }
 
+fn text_fits(
+    face: &ttf_parser::Face,
+    text: &str,
+    multiline: bool,
+    size_pt: f32,
+    width_pt: f32,
+    height_pt: f32,
+    vertical: VerticalAlign,
+) -> bool {
+    const EPS: f32 = 0.01;
+    let lines = if multiline {
+        wrap_text(face, text, size_pt, width_pt)
+    } else {
+        vec![text.to_string()]
+    };
+    let h = block_height(face, size_pt, lines.len(), vertical);
+    if h > height_pt + EPS {
+        return false;
+    }
+    for line in &lines {
+        if text_width(face, line, size_pt) > width_pt + EPS {
+            return false;
+        }
+    }
+    true
+}
+
 /// Largest font in [min_size, max_size] (0.5pt steps) at which `text` fits the box, else min_size.
 pub(super) fn largest_fitting_font(
     text: &str,
@@ -443,100 +619,216 @@ pub(super) fn largest_fitting_font(
     min_size
 }
 
-pub(super) fn fit_text_to_box(
-    text: &str,
-    multiline: bool,
-    weight: u16,
-    vertical: VerticalAlign,
-    min_size: f32,
-    max_size: f32,
-    fit: FitBox,
-) -> Result<(f32, String), AppError> {
-    let fitted = largest_fitting_font(text, multiline, weight, vertical, min_size, max_size, fit);
-    let face = instance(weight, fitted)?;
-    let face = &face;
-    let width_pt = units_to_pt(fit.width_units, fit.unit);
-    let height_pt = units_to_pt(fit.height_units, fit.unit);
-    if text_fits(face, text, multiline, fitted, width_pt, height_pt, vertical) {
-        if multiline {
-            let lines = wrap_text(face, text, fitted, width_pt);
-            return Ok((fitted, lines.join("\n")));
-        }
-        return Ok((fitted, text.to_string()));
-    }
-    let trimmed = if multiline {
-        trim_multiline(face, text, fitted, width_pt, height_pt, vertical)
-    } else {
-        trim_single_line(face, text, fitted, width_pt)
+#[derive(Debug, Clone)]
+pub struct TextFit {
+    pub font_size_pt: f32,
+    pub lines: Vec<String>,
+    pub width_units: f32,
+    pub height_units: f32,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct TextLayoutItem<'a> {
+    pub raw_text: &'a str,
+    pub font_size: &'a FontSize,
+    pub font_weight: Option<crate::models::DynamicValue<u16>>,
+    pub multiline: bool,
+    pub alignment: Alignment,
+    pub overflow: Overflow,
+}
+
+pub(super) fn layout_text(
+    item: TextLayoutItem<'_>,
+    box_size: (f32, f32),
+    unit: &str,
+    path: &str,
+) -> Result<TextFit, AppError> {
+    let weight = match item.font_weight {
+        Some(crate::models::DynamicValue::Literal(val)) => val,
+        _ => 400,
     };
-    Ok((fitted, trimmed))
-}
 
-fn text_fits(
-    face: &ttf_parser::Face,
-    text: &str,
-    multiline: bool,
-    size: f32,
-    width_pt: f32,
-    height_pt: f32,
-    vertical: VerticalAlign,
-) -> bool {
-    if multiline {
-        let lines = wrap_text(face, text, size, width_pt);
-        block_height(face, size, lines.len(), vertical) <= height_pt + 0.01
+    let width_pt = units_to_pt(box_size.0, unit);
+    let height_pt = units_to_pt(box_size.1, unit);
+    let vertical = item.alignment.vertical;
+
+    // Step 1: Input line(s)
+    let input_text = if item.multiline {
+        item.raw_text.to_string()
     } else {
-        text_width(face, text, size) <= width_pt + 0.01
-            && block_height(face, size, 1, vertical) <= height_pt + 0.01
+        item.raw_text.lines().next().unwrap_or("").to_string()
+    };
+
+    if input_text.is_empty() {
+        return Ok(TextFit {
+            font_size_pt: match item.font_size {
+                FontSize::Fixed(s) => *s,
+                FontSize::Range { max, .. } => *max,
+            },
+            lines: vec![],
+            width_units: 0.0,
+            height_units: 0.0,
+        });
     }
+
+    // Step 2: Shrink font_size if range
+    let (chosen_size, face) = match item.font_size {
+        FontSize::Fixed(s) => (*s, instance(weight, *s)?),
+        FontSize::Range { min, max } => {
+            let fitted = largest_fitting_font(
+                &input_text,
+                item.multiline,
+                weight,
+                vertical,
+                *min,
+                *max,
+                FitBox {
+                    width_units: box_size.0,
+                    height_units: box_size.1,
+                    unit,
+                },
+            );
+            (fitted, instance(weight, fitted)?)
+        }
+    };
+
+    // Step 3: Break & Overflow at chosen_size
+    let raw_lines = if item.multiline {
+        wrap_text(&face, &input_text, chosen_size, width_pt)
+    } else {
+        vec![input_text.clone()]
+    };
+
+    let fits = text_fits(
+        &face,
+        &input_text,
+        item.multiline,
+        chosen_size,
+        width_pt,
+        height_pt,
+        vertical,
+    );
+
+    let lines_to_trim = if fits {
+        raw_lines
+    } else {
+        match item.overflow {
+            Overflow::Fail => {
+                return Err(AppError::unsupported_layout_item(
+                    Reason::TextDoesNotFit,
+                    format!("at {path}: text does not fit within box"),
+                ));
+            }
+            Overflow::Ellipsis => {
+                let ellipsis_width = text_width(&face, ELLIPSIS, chosen_size);
+                if width_pt < ellipsis_width {
+                    return Err(AppError::unsupported_layout_item(
+                        Reason::TextDoesNotFit,
+                        format!(
+                            "at {path}: box width {}{unit} is narrower than ellipsis marker",
+                            box_size.0
+                        ),
+                    ));
+                }
+                let line_1_h = block_height(&face, chosen_size, 1, vertical);
+                if line_1_h > height_pt + 0.01 {
+                    return Err(AppError::unsupported_layout_item(
+                        Reason::TextDoesNotFit,
+                        format!("at {path}: box height {}{unit} is shorter than one line at font size {chosen_size}pt", box_size.1),
+                    ));
+                }
+
+                if item.multiline {
+                    let max_lines = ((height_pt - overflow_em(&face, vertical) * chosen_size
+                        + leading(chosen_size))
+                        / (cap_height(&face, chosen_size) + leading(chosen_size)))
+                    .floor()
+                    .max(1.0) as usize;
+
+                    let mut lines = raw_lines;
+                    // The marker means content was dropped, so only a truncation earns it, and it
+                    // goes on the last line the truncation kept. A block that already fits the
+                    // line budget lost nothing off its end and keeps its final line as authored.
+                    let truncated = lines.len() > max_lines;
+                    if truncated {
+                        lines.truncate(max_lines);
+                    }
+                    // An over-wide line is shortened wherever it sits, not only last: `wrap_text`
+                    // emits one whenever a single glyph is wider than the box, and leaving it
+                    // alone would clip it, which is never an outcome of an overflow policy.
+                    let last = lines.len().saturating_sub(1);
+                    for (index, line) in lines.iter_mut().enumerate() {
+                        if text_width(&face, line, chosen_size) > width_pt
+                            || (truncated && index == last)
+                        {
+                            *line = ellipsize(&face, line, chosen_size, width_pt);
+                        }
+                    }
+                    lines
+                } else {
+                    let mut out = raw_lines.into_iter().next().unwrap_or_default();
+                    if text_width(&face, &out, chosen_size) > width_pt {
+                        out = ellipsize(&face, &out, chosen_size, width_pt);
+                    }
+                    vec![out]
+                }
+            }
+        }
+    };
+
+    // Step 4: Trim blank edges at emission
+    let mut start = 0;
+    while start < lines_to_trim.len() && lines_to_trim[start].trim().is_empty() {
+        start += 1;
+    }
+    let mut end = lines_to_trim.len();
+    while end > start && lines_to_trim[end - 1].trim().is_empty() {
+        end -= 1;
+    }
+    let emitted_raw: Vec<String> = if start >= end {
+        vec![]
+    } else {
+        lines_to_trim[start..end].to_vec()
+    };
+
+    let emitted_count = emitted_raw.len();
+    let block_h_pt = if emitted_count == 0 {
+        0.0
+    } else {
+        block_height(&face, chosen_size, emitted_count, vertical)
+    };
+    let max_w_pt = emitted_raw
+        .iter()
+        .map(|l| text_width(&face, l, chosen_size))
+        .fold(0.0_f32, f32::max);
+
+    let height_units = pt_to_units(block_h_pt, unit);
+    let width_units = pt_to_units(max_w_pt, unit);
+
+    let lines = emitted_raw
+        .iter()
+        .map(|l| to_nonbreaking(l.as_str()))
+        .collect();
+
+    Ok(TextFit {
+        font_size_pt: chosen_size,
+        lines,
+        width_units,
+        height_units,
+    })
 }
 
-fn trim_single_line(face: &ttf_parser::Face, text: &str, size: f32, width_pt: f32) -> String {
-    const ELLIPSIS: &str = "...";
-    let mut out = text.to_string();
-    if text_width(face, &out, size) <= width_pt {
-        return out;
-    }
-    let ellipsis_width = text_width(face, ELLIPSIS, size);
-    if ellipsis_width > width_pt {
-        return ELLIPSIS.to_string();
-    }
+/// The overflow marker appended to a shortened line.
+const ELLIPSIS: &str = "...";
+
+/// Shorten `line` until it and the marker fit in `width_pt`, then append the marker. Callers have
+/// already refused a box narrower than the marker itself, so the result always fits.
+fn ellipsize(face: &ttf_parser::Face, line: &str, size: f32, width_pt: f32) -> String {
+    let mut out = line.to_string();
     while !out.is_empty() && text_width(face, &format!("{out}{ELLIPSIS}"), size) > width_pt {
         out.pop();
     }
     format!("{out}{ELLIPSIS}")
-}
-
-fn trim_multiline(
-    face: &ttf_parser::Face,
-    text: &str,
-    size: f32,
-    width_pt: f32,
-    height_pt: f32,
-    vertical: VerticalAlign,
-) -> String {
-    const ELLIPSIS: &str = "...";
-    // Inverse of block_height, with the edge reservation taken off the top:
-    // n*cap + (n-1)*leading <= H - overflow  =>  n <= (H - overflow + leading) / (cap + leading)
-    let max_lines = ((height_pt - overflow_em(face, vertical) * size + leading(size))
-        / (cap_height(face, size) + leading(size)))
-    .floor()
-    .max(1.0) as usize;
-    let mut lines = wrap_text(face, text, size, width_pt);
-    if lines.len() <= max_lines {
-        return lines.join("\n");
-    }
-    lines.truncate(max_lines);
-    let last = lines.last_mut().unwrap();
-    let ellipsis_width = text_width(face, ELLIPSIS, size);
-    if ellipsis_width > width_pt {
-        *last = ELLIPSIS.to_string();
-    } else {
-        while !last.is_empty() && text_width(face, &format!("{last}{ELLIPSIS}"), size) > width_pt {
-            last.pop();
-        }
-        *last = format!("{last}{ELLIPSIS}");
-    }
-    lines.join("\n")
 }
 
 fn wrap_text(face: &ttf_parser::Face, text: &str, size: f32, width_pt: f32) -> Vec<String> {
@@ -753,117 +1045,6 @@ fn pt_to_units(value_pt: f32, unit: &str) -> f32 {
         "mm" => value_pt * 25.4 / 72.0,
         _ => value_pt,
     }
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct MeasuredText {
-    pub font: f32,
-    pub lines: Vec<String>,
-    pub width: f32,
-}
-
-/// Auto-length fit: choose the font, return the (possibly wrapped and ellipsized) lines and the
-/// natural width (clamped to the budget). Width is in template units.
-///
-/// When `multiline` is `false`, only the first input line is considered; the result is always
-/// one line (ellipsized on overflow). When `multiline` is `true`, the text is word-wrapped to the
-/// budget width, the largest font that fits the height is chosen, and overflow lines are ellipsized.
-pub(super) fn fit_text_auto_length(
-    raw_text: &str,
-    font_size: &FontSize,
-    multiline: bool,
-    weight: u16,
-    vertical: VerticalAlign,
-    fit: FitBox,
-) -> Result<MeasuredText, AppError> {
-    let (budget_w_units, unit) = (fit.width_units, fit.unit);
-    let budget_pt = units_to_pt(budget_w_units, unit);
-    let height_pt = units_to_pt(fit.height_units, unit);
-
-    if !multiline {
-        let line = to_nonbreaking(raw_text.lines().next().unwrap_or(""));
-        let size = match font_size {
-            FontSize::Fixed(s) => *s,
-            FontSize::Range { min, max } => {
-                largest_fitting_font(&line, false, weight, vertical, *min, *max, fit)
-            }
-        };
-        let face = instance(weight, size)?;
-        let face = &face;
-        if text_fits(face, &line, false, size, budget_pt, height_pt, vertical) {
-            let w = pt_to_units(text_width(face, &line, size), unit).min(budget_w_units);
-            return Ok(MeasuredText {
-                font: size,
-                lines: vec![line],
-                width: w,
-            });
-        }
-        let trimmed = trim_single_line(face, &line, size, budget_pt);
-        return Ok(MeasuredText {
-            font: size,
-            lines: vec![trimmed],
-            width: budget_w_units,
-        });
-    }
-
-    // Multiline: pick the font (shrink to fit the height with wrapping), then produce the final lines.
-    let size = match font_size {
-        FontSize::Fixed(s) => *s,
-        FontSize::Range { min, max } => {
-            largest_fitting_font(raw_text, true, weight, vertical, *min, *max, fit)
-        }
-    };
-    let face = instance(weight, size)?;
-    let (lines, max_w_pt) = wrap_lines_fit(&face, raw_text, size, budget_pt, height_pt, vertical);
-    let width = pt_to_units(max_w_pt, unit).min(budget_w_units);
-    Ok(MeasuredText {
-        font: size,
-        lines,
-        width,
-    })
-}
-
-/// Wrap `text` to `width_pt`, keep only the lines that fit `height_pt` (ellipsizing the last on
-/// overflow), and NBSP-treat each kept line so the renderer cannot re-break it. Wrapping happens on
-/// real spaces first (NBSP is not whitespace, so it must be applied after wrapping). Returns the
-/// NBSP-treated lines plus the longest-line width in points, measured on the raw (pre-NBSP) lines so
-/// the width never depends on NBSP and space sharing an advance in the measurement font.
-fn wrap_lines_fit(
-    face: &ttf_parser::Face,
-    text: &str,
-    size: f32,
-    width_pt: f32,
-    height_pt: f32,
-    vertical: VerticalAlign,
-) -> (Vec<String>, f32) {
-    const ELLIPSIS: &str = "...";
-    // Inverse of block_height, as in trim_multiline, minus the edge reservation.
-    let max_lines = ((height_pt - overflow_em(face, vertical) * size + leading(size))
-        / (cap_height(face, size) + leading(size)))
-    .floor()
-    .max(1.0) as usize;
-    let mut lines = wrap_text(face, text, size, width_pt);
-    if lines.len() > max_lines {
-        lines.truncate(max_lines);
-        let last = lines.last_mut().unwrap();
-        let ellipsis_width = text_width(face, ELLIPSIS, size);
-        if ellipsis_width > width_pt {
-            *last = ELLIPSIS.to_string();
-        } else {
-            while !last.is_empty()
-                && text_width(face, &format!("{last}{ELLIPSIS}"), size) > width_pt
-            {
-                last.pop();
-            }
-            *last = format!("{last}{ELLIPSIS}");
-        }
-    }
-    let max_w_pt = lines
-        .iter()
-        .map(|l| text_width(face, l, size))
-        .fold(0.0_f32, f32::max);
-    let lines = lines.into_iter().map(|l| to_nonbreaking(&l)).collect();
-    (lines, max_w_pt)
 }
 
 pub(super) fn typst_alignment(alignment: &Alignment) -> String {
@@ -1092,9 +1273,9 @@ mod tests {
 
 #[cfg(test)]
 mod helpers_tests {
-    use super::{fit_text_auto_length, largest_fitting_font, FitBox};
-    use crate::models::FontSize;
-    use crate::models::VerticalAlign;
+    use super::{largest_fitting_font, layout_text, FitBox};
+    use crate::errors::AppError;
+    use crate::models::{Alignment, FontSize, HorizontalAlign, Overflow, VerticalAlign};
 
     #[test]
     fn largest_fitting_font_picks_max_then_steps_down() {
@@ -1132,163 +1313,305 @@ mod helpers_tests {
         );
     }
 
+    fn test_layout(
+        text: &str,
+        font_size: &FontSize,
+        multiline: bool,
+        align: Alignment,
+        overflow: Overflow,
+        box_size: (f32, f32),
+    ) -> Result<super::TextFit, AppError> {
+        layout_text(
+            super::TextLayoutItem {
+                raw_text: text,
+                font_size,
+                font_weight: None,
+                multiline,
+                alignment: align,
+                overflow,
+            },
+            box_size,
+            "mm",
+            "layout[0]",
+        )
+    }
+
     #[test]
-    fn auto_length_short_text_is_content_width() {
-        let m = fit_text_auto_length(
+    fn layout_text_short_text_is_content_width() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Center,
+            vertical: VerticalAlign::Center,
+        };
+        let m = test_layout(
             "Hi",
             &FontSize::Range {
                 min: 6.0,
                 max: 20.0,
             },
             false,
-            400,
-            VerticalAlign::Center,
-            FitBox {
-                width_units: 200.0,
-                height_units: 50.0,
-                unit: "mm",
-            },
+            align,
+            Overflow::Ellipsis,
+            (200.0, 50.0),
         )
         .unwrap();
-        assert_eq!(m.font, 20.0);
-        assert!(m.width > 0.0 && m.width < 200.0);
+        assert_eq!(m.font_size_pt, 20.0);
+        assert!(m.width_units > 0.0 && m.width_units < 200.0);
         assert_eq!(m.lines, vec!["Hi".to_string()]);
     }
 
     #[test]
-    fn auto_length_overflow_ellipsizes_at_min_and_uses_budget() {
-        let m = fit_text_auto_length(
+    fn layout_text_overflow_ellipsizes_at_min_and_uses_budget() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Center,
+            vertical: VerticalAlign::Center,
+        };
+        let m = test_layout(
             "An extremely long label that cannot possibly fit even at the minimum font size",
             &FontSize::Range {
                 min: 6.0,
                 max: 20.0,
             },
             false,
-            400,
-            VerticalAlign::Center,
-            FitBox {
-                width_units: 8.0,
-                height_units: 3.0,
-                unit: "mm",
-            },
+            align,
+            Overflow::Ellipsis,
+            (8.0, 3.0),
         )
         .unwrap();
-        assert_eq!(m.font, 6.0);
+        assert_eq!(m.font_size_pt, 6.0);
         assert_eq!(m.lines.len(), 1);
         assert!(m.lines[0].ends_with("...") || m.lines[0].ends_with('\u{2026}'));
-        assert!((m.width - 8.0).abs() < 0.01);
     }
 
     #[test]
-    fn auto_length_fixed_font_no_shrink() {
-        let m = fit_text_auto_length(
+    fn layout_text_overflow_fail_returns_err() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Center,
+            vertical: VerticalAlign::Center,
+        };
+        let res = test_layout(
+            "An extremely long label that cannot possibly fit even at the minimum font size",
+            &FontSize::Range {
+                min: 6.0,
+                max: 20.0,
+            },
+            false,
+            align,
+            Overflow::Fail,
+            (8.0, 3.0),
+        );
+        assert!(res.is_err());
+    }
+
+    /// Task 9.2's first irreducible case: a box narrower than the marker itself has nothing left
+    /// to shorten, so `ellipsis` reaches the same refusal `fail` would.
+    #[test]
+    fn layout_text_ellipsis_refuses_a_box_narrower_than_the_marker() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Center,
+        };
+        let err = test_layout(
+            "ABC",
+            &FontSize::Fixed(6.0),
+            false,
+            align,
+            Overflow::Ellipsis,
+            (0.5, 10.0),
+        )
+        .expect_err("a box narrower than '...' cannot be ellipsized");
+        assert_eq!(err.reason(), Some("text_does_not_fit"));
+        assert!(
+            err.message_text().contains("narrower than ellipsis marker"),
+            "got {}",
+            err.message_text()
+        );
+    }
+
+    /// Task 9.2's second irreducible case: shortening a line cannot buy vertical room, so a box
+    /// shorter than one line at the chosen size is refused rather than cut through the middle.
+    #[test]
+    fn layout_text_ellipsis_refuses_a_box_shorter_than_one_line() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Center,
+        };
+        let err = test_layout(
+            "ABC",
+            &FontSize::Fixed(12.0),
+            false,
+            align,
+            Overflow::Ellipsis,
+            (50.0, 0.5),
+        )
+        .expect_err("a box shorter than one line cannot be ellipsized");
+        assert_eq!(err.reason(), Some("text_does_not_fit"));
+        assert!(
+            err.message_text().contains("shorter than one line"),
+            "got {}",
+            err.message_text()
+        );
+    }
+
+    /// `wrap_text` splits an over-wide word per glyph and keeps a glyph that is wider than the box
+    /// on its own line, so an over-wide line can sit anywhere in the block, not only last. Every
+    /// emitted line must fit: clipping is never an outcome of an overflow policy.
+    #[test]
+    fn layout_text_ellipsizes_every_over_wide_line_not_only_the_last() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Center,
+        };
+        let face = super::instance(400, 6.0).unwrap();
+        let glyph_w = super::text_width(&face, "W", 6.0);
+        let marker_w = super::text_width(&face, "...", 6.0);
+        assert!(
+            marker_w < glyph_w,
+            "the case needs a box between '...' and 'W': {marker_w} vs {glyph_w}"
+        );
+        let box_w = super::pt_to_units((marker_w + glyph_w) / 2.0, "mm");
+
+        let m = test_layout(
+            "WW",
+            &FontSize::Fixed(6.0),
+            true,
+            align,
+            Overflow::Ellipsis,
+            (box_w, 10.0),
+        )
+        .unwrap();
+
+        assert!(
+            m.lines.len() > 1,
+            "expected a wrapped block, got {:?}",
+            m.lines
+        );
+        assert!(
+            m.width_units <= box_w + 1e-4,
+            "line wider than its box: {} > {box_w} in {:?}",
+            m.width_units,
+            m.lines
+        );
+    }
+
+    /// The marker records dropped content. A block that fits the line budget dropped nothing off
+    /// its end, so its final line is emitted as authored even when an earlier over-wide line had
+    /// to be shortened: only the line that overflowed is touched.
+    #[test]
+    fn layout_text_ellipsis_leaves_a_final_line_that_fits_intact() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Center,
+        };
+        let face = super::instance(400, 6.0).unwrap();
+        let glyph_w = super::text_width(&face, "W", 6.0);
+        let marker_w = super::text_width(&face, "...", 6.0);
+        assert!(
+            marker_w < glyph_w,
+            "the case needs a box between '...' and 'W': {marker_w} vs {glyph_w}"
+        );
+        let box_w = super::pt_to_units((marker_w + glyph_w) / 2.0, "mm");
+
+        let m = test_layout(
+            "W i",
+            &FontSize::Fixed(6.0),
+            true,
+            align,
+            Overflow::Ellipsis,
+            // Two lines of 6pt fit in 6mm and three do not, so the block exactly fills the line
+            // budget: the case where a line count alone cannot tell whether anything was dropped.
+            (box_w, 6.0),
+        )
+        .unwrap();
+
+        assert_eq!(
+            m.lines,
+            vec!["...".to_string(), "i".to_string()],
+            "the over-wide first line becomes the marker and the fitting last line is untouched"
+        );
+    }
+
+    #[test]
+    fn layout_text_fixed_font_no_shrink() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Center,
+            vertical: VerticalAlign::Center,
+        };
+        let m = test_layout(
             "Hi",
             &FontSize::Fixed(12.0),
             false,
-            400,
-            VerticalAlign::Center,
-            FitBox {
-                width_units: 200.0,
-                height_units: 50.0,
-                unit: "mm",
-            },
+            align,
+            Overflow::Ellipsis,
+            (200.0, 50.0),
         )
         .unwrap();
-        assert_eq!(m.font, 12.0);
+        assert_eq!(m.font_size_pt, 12.0);
         assert_eq!(m.lines, vec!["Hi".to_string()]);
     }
 
     #[test]
-    fn auto_length_multiline_wraps_and_width_is_longest_line() {
-        // Long text, narrow budget, tall box: should wrap to >1 line; width <= budget.
-        let m = fit_text_auto_length(
+    fn layout_text_multiline_wraps_and_width_is_longest_line() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Center,
+            vertical: VerticalAlign::Center,
+        };
+        let m = test_layout(
             "alpha bravo charlie delta",
             &FontSize::Range {
                 min: 6.0,
                 max: 10.0,
             },
             true,
-            400,
-            VerticalAlign::Center,
-            FitBox { width_units: 20.0, height_units: // budget width units (mm)
-            20.0, unit: // box height units (mm): room for several lines
-            "mm" },
+            align,
+            Overflow::Ellipsis,
+            (20.0, 20.0),
         )
         .unwrap();
         assert!(m.lines.len() >= 2, "expected wrapping, got {:?}", m.lines);
-        assert!(m.width <= 20.0 + 0.01);
-        // each line is NBSP-treated (no ASCII space)
-        assert!(
-            m.lines.iter().all(|l| !l.contains(' ')),
-            "lines must be NBSP-joined: {:?}",
-            m.lines
-        );
+        assert!(m.width_units <= 20.0 + 0.01);
     }
 
     #[test]
-    fn auto_length_multiline_short_text_is_single_line() {
-        let m = fit_text_auto_length(
+    fn layout_text_multiline_short_text_is_single_line() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Center,
+            vertical: VerticalAlign::Center,
+        };
+        let m = test_layout(
             "Hi",
             &FontSize::Range {
                 min: 6.0,
                 max: 10.0,
             },
             true,
-            400,
-            VerticalAlign::Center,
-            FitBox {
-                width_units: 50.0,
-                height_units: 20.0,
-                unit: "mm",
-            },
+            align,
+            Overflow::Ellipsis,
+            (50.0, 20.0),
         )
         .unwrap();
         assert_eq!(m.lines.len(), 1);
     }
 
     #[test]
-    fn auto_length_multiline_overflow_ellipsizes_last_line() {
-        // Many words, short height: at min font only a few lines fit; last is ellipsized.
-        let m = fit_text_auto_length(
-            "one two three four five six seven eight nine ten eleven twelve",
-            &FontSize::Range { min: 6.0, max: 6.0 }, // fixed-ish via min==max to force overflow
-            true,
-            400,
-            VerticalAlign::Center,
-            FitBox { width_units: 12.0, height_units: // narrow
-            6.0, unit: // short height: few lines
-            "mm" },
-        )
-        .unwrap();
-        assert!(
-            m.lines.last().unwrap().contains("..."),
-            "last line should ellipsize: {:?}",
-            m.lines
-        );
-    }
-
-    #[test]
-    fn auto_length_multiline_empty_input_is_ok() {
-        // Empty input must not panic. `wrap_text` yields a single blank line, so the result is one
-        // empty line with zero width.
-        let m = fit_text_auto_length(
+    fn layout_text_multiline_empty_input_is_ok() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Center,
+            vertical: VerticalAlign::Center,
+        };
+        let m = test_layout(
             "",
             &FontSize::Range {
                 min: 6.0,
                 max: 10.0,
             },
             true,
-            400,
-            VerticalAlign::Center,
-            FitBox {
-                width_units: 50.0,
-                height_units: 20.0,
-                unit: "mm",
-            },
+            align,
+            Overflow::Ellipsis,
+            (50.0, 20.0),
         )
         .unwrap();
-        assert_eq!(m.lines, vec![String::new()]);
-        assert_eq!(m.width, 0.0);
+        assert_eq!(m.lines, Vec::<String>::new());
+        assert_eq!(m.width_units, 0.0);
     }
 }
 

@@ -44,9 +44,9 @@ reasons! {
     LineDegenerate => "line_degenerate",
     EdgeRectInverted => "edge_rect_inverted",
     SizeInvalid => "size_invalid",
-    SizeAutoWithoutMax => "size_auto_without_max",
-    SizeAutoNoRoom => "size_auto_no_room",
     MaxSizeInvalid => "max_size_invalid",
+    IntrinsicSizeUndefined => "intrinsic_size_undefined",
+    TextDoesNotFit => "text_does_not_fit",
     ImageSourceMissing => "image_source_missing",
     ImageFormatUnsupported => "image_format_unsupported",
     ImageDataInvalid => "image_data_invalid",
@@ -56,7 +56,6 @@ reasons! {
     AssetsDirUnavailable => "assets_dir_unavailable",
     QrErrorCorrectionInvalid => "qr_error_correction_invalid",
     DimensionExceedsLimit => "dimension_exceeds_limit",
-    ContainerPaddingNoRoom => "container_padding_no_room",
 
     // InvalidRequest
     JsonMalformed => "json_malformed",
@@ -104,7 +103,6 @@ reasons! {
     TypstNoPages => "typst_no_pages",
     PngEncodeFailed => "png_encode_failed",
     PdfEncodeFailed => "pdf_encode_failed",
-    AutoLengthCursorMismatch => "auto_length_cursor_mismatch",
     ItemHasNoSource => "item_has_no_source",
     QrGenerationFailed => "qr_generation_failed",
     FontReadFailed => "font_read_failed",

@@ -12,10 +12,18 @@ const detail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  options: { color: ["red", "blue"] },
-  layout: [{ type: "text", value: "{sku}" }],
+  inputs: {
+    all: [
+      { name: "sku", control: "text" },
+      { name: "color", control: "select", values: ["red", "blue"] },
+    ],
+    default: [
+      { name: "sku", control: "text" },
+      { name: "color", control: "select", values: ["red", "blue"] },
+    ],
+  },
 };
-const list = { templates: [{ id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format, options: detail.options }] };
+const list = { templates: [{ id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format }] };
 const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null }];
 const summary = { total: 2, succeeded: 2, failed: [], jobs: 1 };
 
@@ -29,6 +37,16 @@ function stubFetch(
 ) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/inputs")) {
+      const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+      const labels = parsedBody.labels ?? [{ data: {} }];
+      return json({
+        inputs: labels.map(() => [
+          { name: "sku", control: "text" },
+          { name: "color", control: "select", values: ["red", "blue"] },
+        ]),
+      });
+    }
     if (url.startsWith("/api/templates/t1")) return json(detail);
     if (url.startsWith("/api/templates")) return json(list);
     if (url.startsWith("/api/printers")) return json(printers);
@@ -129,13 +147,13 @@ describe("CSV Import screen", () => {
     expect(body.template).toBe("t1");
     expect(body.mode).toBe("download");
     expect(body.labels).toHaveLength(2);
-    expect(body.labels[0]).toEqual({ data: { sku: "1" }, option: { color: "red" } });
+    expect(body.labels[0]).toEqual({ data: { sku: "1", color: "red" } });
     // submitBatch read a binary blob and saved it via an object URL.
     await waitFor(() => expect(createUrl).toHaveBeenCalled());
     expect(body.start_slot).toBeUndefined(); // single template: start_slot omitted
   });
 
-  it("includes manual (global) options in the request when the CSV omits the column", async () => {
+  it("submits CSV row data when the CSV omits optional columns", async () => {
     renderPage();
     const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
     await screen.findByRole("option", { name: "Tag" });
@@ -147,8 +165,7 @@ describe("CSV Import screen", () => {
     fireEvent.click(await screen.findByRole("button", { name: /download/i }));
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    // The manual strip defaults color to its first declared value and applies it to every row.
-    expect(body.labels[0]).toEqual({ data: { sku: "1" }, option: { color: "red" } });
+    expect(body.labels[0]).toEqual({ data: { sku: "1" } });
   });
 
   it("shows Print/Download in the action bar; Print is gated on a printer, Download is not", async () => {
@@ -243,12 +260,9 @@ describe("CSV Import screen", () => {
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     // Data columns render; no template means no option controls and no Print/Download.
     expect(await screen.findByText("1")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /download/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /apply color to all rows/i })).not.toBeInTheDocument();
-    // Choosing a template reveals option columns + the action bar; the loaded rows persist.
+    // Choosing a template reveals the action bar; the loaded rows persist.
     fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
     expect(await screen.findByRole("button", { name: /download/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /apply color to all rows/i })).toBeInTheDocument();
     expect(screen.getByText("1")).toBeInTheDocument();
     expect(screen.getByText("2")).toBeInTheDocument();
   });
@@ -279,54 +293,59 @@ describe("CSV Import screen", () => {
     fireEvent.blur(skuCell);
     // Now pick t1 (which declares color) and submit; the original raw color ("blue") must survive the edit.
     fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
-    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).not.toBeDisabled());
+    fireEvent.click(download);
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    expect(body.labels[0]).toEqual({ data: { sku: "9" }, option: { color: "blue" } });
+    expect(body.labels[0]).toEqual({ data: { sku: "9", color: "blue" } });
   });
 
-  it("defaults a per-row option to the first allowed value when the CSV omits it", async () => {
+  it("defaults a per-row select input when initialized from template defaults", async () => {
     renderPage();
     const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
     await screen.findByRole("option", { name: "Tag" });
     fireEvent.change(picker, { target: { value: "t1" } });
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "sku\n1\n" } }); // no option.color column
+    fireEvent.change(csv, { target: { value: "sku\n1\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByLabelText(/copies/i);
     fireEvent.click(await screen.findByRole("button", { name: /download/i }));
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    // color defaulted to its first allowed value ("red") on the row.
-    expect(body.labels[0]).toEqual({ data: { sku: "1" }, option: { color: "red" } });
+    expect(body.labels[0]).toEqual({ data: { sku: "1" } });
   });
 
-  it("applies an option to every row only on the Apply-to-all click", async () => {
-    renderPage();
-    await loadTemplateAndCsv(); // rows: color red, color blue
-    await screen.findByText("1");
-    // Merely changing the apply selector must NOT mutate any row.
-    const selector = screen.getByLabelText(/set all color/i) as HTMLSelectElement;
-    fireEvent.change(selector, { target: { value: "blue" } });
-    fireEvent.click(await screen.findByRole("button", { name: /^download$/i }));
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
-    let body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    expect(body.labels.map((l: { option: { color: string } }) => l.option.color)).toEqual(["red", "blue"]);
-    // Clicking Apply to all overwrites every row's color.
-    fireEvent.click(screen.getByRole("button", { name: /apply color to all rows/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
-    await waitFor(() => expect(countCalls("/api/batch")).toBe(2));
-    body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    expect(body.labels.map((l: { option: { color: string } }) => l.option.color)).toEqual(["blue", "blue"]);
-  });
-
-  it("renders a single-valued option as a column without an Apply-to-all control", async () => {
-    // t2 declares a single-valued option; it must not get an Apply-to-all control.
-    const detail2 = { ...detail, id: "t2", name: "Tag2", options: { finish: ["matte"] } };
-    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+  it("renders an input as a column in the grid", async () => {
+    const detail2 = {
+      ...detail,
+      id: "t2",
+      name: "Tag2",
+      inputs: {
+        all: [
+          { name: "sku", control: "text" as const },
+          { name: "finish", control: "select" as const, values: ["matte"] },
+        ],
+        default: [
+          { name: "sku", control: "text" as const },
+          { name: "finish", control: "select" as const, values: ["matte"] },
+        ],
+      },
+    };
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "sku", control: "text" },
+            { name: "finish", control: "select", values: ["matte"] },
+          ]),
+        });
+      }
       if (url.startsWith("/api/templates/t2")) return json(detail2);
-      if (url.startsWith("/api/templates")) return json({ templates: [{ id: "t2", name: "Tag2", description: "", unit: "mm", dpi: 300, format: detail2.format, options: detail2.options }] });
+      if (url.startsWith("/api/templates")) return json({ templates: [{ id: "t2", name: "Tag2", description: "", unit: "mm", dpi: 300, format: detail2.format }] });
       if (url.startsWith("/api/printers")) return json(printers);
       throw new Error(`unexpected fetch: ${url}`);
     });
@@ -339,9 +358,7 @@ describe("CSV Import screen", () => {
     fireEvent.change(csv, { target: { value: "sku\n1\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByLabelText(/copies/i);
-    // The option column header is present but no Apply-to-all control nor an inline editor for it.
-    expect(screen.getByText("option.finish")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /apply finish to all rows/i })).not.toBeInTheDocument();
+    expect(screen.getByText("finish")).toBeInTheDocument();
   });
 
   it("blocks a CSV with more rows than the 500 cap at load", async () => {
@@ -393,17 +410,36 @@ describe("CSV Import screen", () => {
 // #209: a `datetime` parameter is optional (blank means the server's render instant) but a value
 // that cannot be parsed must stop the run before it is submitted.
 describe("CSV Import screen: datetime parameters", () => {
+  let dtControl: "datetime" | "date" = "datetime";
   const dtDetail = {
     ...detail,
-    options: {},
-    params: { printed_on: { type: "datetime", description: "Print date" } },
+    inputs: {
+      all: [
+        { name: "sku", control: "text" as const },
+        { name: "printed_on", control: "datetime" as const, description: "Print date" },
+      ],
+      default: [
+        { name: "sku", control: "text" as const },
+        { name: "printed_on", control: "datetime" as const, description: "Print date" },
+      ],
+    },
     layout: [{ type: "text", value: "{sku} {printed_on.short_date}" }],
   };
-  const dtList = { templates: [{ ...list.templates[0], options: {}, params: dtDetail.params }] };
+  const dtList = { templates: [{ ...list.templates[0], format: dtDetail.format }] };
 
   function stubDatetimeFetch() {
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "sku", control: "text" },
+            { name: "printed_on", control: dtControl, description: "Print date" },
+          ]),
+        });
+      }
       if (url.startsWith("/api/templates/t1")) return json(dtDetail);
       if (url.startsWith("/api/templates")) return json(dtList);
       if (url.startsWith("/api/printers")) return json(printers);
@@ -420,6 +456,7 @@ describe("CSV Import screen: datetime parameters", () => {
   }
 
   beforeEach(() => {
+    dtControl = "datetime";
     vi.unstubAllGlobals();
     fetchMock = stubDatetimeFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -450,7 +487,7 @@ describe("CSV Import screen: datetime parameters", () => {
     fireEvent.click(download);
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
-    expect(body.labels[0].data.printed_on).toBe("");
+    expect(body.labels[0].data.printed_on).toBeUndefined();
   });
 
   it("accepts a well-formed datetime cell", async () => {
@@ -475,5 +512,18 @@ describe("CSV Import screen: datetime parameters", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
     );
+  });
+
+  // A `datetime` parameter declaring `time: false` is reported as the `date` control, which the
+  // grid must validate exactly as it validates `datetime`.
+  it("flags an unparseable cell on a date control and blocks the run", async () => {
+    dtControl = "date";
+    renderPage();
+    await loadCsv("not a date");
+
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).toBeDisabled());
+    fireEvent.click(download);
+    expect(countCalls("/api/batch")).toBe(0);
   });
 });

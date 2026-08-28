@@ -21,13 +21,13 @@ layout:
     size: [15.8, 15.8]
   - type: container
     at: [17.3, 0.0]
-    size: [auto, 15.8]
+    size: [fill, 15.8]
     padding: 1.0
     items:
       - type: text
         value: "{message}"
         at: [0.0, 0.0]
-        size: [auto, 13.8]
+        size: [content, 13.8]
         font_size:
           min: 8.0
           max: 28.0

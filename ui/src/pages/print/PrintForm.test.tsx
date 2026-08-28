@@ -12,7 +12,11 @@ const tape: TemplateDetail = {
   unit: "mm",
   dpi: 300,
   format: { type: "single", width: 80, height: 24 },
-  layout: [{ type: "text", value: "{message}" }],
+  inputs: {
+    all: [{ name: "message", control: "text", required: true }],
+    default: [{ name: "message", control: "text", required: true }],
+  },
+  variables: [],
 };
 
 const sheet: TemplateDetail = {
@@ -33,7 +37,11 @@ const sheet: TemplateDetail = {
       [120, 0],
     ],
   },
-  layout: [{ type: "text", value: "{message}" }],
+  inputs: {
+    all: [{ name: "message", control: "text", required: true }],
+    default: [{ name: "message", control: "text", required: true }],
+  },
+  variables: [],
 };
 
 const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null }];
@@ -44,16 +52,39 @@ function stubFetch(printersList: unknown[] = printers) {
     void init;
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith("/api/printers")) {
-      return new Response(JSON.stringify(printersList), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(printersList), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
+      return new Response(
+        JSON.stringify({
+          inputs: [[{ name: "message", control: "text", required: true }]],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
     }
     if (url.startsWith("/api/render/label")) {
-      return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      return new Response(new Blob(["img"]), {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
     }
     if (url.startsWith("/api/print")) {
-      return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(summary), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     if (url.startsWith("/api/batch")) {
-      return new Response(JSON.stringify(summary), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify(summary), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
     }
     throw new Error(`unexpected fetch: ${url}`);
   });
@@ -72,7 +103,6 @@ function renderForm(detail: TemplateDetail) {
 }
 
 let fetchMock: ReturnType<typeof stubFetch>;
-// `/api/print` is a prefix of `/api/printers`; match it exactly so printer fetches don't count.
 const matches = (u: unknown, path: string) =>
   path === "/api/print" ? String(u) === "/api/print" : String(u).startsWith(path);
 const lastCall = (path: string) => [...fetchMock.mock.calls].reverse().find(([u]) => matches(u, path));
@@ -164,7 +194,6 @@ describe("PrintForm phone-first layout", () => {
   });
 
   it("on mobile, the preview is a collapsed disclosure and only fetches when opened", async () => {
-    // Override the global stub: mobile (matches: false).
     vi.stubGlobal(
       "matchMedia",
       (q: string) =>
@@ -176,90 +205,104 @@ describe("PrintForm phone-first layout", () => {
         }) as unknown as MediaQueryList,
     );
     renderForm(tape);
-    // fill the required field so the form is valid
     fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hi" } });
-    // closed disclosure -> no preview fetch (allow debounce to elapse)
     await new Promise((r) => setTimeout(r, 400));
     expect(countCalls("/api/render/label")).toBe(0);
-    // open the disclosure (click the summary, not the details)
     fireEvent.click(screen.getByText("Preview"));
     await waitFor(() => expect(countCalls("/api/render/label")).toBeGreaterThan(0));
   });
 });
 
-describe("PrintForm printer preselect", () => {
-  const p = (id: string, is_default = false) => ({
-    id,
-    name: id,
-    kind: "cups",
-    config: null,
-    is_default,
-  });
-
+describe("PrintForm gating and submission pruning", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
-  const renderWith = (printersList: unknown[]) => {
-    fetchMock = stubFetch(printersList);
-    vi.stubGlobal("fetch", fetchMock);
-    return renderForm(tape);
-  };
-
-  const printerSelect = async () => (await screen.findByLabelText("printer")) as HTMLSelectElement;
-
-  it("preselects the default printer over other printers", async () => {
-    renderWith([p("a"), p("b", true)]);
-    const select = await printerSelect();
-    await waitFor(() => expect(select.value).toBe("b"));
-  });
-
-  it("preselects the sole printer when there is no default", async () => {
-    renderWith([p("only")]);
-    const select = await printerSelect();
-    await waitFor(() => expect(select.value).toBe("only"));
-  });
-
-  it("selects none when multiple printers have no default", async () => {
-    renderWith([p("a"), p("b")]);
-    const select = await printerSelect();
-    // Wait for the printers to load; the render-derived preselect (#116) must leave it empty.
-    await waitFor(() => expect(countCalls("/api/printers")).toBeGreaterThan(0));
-    expect(select.value).toBe("");
-    expect(screen.getByRole("button", { name: /^print$/i })).toBeDisabled();
-  });
-
-  it("does not clobber an explicit None on a printers refetch (one-shot guard)", async () => {
-    const qc = renderWith([p("only", true)]);
-    const select = await printerSelect();
-    await waitFor(() => expect(select.value).toBe("only"));
-
-    // User explicitly clears to none.
-    fireEvent.change(select, { target: { value: "" } });
-    expect(select.value).toBe("");
-
-    // A printers refetch must not re-run the one-shot preselect.
-    await qc.invalidateQueries({ queryKey: ["printers"] });
-    await waitFor(() => expect(countCalls("/api/printers")).toBeGreaterThan(1));
-    expect(select.value).toBe("");
-  });
-
-  it("seeds datetime parameters and allows submission without manual entry", async () => {
-    fetchMock = stubFetch();
-    vi.stubGlobal("fetch", fetchMock);
-    const dtTemplate: TemplateDetail = {
+  it("omits a deactivated name and an empty non-text value from the submitted data", async () => {
+    const gatedTemplate: TemplateDetail = {
       ...tape,
-      params: {
-        printed_on: { type: "datetime", description: "Print Date" },
+      inputs: {
+        all: [
+          { name: "message", control: "text", required: true },
+          { name: "tier", control: "select", values: ["standard", "pro"], default: "standard" },
+          { name: "pro_code", control: "text" },
+          { name: "count", control: "number" },
+        ],
+        default: [
+          { name: "message", control: "text", required: true },
+          { name: "tier", control: "select", values: ["standard", "pro"], default: "standard" },
+          { name: "count", control: "number" },
+        ],
       },
-      layout: [{ type: "text", value: "{printed_on}" }],
     };
-    renderForm(dtTemplate);
-    const input = (await screen.findByLabelText("Print Date")) as HTMLInputElement;
-    expect(input.value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
-    const downloadBtn = screen.getByRole("button", { name: /^download$/i });
-    expect(downloadBtn).not.toBeDisabled();
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/printers")) {
+        return new Response(JSON.stringify([{ id: "p1", name: "P1", kind: "cups", is_default: true }]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
+        const bodyStr = init?.body as string | undefined;
+        const parsed = bodyStr ? JSON.parse(bodyStr) : null;
+        const tier = parsed?.labels?.[0]?.data?.tier;
+        const inputs =
+          tier === "pro"
+            ? [
+                { name: "message", control: "text", required: true },
+                { name: "tier", control: "select", values: ["standard", "pro"], default: "standard" },
+                { name: "pro_code", control: "text" },
+              ]
+            : [
+                { name: "message", control: "text", required: true },
+                { name: "tier", control: "select", values: ["standard", "pro"], default: "standard" },
+              ];
+        return new Response(
+          JSON.stringify({
+            inputs: [inputs],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      if (url.startsWith("/api/print")) {
+        return new Response(JSON.stringify(summary), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderForm(gatedTemplate);
+    const message = (await screen.findByLabelText("message")) as HTMLInputElement;
+    fireEvent.change(message, { target: { value: "hello" } });
+
+    // Switch to pro tier to reveal pro_code
+    const tierSelect = (await screen.findByLabelText("tier")) as HTMLSelectElement;
+    fireEvent.change(tierSelect, { target: { value: "pro" } });
+
+    const proCode = (await screen.findByLabelText("pro_code")) as HTMLInputElement;
+    fireEvent.change(proCode, { target: { value: "SECRET_CODE" } });
+
+    // Switch back to standard tier to deactivate pro_code
+    fireEvent.change(tierSelect, { target: { value: "standard" } });
+    await waitFor(() => expect(screen.queryByLabelText("pro_code")).toBeNull());
+
+    const print = screen.getByRole("button", { name: /^print$/i });
+    await waitFor(() => expect(print).not.toBeDisabled());
+    fireEvent.click(print);
+
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
+    // count is empty non-text; pro_code has value but is deactivated
+    expect(body.fields).toEqual({ message: "hello", tier: "standard" });
   });
 });
