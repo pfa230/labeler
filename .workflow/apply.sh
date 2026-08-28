@@ -110,6 +110,9 @@ while :; do
   rc=$?
   review_log="$wt/.agent-review-$reviewer.log"
   [ "$rc" -eq 5 ] && { echo "the reviewer edited files; its verdict cannot be trusted." >&2; exit 5; }
+  # Checked before anything is copied or read: a transcript must not become the
+  # round artifact, and must not be mistaken for a verdict.
+  [ "$rc" -eq 7 ] && { echo "the reviewer produced a transcript, not a review; stopping." >&2; exit 7; }
 
   # Last line-start VERDICT wins: the reviewer's final word ends its output, and a
   # verdict quoted mid-prose never starts a line. This is deliberately more
@@ -153,8 +156,14 @@ while :; do
     exit 6
   fi
 
+  # The findings go by path, not by value. Passing them as an argument put the whole
+  # review on the command line, where agents.sh re-quotes it and pty_run evals the
+  # result, so a large review died with "Argument list too long" before the
+  # implementer started (#264). The round artifact is already on disk, inside the
+  # worktree the implementer runs in.
   say "fix round $round: $implementer"
-  "$stage" implement "$implementer" "$change" --resume "$(cat "$review_log")" \
+  "$stage" implement "$implementer" "$change" --resume \
+    "The findings are in openspec/changes/$change/diff-review-$round.md, relative to your worktree root. Read that file first; it is the whole review." \
     || { echo "fix round failed; stopping." >&2; exit 1; }
   round=$((round + 1))
 done
