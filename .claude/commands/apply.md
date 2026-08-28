@@ -25,6 +25,7 @@ Exit codes worth naming when you report them:
 - **3** implement exited cleanly having changed nothing, so it did not run
 - **4** no readable verdict, so the script refused to guess whether the review passed
 - **5** the reviewer edited files, which invalidates its verdict
+- **7** the reviewer returned no structured result, so its log is a transcript rather than a review
 - **6** still REVISE after the last round; the findings want a human, not another round
 - **2** bad arguments, or the change could not be resolved; nothing was launched
 
