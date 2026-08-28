@@ -79,6 +79,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0066](0066-format-badge-carries-icon-colour-and-count.md) | The format badge carries an icon, its own colour and a position count, and is delineated by a border | Accepted (the --accent-deep token decision superseded by [0071]) |
 | [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted (token list and formatting syntax superseded by [0079](0079-token-grammar.md)) |
 | [0069](0069-connect-opens-on-a-default-connection.md) | Connect opens on a default connection named by an instance-wide setting | Accepted |
+| [0070](0070-service-derives-the-input-list.md) | Service derives the input list | Accepted |
 | [0071](0071-one-accent-colour-with-a-defined-ink.md) | One accent colour, dark enough to carry text, with a defined ink on its fill | Accepted |
 | [0072](0072-two-filter-scopes-named-not-merged.md) | Two filter scopes named, not merged | Accepted |
 | [0073](0073-group-is-a-directory-id-is-the-filename.md) | Group is a directory; ID is the filename | Accepted |

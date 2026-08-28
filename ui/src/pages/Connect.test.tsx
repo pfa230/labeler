@@ -16,8 +16,11 @@ const schema = {
 };
 const templateDetail = {
   id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300,
-  format: { type: "single" }, options: {},
-  layout: [{ type: "text", value: "{name}" }],
+  format: { type: "single" },
+  inputs: {
+    all: [{ name: "name", control: "text" }],
+    default: [{ name: "name", control: "text" }],
+  },
 };
 
 type StubOptions = {
@@ -36,6 +39,11 @@ function stub(opts: StubOptions = {}) {
   const fn = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input, init) => {
     const url = typeof input === "string" ? input : input.toString();
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/inputs")) {
+      const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+      const labels = parsedBody.labels ?? [{ data: {} }];
+      return json({ inputs: labels.map(() => [{ name: "name", control: "text" }]) });
+    }
     if (url === "/api/connections") {
       if (opts.connectionsError) return json({ error: "Failed" }, 500);
       return json(opts.connections ?? [{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
@@ -333,7 +341,16 @@ describe("Connect", () => {
 describe("Connect: datetime parameters", () => {
   const dtDetail = {
     ...templateDetail,
-    params: { printed_on: { type: "datetime", description: "Print date" } },
+    inputs: {
+      all: [
+        { name: "name", control: "text" as const },
+        { name: "printed_on", control: "datetime" as const, description: "Print date" },
+      ],
+      default: [
+        { name: "name", control: "text" as const },
+        { name: "printed_on", control: "datetime" as const, description: "Print date" },
+      ],
+    },
     layout: [{ type: "text", value: "{name} {printed_on.short_date}" }],
   };
 
@@ -343,6 +360,16 @@ describe("Connect: datetime parameters", () => {
     const base = stub();
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "name", control: "text" },
+            { name: "printed_on", control: "datetime", description: "Print date" },
+          ]),
+        });
+      }
       if (url === "/api/templates/tpl") return json(dtDetail);
       if (url === "/api/connections/c1/schema")
         return json({

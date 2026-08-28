@@ -1,16 +1,28 @@
 import { useEffect, useState } from "react";
 import { fetchBlob, submitBatch } from "../api/client";
-import { defaultOptions, imageFields, referencedFields } from "./templateFields";
-import type { TemplateDetail } from "../api/types";
+import type { InputSpec, TemplateDetail } from "../api/types";
 
 // A 1x1 transparent PNG data URI: a valid sample for data-bound image fields (backend parses a data URI).
-const SAMPLE_PNG =
+export const SAMPLE_PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
-// Build sample values per referenced field: image fields get a data URI, others the field name as a stand-in.
-export function sampleData(fields: string[], imgFields: string[] = []): Record<string, string> {
-  const imgs = new Set(imgFields);
-  return Object.fromEntries(fields.map((f) => [f, imgs.has(f) ? SAMPLE_PNG : f]));
+// Build sample values by the thumbnail rule over inputs.all:
+// Required interpolated images get SAMPLE_PNG, required interpolated numbers get min ?? 1,
+// required interpolated strings get the input name.
+export function sampleData(inputs: InputSpec[]): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  for (const input of inputs) {
+    if (input.interpolated && input.required) {
+      if (input.control === "image") {
+        data[input.name] = SAMPLE_PNG;
+      } else if (input.control === "integer" || input.control === "number") {
+        data[input.name] = input.min ?? 1;
+      } else {
+        data[input.name] = input.name;
+      }
+    }
+  }
+  return data;
 }
 
 // Renders a preview object URL for a template detail. Single -> /render/label image; sheet -> /batch pdf.
@@ -22,17 +34,14 @@ export function useTemplatePreview(detail: TemplateDetail | undefined): { url?: 
     if (!detail) return;
     let url: string | undefined;
     let cancelled = false;
-    const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
-    const option = hasOptions ? defaultOptions(detail.options) : undefined; // omit `option` for no-option templates
-    const sel = option ?? {};
-    const data = sampleData(referencedFields(detail.layout, sel, detail.params), imageFields(detail.layout, sel));
-    const label: Record<string, unknown> = option ? { data, option } : { data };
+    const data = sampleData(detail.inputs.all);
+    const label: Record<string, unknown> = { data };
     (async () => {
       setState({ loading: true });
       try {
         let blob: Blob;
         if (detail.format.type === "single") {
-          const body = option ? { template: detail.id, data, option } : { template: detail.id, data };
+          const body = { template: detail.id, data };
           ({ blob } = await fetchBlob("/render/label", {
             method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
           }));

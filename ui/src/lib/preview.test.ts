@@ -3,8 +3,14 @@ import { renderHook } from "@testing-library/react";
 import { sampleData, useTemplatePreview } from "./preview";
 
 describe("sampleData", () => {
-  it("builds a value per referenced field", () => {
-    expect(sampleData(["title", "id"])).toEqual({ title: "title", id: "id" });
+  it("builds a value per referenced field with thumbnail rule", () => {
+    expect(
+      sampleData([
+        { name: "title", control: "text", interpolated: true, required: true },
+        { name: "id", control: "number", interpolated: true, required: true },
+        { name: "flavor", control: "select", values: ["vanilla", "chocolate"] },
+      ]),
+    ).toEqual({ title: "title", id: 1 });
   });
 });
 

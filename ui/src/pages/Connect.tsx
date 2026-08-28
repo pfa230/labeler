@@ -3,15 +3,16 @@ import { useConnections, useConnectorSchema, materializeConnection, type Connect
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters, useSettings } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
-import { datetimeCellError, defaultOptions, defaultParamValues, hasServerDefault, referencedFields } from "../lib/templateFields";
+import { datetimeCellError } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
 import {
-  MAX_BATCH_LABELS, expandedCount, resolveLabels, sourceRowForExpandedIndex,
+  MAX_BATCH_LABELS, expandedCount, sourceRowForExpandedIndex,
   duplicateRow, removeRow, type LabelGridRow,
 } from "../lib/labelGrid";
 import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
+import { useBatchRowInputs, pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
 import type { TemplateDetail } from "../api/types";
@@ -121,18 +122,13 @@ function Composer({
 }) {
   const { push } = useToast();
   const connectorKeys = useMemo(() => [...new Set(schema.resources.flatMap((r) => r.columns.map((c) => c.key)))], [schema]);
-  const templateFields = useMemo(() => {
-    const fields = referencedFields(detail.layout, {});
-    const paramKeys = detail.params ? Object.keys(detail.params) : [];
-    return [...new Set([...fields, ...paramKeys])];
-  }, [detail]);
+  const templateFields = useMemo(() => detail.inputs.all.map((i) => i.name), [detail]);
   const [mapping, setMapping] = useState<FieldMapping>(() => defaultMapping(templateFields, connectorKeys));
 
   const [rows, setRows] = useState<LabelGridRow[]>([]);
   const rowsRef = useRef(rows);
   const commitRows = (next: LabelGridRow[]) => { rowsRef.current = next; setRows(next); };
 
-  const [manualOptions, setManualOptions] = useState<Record<string, string>>(() => defaultOptions(detail.options));
   const [copies, setCopies] = useState(1);
   const [startSlot, setStartSlot] = useState(0);
   const [printer, setPrinter] = useState<string | undefined>(undefined);
@@ -140,46 +136,51 @@ function Composer({
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedRowId, setSelectedRowId] = useState<string | undefined>(undefined);
 
-  const declaredOptions = useMemo(() => {
-    const opts: Record<string, string[]> = { ...(detail.options ?? {}) };
-    if (detail.params) {
-      for (const [name, spec] of Object.entries(detail.params)) {
-        if (spec.type === "enum" && spec.values) {
-          opts[name] = spec.values;
-        }
-      }
-    }
-    return opts;
-  }, [detail]);
-  const declaredNames = Object.keys(declaredOptions);
+  const { getRowInputs, pending: rowsPending } = useBatchRowInputs(
+    detail.id,
+    rows,
+    detail.inputs.default,
+  );
+
   const isSheet = detail.format.type === "sheet";
   const positions = detail.format.type === "sheet" ? detail.format.positions.length : 0;
 
-  const paramKeys = detail.params ? Object.keys(detail.params) : [];
-  const requiredForRow = (row: LabelGridRow): string[] => [
-    ...new Set([...referencedFields(detail.layout, { ...manualOptions, ...row.option }, detail.params), ...paramKeys]),
-  ];
-  const requiredUnion = new Set<string>();
-  for (const row of rows) for (const f of requiredForRow(row)) requiredUnion.add(f);
-  const displayedFields = rows.length
-    ? [...requiredUnion]
-    : [...new Set([...referencedFields(detail.layout, manualOptions, detail.params), ...paramKeys])];
+  const requiredUnion = useMemo(() => {
+    const set = new Set<string>();
+    if (rows.length === 0) {
+      for (const input of detail.inputs.default) set.add(input.name);
+    } else {
+      for (const row of rows) {
+        const inputs = getRowInputs(row.id) ?? detail.inputs.default;
+        for (const input of inputs) set.add(input.name);
+      }
+    }
+    return [...set];
+  }, [rows, detail, getRowInputs]);
+
+  const displayedFields = requiredUnion;
+
+  const isCellEditable = (row: LabelGridRow, field: string): boolean => {
+    const inputs = getRowInputs(row.id);
+    if (!inputs) return true;
+    return inputs.some((i) => i.name === field);
+  };
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
     const field: Record<string, string> = {};
-    for (const f of requiredForRow(row)) {
-      const spec = detail.params?.[f];
-      const valStr = row.data[f] !== undefined ? String(row.data[f]) : "";
-      if (spec?.type === "datetime") {
+    const inputs = getRowInputs(row.id) ?? detail.inputs.default;
+    for (const input of inputs) {
+      const valStr = row.data[input.name] !== undefined && row.data[input.name] !== null ? String(row.data[input.name]) : "";
+      if (input.control === "datetime" || input.control === "date") {
         const dtErr = datetimeCellError(valStr);
-        if (dtErr) field[f] = dtErr;
-      } else {
-        const hasDefault = spec ? hasServerDefault(spec) : false;
-        if (!hasDefault && valStr.length === 0) field[f] = "required";
+        if (dtErr) field[input.name] = dtErr;
+      } else if (input.required) {
+        if (valStr.length === 0) field[input.name] = "required";
       }
     }
     return Object.keys(field).length ? { field } : {};
   };
+
   const rowInvalid = (row: LabelGridRow): boolean => !!validateRow(row).field;
   const viewRows = rows.map((row) => ({ ...row, validation: validateRow(row) }));
   const hasErrors = viewRows.some(rowInvalid);
@@ -190,13 +191,11 @@ function Composer({
   const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
 
   // Build the resolved label for the selected row using the same resolution the submit path uses.
-  // Connect uses a global manualOptions overlay (not per-row effectiveOption like Import).
-  const defaults = defaultParamValues(detail.params);
   const selRow = rows.find((r) => r.id === resolvedSelectedId);
-  const previewRow = selRow
-    ? { ...selRow, data: { ...defaults, ...selRow.data } }
+  const previewData = selRow
+    ? pruneDataForSubmit(selRow.data, getRowInputs(selRow.id) ?? detail.inputs.default)
     : undefined;
-  const previewLabel = previewRow ? resolveLabels([previewRow], manualOptions, 1)[0] : undefined;
+  const previewLabel = previewData ? { data: previewData } : undefined;
 
   const preview = useRowPreview({
     templateId: detail.id,
@@ -232,6 +231,7 @@ function Composer({
     if (stale) return; // detail is the previous template during a switch (keepPreviousData); do not submit
     const snapshot = rowsRef.current;
     if (snapshot.length === 0) return;
+    if (rowsPending) { setFormError("Resolving row inputs; please wait."); return; }
     if (snapshot.some(rowInvalid)) { setFormError("Fix the highlighted rows before running."); return; }
     if (expandedCount(snapshot.length, copies) > MAX_BATCH_LABELS) { setFormError(`Too many labels (over the ${MAX_BATCH_LABELS} limit).`); return; }
     if (mode === "print" && !printer) { setFormError("Select a printer to print."); return; }
@@ -241,11 +241,10 @@ function Composer({
     const submittedCopies = copies;
     const idForExpandedIndex = (index: number): string | undefined => submittedIds[sourceRowForExpandedIndex(index, submittedCopies)];
     try {
-      const rowsWithDefaults = rowsRef.current.map((r) => ({
-        ...r,
-        data: { ...defaults, ...r.data },
-      }));
-      const labels = resolveLabels(rowsWithDefaults, manualOptions, submittedCopies);
+      const labels = rowsRef.current.flatMap((r) => {
+        const pruned = pruneDataForSubmit(r.data, getRowInputs(r.id) ?? detail.inputs.default);
+        return Array.from({ length: submittedCopies }, () => ({ data: pruned }));
+      });
       const r = await submitBatch({
         template: detail.id, labels, mode,
         ...(mode === "print" ? { printer } : {}),
@@ -306,21 +305,6 @@ function Composer({
 
       {rows.length > 0 && (
         <>
-          {declaredNames.length > 0 && (
-            <div className="flex flex-wrap gap-3">
-              {declaredNames.map((name) => (
-                <label key={name} className="flex flex-col gap-1">
-                  <span className="text-sm font-medium">{name}</span>
-                  <select aria-label={name} value={manualOptions[name] ?? declaredOptions[name][0] ?? ""} disabled={busy}
-                    onChange={(e) => { setManualOptions({ ...manualOptions, [name]: e.target.value }); commitRows(rowsRef.current.map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
-                    className={inputClass} style={inputStyle}>
-                    {declaredOptions[name].map((v) => (<option key={v} value={v}>{v}</option>))}
-                  </select>
-                </label>
-              ))}
-            </div>
-          )}
-
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-sm font-medium">Copies</span>
@@ -348,8 +332,7 @@ function Composer({
           <LabelGrid
             rows={viewRows}
             fields={displayedFields}
-            optionNames={[]}
-            optionValues={declaredOptions}
+            isCellEditable={isCellEditable}
             onRowsChange={(next, { indexes }) => {
               const dirty = new Set(indexes);
               commitRows(next.map((r, i) => ({ ...r, validation: {}, annotation: dirty.has(i) ? undefined : r.annotation })));

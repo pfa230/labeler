@@ -4,37 +4,49 @@ export type TemplateFormat =
   | { type: "single"; width: Dimension; height: Dimension }
   | { type: "sheet"; paper_width: number; paper_height: number; label_width: number; label_height: number; positions: [number, number][] };
 
-export type Options = Record<string, string[]>;
-
-export type ParamType =
-  | "string"
-  | "length"
-  | "integer"
-  | "number"
-  | "boolean"
-  | "enum"
-  | "datetime";
-
 export type ParamValue = string | number | boolean;
 
 export interface ParamSpec {
-  type: ParamType;
-  multiline?: boolean;
-  values?: string[];
+  type: "string" | "number" | "integer" | "boolean" | "enum" | "length" | "datetime";
   default?: ParamValue;
+  values?: string[];
   min?: number;
   max?: number;
+  multiline?: boolean;
   time?: boolean;
   description?: string;
 }
 
-// Layout items are tagged by `type`; only the fields the UI reads are typed.
-export type LayoutItem =
-  | { type: "text"; value: string; multiline?: boolean; when?: Record<string, string> }
-  | { type: "qr"; value: string; when?: Record<string, string> }
-  | { type: "image"; name?: string; src?: string; when?: Record<string, string> }
-  | { type: "line"; when?: Record<string, string> }
-  | { type: "container"; option?: Record<string, string>; when?: Record<string, string>; items: LayoutItem[] };
+export type InputControl =
+  | "text"
+  | "textarea"
+  | "select"
+  | "checkbox"
+  | "number"
+  | "integer"
+  | "image"
+  | "date"
+  | "datetime";
+
+export interface InputSpec {
+  name: string;
+  control: InputControl;
+  slider?: boolean;
+  required?: boolean;
+  default?: ParamValue;
+  values?: string[];
+  min?: number;
+  max?: number;
+  unit?: string;
+  description?: string;
+  interpolated?: boolean;
+  truncated_elsewhere?: boolean;
+}
+
+export interface TemplateInputs {
+  default: InputSpec[];
+  all: InputSpec[];
+}
 
 export interface BrokenTemplate {
   path: string;
@@ -51,7 +63,6 @@ export interface TemplateSummary {
   dpi: number;
   format: TemplateFormat;
   params?: Record<string, ParamSpec>;
-  options?: Options;
 }
 
 export interface TemplateListResponse {
@@ -68,9 +79,17 @@ export interface TemplateDetail {
   dpi: number;
   format: TemplateFormat;
   params?: Record<string, ParamSpec>;
-  options?: Options;
-  layout: LayoutItem[];
+  inputs: TemplateInputs;
+  variables: string[];
   version?: string;
+}
+
+export interface TemplateInputsRequest {
+  labels: { data?: Record<string, unknown>; option?: Record<string, string> }[];
+}
+
+export interface TemplateInputsResponse {
+  inputs: InputSpec[][];
 }
 export interface BatchSummary { total: number; succeeded: number; failed: { index: number; error: string }[]; jobs: number }
 export interface Printer { id: string; name: string; kind: string; config: unknown; is_default?: boolean }

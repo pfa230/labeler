@@ -2,11 +2,12 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { defaultOptions, hasServerDefault, initialParamValues, reconcileRowOptions, referencedFields } from "../../lib/templateFields";
+import { formatLocalDate, formatLocalDateTime } from "../../lib/templateFields";
+import { useLabelInputs, pruneDataForSubmit } from "../../lib/labelInputs";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { usePrinters } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
-import type { BatchSummary, TemplateDetail } from "../../api/types";
+import type { BatchSummary, InputSpec, ParamValue, TemplateDetail } from "../../api/types";
 import { PreviewPane } from "../../components/PreviewPane";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
@@ -18,12 +19,26 @@ const MIN_COPIES = 1;
 const MAX_COPIES = 100;
 const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Math.floor(Number.isFinite(n) ? n : 1)));
 
+function initialDataFromInputs(inputs: InputSpec[], now: Date = new Date()): Record<string, ParamValue> {
+  const data: Record<string, ParamValue> = {};
+  for (const input of inputs) {
+    if (input.control === "datetime" || input.control === "date") {
+      data[input.name] =
+        input.control === "datetime" ? formatLocalDateTime(now) : formatLocalDate(now);
+    } else if (input.default !== undefined && input.default !== null) {
+      data[input.name] = input.default;
+    } else if (input.control === "select" && input.values && input.values.length > 0) {
+      data[input.name] = input.values[0];
+    } else if (input.control === "checkbox") {
+      data[input.name] = false;
+    }
+  }
+  return data;
+}
+
 export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
   const [value, setValue] = useState<FormValue>(() => ({
-    data: {
-      ...initialParamValues(detail.params),
-    },
-    option: defaultOptions(detail.options),
+    data: initialDataFromInputs(detail.inputs?.default ?? []),
     printer: undefined,
     startSlot: 0,
   }));
@@ -35,6 +50,12 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
 
   const isLg = useMediaQuery("(min-width: 1024px)");
   const [previewOpen, setPreviewOpen] = useState(false);
+
+  const { inputs, pending: inputsPending, error: inputsError } = useLabelInputs(
+    detail.id,
+    value.data,
+    detail.inputs?.default ?? [],
+  );
 
   // Printer preselect, derived at render (no effect; #116): default -> sole printer -> none.
   // `value.printer` stores only EXPLICIT user choices ("" = explicit None, an id = explicit pick,
@@ -53,26 +74,20 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   };
 
   const isSheet = detail.format.type === "sheet";
-  const reconciledOption = reconcileRowOptions(value.option, detail.options);
-  const fields = referencedFields(detail.layout, reconciledOption, detail.params);
-  const hasParams = !!detail.params && Object.keys(detail.params).length > 0;
-  const valid = hasParams
-    ? Object.entries(detail.params!).every(([name, spec]) => {
-        if (hasServerDefault(spec)) return true;
-        const current = value.data[name];
-        return current !== undefined && current !== "";
-      }) &&
-      fields
-        .filter((f) => !detail.params?.[f])
-        .every((f) => (value.data[f] !== undefined ? String(value.data[f]) : "").length > 0)
-    : fields.every((f) => (value.data[f] !== undefined ? String(value.data[f]) : "").length > 0);
-  const hasOptions = !!detail.options && Object.keys(detail.options).length > 0;
-  const option = hasOptions ? reconciledOption : undefined;
+  const valid =
+    !inputsPending &&
+    inputs.every((input) => {
+      if (!input.required) return true;
+      const current = value.data[input.name];
+      return current !== undefined && current !== "" && current !== null;
+    });
+
   const startSlot = isSheet ? value.startSlot : undefined;
-  const label = { data: value.data, ...(option ? { option } : {}) };
+  const submittedData = pruneDataForSubmit(value.data, inputs);
+  const label = { data: submittedData };
 
   const preview = useLivePreview(
-    { templateId: detail.id, format: detail.format.type, data: value.data, option, startSlot },
+    { templateId: detail.id, format: detail.format.type, data: submittedData, startSlot },
     valid && (isLg || previewOpen),
   );
 
@@ -93,7 +108,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
         const { blob, filename } = await fetchBlob(`/render/label?format=${fmt}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ template: detail.id, data: value.data, ...(option ? { option } : {}) }),
+          body: JSON.stringify({ template: detail.id, data: submittedData }),
         });
         saveBlob(blob, filename ?? `${detail.id}.${fmt}`);
       }
@@ -127,8 +142,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
         const summary = await printLabel({
           template: detail.id,
           printer,
-          fields: value.data,
-          ...(option ? { option } : {}),
+          fields: submittedData,
           copies: n,
         });
         showSummary(summary);
@@ -151,8 +165,9 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="flex flex-col gap-4">
-        <FieldForm detail={detail} value={{ ...value, option: reconciledOption, printer: effectivePrinter }} onChange={setValue} />
+        <FieldForm detail={detail} inputs={inputs} value={{ ...value, printer: effectivePrinter }} onChange={setValue} />
 
+        {inputsError && <p style={{ color: "var(--bad)" }}>{inputsError}</p>}
         {formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}
 
         <div className="flex items-center gap-3">
