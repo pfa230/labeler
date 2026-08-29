@@ -92,6 +92,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0083](0083-packed-children-flow-layout.md) | A packed child is anchorless, and its container's arrangement places it | Accepted |
 | [0084](0084-centred-text-reserves-its-ink.md) | Centred text reserves its ink | Accepted |
 | [0085](0085-text-wrap-flag.md) | Text `wrap` flag, segmentation, and field-level shortening | Accepted |
+| [0086](0086-a-grid-cell-editor-follows-the-reported-control.md) | A grid cell editor follows the reported control | Accepted |
 
 ## Adding an ADR
 

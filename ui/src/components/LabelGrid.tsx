@@ -2,6 +2,7 @@ import "react-data-grid/lib/styles.css";
 import { useMemo } from "react";
 import { DataGrid, type Column, type RenderEditCellProps, type RenderCellProps, type RowsChangeData } from "react-data-grid";
 import type { LabelGridRow } from "../lib/labelGrid";
+import type { InputControl, InputSpec } from "../api/types";
 
 const rowKeyGetter = (r: LabelGridRow) => r.id; // stable module-level identity (avoids grid recalculation)
 
@@ -10,7 +11,7 @@ export interface LabelGridProps {
   fields: string[];
   optionNames?: string[];
   optionValues?: Record<string, string[]>; // allowed values per declared option
-  isCellEditable?: (row: LabelGridRow, field: string) => boolean;
+  cellInput?: (row: LabelGridRow, field: string) => InputSpec | undefined;
   // RDG passes the full updated rows plus which indexes changed, so the caller can normalize edited rows.
   onRowsChange: (rows: LabelGridRow[], data: RowsChangeData<LabelGridRow>) => void;
   onDuplicate: (id: string) => void;
@@ -26,14 +27,42 @@ const cellErrorStyle = { color: "var(--bad)" } as const;
 const DATA_PREFIX = "data:";
 const OPTION_PREFIX = "option:";
 
-function DataEditCell({ row, column, onRowChange, onClose }: RenderEditCellProps<LabelGridRow>) {
+interface DataEditCellProps extends RenderEditCellProps<LabelGridRow> {
+  control?: InputControl;
+}
+
+function DataEditCell({ row, column, onRowChange, onClose, control = "text" }: DataEditCellProps) {
   const field = column.key.slice(DATA_PREFIX.length);
+  const value = row.data[field] !== undefined ? String(row.data[field]) : "";
+
+  if (control === "textarea") {
+    return (
+      <textarea
+        autoFocus
+        aria-label={`edit ${field}`}
+        className="w-full h-full bg-transparent px-2 resize-none"
+        value={value}
+        onChange={(e) => onRowChange({ ...row, data: { ...row.data, [field]: e.target.value } })}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            if (e.shiftKey) {
+              e.stopPropagation();
+            } else {
+              e.preventDefault();
+            }
+          }
+        }}
+        onBlur={() => onClose(true)}
+      />
+    );
+  }
+
   return (
     <input
       autoFocus
       aria-label={`edit ${field}`}
       className="w-full bg-transparent px-2"
-      value={row.data[field] !== undefined ? String(row.data[field]) : ""}
+      value={value}
       onChange={(e) => onRowChange({ ...row, data: { ...row.data, [field]: e.target.value } })}
       onBlur={() => onClose(true)}
     />
@@ -70,7 +99,7 @@ export function LabelGrid({
   fields,
   optionNames = [],
   optionValues = {},
-  isCellEditable,
+  cellInput,
   onRowsChange,
   onDuplicate,
   onRemove,
@@ -106,27 +135,56 @@ export function LabelGrid({
     ...fields.map<Column<LabelGridRow>>((field) => ({
       key: `${DATA_PREFIX}${field}`,
       name: field,
-      editable: (row: LabelGridRow) => !disabled && (!isCellEditable || isCellEditable(row, field)),
+      editable: (row: LabelGridRow) => {
+        if (disabled) return false;
+        if (!cellInput) return true;
+        return cellInput(row, field) !== undefined;
+      },
       renderCell: ({ row }: RenderCellProps<LabelGridRow>) => {
-        const active = !isCellEditable || isCellEditable(row, field);
-        if (!active) {
+        const spec = cellInput ? cellInput(row, field) : { name: field, control: "text" as const };
+        if (!spec) {
           return <span style={{ color: "var(--muted)", opacity: 0.35 }}>—</span>;
         }
         const err = row.validation.field?.[field];
-        const value = row.data[field] ?? "";
+        const rawValue = row.data[field] ?? "";
+        const strValue = String(rawValue);
+
         // An empty required field renders an explicit, accessible marker (not just a tooltip on empty text).
-        if (err && value === "") {
+        if (err && strValue === "") {
           return (
             <span style={cellErrorStyle} aria-label={`${field} ${err}`} title={err}>
               ⚠ {err}
             </span>
           );
         }
-        return <span style={err ? cellErrorStyle : undefined} title={err}>{value}</span>;
+
+        const lines = strValue.split(/\r\n|\n/);
+        const isMultiline = lines.length > 1;
+        const firstLine = lines[0];
+        const remaining = lines.length - 1;
+
+        const title = err && isMultiline
+          ? `${err}\n\n${strValue}`
+          : (err || (isMultiline ? strValue : undefined));
+
+        if (isMultiline) {
+          return (
+            <span style={err ? cellErrorStyle : undefined} title={title}>
+              <span>{firstLine}</span>{" "}
+              <span style={{ color: "var(--muted)", opacity: 0.6 }}>
+                +{remaining}
+              </span>
+            </span>
+          );
+        }
+
+        return <span style={err ? cellErrorStyle : undefined} title={title}>{strValue}</span>;
       },
       renderEditCell: (p: RenderEditCellProps<LabelGridRow>) => {
-        if (disabled || (isCellEditable && !isCellEditable(p.row, field))) return null;
-        return <DataEditCell {...p} />;
+        if (disabled) return null;
+        const spec = cellInput ? cellInput(p.row, field) : { name: field, control: "text" as const };
+        if (!spec) return null;
+        return <DataEditCell {...p} control={spec.control} />;
       },
     })),
     ...optionNames.map<Column<LabelGridRow>>((name) => ({
@@ -167,7 +225,7 @@ export function LabelGrid({
       ),
     },
     ];
-  }, [fields, optionNames, optionValues, isCellEditable, onDuplicate, onRemove, disabled, rows, selectedRowId, onSelectRow]);
+  }, [fields, optionNames, optionValues, cellInput, onDuplicate, onRemove, disabled, rows, selectedRowId, onSelectRow]);
 
   return (
     <DataGrid
