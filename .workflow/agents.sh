@@ -99,7 +99,7 @@ agent_apply_prompt() {
 # resumed. Each rule below was read off that CLI's own output, not off a table.
 #
 # The single-object agents are searched in the LAST FIVE LINES only: an agent that
-# reads another agent's `.agent-*.json` echoes that envelope into its transcript,
+# reads another agent's `.agent-runs/*.json` echoes that envelope into its transcript,
 # and a whole-file search then recorded the wrong agent's id as its own (#264).
 # codex needs the whole file, because its id is printed first and its answer last;
 # it is safe there because its output is one JSON event per line and an echoed file

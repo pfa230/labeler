@@ -44,6 +44,8 @@ setup() {
   git init -q .; git config user.email t@t; git config user.name t
   mkdir -p openspec/changes/archive
   echo x > openspec/changes/archive/.gitkeep
+  # The real ignore file, so the artifact test below judges the rule that ships.
+  cp "$here/../.gitignore" .gitignore
   git add -A; git commit -qm base
   cwd="$repo"
 }
@@ -159,8 +161,8 @@ for agent in claude codex agy opencode; do
     opencode) want_id="" ;;
   esac
   out=$(cd "$repo" && PATH="$bin:$PATH" "$here/run-stage.sh" review "$agent" issue-8-envelope 2>&1); rc=$?
-  got_log=$(cat "$repo/.worktrees/issue-8/.agent-review-$agent.log" 2>/dev/null)
-  got_id=$(cat "$repo/.worktrees/issue-8/.agent-review-$agent.conversation" 2>/dev/null)
+  got_log=$(cat "$repo/.worktrees/issue-8/.agent-runs/review-$agent.log" 2>/dev/null)
+  got_id=$(cat "$repo/.worktrees/issue-8/.agent-runs/review-$agent.conversation" 2>/dev/null)
   if [ "$rc" = "0" ] && [ "$got_log" = "REVIEW BODY" ]; then
     pass=$((pass + 1)); printf "ok    %s's answer is extracted as the review\n" "$agent"
   else
@@ -204,6 +206,23 @@ FAKE
     fail=$((fail + 1)); printf 'FAIL  and says why\n'
   fi
 done
+
+# The same run answers where its artifacts went (#255). The landing commit stages the
+# worktree wholesale, so a merely untracked transcript gets committed; both halves are
+# asserted, because "nothing untracked" passes just as well when nothing was written.
+if [ -s "$repo/.worktrees/issue-9/.agent-runs/review-codex.log" ]; then
+  pass=$((pass + 1)); printf 'ok    the run writes its log under .agent-runs/\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  no log at .worktrees/issue-9/.agent-runs/review-codex.log\n'
+  (cd "$repo/.worktrees/issue-9" && ls -A) | sed 's/^/        /'
+fi
+stray=$(cd "$repo/.worktrees/issue-9" && git ls-files --others --exclude-standard | grep -c 'agent\|agy')
+if [ "$stray" = "0" ]; then
+  pass=$((pass + 1)); printf 'ok    and a git add -A stages none of it\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  %s run artifact(s) would be staged\n' "$stray"
+  (cd "$repo/.worktrees/issue-9" && git ls-files --others --exclude-standard) | sed 's/^/        /'
+fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 
