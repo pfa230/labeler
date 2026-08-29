@@ -12,9 +12,9 @@ Prefer that.
 
 1. Run `.workflow/apply-with-agy.sh $ARGUMENTS` in the background; it can take many minutes.
 2. Report only the exit status and the tail it prints. Do NOT read
-   `.worktrees/<issue>/.agy-apply.log` in full: it runs to thousands of lines and pulling it
-   into this context is exactly what the script exists to avoid. Read a targeted range only if
-   diagnosing a failure.
+   `.worktrees/<issue>/.agent-runs/agy-apply.log` in full: it runs to thousands of lines and
+   pulling it into this context is exactly what the script exists to avoid. Read a targeted
+   range only if diagnosing a failure.
 3. While it runs, and after it finishes, do not commit, merge, push, or archive. The script holds
    a lock that makes git refuse those anyway; do not attempt to remove the lock.
 4. When it completes, review the resulting diff adversarially, per "Reviewing before you call it
