@@ -1991,6 +1991,15 @@ pub async fn update_connection_h(
         .get_connection(&id)
         .await?
         .ok_or_else(|| AppError::not_found(&id))?;
+    if body.connector != existing.connector {
+        return Err(AppError::invalid_request(
+            Reason::ConnectorImmutable,
+            format!(
+                "connector cannot be changed (existing '{}', requested '{}')",
+                existing.connector, body.connector
+            ),
+        ));
+    }
     let connector = state.connectors().get(&existing.connector).ok_or_else(|| {
         AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
     })?;
