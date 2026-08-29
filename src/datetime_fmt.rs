@@ -44,13 +44,37 @@ pub fn parse_datetime_in_tz<Tz: TimeZone>(s: &str, tz: &Tz) -> Result<DateTime<T
     // 1. Date only: YYYY-MM-DD -> local midnight
     if let Ok(date) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
         if let Some(ndt) = date.and_hms_opt(0, 0, 0) {
-            return match tz.from_local_datetime(&ndt) {
-                LocalResult::Single(dt) => Ok(dt),
-                LocalResult::Ambiguous(earlier, _later) => Ok(earlier),
-                LocalResult::None => Err(
-                    "local date/time does not exist due to daylight saving transition".to_string(),
-                ),
-            };
+            match tz.from_local_datetime(&ndt) {
+                LocalResult::Single(dt) => return Ok(dt),
+                LocalResult::Ambiguous(earlier, _later) => return Ok(earlier),
+                LocalResult::None => {
+                    // Local midnight does not exist on this date (e.g. DST gap at 00:00).
+                    // Find the first instant that exists on this local date.
+                    for minute in 1..(24 * 60) {
+                        let h = (minute / 60) as u32;
+                        let m = (minute % 60) as u32;
+                        if let Some(candidate_ndt) = date.and_hms_opt(h, m, 0) {
+                            match tz.from_local_datetime(&candidate_ndt) {
+                                LocalResult::Single(dt) => {
+                                    if dt.date_naive() == date {
+                                        return Ok(dt);
+                                    }
+                                }
+                                LocalResult::Ambiguous(earlier, _later) => {
+                                    if earlier.date_naive() == date {
+                                        return Ok(earlier);
+                                    }
+                                }
+                                LocalResult::None => {}
+                            }
+                        }
+                    }
+                    return Err(
+                        "local date/time does not exist due to daylight saving transition"
+                            .to_string(),
+                    );
+                }
+            }
         }
     }
 
@@ -225,8 +249,11 @@ mod tests {
 
         fn offset_from_local_datetime(&self, local: &NaiveDateTime) -> LocalResult<Self::Offset> {
             use chrono::Timelike;
-            if local.date() == NaiveDate::from_ymd_opt(2026, 3, 29).unwrap()
-                && local.time().hour() == 2
+            if (local.date() == NaiveDate::from_ymd_opt(2026, 3, 29).unwrap()
+                && local.time().hour() == 2)
+                || (local.date() == NaiveDate::from_ymd_opt(2026, 4, 5).unwrap()
+                    && local.time().hour() == 0)
+                || local.date() == NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()
             {
                 LocalResult::None
             } else if local.date() == NaiveDate::from_ymd_opt(2026, 10, 25).unwrap()
@@ -286,5 +313,18 @@ mod tests {
         // Ambiguity: 2026-10-25 02:30 resolves to earlier instant (offset +2h = 7200)
         let amb_res = parse_datetime_in_tz("2026-10-25T02:30", &tz).unwrap();
         assert_eq!(amb_res.offset().local_minus_utc(), 7200);
+
+        // Midnight DST gap on 2026-04-05: date-only resolves forward to first valid instant (01:00)
+        let fwd_res = parse_datetime_in_tz("2026-04-05", &tz).unwrap();
+        assert_eq!(
+            fwd_res.format("%Y-%m-%dT%H:%M").to_string(),
+            "2026-04-05T01:00"
+        );
+
+        // Date-time in gap is rejected
+        assert!(parse_datetime_in_tz("2026-04-05T00:30", &tz).is_err());
+
+        // Date where whole day is missing in tz
+        assert!(parse_datetime_in_tz("2026-12-31", &tz).is_err());
     }
 }

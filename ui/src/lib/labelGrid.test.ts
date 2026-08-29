@@ -24,21 +24,15 @@ describe("labelGrid logic", () => {
     expect(MAX_BATCH_LABELS).toBe(500);
   });
 
-  it("resolveLabels expands copies adjacently and merges options (row wins over manual)", () => {
-    const rows = [row("a", { sku: "1" }, { color: "red" }), row("b", { sku: "2" })];
-    const out = resolveLabels(rows, { color: "blue", size: "L" }, 2);
+  it("resolveLabels expands copies adjacently", () => {
+    const rows = [row("a", { sku: "1" }), row("b", { sku: "2" })];
+    const out = resolveLabels(rows, 2);
     expect(out).toEqual([
-      { data: { sku: "1" }, option: { color: "red", size: "L" } },
-      { data: { sku: "1" }, option: { color: "red", size: "L" } },
-      { data: { sku: "2" }, option: { color: "blue", size: "L" } },
-      { data: { sku: "2" }, option: { color: "blue", size: "L" } },
+      { data: { sku: "1" } },
+      { data: { sku: "1" } },
+      { data: { sku: "2" } },
+      { data: { sku: "2" } },
     ]);
-  });
-
-  it("resolveLabels omits option entirely when the merged map is empty", () => {
-    const out = resolveLabels([row("a", { sku: "1" })], {}, 1);
-    expect(out).toEqual([{ data: { sku: "1" } }]);
-    expect("option" in out[0]).toBe(false);
   });
 
   it("sourceRowForExpandedIndex maps an expanded index back to its source row", () => {

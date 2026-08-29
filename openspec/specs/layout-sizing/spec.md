@@ -1011,7 +1011,7 @@ sync."
 #### Scenario: An invalid inactive branch is still refused at load
 
 - **WHEN** a template declares an item behind `when: { debug: true }` whose `size` is `[0, 10]`, and
-  `debug` defaults to `false`
+  `debug` declares `default: false`
 - **THEN** the template fails validation and is quarantined
 
 #### Scenario: An inactive item imposes no requirement

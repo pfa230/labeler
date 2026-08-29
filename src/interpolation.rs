@@ -219,6 +219,48 @@ pub fn scan_tokens(s: &str) -> Vec<ScannedToken<'_>> {
     tokens
 }
 
+/// Validate the brace syntax of a parameter default string at template load time.
+/// Scans for well-formed tokens and verifies that literal chunks between them obey the
+/// brace-balance rules (unterminated '{' or unmatched '}'), honouring '{{' and '}}'.
+pub fn validate_default_syntax(s: &str) -> Result<(), String> {
+    let tokens = scan_tokens(s);
+    let mut pos = 0;
+    for token in tokens {
+        if token.start > pos {
+            check_literal_chunk_braces(&s[pos..token.start])?;
+        }
+        pos = token.end;
+    }
+    if pos < s.len() {
+        check_literal_chunk_braces(&s[pos..])?;
+    }
+    Ok(())
+}
+
+fn check_literal_chunk_braces(chunk: &str) -> Result<(), String> {
+    let mut chars = chunk.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                } else {
+                    return Err("unterminated '{'".to_string());
+                }
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                } else {
+                    return Err("unmatched '}'".to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

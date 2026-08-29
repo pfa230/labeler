@@ -23,7 +23,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0010](0010-variable-interpolation-layer.md) | Variable interpolation layer | Accepted (dual-binding superseded by [0055](0055-standardize-on-value-interpolation.md)) |
 | [0011](0011-unified-batch-endpoint.md) | Unified batch render/print endpoint | Accepted |
 | [0012](0012-job-options.md) | Job options as format-intrinsic batch parameters | Accepted |
-| [0013](0013-render-print-ux.md) | Render & Print UX decisions | Accepted |
+| [0013](0013-render-print-ux.md) | Render & Print UX decisions | Accepted (parameter pre-fill superseded in part by [0088](0088-explicit-parameter-defaults.md)) |
 | [0014](0014-csv-import-grid.md) | CSV import editable grid | Accepted |
 | [0015](0015-settings-printers-ux.md) | Settings & Printers screen UX | Accepted |
 | [0016](0016-deployment-and-packaging.md) | Deployment and packaging | Accepted |
@@ -32,7 +32,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0019](0019-ci-and-image-publishing.md) | CI and image publishing | Accepted |
 | [0020](0020-variables-vs-settings.md) | Variables vs settings (substitution vs app config) | Accepted |
 | [0021](0021-homebox-connect-hardening.md) | Homebox & Connect hardening (isLocation, row link, selection) | Accepted |
-| [0022](0022-import-option-model.md) | Import option model and template-switch persistence | Accepted |
+| [0022](0022-import-option-model.md) | Import option model and template-switch persistence | Accepted (option model defaults superseded in part by [0088](0088-explicit-parameter-defaults.md)) |
 | [0023](0023-template-thumbnail-endpoint.md) | Template thumbnail endpoint | Accepted |
 | [0024](0024-app-settings-storage-and-api.md) | App settings storage and API | Accepted |
 | [0025](0025-optional-no-auth-mode.md) | Optional no-auth mode for homelab | Accepted |
@@ -66,7 +66,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0053](0053-max-bounds-cap.md) | `max_w`/`max_h` cap an `auto` size, not substitute for its fallback | Superseded by [0080](0080-unify-size-resolution.md) |
 | [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Superseded by [0080](0080-unify-size-resolution.md) |
 | [0055](0055-standardize-on-value-interpolation.md) | Standardize on value interpolation for text and QR items | Accepted |
-| [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted |
+| [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted (implicit defaults superseded in part by [0088](0088-explicit-parameter-defaults.md)) |
 | [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted |
 | [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
 | [0059](0059-auto-length-text-box-is-the-alignment-slot.md) | Auto-length text box is the alignment slot | Superseded by [0080](0080-unify-size-resolution.md) |
@@ -77,9 +77,9 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0064](0064-svar-grid-for-the-connector-browser.md) | The connector browse table uses SVAR DataGrid; the ordering rules stay ours | Accepted |
 | [0065](0065-template-writes-verify-the-id-they-wrote.md) | A template write verifies the id it wrote, and a contested id refuses the delete | Accepted |
 | [0066](0066-format-badge-carries-icon-colour-and-count.md) | The format badge carries an icon, its own colour and a position count, and is delineated by a border | Accepted (the --accent-deep token decision superseded by [0071]) |
-| [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted (token list and formatting syntax superseded by [0079](0079-token-grammar.md)) |
+| [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted (token list and formatting syntax superseded by [0079](0079-token-grammar.md); render-instant default superseded by [0088](0088-explicit-parameter-defaults.md)) |
 | [0069](0069-connect-opens-on-a-default-connection.md) | Connect opens on a default connection named by an instance-wide setting | Accepted |
-| [0070](0070-service-derives-the-input-list.md) | Service derives the input list | Accepted |
+| [0070](0070-service-derives-the-input-list.md) | Service derives the input list | Accepted (amended by [0088](0088-explicit-parameter-defaults.md)) |
 | [0071](0071-one-accent-colour-with-a-defined-ink.md) | One accent colour, dark enough to carry text, with a defined ink on its fill | Accepted |
 | [0072](0072-two-filter-scopes-named-not-merged.md) | Two filter scopes named, not merged | Accepted |
 | [0073](0073-group-is-a-directory-id-is-the-filename.md) | Group is a directory; ID is the filename | Accepted |
@@ -94,6 +94,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0085](0085-text-wrap-flag.md) | Text `wrap` flag, segmentation, and field-level shortening | Accepted |
 | [0086](0086-a-grid-cell-editor-follows-the-reported-control.md) | A grid cell editor follows the reported control | Accepted |
 | [0087](0087-connection-connector-is-immutable.md) | A connection's connector is immutable, and a contradiction is reported | Accepted |
+| [0088](0088-explicit-parameter-defaults.md) | A parameter is required unless its template declares a default | Accepted |
 
 ## Adding an ADR
 

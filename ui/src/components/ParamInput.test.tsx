@@ -188,4 +188,36 @@ describe("ParamInput", () => {
     fireEvent.change(input, { target: { value: "2026-08-19T16:45" } });
     expect(onChange).toHaveBeenCalledWith("2026-08-19T16:45");
   });
+
+  it("renders an unset checkbox when value and default are undefined", () => {
+    const onChange = vi.fn();
+    const spec: ParamSpec = { type: "boolean", description: "Flag" };
+    render(<ParamInput name="flag" spec={spec} value={undefined} onChange={onChange} />);
+
+    const checkbox = screen.getByRole("checkbox", { name: "Flag" }) as HTMLInputElement;
+    expect(checkbox).toBeInTheDocument();
+    expect(checkbox.checked).toBe(false);
+    expect(screen.getByText("Unset")).toBeInTheDocument();
+  });
+
+  it("renders a select with placeholder when value and default are undefined", () => {
+    const onChange = vi.fn();
+    const spec: ParamSpec = { type: "enum", values: ["a", "b"], description: "Choice" };
+    render(<ParamInput name="choice" spec={spec} value={undefined} onChange={onChange} />);
+
+    const select = screen.getByRole("combobox", { name: "Choice" }) as HTMLSelectElement;
+    expect(select).toBeInTheDocument();
+    expect(select.value).toBe("");
+    expect(screen.getByText("Select...")).toBeInTheDocument();
+  });
+
+  it("renders a number input rather than a slider when bounds are set but default is missing", () => {
+    const onChange = vi.fn();
+    const spec: ParamSpec = { type: "length", min: 10, max: 100, description: "Width" };
+    render(<ParamInput name="width" spec={spec} value={undefined} onChange={onChange} />);
+
+    expect(screen.queryByRole("slider")).toBeNull();
+    const spin = screen.getByRole("spinbutton", { name: "Width" }) as HTMLInputElement;
+    expect(spin).toBeInTheDocument();
+  });
 });

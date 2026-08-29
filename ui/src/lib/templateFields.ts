@@ -1,15 +1,3 @@
-export function hasServerDefault(spec: { type?: string; control?: string; default?: unknown; values?: unknown[] }): boolean {
-  return (
-    spec.type === "datetime" ||
-    spec.control === "datetime" ||
-    spec.control === "date" ||
-    spec.type === "boolean" ||
-    spec.control === "checkbox" ||
-    ((spec.type === "enum" || spec.control === "select") && (spec.values?.length ?? 0) > 0) ||
-    spec.default !== undefined
-  );
-}
-
 export function formatLocalDate(d: Date = new Date()): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -105,15 +93,4 @@ export function datetimeCellError(raw: string): string | null {
   }
 
   return null;
-}
-
-export function reconcileRowOptions(
-  current: Record<string, string>,
-  options?: Record<string, string[]>,
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, vals] of Object.entries(options ?? {})) {
-    out[name] = name in current && current[name] !== undefined ? current[name] : (vals[0] ?? "");
-  }
-  return out;
 }

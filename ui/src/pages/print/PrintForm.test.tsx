@@ -58,6 +58,25 @@ function stubFetch(printersList: unknown[] = printers) {
       });
     }
     if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
+      if (url.includes("types_tpl")) {
+        return new Response(
+          JSON.stringify({
+            inputs: [
+              [
+                { name: "printed_on", control: "datetime", required: true },
+                { name: "flag", control: "checkbox", required: true },
+                { name: "choice", control: "select", values: ["one", "two"], required: true },
+                { name: "token_field", control: "text", required: false },
+                { name: "lit_field", control: "text", default: "seeded", required: false },
+              ],
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
       return new Response(
         JSON.stringify({
           inputs: [[{ name: "message", control: "text", required: true }]],
@@ -304,5 +323,70 @@ describe("PrintForm gating and submission pruning", () => {
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     // count is empty non-text; pro_code has value but is deactivated
     expect(body.fields).toEqual({ message: "hello", tier: "standard" });
+  });
+
+  it("leaves undefaulted datetime, boolean, and enum empty on mount and seeds literal defaults", async () => {
+    const detailWithTypes: TemplateDetail = {
+      id: "types_tpl",
+      name: "Types Template",
+      description: "",
+      unit: "mm",
+      dpi: 300,
+      format: { type: "single", width: 80, height: 24 },
+      inputs: {
+        all: [
+          { name: "printed_on", control: "datetime", required: true },
+          { name: "flag", control: "checkbox", required: true },
+          { name: "choice", control: "select", values: ["one", "two"], required: true },
+          { name: "token_field", control: "text", required: false },
+          { name: "lit_field", control: "text", default: "seeded", required: false },
+        ],
+        default: [
+          { name: "printed_on", control: "datetime", required: true },
+          { name: "flag", control: "checkbox", required: true },
+          { name: "choice", control: "select", values: ["one", "two"], required: true },
+          { name: "token_field", control: "text", required: false },
+          { name: "lit_field", control: "text", default: "seeded", required: false },
+        ],
+      },
+      variables: [],
+    };
+
+    const fetchMock = stubFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderForm(detailWithTypes);
+
+    // printed_on has no default -> value is ""
+    const dtInput = (await screen.findByLabelText("printed_on")) as HTMLInputElement;
+    expect(dtInput.value).toBe("");
+
+    // flag has no default -> Unset
+    expect(screen.getByText("Unset")).toBeInTheDocument();
+
+    // choice has no default -> value is ""
+    const choiceSelect = (await screen.findByLabelText("choice")) as HTMLSelectElement;
+    expect(choiceSelect.value).toBe("");
+
+    // token_field has no default -> value is ""
+    const tokInput = (await screen.findByLabelText("token_field")) as HTMLInputElement;
+    expect(tokInput.value).toBe("");
+
+    // lit_field has default "seeded" -> value is "seeded"
+    const litInput = (await screen.findByLabelText("lit_field")) as HTMLInputElement;
+    expect(litInput.value).toBe("seeded");
+
+    // Undefaulted required fields (printed_on, flag, choice) are demanded; form is invalid and Print is disabled
+    const printBtn = screen.getByRole("button", { name: /^print$/i });
+    expect(printBtn).toBeDisabled();
+
+    // Fill in the required fields
+    fireEvent.change(dtInput, { target: { value: "2026-08-19T14:30" } });
+    fireEvent.change(choiceSelect, { target: { value: "one" } });
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.change(await screen.findByLabelText("printer"), { target: { value: "p1" } });
+
+    // Now form is complete and Print button is enabled
+    await waitFor(() => expect(printBtn).not.toBeDisabled());
   });
 });

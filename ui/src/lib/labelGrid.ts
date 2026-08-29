@@ -33,23 +33,15 @@ export function expandedCount(rowCount: number, copies: number): number {
 
 export interface ResolvedLabel {
   data: Record<string, ParamValue>;
-  option?: Record<string, string>;
 }
 
-// Resolve rows to labels for /api/batch: merge manual options under each row's options (row wins),
-// omit option entirely when empty (the backend rejects `option` on option-less templates), and
-// expand `copies` adjacently (row0 x copies, row1 x copies, ...).
 export function resolveLabels(
   rows: LabelGridRow[],
-  manualOptions: Record<string, string>,
   copies: number,
 ): ResolvedLabel[] {
   const out: ResolvedLabel[] = [];
   for (const row of rows) {
-    // A row's CSV option value wins over the manual/global default, including a blank value: a blank
-    // CSV option cell is treated as invalid (caught by validateOptionCell), not as a fallback to manual.
-    const option = { ...manualOptions, ...row.option };
-    const label: ResolvedLabel = Object.keys(option).length ? { data: row.data, option } : { data: row.data };
+    const label: ResolvedLabel = { data: row.data };
     for (let i = 0; i < copies; i += 1) out.push(label);
   }
   return out;
