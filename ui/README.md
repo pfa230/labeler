@@ -11,6 +11,10 @@ npm run test           # vitest
 npm run lint           # eslint
 ```
 
+npm is the only supported package manager, and `ui/package-lock.json` is the only lockfile. The
+`packageManager` field in `package.json` makes `pnpm install` exit 1 here instead of quietly writing a
+second one.
+
 Structure: `src/api/` (typed `/api` client + TanStack Query hooks), `src/app/` (Shell, routing, theme,
 toasts), `src/pages/` (screens). Theme tokens ("Ink & Tape") live in `src/theme.css`; the dark class is
 applied pre-paint by an inline script in `index.html`.
