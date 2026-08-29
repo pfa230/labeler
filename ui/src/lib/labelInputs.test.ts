@@ -68,6 +68,29 @@ describe("pruneDataForSubmit", () => {
     };
     expect(pruneDataForSubmit(data, activeInputs)).toEqual({});
   });
+
+  it("omits deferred names from the result while retaining non-deferred names", () => {
+    const activeInputs: InputSpec[] = [
+      { name: "title", control: "text", default: "Untitled" },
+      { name: "count", control: "integer", default: 1 },
+      { name: "notes", control: "text" },
+    ];
+    const data = {
+      title: "Untitled",
+      count: 1,
+      notes: "Custom note",
+    };
+    const deferred = {
+      title: true,
+      count: false,
+    };
+    const pruned = pruneDataForSubmit(data, activeInputs, deferred);
+    expect(pruned).toEqual({
+      count: 1,
+      notes: "Custom note",
+    });
+    expect(pruned).not.toHaveProperty("title");
+  });
 });
 
 describe("useLabelInputs", () => {
@@ -97,7 +120,7 @@ describe("useLabelInputs", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() =>
-      useLabelInputs("tmpl-1", { tier: "standard" }, defaultInputs, 20),
+      useLabelInputs("tmpl-1", () => ({ tier: "standard" }), defaultInputs, 20),
     );
 
     expect(result.current.inputs).toEqual(defaultInputs);
@@ -130,7 +153,7 @@ describe("useLabelInputs", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { result, rerender } = renderHook(
-      ({ data }) => useLabelInputs("tmpl-2", data, defaultInputs, 20),
+      ({ data }) => useLabelInputs("tmpl-2", () => data, defaultInputs, 20),
       { initialProps: { data: { tier: "standard" } } },
     );
 
@@ -166,7 +189,7 @@ describe("useLabelInputs", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { result, rerender } = renderHook(
-      ({ data }) => useLabelInputs("tmpl-cache", data, defaultInputs, 20),
+      ({ data }) => useLabelInputs("tmpl-cache", () => data, defaultInputs, 20),
       { initialProps: { data: { tier: "pro" } } },
     );
 
@@ -205,7 +228,7 @@ describe("useLabelInputs", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { result, rerender } = renderHook(
-      ({ data }) => useLabelInputs("tmpl-abort", data, defaultInputs, 20),
+      ({ data }) => useLabelInputs("tmpl-abort", () => data, defaultInputs, 20),
       { initialProps: { data: { tier: "standard" } } },
     );
 

@@ -96,6 +96,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0087](0087-connection-connector-is-immutable.md) | A connection's connector is immutable, and a contradiction is reported | Accepted |
 | [0088](0088-explicit-parameter-defaults.md) | A parameter is required unless its template declares a default | Accepted |
 | [0089](0089-wrapping-and-the-overflow-policy.md) | Wrapping and the overflow policy | Accepted |
+| [0090](0090-a-declared-default-is-deferred-not-copied.md) | A declared default is deferred, not copied | Accepted |
 
 ## Adding an ADR
 

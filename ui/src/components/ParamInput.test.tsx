@@ -44,6 +44,46 @@ describe("ParamInput", () => {
     await waitFor(() => expect(onChange).toHaveBeenCalled());
   });
 
+  it("drops a file read that finishes after the entry was deferred again", async () => {
+    const onChange = vi.fn();
+    const spec: ParamSpec = { type: "string", description: "Logo" };
+    const { rerender } = render(
+      <ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} />,
+    );
+
+    const input = screen.getByLabelText("Logo") as HTMLInputElement;
+    const file = new File(["fake-image"], "logo.png", { type: "image/png" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    // Re-checking "Use default" while the read is in flight: the chooser is cleared and the control
+    // disabled before the reader resolves.
+    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} disabled={true} />);
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("clears the file input selection when value is reset or disabled", async () => {
+    const onChange = vi.fn();
+    const spec: ParamSpec = { type: "string", description: "Logo" };
+    const { rerender } = render(
+      <ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} />,
+    );
+
+    const input = screen.getByLabelText("Logo") as HTMLInputElement;
+    const file = new File(["fake-image"], "logo.png", { type: "image/png" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true, writable: true });
+    Object.defineProperty(input, "value", { value: "C:\\fakepath\\logo.png", configurable: true, writable: true });
+
+    rerender(<ParamInput name="logo" spec={spec} value="data:image/png;base64,..." onChange={onChange} isImage={true} />);
+    expect(screen.getByText("image selected")).toBeInTheDocument();
+
+    // Now reset value and disable (simulating re-checking the Use default checkbox)
+    rerender(<ParamInput name="logo" spec={spec} value="" onChange={onChange} isImage={true} disabled={true} />);
+    expect(screen.queryByText("image selected")).not.toBeInTheDocument();
+    expect(input.value).toBe("");
+  });
+
   it("renders a slider for length parameter with min and max bounds", () => {
     const onChange = vi.fn();
     const spec: ParamSpec = {
