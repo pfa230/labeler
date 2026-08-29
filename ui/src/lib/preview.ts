@@ -8,15 +8,24 @@ export const SAMPLE_PNG =
 
 // Build sample values by the thumbnail rule over inputs.all:
 // Required interpolated images get SAMPLE_PNG, required interpolated numbers get min ?? 1,
-// required interpolated strings get the input name.
-export function sampleData(inputs: InputSpec[]): Record<string, unknown> {
+// required checkboxes get false, required dates/datetimes get current instant (RFC 3339 with Z),
+// every enum in inputs.all gets its first allowed value, and required strings get the input name.
+export function sampleData(inputs: InputSpec[], now: Date = new Date()): Record<string, unknown> {
   const data: Record<string, unknown> = {};
   for (const input of inputs) {
-    if (input.interpolated && input.required) {
+    if (input.control === "select" || (input.values && input.values.length > 0)) {
+      if (input.values && input.values.length > 0) {
+        data[input.name] = input.values[0];
+      }
+    } else if (input.interpolated && input.required) {
       if (input.control === "image") {
         data[input.name] = SAMPLE_PNG;
       } else if (input.control === "integer" || input.control === "number") {
         data[input.name] = input.min ?? 1;
+      } else if (input.control === "checkbox") {
+        data[input.name] = false;
+      } else if (input.control === "date" || input.control === "datetime") {
+        data[input.name] = now.toISOString();
       } else {
         data[input.name] = input.name;
       }

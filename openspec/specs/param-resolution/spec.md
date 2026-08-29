@@ -1,0 +1,449 @@
+# param-resolution Specification
+
+## Purpose
+Defines how one request's value for a declared template parameter is decided: supplied by the caller,
+resolved from the template's own declared default, or absent. It owns the rule that nothing else may
+supply a value to a token, how a default is interpolated and when, and what a default that cannot be
+resolved reports.
+
+## Requirements
+
+### Requirement: A parameter is required unless the template declares a default
+
+For one request, the value a `{token}` reads for a declared parameter SHALL come from exactly two
+places, tried in this order:
+
+1. the request's `data` map;
+2. the parameter's declared `default:`, resolved per the requirement below.
+
+There is no third place. The service SHALL NOT derive the value a token reads from the parameter's
+type, from its `values` list, from its `min` or `max`, or from the clock. A parameter that neither
+source supplies is **absent**, and absent is a state the render carries rather than an error in itself.
+
+An absent parameter that an **active** layout item reads through a token SHALL be `422 MissingField`
+naming the parameter, on the same terms and with the same payload as an absent request field. Whether
+an item is active is decided by its `when:` predicate, and an item under an unmatched predicate is
+neither measured nor rendered, so a parameter that only an inactive branch reads SHALL NOT be required.
+
+An absent parameter named by a `when:` predicate SHALL make that predicate false. It SHALL NOT be an
+error, because a predicate asks what a value is and absence is an answer. A template whose every branch
+is gated on an absent parameter therefore renders none of them rather than failing.
+
+This rule holds for every parameter type. A `boolean` with no declared `default:` is not `false`, an
+`enum` with no declared `default:` is not its first value, and a `datetime` with no declared `default:`
+is not the render instant.
+
+**Two things that look like a third source and are not.** A CSV import's `option.<name>` column is
+folded into the row's `data` map before the label is built, and an empty cell is folded nowhere, so it
+reaches this rule as a plain omission from `data`. And the renderer's internal option-selection argument
+is populated by nothing but a preview, and is specified by the preview requirement below; no request
+model carries it, so no caller can reach it.
+
+**What this rule does not reach, stated here rather than in a footnote.** A numeric parameter named by a
+container's `width`/`height` `ref:` is resolved by *different* mechanisms, which do derive a value when
+the parameter has no usable default, and which do not even agree with each other: at load
+`load_geometry_values` falls back `min` → `max` → `0.0` (`src/templates.rs:1514-1529`) while
+`resolve_f32_default` falls back `min` → `0.0` (`:1531-1544`) and `resolve_u16_default` falls back to
+`400` (`:1546-1556`); at render `render_geometry_values` falls back `min` → `0.0` and never consults
+`max` (`src/render/mod.rs:927-946`). They carry the same defect this requirement removes, in another
+place, and this capability neither governs nor changes them; they are tracked as **#261**. The absolute
+sentence above is about the value a token reads.
+
+#### Scenario: An omitted boolean with no default fails
+
+- **WHEN** a template declares `bold: { type: boolean }`, an active `text` item renders `{bold}`, and
+  the request omits `bold`
+- **THEN** the response is `422 MissingField` naming `bold`
+
+#### Scenario: An omitted enum with no default fails
+
+- **WHEN** a template declares `size: { type: enum, values: [small, large] }`, an active item renders
+  `{size}`, and the request omits `size`
+- **THEN** the response is `422 MissingField` naming `size`, rather than the label printing `small`
+
+#### Scenario: An omitted enum gates a branch off rather than failing
+
+- **WHEN** a template declares `outline: { type: enum, values: [yes] }`, a container carries
+  `when: { outline: yes }`, and the request omits `outline`
+- **THEN** the label renders with that container absent, and the response is not an error
+
+#### Scenario: An omitted boolean gates a branch off rather than selecting one
+
+- **WHEN** a container carries `when: { bold: "false" }`, `bold` declares no `default:`, and the
+  request omits `bold`
+- **THEN** that container is absent, rather than rendered because `bold` was taken as `false`
+
+#### Scenario: A parameter only an inactive branch reads is not required
+
+- **WHEN** an inactive container's `text` item renders `{caption}` and the request omits `caption`
+- **THEN** the label renders, and no `MissingField` is raised for `caption`
+
+#### Scenario: A declared default is used
+
+- **WHEN** a template declares `bold: { type: boolean, default: false }` and the request omits `bold`
+- **THEN** the label renders with `bold` resolved to `false`
+
+#### Scenario: A filled CSV option cell is an ordinary value
+
+- **WHEN** a CSV import carries an `option.orientation` column whose cell reads `horizontal`
+- **THEN** that row's label carries `orientation: horizontal` in its `data`, and the declared default is
+  not reached
+
+#### Scenario: A blank CSV option cell is an omission
+
+- **WHEN** a CSV import carries an `option.<name>` column whose cell is empty for a row, and the named
+  parameter declares no `default:`
+- **THEN** that row's label omits the parameter, and the import fails with `422 MissingField` naming it
+  if an active item reads it
+
+### Requirement: A declared default is resolved against one request-scoped snapshot
+
+A `default:` that is a string SHALL be interpolated by the `interpolation-tokens` grammar before it is
+used, restricted there to namespaced tokens. A `default:` that is not a string carries no token and
+SHALL be used as written.
+
+A request SHALL capture one instant and read the variables store once, and every default it resolves
+SHALL be resolved against that one snapshot. Resolution itself happens per label, so a batch, sheet or
+ZIP resolves a given default once per label and SHALL get the identical value every time. The
+observable rule is that no two labels in one request may see a given default resolve differently.
+
+A default's resolved value SHALL be validated and coerced by exactly the rule a value the caller supplied
+for that parameter is validated and coerced by. A default is not privileged: it may not carry a value the
+request could not have carried. What the *rule* shares is what counts as invalid; what it does not share
+is who is told. A value the caller sent that fails is the caller's error and keeps its existing response,
+and a resolved default that fails the same rule is the template's, reported as
+`422 TemplateInvalid` with `details.reason` `param_default_unresolvable` under the requirement below.
+
+**This is a breaking change for a literal default carrying a value a request would be rejected for** — a
+`boolean` declaring `default: "yes"` loads and renders today, because a default was inserted without
+validation, and SHALL be rejected from this change onward on the terms the request value `"yes"` is
+rejected.
+
+Coercion applies to the value as the model holds it, and this capability does not reshape that value
+first. One consequence is worth stating because it looks like an inconsistency and is not worth machinery
+to remove: a template declaring `default: 1` on a `boolean` is held as a float and is rejected, while a
+request sending `bold: 1` is accepted, because the conversion that reads a template collapses a YAML
+integer to a float for every non-`integer` type. An author writes `default: true`. Making the two agree
+means preserving the authored scalar's kind through that conversion, which is a defect of its own, tracked as #270.
+
+Where validation is *lenient* — the input-list path, which absorbs a value it cannot coerce rather than
+rejecting it — a declared default that fails validation SHALL be absorbed the same way for gate
+evaluation. This capability does not require the list to withhold it. Deciding that a literal default
+fails needs the same coercion a render applies, and for a `datetime` that needs the server timezone,
+which the derivation building the list does not have. What a client is handed for a declared default, and
+whether an unusable one should be withheld, is #262's subject and is not settled here.
+
+
+A default carrying **no interpolation syntax at all** SHALL keep the load-time checks it has today, which
+reject an `enum` default outside `values` and a default that overflows the frame it sizes. A default
+carrying any — a token, or an escape — SHALL NOT have its *value* checked at load.
+
+The test is syntax and not tokens, because an escape changes the value without being one: `{{draft}}`
+carries no token yet resolves to `{draft}`, so an `enum` declaring `values: ["{draft}"]` would be refused
+at load for a default that resolves to an allowed value, and one declaring `values: ["{{draft}}"]` would
+pass load and resolve outside its own set. Both directions are wrong, and both disappear if the check
+skips anything a brace could change.
+Load-time validation SHALL therefore treat a parameter whose default carries a token exactly as it
+treats a parameter with no default at all, and the checks that default would have faced SHALL be
+applied to its resolved value instead.
+
+A client cannot resolve a default, because the tokens in one read the variables store and the request's
+instant, and it cannot safely pass one through either: seeding `{vars.base}` into a control submits a
+data value that prints verbatim, since interpolation is substitution-only; seeding `{{draft}}` submits
+text the server would have unescaped to `{draft}`; and seeding `price }} net` submits text that never
+reaches the `interpolation_syntax` check an unmatched brace is meant to fail.
+
+The service SHALL therefore decide this rather than each client: a default whose text carries
+interpolation syntax SHALL NOT be published as a usable default in the input list a client renders from,
+while the parameter stays not-required because the service does have one (`template-inputs`). A client
+SHALL seed a control only from a default that list publishes, and SHALL NOT read a default out of the
+raw parameter declaration to seed with. The cost is that a resolvable escape like `{{draft}}` also yields
+an empty control, which is the price of one rule stated once on the server rather than reimplemented by
+every client; #262 is what later lets that control show the value instead.
+
+A client SHALL NOT supply the first entry of an `enum`'s `values` for a parameter that declares no
+`default:`, in a form control, in a grid column, or in any reconciliation of a row against a template.
+That is the same inference this capability removes from the service, and moving it into a client does
+not make it a declaration.
+
+#### Scenario: A literal default is checked when the template loads
+
+- **WHEN** a template declares `size: { type: enum, values: [small, large], default: medium }`
+- **THEN** the template fails validation naming `size` and `medium`, and the file is quarantined
+
+#### Scenario: A tokened default is checked when it resolves
+
+- **WHEN** a template declares `size: { type: enum, values: [small, large], default: "{vars.size}" }`
+  and the store holds `size = medium`
+- **THEN** the template loads without error, and a request omitting `size` fails when it renders
+
+#### Scenario: A literal default a request could not have sent is rejected
+
+- **WHEN** a template declares `bold: { type: boolean, default: "yes" }`, an active item reads `{bold}`,
+  and a request omits `bold`
+- **THEN** the response is `422 TemplateInvalid` with `details.reason` `param_default_unresolvable`,
+  naming `bold` and `yes`
+- **AND** it is judged invalid by the same coercion rule that rejects a request sending `bold: "yes"`,
+  but is not reported as that request's error
+
+#### Scenario: A client preview supplies a legal enum value
+
+- **WHEN** a client renders its live preview of a template printing `{size}` where `size` declares
+  `values: [small, large]` and no `default:`
+- **THEN** the request it posts carries `size: small`, and the preview renders rather than being rejected
+  for a value outside the parameter's `values`
+
+#### Scenario: A grid does not select an undefaulted enum for the operator
+
+- **WHEN** the CSV import grid loads a template declaring `size: { type: enum, values: [small, large] }`
+  with no `default:`
+- **THEN** no row is pre-set to `small`, and a row left unset is reported as needing a value rather than
+  submitted as `small`
+
+#### Scenario: A grid selection reaches the request
+
+- **WHEN** an operator selects `large` for a row in that grid and submits
+- **THEN** that row's label carries `size: large` where the service reads it, rather than in a sibling
+  object no request model accepts
+
+#### Scenario: A client leaves a tokened default's control empty
+
+- **WHEN** the print form loads a template declaring `url: { type: string, default: "{vars.base}" }`
+- **THEN** the control is empty rather than holding the text `{vars.base}`, the form does not demand a
+  value for `url`, and submitting it unchanged omits `url` so the service resolves the default
+
+#### Scenario: An escaped brace is not seeded either
+
+- **WHEN** the print form loads a template declaring `label: { type: string, default: "{{draft}}" }`
+- **THEN** the control is empty, and submitting it unchanged omits `label`, so the label prints
+  `{draft}` rather than the four-brace text a seeded control would have submitted
+
+#### Scenario: A plain default is seeded
+
+- **WHEN** the print form loads a template declaring `title: { type: string, default: "Untitled" }`
+- **THEN** the control holds `Untitled`
+
+#### Scenario: Every label in one batch sees one resolved default
+
+- **WHEN** a batch of labels omits a parameter declaring `default: "{sys.now}"` and the run crosses
+  midnight
+- **THEN** every label resolves it to the same instant, and no two labels print different dates
+
+#### Scenario: A variable edited mid-request does not split a batch
+
+- **WHEN** the variables store changes while a batch is rendering, and its labels omit a parameter
+  declaring `default: "{vars.base}"`
+- **THEN** every label resolves the value the store held when the request began
+
+### Requirement: A default that cannot be resolved is the template's fault, not the caller's
+
+Resolving a default fails in exactly two ways: a token in it names a value that is absent, or the
+resolved value is one the parameter's declaration forbids. Both SHALL be reported as
+`422 TemplateInvalid` with `details.reason` `param_default_unresolvable`, and the message SHALL name the
+parameter, the token that failed where one did, and the resolved value where there is one.
+
+These are the two ways *resolution* fails at render. A default's brace syntax fails earlier and is not
+one of them: `interpolation-tokens` requires an unterminated `{` or an unmatched `}` in a `default:` to be
+refused when the template loads, naming the parameter. That is not a pre-existing failure — a default is
+not interpolated today, so `default: "50% {off"` loads and prints verbatim — and it is new here, which is
+why it is decided at load rather than left to surface at render as the caller's `400 InvalidRequest`. Text
+only a template author wrote must not be reported against a request that supplied nothing, which is the
+same argument this requirement makes about `MissingField`.
+
+It SHALL NOT be reported as `422 MissingField`. `MissingField` tells a caller which field to add, and a
+caller who omitted a parameter that has a default has nothing to add: the fault is in the template, and
+naming the caller's request for it sends the wrong person to look. Interpolation raises `MissingField`
+for an absent variable and for an unknown format name; inside a default, that error SHALL be remapped to
+this one rather than surfacing as the caller's.
+
+*This requirement supersedes the `TemplateInvalid` row of the error-code table in `docs/SPEC.md` §10
+(`docs/SPEC.md:686`), which reads "Template fails structural validation (e.g. a dynamic `format.width`
+missing one bound)", and restates that code's complete post-change contract. It supersedes no other row
+of that table and no other part of §10, and it adds one row to the reason registry in §10.1 while
+changing none of the rows already there. The `request-error-envelope` capability supersedes the same
+table for the addition of `Internal` (500), and this change narrows its "every other row remains
+authoritative" sentence so the published set says so outright rather than relying on a reading. The two
+supersessions are disjoint.*
+
+`TemplateInvalid` (422) SHALL mean that the **template**, rather than the request, is at fault. Its
+complete set of reasons after this change is:
+
+| Reason | When |
+| --- | --- |
+| `template_parse_failed` | The YAML did not parse. |
+| `template_validation_failed` | The template parsed but failed structural validation. |
+| `template_duplicate_id` | Two templates on disk declare the same id. |
+| `template_group_invalid` | A template's group is not a legal group. |
+| `template_group_case_conflict` | A group differs from an existing one only by case. |
+| `template_group_unsafe_path` | A group resolves outside the templates directory. |
+| `param_default_unresolvable` | A declared default cannot be resolved for this request. |
+
+Only the last row is new; the other six are the code's existing reasons, restated unchanged so that this
+requirement is a complete contract rather than a redefinition that silently drops what it omits. Six of
+the seven are decided without a request. The seventh is not: it is request-time and depends on the
+variables store, so `TemplateInvalid` is no longer raised only while validating a template. That is
+deliberate, and it is what distinguishes this code from `MissingField` — the template is what must
+change to fix it in all seven cases, and that is what the code tells a caller. No `code` string changes.
+
+In a batch the failure SHALL be reported per label, through the same machinery every other per-label
+failure uses: every label that reaches the unresolvable default SHALL appear in the `details.failures`
+list of the `422 BatchInvalid` response carrying the `TemplateInvalid` code and the
+`param_default_unresolvable` reason. Because the failure depends on the template and the request's
+snapshot and on no label's data, every label that omits the parameter SHALL fail identically, and the
+batch stays all-or-nothing: no PDF, no ZIP and no print job SHALL be produced.
+
+#### Scenario: A default naming an absent variable
+
+- **WHEN** a template declares `url: { type: string, default: "{vars.base}" }`, the store holds no
+  `base`, and a request omits `url`
+- **THEN** the response is `422 TemplateInvalid` with `details.reason` `param_default_unresolvable`,
+  naming `url` and `vars.base`, and it is not a `MissingField` naming `vars.base`
+
+#### Scenario: A default resolving outside an enum's values
+
+- **WHEN** a template declares `size: { type: enum, values: [small, large], default: "{vars.size}" }`,
+  the store holds `size = medium`, and a request omits `size`
+- **THEN** the response is `422 TemplateInvalid` with `details.reason` `param_default_unresolvable`,
+  naming `size` and `medium`
+
+#### Scenario: A datetime default resolving to text the parser rejects
+
+- **WHEN** a template declares `printed_on: { type: datetime, default: "{sys.now:long_date}" }` and a
+  request omits `printed_on`
+- **THEN** the response is `422 TemplateInvalid` with `details.reason` `param_default_unresolvable`,
+  naming `printed_on`
+
+#### Scenario: Structural validation keeps its own reason
+
+- **WHEN** a template is submitted whose dynamic `format.width` is missing one bound
+- **THEN** the response is `422 TemplateInvalid` with `details.reason` `template_validation_failed`,
+  exactly as before
+
+#### Scenario: A batch names every label that reached the broken default
+
+- **WHEN** a batch of three labels all omit a parameter whose default cannot be resolved
+- **THEN** the response is `422 BatchInvalid`, no artifact is produced, and `details.failures` carries
+  one entry per label, each with the `TemplateInvalid` code and the `param_default_unresolvable` reason
+
+#### Scenario: A caller who supplies the value is unaffected
+
+- **WHEN** the same template with an unresolvable default receives a request that supplies the
+  parameter
+- **THEN** the label renders, because the default is never reached
+
+### Requirement: A preview invents values, and says which ones, because no caller supplied any
+
+A thumbnail or preview render has no request behind it, so every value it prints is one the service
+chose. This is placeholder substitution, it is preview-only, and it never reaches a render a caller
+asked for. It is the one place the service supplies a value the template does not declare, and exactly
+three rules govern it:
+
+1. **Every request field or declared parameter that a token reads and that the service has no value
+   of its own for** gets a placeholder, chosen to be legal for the kind of control it is.
+   `template-inputs` owns that table and this capability does not restate it; what matters here is that
+   a parameter this change makes required — an undefaulted `boolean` or `datetime` — now falls inside it,
+   where before the service's own fallback covered it. An undefaulted `enum` does not: rule 2 covers it. A parameter that declares a `default:`
+   is **not** in it: the service has a value for that one, so it resolves rather than being stood in for,
+   which is why a thumbnail of a template declaring `title: { default: Untitled }` prints `Untitled` and
+   not the placeholder `title`.
+2. **Every declared `enum` parameter** additionally gets the first of its `values` as a preview-only
+   selection, whether or not a token reads it, as `docs/SPEC.md` §2.0 documents ("The default option
+   selection (first allowed value per option key) is used automatically"). That sentence is not
+   superseded and its behavior is not changed: a preview that dropped it would render a template's gated
+   branches away and show an operator a label nobody will print.
+3. **Nothing else is invented.** A parameter that neither rule supplies is resolved exactly as a render
+   resolves it: its declared `default:` if it has one, and absent if it has none. A `boolean` named only
+   by a `when:` predicate is the case that changes — with no declared default it is now absent, so that
+   predicate is false in a preview where it was previously true against `false`; with one, it resolves
+   to it, as it always did.
+
+Rule 2 outranks a declared `default:`, and that is the one place a preview and a render disagree. The
+option selection is merged into the request data before any default is consulted, so a preview of a
+template declaring `orientation: { values: [horizontal, vertical], default: vertical }` shows
+`horizontal`. A declared `enum` default is therefore never resolved in a preview, and a broken one never
+fails there, while a render of the same template fails. This is the behaviour the frozen §2.0 sentence
+already produces and this capability does not change it; it is written down because rule 3 would
+otherwise be read as covering every type.
+
+Rule 3 covers every type rule 2 does not. A preview resolves a declared default for such a parameter
+whether a token reads it, a `when:` predicate names it, or **nothing reads it at all**, because
+resolution walks a template's declared parameters rather than the set some layout reads. So a stale
+parameter carrying a broken default fails every render and every preview of its template, and it does so
+even though no branch would have used it. That is eager where `docs/SPEC.md` §5 and `layout-sizing` are
+lazy about *values*, and the reason is that laziness there is about what a request must supply, which a
+renderer can decide from the active layout, while this is about what the template itself declares, which
+would need the read-set the input derivation computes and this path does not have. A parameter nothing
+reads is dead weight an author should delete; this capability makes a broken one say so.
+
+These three rules govern the **server's** preview, which is the thumbnail: the service knows no caller
+supplied data and substitutes its own. A client's live preview is a different thing wearing the same
+name — it builds placeholder data itself and POSTs an ordinary render, which the service cannot
+distinguish from a real one. Such a client SHALL supply a legal value for every input its
+preview references that the service reports as required, and SHALL NOT omit one on the assumption that
+the service will fill it in. Nothing on the render path fills it in any more. Two inputs this change
+newly makes required are the ones a client gets wrong by default: an undefaulted `datetime`, whose
+name-as-placeholder is not a parseable instant, and an undefaulted `enum`, whose name is not one of its
+`values`.
+
+A placeholder SHALL be legal for the parameter it stands in for, so that making a parameter required does
+not turn a preview into a coercion failure. That binds the `enum` case rather than deferring it: a
+`select` input's placeholder SHALL be one of its `values`. On the server this is already so, because the
+thumbnail's option selection supplies every declared `enum` and the invention table never reaches one. A
+client building its own preview has no option map to send — no request model carries one — so it SHALL
+put the first allowed value in the request `data` instead. That is preview data, not a form control and
+not a default, and it is not the client-side inference this capability forbids: it is what the service's
+own preview does, spelled the only way a request can carry it.
+
+#215 remains the question of whether a preview's placeholders are *good* ones. What this capability
+settles is that they must at least be values the parameter accepts.
+
+#### Scenario: A thumbnail of a template with an undefaulted datetime renders
+
+- **WHEN** a thumbnail is rendered for a template printing `{printed_on:short_date}` where
+  `printed_on` declares no `default`
+- **THEN** the thumbnail prints the current date and does not fail
+
+#### Scenario: A thumbnail still shows an enum-gated branch
+
+- **WHEN** a thumbnail is rendered for a template whose outline container carries
+  `when: { outline: yes }` and `outline` declares `values: [yes]` and no `default`
+- **THEN** the thumbnail renders with that container, through the preview-only option selection
+
+#### Scenario: A thumbnail drops a boolean-gated branch
+
+- **WHEN** a thumbnail is rendered for a template whose container carries `when: { bold: "false" }` and
+  `bold` declares no `default`
+- **THEN** the thumbnail renders without that container
+
+#### Scenario: A thumbnail fails on a broken default a token reads
+
+- **WHEN** a thumbnail is rendered for a template declaring `url: { type: string, default: "{vars.base}" }`
+  whose active `qr` item reads `{url}`, and the store holds no `base`
+- **THEN** the thumbnail fails with `param_default_unresolvable` naming `url`, because a parameter that
+  declares a default is not stood in for and its default is resolved instead
+
+#### Scenario: A thumbnail of a template reading an undefaulted boolean renders
+
+- **WHEN** a thumbnail is rendered for a template whose active `text` item reads `{bold}` and `bold`
+  declares no `default:`
+- **THEN** the thumbnail renders with a legal boolean placeholder, rather than failing to coerce one
+
+#### Scenario: A thumbnail fails on a broken default only a predicate reads
+
+- **WHEN** a thumbnail is rendered for a template declaring `mode: { type: string, default: "{vars.mode}" }`
+  named only by a container's `when:`, and the store holds no `mode`
+- **THEN** the thumbnail fails with `param_default_unresolvable` naming `mode`, exactly as a real render
+  of that template would
+
+#### Scenario: A client's live preview supplies its own instant
+
+- **WHEN** a client renders its live preview of a template printing `{printed_on:short_date}` where
+  `printed_on` declares no `default`
+- **THEN** the request it posts carries a legal value for `printed_on`, and the preview renders rather
+  than returning `422 MissingField`
+
+#### Scenario: A declared default is used rather than stood in for
+
+- **WHEN** a thumbnail is rendered for a template declaring `title: { type: string, default: Untitled }`
+  and printing `{title}`
+- **THEN** the thumbnail prints `Untitled`, and no placeholder is invented for `title`

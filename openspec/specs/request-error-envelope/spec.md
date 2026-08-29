@@ -239,7 +239,9 @@ sends a caller to fix a URL that is correct.
 
 This requirement exposes `code: Internal`, which is absent from `docs/SPEC.md` §10's code table. It
 therefore supersedes that table **for the addition of `Internal` (500) only**, adding the row below.
-Every other row of the table, and every other code, is unchanged and remains authoritative.
+Every other row of the table, and every other code, is unchanged by *this* capability and remains
+authoritative until another names one. `param-resolution` names the `TemplateInvalid` row; the two
+supersessions are disjoint.
 
 | Code | Status | When |
 | --- | --- | --- |

@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { formatLocalDate, formatLocalDateTime } from "../../lib/templateFields";
 import { useLabelInputs, pruneDataForSubmit } from "../../lib/labelInputs";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { usePrinters } from "../../api/queries";
@@ -19,18 +18,11 @@ const MIN_COPIES = 1;
 const MAX_COPIES = 100;
 const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Math.floor(Number.isFinite(n) ? n : 1)));
 
-function initialDataFromInputs(inputs: InputSpec[], now: Date = new Date()): Record<string, ParamValue> {
+function initialDataFromInputs(inputs: InputSpec[]): Record<string, ParamValue> {
   const data: Record<string, ParamValue> = {};
   for (const input of inputs) {
-    if (input.control === "datetime" || input.control === "date") {
-      data[input.name] =
-        input.control === "datetime" ? formatLocalDateTime(now) : formatLocalDate(now);
-    } else if (input.default !== undefined && input.default !== null) {
+    if (input.default !== undefined && input.default !== null) {
       data[input.name] = input.default;
-    } else if (input.control === "select" && input.values && input.values.length > 0) {
-      data[input.name] = input.values[0];
-    } else if (input.control === "checkbox") {
-      data[input.name] = false;
     }
   }
   return data;

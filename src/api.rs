@@ -1203,16 +1203,17 @@ pub async fn thumbnail(
     let template = registry
         .get(&id)
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let data = template.placeholder_data();
-    let option = crate::render::default_option_selection(template);
-    let variables = state.store().all_variables().await?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
+    let now = chrono::Local::now();
     let dt = crate::datetime_fmt::DateTimeResolver {
         formats: &dt_formats,
-        now: chrono::Local::now(),
+        now,
     };
+    let data = template.placeholder_data(now);
+    let option = crate::render::default_option_selection(template);
+    let variables = state.store().all_variables().await?;
     let png =
         crate::render::render_thumbnail_png(template, &data, option.as_ref(), &variables, &dt)?;
 

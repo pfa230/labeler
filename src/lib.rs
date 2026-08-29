@@ -1350,6 +1350,27 @@ mod http_tests {
             json!({ "message": "Hi" }),
             json!({ "message": "Hi", "printed_on": "" }),
             json!({ "message": "Hi", "printed_on": null }),
+        ] {
+            let payload = json!({ "template": "brother_24mm_printed_on", "data": data });
+            let response = build_app()
+                .oneshot(json_req(
+                    "POST",
+                    "/api/render/label?format=png",
+                    payload.to_string(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{data} should fail with 422 MissingField"
+            );
+            let body = json_response(response).await;
+            assert_eq!(body["error"]["code"], "MissingField");
+            assert_eq!(body["error"]["details"]["field"], "printed_on");
+        }
+
+        for data in [
             json!({ "message": "Hi", "printed_on": "2026-08-19" }),
             json!({ "message": "Hi", "printed_on": "2026-08-19T14:30" }),
             json!({ "message": "Hi", "printed_on": "2026-08-19T14:30:00" }),
@@ -1421,7 +1442,7 @@ mod http_tests {
             "template": "brother_24mm_printed_on",
             "mode": "download",
             "labels": [
-                { "data": { "message": "one" } },
+                { "data": { "message": "one", "printed_on": "2026-08-18" } },
                 { "data": { "message": "two", "printed_on": "not a date" } },
                 { "data": { "message": "three", "printed_on": "2026-08-19" } }
             ]
@@ -2283,6 +2304,170 @@ layout:
                 "nothing should be written to disk"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn load_time_put_default_rules() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 1. Bare token in default is rejected on PUT
+        let yaml_bare = r#"
+name: Bad Bare Token
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "{bare_token}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/bare_def",
+                "PUT",
+                yaml_bare.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
+
+        // 2. Datetime accepting literal and {sys.now}
+        let yaml_dt_sys = r#"
+name: Valid DT Sys
+unit: mm
+dpi: 200
+params:
+  dt:
+    type: datetime
+    default: "{sys.now}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{dt}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/dt_sys",
+                "PUT",
+                yaml_dt_sys.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+
+        // 3. Explicit null default: null loads as absent default
+        let yaml_null = r#"
+name: Null Default
+unit: mm
+dpi: 200
+params:
+  str_val:
+    type: string
+    default: null
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{str_val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/null_def",
+                "PUT",
+                yaml_null.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+
+        // 4. Non-string datetime default is refused
+        let yaml_non_str_dt = r#"
+name: Non String DT
+unit: mm
+dpi: 200
+params:
+  dt:
+    type: datetime
+    default: 12345
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{dt}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/non_str_dt",
+                "PUT",
+                yaml_non_str_dt.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
+
+        // 5. Unescaped brace in default is refused with template_validation_failed
+        let yaml_unescaped = r#"
+name: Unescaped Brace DT
+unit: mm
+dpi: 200
+params:
+  dt:
+    type: datetime
+    default: "{sys.now"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{dt}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/unescaped_dt",
+                "PUT",
+                yaml_unescaped.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
     }
 
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
@@ -6629,6 +6814,17 @@ mod auth_http_tests {
         ))
     }
 
+    fn test_app_with_custom_templates(tpls: Vec<(&str, &str)>) -> (axum::Router, Arc<AppState>) {
+        let (mut templates, templates_dir) = crate::templates::load_all_for_tests();
+        for (id, yaml) in tpls {
+            let def = crate::parse::parse_template(yaml).unwrap();
+            templates.insert_for_tests(id.to_string(), None, def);
+        }
+        let store = Store::open_in_memory().expect("store");
+        let state = Arc::new(AppState::new(templates, templates_dir, store).with_no_auth(true));
+        (app(state.clone()), state)
+    }
+
     fn req_get(uri: &str) -> Request<Body> {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
     }
@@ -7832,5 +8028,535 @@ mod auth_http_tests {
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn omitted_boolean_and_enum_return_422_missing_field() {
+        let yaml = r#"
+name: Test Missing Param
+unit: mm
+dpi: 200
+params:
+  flag:
+    type: boolean
+  choice:
+    type: enum
+    values: [one, two]
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{flag} {choice}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("missing_param_tpl", yaml)]);
+
+        // 1. Omit flag -> 422 MissingField named 'flag'
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "missing_param_tpl",
+                "data": { "choice": "one" }
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "flag");
+
+        // 2. Omit choice -> 422 MissingField named 'choice'
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "missing_param_tpl",
+                "data": { "flag": true }
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "choice");
+    }
+
+    #[tokio::test]
+    async fn omitted_datetime_returns_422_missing_field_and_declared_default_prints() {
+        let yaml_no_default = r#"
+name: Test Missing DateTime
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{printed_on:iso_date}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let yaml_with_default = r#"
+name: Test Default DateTime
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+    default: "{sys.now}"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{printed_on:iso_date}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("dt_no_default", yaml_no_default),
+            ("dt_with_default", yaml_with_default),
+        ]);
+
+        // Omission without default -> 422 MissingField naming 'printed_on'
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "dt_no_default",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "printed_on");
+
+        // Blank string without default -> also treated as omission -> 422 MissingField
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "dt_no_default",
+                "data": { "printed_on": "   " }
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "printed_on");
+
+        // null without default -> 422 MissingField
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "dt_no_default",
+                "data": { "printed_on": null }
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "printed_on");
+
+        // Omission, blank, null with default: "{sys.now}" all render 200 OK
+        for val in [
+            serde_json::json!({}),
+            serde_json::json!({"printed_on": ""}),
+            serde_json::json!({"printed_on": null}),
+        ] {
+            let req = req_post_json(
+                "/api/render/label",
+                &serde_json::json!({
+                    "template": "dt_with_default",
+                    "data": val
+                })
+                .to_string(),
+            );
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn param_default_unresolvable_http_tests() {
+        let yaml1 = r#"
+name: T1
+unit: mm
+dpi: 200
+params:
+  foo:
+    type: string
+    default: "{vars.missing_key}"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{foo}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let yaml2 = r#"
+name: T2
+unit: mm
+dpi: 200
+params:
+  choice:
+    type: enum
+    values: [alpha, beta]
+    default: "{vars.bad_enum}"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{choice}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let yaml3 = r#"
+name: T3
+unit: mm
+dpi: 200
+params:
+  dt:
+    type: datetime
+    default: "{vars.bad_date}"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{dt}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let yaml4 = r#"
+name: T4
+unit: mm
+dpi: 200
+params:
+  flag:
+    type: boolean
+    default: "yes"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{flag}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, state) = test_app_with_custom_templates(vec![
+            ("t_bad_var", yaml1),
+            ("t_bad_enum", yaml2),
+            ("t_bad_date", yaml3),
+            ("t_bad_bool", yaml4),
+        ]);
+
+        // 1. Missing variable in default
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({ "template": "t_bad_var", "data": {} }).to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+        let msg1 = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg1.contains("foo"),
+            "message '{msg1}' should name parameter 'foo'"
+        );
+        assert!(
+            msg1.contains("vars.missing_key"),
+            "message '{msg1}' should name failing token"
+        );
+
+        // 2. Resolved enum default not in allowed values
+        state
+            .store()
+            .set_variable("bad_enum", "invalid_choice")
+            .await
+            .unwrap();
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({ "template": "t_bad_enum", "data": {} }).to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+        let msg2 = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg2.contains("choice"),
+            "message '{msg2}' should name parameter 'choice'"
+        );
+        assert!(
+            msg2.contains("invalid_choice"),
+            "message '{msg2}' should name resolved value"
+        );
+
+        // 3. Unparseable datetime default
+        state
+            .store()
+            .set_variable("bad_date", "not-a-date")
+            .await
+            .unwrap();
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({ "template": "t_bad_date", "data": {} }).to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+        let msg3 = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg3.contains("dt"),
+            "message '{msg3}' should name parameter 'dt'"
+        );
+        assert!(
+            msg3.contains("not-a-date"),
+            "message '{msg3}' should name resolved value"
+        );
+
+        // 4. Boolean literal default of "yes" (invalid boolean string)
+        let req = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({ "template": "t_bad_bool", "data": {} }).to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+        let msg4 = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg4.contains("flag"),
+            "message '{msg4}' should name parameter 'flag'"
+        );
+        assert!(
+            msg4.contains("yes"),
+            "message '{msg4}' should name invalid value 'yes'"
+        );
+    }
+
+    #[tokio::test]
+    async fn datetime_param_attribution_boundary_http_test() {
+        let yaml = r#"
+name: Attribution Boundary DT
+unit: mm
+dpi: 200
+params:
+  dt:
+    type: datetime
+    default: "{vars.bad_date}"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{dt}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, state) = test_app_with_custom_templates(vec![("t_attribution_dt", yaml)]);
+
+        let invalid_val = "2026-02-30";
+
+        // Path 1: Caller supplies the invalid date value in request `data` -> 400 Bad Request / datetime_param_invalid
+        let req_supplied = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "t_attribution_dt",
+                "data": { "dt": invalid_val }
+            })
+            .to_string(),
+        );
+        let res_supplied = app.clone().oneshot(req_supplied).await.unwrap();
+        assert_eq!(res_supplied.status(), StatusCode::BAD_REQUEST);
+        let body_supplied = body_json(res_supplied).await;
+        assert_eq!(body_supplied["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body_supplied["error"]["details"]["reason"],
+            "datetime_param_invalid"
+        );
+
+        // Path 2: Exact same value reached through resolved default (data: {}) -> 422 Unprocessable Entity / param_default_unresolvable
+        state
+            .store()
+            .set_variable("bad_date", invalid_val)
+            .await
+            .unwrap();
+        let req_default = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "t_attribution_dt",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_default = app.clone().oneshot(req_default).await.unwrap();
+        assert_eq!(res_default.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_default = body_json(res_default).await;
+        assert_eq!(body_default["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body_default["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_failure_reports_param_default_unresolvable() {
+        let yaml = r#"
+name: TBatch
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "{vars.missing}"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("t_batch_bad", yaml)]);
+        let req = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "t_batch_bad",
+                "labels": [
+                    { "data": {} },
+                    { "data": { "val": "overridden" } },
+                    { "data": {} }
+                ],
+                "mode": "download"
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0]["index"], 0);
+        assert_eq!(failures[0]["code"], "TemplateInvalid");
+        assert_eq!(failures[0]["reason"], "param_default_unresolvable");
+        assert_eq!(failures[1]["index"], 2);
+        assert_eq!(failures[1]["code"], "TemplateInvalid");
+        assert_eq!(failures[1]["reason"], "param_default_unresolvable");
+    }
+
+    #[tokio::test]
+    async fn inputs_endpoint_infallible_for_unresolvable_default() {
+        let yaml = r#"
+name: TInputs
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "{vars.missing_var}"
+format:
+  type: single
+  height: 20
+  width: 50
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("t_infallible", yaml)]);
+
+        // GET /api/templates/{id}
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/t_infallible"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        let input_val = body["inputs"]["default"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "val")
+            .unwrap();
+        assert_eq!(input_val["required"], false);
+        assert!(input_val.get("default").is_none() || input_val["default"].is_null());
+
+        // POST /api/templates/{id}/inputs
+        let req = req_post_json(
+            "/api/templates/t_infallible/inputs",
+            &serde_json::json!({
+                "labels": [{ "data": {} }]
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        let input_val = body["inputs"][0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "val")
+            .unwrap();
+        assert_eq!(input_val["required"], false);
+        assert!(input_val.get("default").is_none() || input_val["default"].is_null());
     }
 }

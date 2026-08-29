@@ -142,7 +142,11 @@ function CsvEditor({
       const valStr = row.data[input.name] !== undefined && row.data[input.name] !== null ? String(row.data[input.name]) : "";
       if (input.control === "datetime" || input.control === "date") {
         const dtErr = datetimeCellError(valStr);
-        if (dtErr) field[input.name] = dtErr;
+        if (dtErr) {
+          field[input.name] = dtErr;
+        } else if (input.required && valStr.trim().length === 0) {
+          field[input.name] = "required";
+        }
       } else if (input.required) {
         if (valStr.length === 0) field[input.name] = "required";
       }
