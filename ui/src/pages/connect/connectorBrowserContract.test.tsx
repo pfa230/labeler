@@ -73,6 +73,17 @@ function dataRows(): HTMLElement[] {
   return screen.getAllByRole("row").filter((el) => el.getAttribute("aria-rowindex") !== null);
 }
 
+// Every test here reads rows by content, so every one of them waits for the whole fixture to be
+// painted rather than for row 0. The grid derives its rendered row window from the viewport height
+// ResizeObserver reports, and @svar-ui/react-grid defers that report by a frame
+// (`new ResizeObserver(r => requestAnimationFrame(() => e(r[0].contentRect)))`, dist/index.es.js).
+// Until that frame runs, clientHeight is 0 and the window is the first two rows, so "Drill is
+// painted" says nothing about row 2 onwards: on a loaded runner the fetched rows commit before the
+// frame does, and a synchronous read of a later row finds nothing (#272).
+async function allRowsPainted(count = entityRows.length) {
+  await waitFor(() => expect(dataRows()).toHaveLength(count));
+}
+
 // The one check this whole file exists to make trustworthy: whether SVAR's own selection model
 // (`wx-selected`, exec("select-row", ...)) ever activated, independent of the app's own `selected`
 // state. See ConnectorBrowser.tsx's `select={false}` on <Grid>.
@@ -103,7 +114,7 @@ describe("ConnectorBrowser: existing contract preserved under view controls", ()
   it("keeps a filtered-out row selected, in the summary, and removable from it", async () => {
     vi.stubGlobal("fetch", makeFetchMock());
     render(<Harness />);
-    await screen.findByText("Drill");
+    await allRowsPainted();
 
     fireEvent.click(screen.getByLabelText("select entities:e2"));
     expect(screen.getByTestId("count").textContent).toBe("1");
@@ -127,7 +138,7 @@ describe("ConnectorBrowser: existing contract preserved under view controls", ()
       { resource: "entities", key: "e9", label: "Ghost", lastSeen: 2 }, // never loaded
     ];
     render(<ConnectorBrowser connectionId="c1" schema={schema} selected={selected} onSelectedChange={vi.fn()} />);
-    await screen.findByText("Drill");
+    await allRowsPainted();
 
     const before = screen.getByText(/\/200 selected \(/).textContent;
     expect(before).toBe("2/200 selected (1 in this view, 1 elsewhere)");
@@ -154,7 +165,7 @@ describe("ConnectorBrowser: existing contract preserved under view controls", ()
     ];
     expect(cappedSelected).toHaveLength(MATERIALIZE_CAP);
     render(<ConnectorBrowser connectionId="c1" schema={schema} selected={cappedSelected} onSelectedChange={vi.fn()} />);
-    await screen.findByText("Drill");
+    await allRowsPainted();
 
     sortByName();
     await waitFor(() => expect(columnHeader("Name").getAttribute("aria-sort")).toBe("ascending"));
@@ -173,7 +184,7 @@ describe("ConnectorBrowser: existing contract preserved under view controls", ()
   it("keeps a row selected by identity when a sort moves it", async () => {
     vi.stubGlobal("fetch", makeFetchMock());
     render(<Harness />);
-    await screen.findByText("Drill");
+    await allRowsPainted();
 
     fireEvent.click(screen.getByLabelText("select entities:e2")); // Saw, at connector-order index 1
     expect(screen.getByTestId("count").textContent).toBe("1");
@@ -195,7 +206,7 @@ describe("ConnectorBrowser: existing contract preserved under view controls", ()
   it("keeps each row's source link and drill-in action while a sort is active", async () => {
     vi.stubGlobal("fetch", makeFetchMock());
     render(<ConnectorBrowser connectionId="c1" schema={schema} selected={[]} onSelectedChange={vi.fn()} />);
-    await screen.findByText("Drill");
+    await allRowsPainted();
 
     sortByName();
     await waitFor(() => expect(columnHeader("Name").getAttribute("aria-sort")).toBe("ascending"));
@@ -212,7 +223,7 @@ describe("ConnectorBrowser: existing contract preserved under view controls", ()
   it("still drills in and lands on the related resource while a sort and a filter are active", async () => {
     vi.stubGlobal("fetch", makeFetchMock());
     render(<ConnectorBrowser connectionId="c1" schema={schema} selected={[]} onSelectedChange={vi.fn()} />);
-    await screen.findByText("Drill");
+    await allRowsPainted();
 
     sortByName();
     await waitFor(() => expect(columnHeader("Name").getAttribute("aria-sort")).toBe("ascending"));
@@ -240,7 +251,7 @@ describe("ConnectorBrowser: existing contract preserved under view controls", ()
   it("never activates SVAR's own row selection: ordinary cells, the name link, drill-in, and keyboard", async () => {
     vi.stubGlobal("fetch", makeFetchMock());
     render(<Harness />);
-    await screen.findByText("Drill");
+    await allRowsPainted();
     expect(anySvarRowSelected()).toBe(false);
 
     // 1. An ordinary data cell (not the name link, not a checkbox).
