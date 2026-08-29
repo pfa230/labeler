@@ -117,14 +117,17 @@ implementation and archive rewrites the main specs *after* it:
    this one judges the code. Do not skip it because tasks are checked.
 
    **A transcript belongs in a log, not in this context and not in the repository.**
-   `run-stage.sh` writes each run to `.worktrees/issue-<N>/.agent-<role>-<agent>.log`, which is
-   untracked. `review.md` and `diff-review.md` are the record, and each holds the reviewer's own final
-   message rather than a summary of it, so there is nothing left to preserve alongside. The raw
-   capture a plan review extracts from is working state: keep it outside the repository, never in the
-   change folder, where `git add -A` would commit it. An earlier convention committed the raw
-   `codex exec` capture next to the review, banner and session id included; 19 such files reached
-   47,190 lines, against 893 lines of actual planning record in the worst change, and they are gone
-   (#244).
+   Every run artifact goes to `.agent-runs/` at the worktree root: `run-stage.sh` writes
+   `<role>-<agent>.{log,json,conversation}` there, `apply-with-agy.sh` writes `agy-apply.*`, and a
+   new script writes its own there too. `.gitignore` matches the directory, so a `git add -A` stages
+   the change's output and nothing else; untracked was not enough, because it left every commit
+   depending on whoever ran it noticing the dotfiles (#255). `review.md` and `diff-review.md` are the
+   record, and each holds the reviewer's own final message rather than a summary of it, so there is
+   nothing left to preserve alongside. The raw capture a plan review extracts from is working state:
+   keep it outside the repository, never in the change folder, where `git add -A` would commit it. An
+   earlier convention committed the raw `codex exec` capture next to the review, banner and session
+   id included; 19 such files reached 47,190 lines, against 893 lines of actual planning record in
+   the worst change, and they are gone (#244).
 
    `apply.sh` records the outcome as `diff-review.md` in the change folder, carrying `AUTHOR:`,
    `REVIEWER:` and `VERDICT:`, with each round kept alongside as `diff-review-<n>.md`. That file is
