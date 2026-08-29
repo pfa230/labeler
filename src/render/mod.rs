@@ -1090,6 +1090,15 @@ struct PlacedBox {
     pub frame: (f32, f32),
 }
 
+struct SingleItemRenderArgs<'a> {
+    pub item: &'a LayoutItem,
+    pub measured_node: &'a Measured,
+    pub pbox: PlacedBox,
+    pub frame: (f32, f32),
+    pub geometry_values: &'a HashMap<String, f32>,
+    pub path: &'a str,
+}
+
 struct ContainerRenderArgs<'a> {
     pub placement: &'a Placement,
     pub cont_frame: &'a Option<crate::models::Frame>,
@@ -1619,7 +1628,6 @@ impl<'a> RenderContext<'a> {
     }
 
     /// Recursively render layout items into the output string
-    #[allow(clippy::too_many_arguments)]
     pub fn render_items(
         &self,
         items: &[LayoutItem],
@@ -1686,12 +1694,14 @@ impl<'a> RenderContext<'a> {
                     };
                     self.render_single_item(
                         &mut out,
-                        item,
-                        measured_node,
-                        pbox,
-                        frame,
-                        geometry_values,
-                        &path,
+                        SingleItemRenderArgs {
+                            item,
+                            measured_node,
+                            pbox,
+                            frame,
+                            geometry_values,
+                            path: &path,
+                        },
                     )?;
                 }
             }
@@ -1716,12 +1726,14 @@ impl<'a> RenderContext<'a> {
                     };
                     self.render_single_item(
                         &mut out,
-                        item,
-                        measured_node,
-                        pbox,
-                        frame,
-                        geometry_values,
-                        &path,
+                        SingleItemRenderArgs {
+                            item,
+                            measured_node,
+                            pbox,
+                            frame,
+                            geometry_values,
+                            path: &path,
+                        },
                     )?;
                 }
             }
@@ -1729,22 +1741,16 @@ impl<'a> RenderContext<'a> {
         Ok(out)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn render_single_item(
         &self,
         out: &mut String,
-        item: &LayoutItem,
-        measured_node: &Measured,
-        pbox: PlacedBox,
-        frame: (f32, f32),
-        geometry_values: &HashMap<String, f32>,
-        path: &str,
+        args: SingleItemRenderArgs<'_>,
     ) -> Result<(), AppError> {
-        match item {
+        match args.item {
             LayoutItem::Line {
                 at, to, thickness, ..
             } => {
-                self.render_line_item(out, at, to, *thickness, frame, path)?;
+                self.render_line_item(out, at, to, *thickness, args.frame, args.path)?;
             }
             LayoutItem::Text {
                 placement,
@@ -1761,8 +1767,8 @@ impl<'a> RenderContext<'a> {
                     placement,
                     resolved_weight,
                     alignment,
-                    pbox,
-                    measured_node.text.as_ref().unwrap(),
+                    args.pbox,
+                    args.measured_node.text.as_ref().unwrap(),
                 )?;
             }
             LayoutItem::Qr {
@@ -1772,7 +1778,7 @@ impl<'a> RenderContext<'a> {
                 ..
             } => {
                 let payload = self.resolve_item_text(value)?;
-                self.render_qr_item(out, payload, placement, params, pbox)?;
+                self.render_qr_item(out, payload, placement, params, args.pbox)?;
             }
             LayoutItem::Image {
                 name,
@@ -1781,7 +1787,14 @@ impl<'a> RenderContext<'a> {
                 fit,
                 ..
             } => {
-                self.render_image_item(out, name.as_deref(), src.as_deref(), placement, fit, pbox)?;
+                self.render_image_item(
+                    out,
+                    name.as_deref(),
+                    src.as_deref(),
+                    placement,
+                    fit,
+                    args.pbox,
+                )?;
             }
             LayoutItem::Container {
                 placement,
@@ -1799,10 +1812,10 @@ impl<'a> RenderContext<'a> {
                         padding,
                         flow: child_flow,
                         items: child_items,
-                        children_measured: &measured_node.children,
-                        pbox,
-                        geometry_values,
-                        path,
+                        children_measured: &args.measured_node.children,
+                        pbox: args.pbox,
+                        geometry_values: args.geometry_values,
+                        path: args.path,
                     },
                 )?;
             }
