@@ -223,11 +223,11 @@ export function LabelGrid({
       name: "",
       width: 110,
       renderCell: ({ row }: RenderCellProps<LabelGridRow>) => (
-        <span className="flex gap-2">
-          <button type="button" aria-label="duplicate row" disabled={disabled} onClick={() => onDuplicate(row.id)}>
+        <span className="flex gap-2 items-center">
+          <button type="button" aria-label="duplicate row" disabled={disabled} onClick={() => onDuplicate(row.id)} className="focus-visible:outline-none focus-visible:ring-2 rounded p-1 hover:bg-[var(--accent-soft)]">
             ⧉
           </button>
-          <button type="button" aria-label="remove row" disabled={disabled} onClick={() => onRemove(row.id)}>
+          <button type="button" aria-label="remove row" disabled={disabled} onClick={() => onRemove(row.id)} className="focus-visible:outline-none focus-visible:ring-2 rounded p-1 hover:bg-[var(--accent-soft)]">
             ✕
           </button>
         </span>
