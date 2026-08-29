@@ -32,8 +32,15 @@ format-name := ^[a-zA-Z0-9_-]+$
 `{{` and `}}` emit literal braces and are not tokens.
 
 This grammar governs every interpolated string a template carries, which is a `text` item's `value:`, a
-`qr` item's `value:`, and an `image` item's `src:`. The same tokens, the same load-time refusals and the
-same render-time errors apply to all three.
+`qr` item's `value:`, an `image` item's `src:`, and a parameter's `default:` in `params:`. The same
+tokens, the same load-time refusals and the same render-time errors apply to all four.
+
+One restriction is peculiar to a `default:` and holds nowhere else: its `value-path` SHALL be dotted.
+A **bare** token in a `default:` SHALL be a load-time refusal naming the parameter and the token. The
+sources a default may read are therefore fixed before a request arrives, so a default can never depend
+on another parameter, on the request `data` map, or on a second default; there is no resolution order
+among defaults and no cycle among them to detect. A `default:` that is not a string carries no token
+and is used as written.
 
 A token has exactly one interpretation, decided by its shape, so the service SHALL NOT resolve tokens
 in a precedence order and SHALL NOT try one source and fall through to another when it does not match.
@@ -51,9 +58,32 @@ their textual form, `null` as the empty string, and any other JSON value via its
 A value that is absent when the label renders SHALL be `422 MissingField` naming the token's
 `value-path`.
 
-Brace syntax errors are unchanged by this capability: an unterminated `{` or an unmatched `}` SHALL be
-`400 InvalidRequest` with `details.reason` `interpolation_syntax`, raised when the label renders. The
-load-time checks in this capability inspect well-formed tokens only.
+A `default:` is the one exception, and it covers **every** failure raised while resolving one, not only
+an absent value: an absent `{vars.<key>}`, an unknown format name, and any other error this capability
+would otherwise report as the caller's. What such a failure reports is decided by the `param-resolution`
+capability, because the caller supplied nothing and has nothing to correct. Where a requirement of this
+capability names `422 MissingField` for one of those failures, it is superseded for a `default:` alone and
+unchanged everywhere else.
+
+Brace syntax errors in a `text` item's `value:`, a `qr` item's `value:` and an `image` item's `src:` are
+unchanged by this capability: an unterminated `{` or an unmatched `}` SHALL be `400 InvalidRequest` with
+`details.reason` `interpolation_syntax`, raised when the label renders.
+
+In a `default:` the same malformed sequence SHALL be refused **when the template loads**, naming the
+parameter. A literal brace in a default is still written `{{` or `}}`; what differs is when the service
+says so. Three reasons, and the first is decisive: a default is not interpolated today, so this failure
+is *new*, and surfacing a new failure at render would report text only a template author wrote as the
+caller's `400 InvalidRequest` against a request that supplied nothing. Second, a default's braces are as
+fixed at load as its tokens are, so nothing is lost by deciding them there. Third, refusing at load stops
+a template being saved that can never render.
+
+This check SHALL scan a `default:` for well-formed tokens and apply the render path's brace-balance rule
+to the text **between** them, which is exactly what the render path does. It SHALL NOT be the token
+scanner alone, which by design skips a malformed brace sequence rather than reporting it, and it SHALL
+NOT be that brace-balance rule applied to the whole string, which treats every undoubled `{` as an error
+and would refuse a legal `default: "{sys.now}"`. This capability does not extend that reasoning to the
+other three sites, whose render-time contract is unchanged and remains an inconsistency it does not
+resolve.
 
 Every load-time refusal in this capability is one validation rule, reached by two paths. When a template
 file is read from disk at startup or reload, the file is quarantined and the service still starts. When
@@ -81,6 +111,29 @@ binds is always one a `{token}` could also name.
 - **WHEN** a template declares `title: { type: string, default: "Untitled" }` and renders `"{title}"`
   with no `title` in the request
 - **THEN** the label reads `Untitled`
+
+#### Scenario: A namespaced token in a default is resolved
+
+- **WHEN** a template declares `url: { type: string, default: "{vars.qr_base_url}" }`, the store holds
+  `qr_base_url = https://ex.co/`, and the request carries no `url`
+- **THEN** the label reads `https://ex.co/`
+
+#### Scenario: A bare token in a default is refused when the template loads
+
+- **WHEN** a template file declares `copy: { type: string, default: "{message}" }`
+- **THEN** the file is quarantined with a validation message naming `copy` and `{message}`, and the same
+  content arriving through a `PUT` is refused with `422 TemplateInvalid`
+
+#### Scenario: A literal brace in a default is escaped like any other
+
+- **WHEN** a template declares `label: { type: string, default: "{{draft}}" }` and the request omits it
+- **THEN** the label reads `{draft}`
+
+#### Scenario: An unescaped brace in a default is refused when the template loads
+
+- **WHEN** a template file declares `label: { type: string, default: "50% {off" }`
+- **THEN** the file is quarantined with a validation message naming `label`, the same content is refused
+  on `PUT` with `422 TemplateInvalid`, and no request ever receives `400 InvalidRequest` for it
 
 #### Scenario: Doubled braces are literal
 

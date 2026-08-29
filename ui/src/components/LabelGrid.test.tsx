@@ -290,4 +290,39 @@ describe("LabelGrid", () => {
     expect(cellSpan).toHaveAttribute("title", "invalid format\n\nline one\nline two");
     expect(cellSpan).toHaveStyle({ color: "var(--bad)" });
   });
+
+  it("commits an option edit to row.data and row.option through onRowsChange", async () => {
+    const onRowsChange = vi.fn();
+    const rowsWithOption: LabelGridRow[] = [
+      {
+        id: "a",
+        origin: "csv",
+        data: { sku: "1", style: "plain" },
+        option: { style: "plain" },
+        validation: {},
+      },
+    ];
+
+    render(
+      <LabelGrid
+        rows={rowsWithOption}
+        fields={["sku"]}
+        optionNames={["style"]}
+        optionValues={{ style: ["plain", "fancy"] }}
+        onRowsChange={onRowsChange}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByText("plain"));
+    const select = (await screen.findByLabelText("edit style")) as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    fireEvent.change(select, { target: { value: "fancy" } });
+
+    await waitFor(() => expect(onRowsChange).toHaveBeenCalled());
+    const updated = onRowsChange.mock.calls.at(-1)![0] as LabelGridRow[];
+    expect(updated[0].option.style).toBe("fancy");
+    expect(updated[0].data.style).toBe("fancy");
+  });
 });

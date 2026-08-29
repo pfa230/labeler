@@ -356,7 +356,7 @@ describe("Connect: datetime parameters", () => {
 
   // The datetime template, plus a connector that offers a `printed_on` field so the default mapping
   // carries `value` into every materialized row.
-  const withPrintedOn = (value?: string) => {
+  const withPrintedOn = (value?: string, required = false) => {
     const base = stub();
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -366,11 +366,24 @@ describe("Connect: datetime parameters", () => {
         return json({
           inputs: labels.map(() => [
             { name: "name", control: "text" },
-            { name: "printed_on", control: "datetime", description: "Print date" },
+            { name: "printed_on", control: "datetime", required, description: "Print date" },
           ]),
         });
       }
-      if (url === "/api/templates/tpl") return json(dtDetail);
+      const tDetail = {
+        ...dtDetail,
+        inputs: {
+          all: [
+            { name: "name", control: "text" as const },
+            { name: "printed_on", control: "datetime" as const, required, description: "Print date" },
+          ],
+          default: [
+            { name: "name", control: "text" as const },
+            { name: "printed_on", control: "datetime" as const, required, description: "Print date" },
+          ],
+        },
+      };
+      if (url === "/api/templates/tpl") return json(tDetail);
       if (url === "/api/connections/c1/schema")
         return json({
           ...schema,
@@ -406,6 +419,17 @@ describe("Connect: datetime parameters", () => {
     renderConnect();
     await browseSelectMaterialize();
     expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
+  });
+
+  it("blocks the run when a blank datetime is materialized for a required parameter", async () => {
+    fetchMock = withPrintedOn(undefined, true);
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
+    );
   });
 
   // The value arrives the way a connector row's values actually arrive, through materialize and the

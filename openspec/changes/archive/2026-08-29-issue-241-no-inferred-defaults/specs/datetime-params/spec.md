@@ -1,200 +1,4 @@
-# datetime-params Specification
-
-## Purpose
-Defines the `datetime` parameter type: how a template declares an instant it wants to print, how the
-interpolation token (not the parameter) chooses the format, how a template declares an explicit default
-or requires the caller to supply a value, how a caller overrides it, and what control the print form and
-the row grids give an operator for it.
-
-## Requirements
-
-### Requirement: A request may override a datetime parameter
-
-A request MAY supply a `datetime` parameter in its `data` map, per label. The service SHALL accept:
-
-- `YYYY-MM-DD`, which resolves to midnight local time on that date;
-- `YYYY-MM-DDTHH:MM` or `YYYY-MM-DDTHH:MM:SS` with no offset, read as server-local wall-clock time
-  (this is what an HTML date-and-time control submits);
-- an RFC 3339 timestamp carrying an offset or `Z`, converted to the server-local timezone.
-
-Surrounding whitespace SHALL be trimmed before parsing. A value that is not one of these forms SHALL be
-rejected. A local time that is ambiguous because of a daylight-saving transition SHALL resolve to the
-earlier of the two instants.
-
-A value naming a local time that does not exist because of a daylight-saving transition SHALL be handled
-by its form, and this is a change from the rule that rejected both forms alike: a **date-only** value
-SHALL resolve to the first instant that exists on that local date, and a **date-and-time** value SHALL
-still be rejected. A date names a day and a day normally exists; a time names an instant, which may not.
-Where a zone skips an entire local date — `Pacific/Apia` had no instant on 2011-12-30 — there is no first
-instant to resolve to, and a date-only value SHALL be rejected too, rather than shifted to a neighbouring
-date it does not name.
-
-The distinction is load-bearing rather than cosmetic. `{sys.now}` renders `%Y-%m-%d`, and this capability
-tells an author to write `default: "{sys.now}"` for the render date, so under the old rule every template
-carrying that default would fail for a whole day each year in any zone transitioning at `00:00` — of which
-several are in current use — on a server whose clock and timezone are correct, blaming the template for a
-migration this capability prescribed.
-
-A `datetime` parameter sent as JSON `null` SHALL be treated exactly as if the request had omitted it,
-which now means it is resolved by `param-resolution` rather than taken as the render instant. A value
-that is neither a JSON string nor `null` (a number, a boolean, an array, or an object) SHALL be rejected
-the same way an unparseable string is. A number in particular SHALL NOT be guessed at: this capability
-defines no epoch or serial-date convention.
-
-On the single-label render path, a rejected value SHALL be `400 InvalidRequest` whose message names
-the parameter and whose `details.reason` is `datetime_param_invalid`. That slug is an addition to the
-reason registry of `docs/SPEC.md` §10.1, which is frozen and therefore does not list it; this
-requirement is its published home. It adds a row to the `InvalidRequest` set and changes no other row,
-and it does not extend `reason` to a fifth code.
-
-In a batch, validation SHALL be per label: every label carrying a rejected value SHALL appear in the
-`details.failures` list of the `422 BatchInvalid` response, each entry naming its label index, the
-`InvalidRequest` code and the `datetime_param_invalid` reason. The batch itself stays all-or-nothing,
-as it is for every other per-label failure today: one rejected value SHALL fail the whole request, and
-no PDF, no ZIP and no print job SHALL be produced or sent for any label in it.
-
-An override SHALL affect only the parameter it names. `{sys.now}` and `{sys.now:<name>}` SHALL
-continue to resolve the request's own instant.
-
-#### Scenario: A date-only override on a day with no midnight
-
-- **WHEN** a request sends a date whose local midnight does not exist because the zone transitions at
-  `00:00`
-- **THEN** the value resolves to the first instant that exists on that date, and a template declaring
-  `default: "{sys.now}"` renders on that day like any other
-
-#### Scenario: A date-and-time naming a nonexistent local time is still refused
-
-- **WHEN** a request sends `printed_on: "2026-09-06T00:30"` in a zone where that local time does not exist
-- **THEN** the response is `400 InvalidRequest` with `details.reason` `datetime_param_invalid`
-
-#### Scenario: A date-only override
-
-- **WHEN** a request sends `printed_on: "2026-08-19"` for a label printing `{printed_on:long_date}`
-- **THEN** the label reads `August 19, 2026`
-
-#### Scenario: A local date-and-time override
-
-- **WHEN** a request sends `printed_on: "2026-08-19T14:30"` for a label printing `{printed_on:time}`
-  with the default `time` format `%H:%M`
-- **THEN** the label reads `14:30`
-
-#### Scenario: An offset timestamp is converted to server-local time
-
-- **WHEN** a request sends an RFC 3339 value carrying an offset different from the server's
-- **THEN** the label prints the corresponding server-local wall-clock time
-
-#### Scenario: An unparseable value is refused
-
-- **WHEN** a request sends `printed_on: "yesterday"`
-- **THEN** the response is `400 InvalidRequest`, the message names `printed_on`, and
-  `details.reason` is `datetime_param_invalid`
-
-#### Scenario: A null is the same as omitting it
-
-- **WHEN** a request sends `printed_on: null`
-- **THEN** the parameter resolves exactly as an omitted one does: its declared `default` if it has one,
-  and `422 MissingField` naming `printed_on` if it does not and an active item reads it
-
-#### Scenario: A number is refused rather than guessed at
-
-- **WHEN** a request sends `printed_on: 20260819`
-- **THEN** the response is `400 InvalidRequest` with `details.reason` `datetime_param_invalid`
-
-#### Scenario: One bad label fails the whole batch and is named
-
-- **WHEN** a batch of three labels sends an unparseable `printed_on` on the second
-- **THEN** the response is `422 BatchInvalid`, no ZIP, PDF or print job is produced, and
-  `details.failures` contains one entry for index 1 carrying the `InvalidRequest` code and the
-  `datetime_param_invalid` reason
-
-#### Scenario: An override does not move the bare datetime token
-
-- **WHEN** a label prints both `{printed_on}` and `{sys.now}` and the request overrides
-  `printed_on` with a past date
-- **THEN** `{printed_on}` prints the past date and `{sys.now}` prints today
-
-### Requirement: The print form and the row grids carry a datetime parameter
-
-The print form SHALL render a `datetime` parameter the service reports as an input for the current
-selection as a date control when `time` is `false` and as a date-and-time control when `time` is
-`true`. A `datetime` parameter the template reads only inside a branch the current selection
-deactivates is not reported as an input and SHALL NOT be rendered, on the same rule that governs
-every other control (`template-inputs`).
-
-The form SHALL seed the control from the `default` the input list publishes for it, and SHALL leave it
-empty when the list publishes none — which is the case both for a parameter declaring no `default:` and
-for one whose declared default carries interpolation syntax the client cannot resolve
-(`template-inputs`). It SHALL NOT read a default out of the raw parameter declaration. It SHALL NOT seed the operator's browser date: that
-was the client half of the render-instant fallback this change removes, and it made the form print a
-value no template declared. The consequence the removed rule recorded — that a browser and server
-straddling a date boundary print the browser's date — goes with it. Publishing a *resolved* default to
-the client, so an empty control can show what will actually print, is #262.
-
-Clearing the control SHALL submit an omission. What that omission prints is `param-resolution`'s answer:
-the declared default, or `422 MissingField` when there is none.
-
-A blank `datetime` parameter SHALL be flagged as a missing required value, in the print form, the CSV
-import grid and the connector grid alike, exactly when the parameter declares no `default:` — on the
-same terms every other parameter type is flagged, and on the same terms the input list the service
-reports marks it required (`template-inputs`). A `datetime` parameter that declares one SHALL NOT be
-flagged, for the same reason.
-
-The CSV import grid and the connector grid SHALL accept a `datetime` parameter as a text cell taking
-the same three input forms as the API. A cell that cannot be parsed SHALL be flagged on its row,
-alongside the existing per-row validation, and SHALL block the run until it is corrected or cleared.
-Both grids SHALL apply the same rule and report the same message.
-
-That client-side check covers the input's shape and calendar validity only. Whether a well-formed
-local instant exists in the server's timezone is the server's to decide. A value the client accepts
-but the server rejects SHALL be annotated on the row it came from, through the same path that already
-carries a `422 BatchInvalid` failure back to its row in both grids.
-
-#### Scenario: The control follows the time flag
-
-- **WHEN** the print form renders a template declaring `printed_on` with `time: false` and
-  `stamped_at` with `time: true`
-- **THEN** `printed_on` is a date control and `stamped_at` is a date-and-time control
-
-#### Scenario: A datetime parameter in an inactive branch has no control
-
-- **WHEN** a template reads `stamped_at` only inside a container gated on `mode: full` and the
-  operator selects `mode: brief`
-- **THEN** the print form renders no control for `stamped_at`, and the label prints
-
-#### Scenario: A cleared control still prints
-
-- **WHEN** `printed_on` declares `default: "{sys.now}"` and an operator clears the control and submits
-- **THEN** the request omits the parameter and the label prints the server's date
-
-#### Scenario: A cleared control with no default blocks the submission
-
-- **WHEN** `printed_on` declares no `default:` and an operator clears the control
-- **THEN** the form flags it as a missing required value, as it would a blank `string` parameter
-
-#### Scenario: A blank cell with no default blocks the run
-
-- **WHEN** a CSV import row leaves a `datetime` column empty and the parameter declares no `default:`
-- **THEN** the row is flagged and the run is blocked, rather than the label printing the server's
-  instant
-
-#### Scenario: A blank cell is not a missing value
-
-- **WHEN** a CSV import row leaves a `datetime` column empty and the parameter declares
-  `default: "{sys.now}"`
-- **THEN** the row is valid, the run is not blocked, and the label prints the request's date
-
-#### Scenario: An unparseable cell blocks the run
-
-- **WHEN** a CSV import row carries `printed_on` as `not a date`
-- **THEN** that row is flagged, and the run is blocked until the cell is corrected or cleared
-
-#### Scenario: A value only the server can reject lands on its row
-
-- **WHEN** a grid row carries a well-formed `printed_on` that names a local time the server's
-  timezone does not have, and the run is submitted
-- **THEN** the run fails, and the server's message for that label is annotated on the row it came
-  from rather than only at the form
+## ADDED Requirements
 
 ### Requirement: A datetime parameter names an instant, not a rendering
 
@@ -398,3 +202,224 @@ it. This is placeholder substitution and not a default: it never reaches a rende
   `printed_on` declares no `default`
 - **THEN** the thumbnail shows the current date in that format, not the literal text
   `printed_on:short_date` and not a `422`
+
+## MODIFIED Requirements
+
+### Requirement: A request may override a datetime parameter
+
+A request MAY supply a `datetime` parameter in its `data` map, per label. The service SHALL accept:
+
+- `YYYY-MM-DD`, which resolves to midnight local time on that date;
+- `YYYY-MM-DDTHH:MM` or `YYYY-MM-DDTHH:MM:SS` with no offset, read as server-local wall-clock time
+  (this is what an HTML date-and-time control submits);
+- an RFC 3339 timestamp carrying an offset or `Z`, converted to the server-local timezone.
+
+Surrounding whitespace SHALL be trimmed before parsing. A value that is not one of these forms SHALL be
+rejected. A local time that is ambiguous because of a daylight-saving transition SHALL resolve to the
+earlier of the two instants.
+
+A value naming a local time that does not exist because of a daylight-saving transition SHALL be handled
+by its form, and this is a change from the rule that rejected both forms alike: a **date-only** value
+SHALL resolve to the first instant that exists on that local date, and a **date-and-time** value SHALL
+still be rejected. A date names a day and a day normally exists; a time names an instant, which may not.
+Where a zone skips an entire local date — `Pacific/Apia` had no instant on 2011-12-30 — there is no first
+instant to resolve to, and a date-only value SHALL be rejected too, rather than shifted to a neighbouring
+date it does not name.
+
+The distinction is load-bearing rather than cosmetic. `{sys.now}` renders `%Y-%m-%d`, and this capability
+tells an author to write `default: "{sys.now}"` for the render date, so under the old rule every template
+carrying that default would fail for a whole day each year in any zone transitioning at `00:00` — of which
+several are in current use — on a server whose clock and timezone are correct, blaming the template for a
+migration this capability prescribed.
+
+A `datetime` parameter sent as JSON `null` SHALL be treated exactly as if the request had omitted it,
+which now means it is resolved by `param-resolution` rather than taken as the render instant. A value
+that is neither a JSON string nor `null` (a number, a boolean, an array, or an object) SHALL be rejected
+the same way an unparseable string is. A number in particular SHALL NOT be guessed at: this capability
+defines no epoch or serial-date convention.
+
+On the single-label render path, a rejected value SHALL be `400 InvalidRequest` whose message names
+the parameter and whose `details.reason` is `datetime_param_invalid`. That slug is an addition to the
+reason registry of `docs/SPEC.md` §10.1, which is frozen and therefore does not list it; this
+requirement is its published home. It adds a row to the `InvalidRequest` set and changes no other row,
+and it does not extend `reason` to a fifth code.
+
+In a batch, validation SHALL be per label: every label carrying a rejected value SHALL appear in the
+`details.failures` list of the `422 BatchInvalid` response, each entry naming its label index, the
+`InvalidRequest` code and the `datetime_param_invalid` reason. The batch itself stays all-or-nothing,
+as it is for every other per-label failure today: one rejected value SHALL fail the whole request, and
+no PDF, no ZIP and no print job SHALL be produced or sent for any label in it.
+
+An override SHALL affect only the parameter it names. `{sys.now}` and `{sys.now:<name>}` SHALL
+continue to resolve the request's own instant.
+
+#### Scenario: A date-only override on a day with no midnight
+
+- **WHEN** a request sends a date whose local midnight does not exist because the zone transitions at
+  `00:00`
+- **THEN** the value resolves to the first instant that exists on that date, and a template declaring
+  `default: "{sys.now}"` renders on that day like any other
+
+#### Scenario: A date-and-time naming a nonexistent local time is still refused
+
+- **WHEN** a request sends `printed_on: "2026-09-06T00:30"` in a zone where that local time does not exist
+- **THEN** the response is `400 InvalidRequest` with `details.reason` `datetime_param_invalid`
+
+#### Scenario: A date-only override
+
+- **WHEN** a request sends `printed_on: "2026-08-19"` for a label printing `{printed_on:long_date}`
+- **THEN** the label reads `August 19, 2026`
+
+#### Scenario: A local date-and-time override
+
+- **WHEN** a request sends `printed_on: "2026-08-19T14:30"` for a label printing `{printed_on:time}`
+  with the default `time` format `%H:%M`
+- **THEN** the label reads `14:30`
+
+#### Scenario: An offset timestamp is converted to server-local time
+
+- **WHEN** a request sends an RFC 3339 value carrying an offset different from the server's
+- **THEN** the label prints the corresponding server-local wall-clock time
+
+#### Scenario: An unparseable value is refused
+
+- **WHEN** a request sends `printed_on: "yesterday"`
+- **THEN** the response is `400 InvalidRequest`, the message names `printed_on`, and
+  `details.reason` is `datetime_param_invalid`
+
+#### Scenario: A null is the same as omitting it
+
+- **WHEN** a request sends `printed_on: null`
+- **THEN** the parameter resolves exactly as an omitted one does: its declared `default` if it has one,
+  and `422 MissingField` naming `printed_on` if it does not and an active item reads it
+
+#### Scenario: A number is refused rather than guessed at
+
+- **WHEN** a request sends `printed_on: 20260819`
+- **THEN** the response is `400 InvalidRequest` with `details.reason` `datetime_param_invalid`
+
+#### Scenario: One bad label fails the whole batch and is named
+
+- **WHEN** a batch of three labels sends an unparseable `printed_on` on the second
+- **THEN** the response is `422 BatchInvalid`, no ZIP, PDF or print job is produced, and
+  `details.failures` contains one entry for index 1 carrying the `InvalidRequest` code and the
+  `datetime_param_invalid` reason
+
+#### Scenario: An override does not move the bare datetime token
+
+- **WHEN** a label prints both `{printed_on}` and `{sys.now}` and the request overrides
+  `printed_on` with a past date
+- **THEN** `{printed_on}` prints the past date and `{sys.now}` prints today
+
+### Requirement: The print form and the row grids carry a datetime parameter
+
+The print form SHALL render a `datetime` parameter the service reports as an input for the current
+selection as a date control when `time` is `false` and as a date-and-time control when `time` is
+`true`. A `datetime` parameter the template reads only inside a branch the current selection
+deactivates is not reported as an input and SHALL NOT be rendered, on the same rule that governs
+every other control (`template-inputs`).
+
+The form SHALL seed the control from the `default` the input list publishes for it, and SHALL leave it
+empty when the list publishes none — which is the case both for a parameter declaring no `default:` and
+for one whose declared default carries interpolation syntax the client cannot resolve
+(`template-inputs`). It SHALL NOT read a default out of the raw parameter declaration. It SHALL NOT seed the operator's browser date: that
+was the client half of the render-instant fallback this change removes, and it made the form print a
+value no template declared. The consequence the removed rule recorded — that a browser and server
+straddling a date boundary print the browser's date — goes with it. Publishing a *resolved* default to
+the client, so an empty control can show what will actually print, is #262.
+
+Clearing the control SHALL submit an omission. What that omission prints is `param-resolution`'s answer:
+the declared default, or `422 MissingField` when there is none.
+
+A blank `datetime` parameter SHALL be flagged as a missing required value, in the print form, the CSV
+import grid and the connector grid alike, exactly when the parameter declares no `default:` — on the
+same terms every other parameter type is flagged, and on the same terms the input list the service
+reports marks it required (`template-inputs`). A `datetime` parameter that declares one SHALL NOT be
+flagged, for the same reason.
+
+The CSV import grid and the connector grid SHALL accept a `datetime` parameter as a text cell taking
+the same three input forms as the API. A cell that cannot be parsed SHALL be flagged on its row,
+alongside the existing per-row validation, and SHALL block the run until it is corrected or cleared.
+Both grids SHALL apply the same rule and report the same message.
+
+That client-side check covers the input's shape and calendar validity only. Whether a well-formed
+local instant exists in the server's timezone is the server's to decide. A value the client accepts
+but the server rejects SHALL be annotated on the row it came from, through the same path that already
+carries a `422 BatchInvalid` failure back to its row in both grids.
+
+#### Scenario: The control follows the time flag
+
+- **WHEN** the print form renders a template declaring `printed_on` with `time: false` and
+  `stamped_at` with `time: true`
+- **THEN** `printed_on` is a date control and `stamped_at` is a date-and-time control
+
+#### Scenario: A datetime parameter in an inactive branch has no control
+
+- **WHEN** a template reads `stamped_at` only inside a container gated on `mode: full` and the
+  operator selects `mode: brief`
+- **THEN** the print form renders no control for `stamped_at`, and the label prints
+
+#### Scenario: A cleared control still prints
+
+- **WHEN** `printed_on` declares `default: "{sys.now}"` and an operator clears the control and submits
+- **THEN** the request omits the parameter and the label prints the server's date
+
+#### Scenario: A cleared control with no default blocks the submission
+
+- **WHEN** `printed_on` declares no `default:` and an operator clears the control
+- **THEN** the form flags it as a missing required value, as it would a blank `string` parameter
+
+#### Scenario: A blank cell with no default blocks the run
+
+- **WHEN** a CSV import row leaves a `datetime` column empty and the parameter declares no `default:`
+- **THEN** the row is flagged and the run is blocked, rather than the label printing the server's
+  instant
+
+#### Scenario: A blank cell is not a missing value
+
+- **WHEN** a CSV import row leaves a `datetime` column empty and the parameter declares
+  `default: "{sys.now}"`
+- **THEN** the row is valid, the run is not blocked, and the label prints the request's date
+
+#### Scenario: An unparseable cell blocks the run
+
+- **WHEN** a CSV import row carries `printed_on` as `not a date`
+- **THEN** that row is flagged, and the run is blocked until the cell is corrected or cleared
+
+#### Scenario: A value only the server can reject lands on its row
+
+- **WHEN** a grid row carries a well-formed `printed_on` that names a local time the server's
+  timezone does not have, and the run is submitted
+- **THEN** the run fails, and the server's message for that label is annotated on the row it came
+  from rather than only at the form
+
+
+## REMOVED Requirements
+
+### Requirement: A template declares a datetime parameter as an instant, not a rendering
+
+**Reason**: Two of its rules are what this change reverses. It rejects `default:` on a `datetime`
+parameter, leaving a template no way to state what it wants, and its parameter-type table records the
+inferred `boolean`, `enum` and `datetime` values as contract. Its scenario "A default on a datetime
+parameter is refused" asserts the removed rule directly, so the requirement cannot be modified in place
+without keeping a scenario that contradicts it. "A datetime parameter names an instant, not a rendering"
+above replaces it, restating every rule that survives, including the `docs/SPEC.md` §3.0 supersession.
+
+**Migration**: None for a template that declares no `datetime` parameter and no undefaulted `boolean` or
+`enum`. Everything else is covered by the migration note on the requirement below.
+
+### Requirement: A datetime parameter defaults to the render instant of its request
+
+**Reason**: The requirement *is* the inferred default this change removes. It made `datetime` the one
+type whose omitted value the service picked, and it forced `default:` to be rejected on that type. The
+parts of it that survive — the blank-string equivalence, the one-instant-per-run guarantee, the field
+list, and the thumbnail — are restated by "A datetime parameter is resolved like every other parameter"
+above, and the resolution rule itself now lives in `param-resolution` alongside every other type's.
+
+**Migration**: A template that wants a `datetime` parameter to mean the render date declares it:
+`default: "{sys.now}"`. That is the render *date*, at local midnight, rather than the wall-clock instant
+the removed rule captured — a difference nothing sees through a date format and `{p:time}` sees as
+`00:00`; a template needing the time of day attaches a format the parser accepts, per the resolution
+requirement above. A template that wants the caller to supply the instant leaves `default:` off and gets
+`422 MissingField` when the caller omits it. A label that always prints the print date and never lets a
+caller override it needs no parameter at all and writes `{sys.now}` directly.

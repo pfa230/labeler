@@ -548,8 +548,9 @@ An unmatched gate removes the whole subtree — it is not rendered, and it is no
 Missing-field validation is lazy: only the active branch requires its parameter fields, so an inactive
 branch's `{tokens}` may be absent from the request without causing a `422 MissingField`.
 
-If an optional parameter is omitted from the request, it automatically resolves to its declared `default`
-(or `false` for booleans, or the first allowed value for enums, or the current render instant for datetime).
+No parameter type carries an implicit default. If a parameter declares no `default:`, it is absent unless
+supplied in the request. If an active layout item references an omitted parameter with no declared default,
+the request fails with `422 MissingField`. Unreferenced parameters in inactive branches do not fail.
 
 ### Datetime parameters, system clock, and formatting
 
@@ -559,6 +560,7 @@ A template can access the render clock via `{sys.now}` or declare parameters of 
 params:
   printed_on:
     type: datetime
+    default: "{sys.now}"
     description: "Print Date"
   expiry_timestamp:
     type: datetime
@@ -571,12 +573,12 @@ What to know:
 - **Datetime parameters.** Declare a parameter of `type: datetime` when the caller must be able to choose or override the instant (e.g. for reprinting).
   - Bare `{param_name}` outputs the ISO 8601 date (`%Y-%m-%d`).
   - `{param_name:<format_name>}` formats the date/time using the named pattern from `datetime_formats` (e.g. `{printed_on:short_date}`, `{expiry_timestamp:time}`).
-  - **Default value is the render instant.** An explicit `default` property is not supported on datetime parameters; when omitted or left blank in requests, datetime parameters automatically default to the render instant (`now`).
+  - **Defaults.** Datetime parameters support explicit string defaults, such as `default: "{sys.now}"` to default to the render date (which resolves to local midnight on that date), a token with a time pattern like `default: "{sys.now:iso_timestamp}"`, or a literal ISO 8601 date/time string. If no default is declared, the parameter is required and omitting it returns `422 MissingField`. Note that bare `{sys.now}` renders `%Y-%m-%d`, so defaulting a `time: true` parameter with bare `{sys.now}` resolves to `00:00` local time rather than the wall clock; to include time in the default, use a pattern that formats the time.
 - **Format syntax and restrictions.**
   - A format is attached with a colon (`:`), never a dot. Attaching a format to a value that is neither `sys.now` nor a declared `type: datetime` parameter (e.g. `{title:short_date}`, `{vars.qr_base_url:long_date}`) is a load-time rejection.
   - `{datetime}` is an ordinary request data field, not a reserved word.
   - The old dotted spellings `{datetime.<name>}` and `{sys.now.<name>}` are load-time rejections that point to the replacement `{sys.now:<name>}`.
-- **UI controls.** The web UI renders a date picker (`<input type="date">`) when `time: false` (or omitted), and a date-and-time picker (`<input type="datetime-local">`) when `time: true`. The print form pre-fills with the browser's current local date/time.
+- **UI controls.** The web UI renders a date picker (`<input type="date">`) when `time: false` (or omitted), and a date-and-time picker (`<input type="datetime-local">`) when `time: true`. The control is seeded from `default` if declared, and left empty otherwise.
 - **Overrides in batches and CSV imports.** Requests can provide ISO date strings (`YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, `YYYY-MM-DDTHH:MM:SS`, or RFC 3339 timestamps with timezone offsets) to override specific labels.
 - **`time:` picks the control, not the output.** Nothing stops a template from declaring `time: false` and then printing `{printed_on:time}`; the date picker has no time to give, so that prints `00:00`. Pair a token that shows a time with `time: true`, and check the result the way you check any other template: render it and look.
 - **Which one to reach for.** Use `{sys.now}` / `{sys.now:<name>}` when the label should always say when it was printed and the caller has no say in it. Declare a `datetime` parameter when the caller must be able to choose the instant. Both use the same `datetime_formats` patterns.

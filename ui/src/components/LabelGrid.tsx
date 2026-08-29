@@ -74,7 +74,7 @@ function OptionEditCell(
   allowed: string[],
 ) {
   const name = column.key.slice(OPTION_PREFIX.length);
-  const value = row.option[name] ?? "";
+  const value = row.option[name] ?? (typeof row.data[name] === "string" ? String(row.data[name]) : "");
   // Render the current value even if it is not allowed, so an invalid CSV value stays selectable/visible.
   const options = allowed.includes(value) ? allowed : [value, ...allowed];
   return (
@@ -83,7 +83,16 @@ function OptionEditCell(
       aria-label={`edit ${name}`}
       className="w-full bg-transparent px-2"
       value={value}
-      onChange={(e) => onRowChange({ ...row, option: { ...row.option, [name]: e.target.value } }, true)}
+      onChange={(e) =>
+        onRowChange(
+          {
+            ...row,
+            option: { ...row.option, [name]: e.target.value },
+            data: { ...row.data, [name]: e.target.value },
+          },
+          true,
+        )
+      }
     >
       {options.map((v) => (
         <option key={v} value={v}>

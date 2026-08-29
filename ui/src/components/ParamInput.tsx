@@ -96,17 +96,17 @@ export function ParamInput({
     paramSpec.type === "integer"
   ) {
     const isInteger = control === "integer" || paramSpec.type === "integer";
+    const hasDefault = spec.default !== undefined && spec.default !== null;
     const isSlider =
-      inputSpec.slider === true ||
-      (!control && spec.min !== undefined && spec.max !== undefined);
+      (inputSpec.slider === true ||
+        (!control && spec.min !== undefined && spec.max !== undefined)) &&
+      hasDefault;
 
     if (isSlider) {
       const currentVal =
         value !== undefined && value !== ""
           ? Number(value)
-          : spec.default !== undefined
-            ? Number(spec.default)
-            : (spec.min ?? 0);
+          : Number(spec.default);
 
       return (
         <div className="flex items-center gap-3">
@@ -162,9 +162,13 @@ export function ParamInput({
   }
 
   if (control === "checkbox" || paramSpec.type === "boolean") {
-    const isChecked = Boolean(
-      value !== undefined ? value : (spec.default ?? false),
-    );
+    const rawVal =
+      value !== undefined
+        ? value
+        : spec.default !== undefined && spec.default !== null
+          ? spec.default
+          : undefined;
+    const isChecked = rawVal !== undefined ? Boolean(rawVal) : undefined;
     return (
       <label className="inline-flex cursor-pointer items-center gap-2">
         <input
@@ -173,22 +177,27 @@ export function ParamInput({
           aria-invalid={invalid}
           aria-describedby={noteId}
           disabled={disabled}
-          checked={isChecked}
+          checked={isChecked ?? false}
           onChange={(e) => onChange(e.target.checked)}
           className="h-4 w-4 rounded border"
           style={{ accentColor: "var(--accent)" }}
         />
-        <span className="select-none text-sm" style={{ color: "var(--ink)" }}>
-          {isChecked ? "Enabled" : "Disabled"}
+        <span className="select-none text-sm" style={{ color: isChecked === undefined ? "var(--muted, #888)" : "var(--ink)" }}>
+          {isChecked === undefined ? "Unset" : isChecked ? "Enabled" : "Disabled"}
         </span>
       </label>
     );
   }
 
   if (control === "select" || paramSpec.type === "enum") {
-    const currentVal = String(
-      value !== undefined ? value : (spec.default ?? spec.values?.[0] ?? ""),
-    );
+    const rawVal =
+      value !== undefined
+        ? value
+        : spec.default !== undefined && spec.default !== null
+          ? spec.default
+          : "";
+    const currentVal = String(rawVal);
+    const hasMatch = (spec.values ?? []).includes(currentVal);
     return (
       <select
         aria-label={label}
@@ -200,6 +209,11 @@ export function ParamInput({
         className={inputClass}
         style={inputStyle}
       >
+        {!hasMatch && (
+          <option value="" disabled hidden>
+            Select...
+          </option>
+        )}
         {(spec.values ?? []).map((v: string) => (
           <option key={v} value={v}>
             {v}
