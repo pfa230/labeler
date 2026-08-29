@@ -117,6 +117,20 @@ else
 fi
 teardown
 
+# Everything below drives run-stage.sh, which runs its agent under pty_run. A shell
+# whose stdin is not a terminal cannot allocate one, and script(1) then fails before
+# the stand-in agent runs at all, so every case fails for the same reason and none of
+# them is telling you anything. Say so once, rather than reporting a dozen identical
+# failures as findings. CI has a terminal, so this is not a way to pass quietly:
+# there the block runs.
+. "$here/agents.sh"
+pty_available=1
+if ! pty_run true >/dev/null 2>&1; then
+  pty_available=0
+  printf 'SKIP  the run-stage cases: this shell cannot allocate a pty (script: tcgetattr)\n'
+fi
+
+if [ "$pty_available" = "1" ]; then
 # --- run-stage.sh reads each agent's own result envelope (#274) ---------------------
 # Every CLI wraps its answer differently, and reading one shape for all of them left
 # claude and codex reporting NO_STRUCTURED_RESULT on every run, unresumable, and
@@ -225,11 +239,30 @@ else
 fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
+fi
+
+# --- the pty capture is filtered down to what the agent actually said ---------------
+# Asserted on bytes rather than through a run, so it holds where no pty can be had.
+# Every case here is something a real capture contained and no answer ever should.
+capture_case() { # capture_case <label> <input> <want>
+  local label="$1" got
+  got=$(printf '%s' "$2" | clean_capture)
+  if [ "$got" = "$3" ]; then
+    pass=$((pass + 1)); printf 'ok    capture: %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL  capture: %s -> %s\n' "$label" "$(printf '%s' "$got" | od -c | head -2 | tr '\n' ' ')"
+  fi
+}
+
+capture_case "BSD script's EOF echo is dropped" "$(printf '^D\b\bREVIEW BODY')" "REVIEW BODY"
+capture_case "a bare ^D an agent typed survives" "he pressed ^D there" "he pressed ^D there"
+capture_case "ANSI colour is dropped" "$(printf '\033[31mred\033[0m')" "red"
+capture_case "carriage returns are dropped" "$(printf 'a\rb')" "ab"
+capture_case "plain text is untouched" '{"type":"thread.started"}' '{"type":"thread.started"}'
 
 # --- each agent is sent its own spelling of the apply step (#274) -------------------
 # One spelling for all four is a command three of them do not have: claude dies on
 # "Unknown command" given the workflow form, which is two apply runs that did nothing.
-. "$here/agents.sh"
 for pair in "claude:/opsx:apply issue-3-c" "agy:/opsx-apply issue-3-c" \
             "opencode:/opsx-apply issue-3-c" "codex:openspec/changes/issue-3-c"; do
   agent="${pair%%:*}"; want="${pair#*:}"
