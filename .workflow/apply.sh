@@ -108,7 +108,7 @@ while :; do
   say "review $round: $reviewer"
   "$stage" review "$reviewer" "$change"
   rc=$?
-  review_log="$wt/.agent-review-$reviewer.log"
+  review_log="$wt/.agent-runs/review-$reviewer.log"
   [ "$rc" -eq 5 ] && { echo "the reviewer edited files; its verdict cannot be trusted." >&2; exit 5; }
   # Checked before anything is copied or read: a transcript must not become the
   # round artifact, and must not be mistaken for a verdict.

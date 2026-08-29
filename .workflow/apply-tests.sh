@@ -44,6 +44,8 @@ setup() {
   git init -q .; git config user.email t@t; git config user.name t
   mkdir -p openspec/changes/archive
   echo x > openspec/changes/archive/.gitkeep
+  # The real ignore file, so the artifact test below judges the rule that ships.
+  cp "$here/../.gitignore" .gitignore
   git add -A; git commit -qm base
   cwd="$repo"
 }
@@ -140,6 +142,23 @@ if printf '%s\n' "$out" | grep -q 'Refusing to treat a transcript as a review'; 
   pass=$((pass + 1)); printf 'ok    and says why\n'
 else
   fail=$((fail + 1)); printf 'FAIL  and says why\n'
+fi
+
+# The same run answers where its artifacts went (#255). The landing commit stages the
+# worktree wholesale, so a merely untracked transcript gets committed; both halves are
+# asserted, because "nothing untracked" passes just as well when nothing was written.
+if [ -s "$repo/.worktrees/issue-9/.agent-runs/review-codex.log" ]; then
+  pass=$((pass + 1)); printf 'ok    the run writes its log under .agent-runs/\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  no log at .worktrees/issue-9/.agent-runs/review-codex.log\n'
+  (cd "$repo/.worktrees/issue-9" && ls -A) | sed 's/^/        /'
+fi
+stray=$(cd "$repo/.worktrees/issue-9" && git ls-files --others --exclude-standard | grep -c 'agent\|agy')
+if [ "$stray" = "0" ]; then
+  pass=$((pass + 1)); printf 'ok    and a git add -A stages none of it\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  %s run artifact(s) would be staged\n' "$stray"
+  (cd "$repo/.worktrees/issue-9" && git ls-files --others --exclude-standard) | sed 's/^/        /'
 fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
