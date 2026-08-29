@@ -105,7 +105,7 @@ worktree_digest() {
 }
 before_digest=$(worktree_digest)
 
-( cd "$wt" && pty_run "$cmd" ) 2>&1 | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r' > "$raw"
+( cd "$wt" && pty_run "$cmd" ) 2>&1 | clean_capture > "$raw"
 status=$?
 after_digest=$(worktree_digest)
 
