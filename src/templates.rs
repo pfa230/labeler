@@ -8,8 +8,8 @@ use thiserror::Error;
 use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, InputControl, InputSpec,
-    Layout, LayoutItem, Options, ParamSpec, ParamType, ParamValue, Placement, Point, Size,
-    SizeValue, TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
+    Layout, LayoutItem, Options, ParamSpec, ParamType, Placement, Point, Size, SizeValue,
+    TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -140,20 +140,24 @@ impl TemplateContent {
     pub fn derive_inputs_for_label(
         &self,
         data: &HashMap<String, serde_json::Value>,
-        now: chrono::DateTime<chrono::Local>,
+        _now: chrono::DateTime<chrono::Local>,
     ) -> Vec<InputSpec> {
         let resolved = crate::render::resolve_parameters_mode(
             self,
             data,
             None,
-            now,
+            None,
+            None,
             crate::render::ResolveMode::Lenient,
         )
         .expect("lenient resolution never fails");
         self.derive_inputs_internal(Some(&resolved.data))
     }
 
-    pub fn placeholder_data(&self) -> HashMap<String, serde_json::Value> {
+    pub fn placeholder_data(
+        &self,
+        now: chrono::DateTime<chrono::Local>,
+    ) -> HashMap<String, serde_json::Value> {
         let mut data = HashMap::new();
         for input in self.inputs_all() {
             if input.interpolated && input.required {
@@ -172,7 +176,11 @@ impl TemplateContent {
                         let n = input.min.unwrap_or(1.0);
                         serde_json::json!(n)
                     }
-                    _ => continue,
+                    InputControl::Checkbox => serde_json::Value::Bool(false),
+                    InputControl::Date | InputControl::Datetime => {
+                        serde_json::Value::String(now.format("%Y-%m-%dT%H:%M:%S").to_string())
+                    }
+                    InputControl::Select => continue,
                 };
                 data.insert(input.name, val);
             }
@@ -386,19 +394,17 @@ impl TemplateContent {
                     ParamType::Integer | ParamType::Number | ParamType::Length
                 ) && spec.min.is_some()
                     && spec.max.is_some();
-                let required = spec.default.is_none()
-                    && !matches!(
-                        spec.param_type,
-                        ParamType::Boolean | ParamType::Enum { .. } | ParamType::Datetime { .. }
-                    );
-                let default = if spec.default.is_some() {
-                    spec.default.clone()
-                } else if matches!(spec.param_type, ParamType::Boolean) {
-                    Some(ParamValue::Boolean(false))
-                } else if let ParamType::Enum { values } = &spec.param_type {
-                    values.first().map(|v| ParamValue::String(v.clone()))
-                } else {
-                    None
+                let required = spec.default.is_none();
+                let default = match &spec.default {
+                    Some(crate::models::ParamValue::String(s)) => {
+                        if s.contains('{') || s.contains('}') {
+                            None
+                        } else {
+                            Some(crate::models::ParamValue::String(s.clone()))
+                        }
+                    }
+                    Some(val) => Some(val.clone()),
+                    None => None,
                 };
                 let values = if let ParamType::Enum { values } = &spec.param_type {
                     Some(values.clone())
@@ -887,6 +893,17 @@ impl TemplateRegistry {
         self.templates.get(id)
     }
 
+    #[cfg(test)]
+    pub fn insert_for_tests(
+        &mut self,
+        id: String,
+        group: Option<String>,
+        content: TemplateContent,
+    ) {
+        self.templates
+            .insert(id.clone(), TemplateDefinition { id, group, content });
+    }
+
     /// Lowercase hex SHA-256 of the template's raw YAML, used as a strong ETag.
     pub fn content_hash(&self, id: &str) -> Option<&str> {
         self.hashes.get(id).map(String::as_str)
@@ -954,6 +971,22 @@ impl TemplateContent {
         for (name, spec) in &self.params {
             validate_param_name(name)?;
             validate_param_spec(name, spec)?;
+            if let Some(crate::models::ParamValue::String(s)) = &spec.default {
+                crate::interpolation::validate_default_syntax(s).map_err(|e| {
+                    format!("invalid interpolation syntax in default of parameter '{name}': {e}")
+                })?;
+                for scanned in crate::interpolation::scan_tokens(s) {
+                    if let Ok(tok) = crate::interpolation::parse(scanned.raw) {
+                        if matches!(tok.source, crate::interpolation::Source::Bare(_)) {
+                            return Err(format!(
+                                "bare token '{}' is not allowed in a default; only namespaced tokens ({{vars.…}}, {{sys.…}}) are supported",
+                                scanned.raw
+                            ));
+                        }
+                    }
+                }
+                validate_interpolated_string(s, &self.params)?;
+            }
         }
         Ok(())
     }
@@ -1244,6 +1277,15 @@ fn validate_param_name(name: &str) -> Result<(), String> {
 
 fn validate_param_spec(name: &str, spec: &ParamSpec) -> Result<(), String> {
     match &spec.param_type {
+        ParamType::Datetime { .. } => {
+            if let Some(default) = &spec.default {
+                if !matches!(default, crate::models::ParamValue::String(_)) {
+                    return Err(format!(
+                        "default on a datetime parameter '{name}' must be a string"
+                    ));
+                }
+            }
+        }
         ParamType::Enum { values } => {
             if values.is_empty() {
                 return Err(format!("parameter '{name}' enum values must not be empty"));
@@ -1252,8 +1294,14 @@ fn validate_param_spec(name: &str, spec: &ParamSpec) -> Result<(), String> {
                 return Err("options must not contain empty values".to_string());
             }
             if let Some(default) = &spec.default {
-                let default_str = match default {
-                    crate::models::ParamValue::String(s) => s.as_str(),
+                match default {
+                    crate::models::ParamValue::String(s) => {
+                        if !s.contains('{') && !s.contains('}') && !values.iter().any(|v| v == s) {
+                            return Err(format!(
+                                "parameter '{name}' default '{s}' is not in enum values"
+                            ));
+                        }
+                    }
                     crate::models::ParamValue::Integer(i) => {
                         let s = i.to_string();
                         if !values.contains(&s) {
@@ -1261,14 +1309,12 @@ fn validate_param_spec(name: &str, spec: &ParamSpec) -> Result<(), String> {
                                 "parameter '{name}' default '{i}' is not in enum values"
                             ));
                         }
-                        return Ok(());
                     }
-                    _ => "",
-                };
-                if !values.iter().any(|v| v == default_str) {
-                    return Err(format!(
-                        "parameter '{name}' default '{default_str}' is not in enum values"
-                    ));
+                    _ => {
+                        return Err(format!(
+                            "parameter '{name}' default must be one of the declared enum values"
+                        ));
+                    }
                 }
             }
         }
@@ -3734,6 +3780,24 @@ layout: []
 "#;
         let res = parse_and_validate(yaml);
         assert!(res.is_err(), "should reject enum default not in values");
+
+        let yaml_float = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: 1.5
+format:
+  type: single
+  height: 18
+  width: 50
+layout: []
+"#;
+        let res_float = parse_and_validate(yaml_float);
+        assert!(res_float.is_err(), "should reject float default on enum");
     }
 
     #[test]
@@ -4377,7 +4441,7 @@ layout:
         let inputs1 = template.derive_inputs_for_label(&data1, now);
         let input_names1: HashSet<String> = inputs1.into_iter().map(|i| i.name).collect();
 
-        let resolved1 = crate::render::resolve_parameters(&template, &data1, None, now)
+        let resolved1 = crate::render::resolve_parameters(&template, &data1, None, None, None)
             .expect("resolve label 1");
         for k in data1.keys() {
             assert!(
@@ -4413,7 +4477,7 @@ layout:
         assert!(input_names2.contains("asset_path"));
         assert!(input_names2.contains("dyn_w"));
 
-        let resolved2 = crate::render::resolve_parameters(&template, &data2, None, now)
+        let resolved2 = crate::render::resolve_parameters(&template, &data2, None, None, None)
             .expect("resolve label 2");
         for k in data2.keys() {
             assert!(
@@ -4487,7 +4551,8 @@ layout:
         font_size: 10
 "#;
         let template = parse_template_ok(yaml);
-        let ph = template.placeholder_data();
+        let now = chrono::Local::now();
+        let ph = template.placeholder_data(now);
         assert_eq!(ph.get("mode"), Some(&json!("mode")));
         assert_eq!(ph.get("subtitle"), Some(&json!("subtitle")));
         assert_eq!(ph.get("length_param"), Some(&json!(15.0)));
@@ -4498,7 +4563,7 @@ layout:
         let dt_formats = BTreeMap::new();
         let dt = crate::datetime_fmt::DateTimeResolver {
             formats: &dt_formats,
-            now: chrono::Local::now(),
+            now,
         };
         let selection = crate::render::default_option_selection(&template);
         let png = crate::render::render_thumbnail_png(
@@ -4555,7 +4620,8 @@ layout:
         font_size: 10
 "#;
         let template = parse_template_ok(yaml);
-        let ph = template.placeholder_data();
+        let now = chrono::Local::now();
+        let ph = template.placeholder_data(now);
         assert_eq!(ph.get("uninterpolated_req"), None);
         assert_eq!(ph.get("branch_mode"), None);
         assert_eq!(ph.get("message"), Some(&json!("message")));
@@ -4563,7 +4629,7 @@ layout:
         let dt_formats = BTreeMap::new();
         let dt = crate::datetime_fmt::DateTimeResolver {
             formats: &dt_formats,
-            now: chrono::Local::now(),
+            now,
         };
         let selection = crate::render::default_option_selection(&template);
         let png = crate::render::render_thumbnail_png(
@@ -4617,13 +4683,14 @@ layout:
         font_size: 10
 "#;
         let template = parse_template_ok(yaml);
-        let ph = template.placeholder_data();
+        let now = chrono::Local::now();
+        let ph = template.placeholder_data(now);
         assert_eq!(ph.get("orientation"), None);
         assert_eq!(ph.get("prefix"), None);
         assert_eq!(ph.get("count"), None);
 
         let now = chrono::Local::now();
-        let resolved = crate::render::resolve_parameters(&template, &ph, None, now)
+        let resolved = crate::render::resolve_parameters(&template, &ph, None, None, None)
             .expect("resolve placeholder parameters");
         assert_eq!(resolved.data.get("orientation"), Some(&json!("horizontal")));
         assert_eq!(resolved.data.get("prefix"), Some(&json!("custom_prefix")));
@@ -4689,7 +4756,7 @@ layout:
             Some(ParamValue::String("one".to_string()))
         );
         let strict_enum_err =
-            crate::render::resolve_parameters(&template, &bad_enum, None, now).unwrap_err();
+            crate::render::resolve_parameters(&template, &bad_enum, None, None, None).unwrap_err();
         assert_eq!(strict_enum_err.code(), "InvalidOptionValue");
 
         // 2. Non-numeric integer
@@ -4705,7 +4772,7 @@ layout:
             Some(ParamValue::Integer(5))
         );
         let strict_int_err =
-            crate::render::resolve_parameters(&template, &bad_int, None, now).unwrap_err();
+            crate::render::resolve_parameters(&template, &bad_int, None, None, None).unwrap_err();
         assert_eq!(
             strict_int_err.reason(),
             Some(Reason::RequestBodyInvalid.as_slug())
@@ -4717,7 +4784,7 @@ layout:
         let lenient_dt = template.derive_inputs_for_label(&bad_dt, now);
         assert!(lenient_dt.iter().any(|i| i.name == "printed_on"));
         let strict_dt_err =
-            crate::render::resolve_parameters(&template, &bad_dt, None, now).unwrap_err();
+            crate::render::resolve_parameters(&template, &bad_dt, None, None, None).unwrap_err();
         assert_eq!(
             strict_dt_err.reason(),
             Some(Reason::DatetimeParamInvalid.as_slug())
@@ -4761,7 +4828,8 @@ layout:
         let inputs_with_opt = template.derive_inputs_for_label(&data, now);
         assert_eq!(inputs_no_opt, inputs_with_opt);
 
-        let render_plain = crate::render::resolve_parameters(&template, &data, None, now).unwrap();
+        let render_plain =
+            crate::render::resolve_parameters(&template, &data, None, None, None).unwrap();
         assert_eq!(render_plain.data["style"], json!("plain"));
     }
 
@@ -5018,5 +5086,261 @@ layout:
 
             fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn input_list_required_and_defaults() {
+        let yaml = r#"
+name: Input List Rules
+unit: mm
+dpi: 200
+params:
+  no_def_bool:
+    type: boolean
+  no_def_enum:
+    type: enum
+    values: [a, b]
+  no_def_dt:
+    type: datetime
+  token_def:
+    type: string
+    default: "{vars.site}"
+  lit_def:
+    type: string
+    default: "literal"
+  gated_on_token:
+    type: string
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "{no_def_bool} {no_def_enum} {no_def_dt} {token_def} {lit_def}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+  - type: container
+    when:
+      token_def: "my_site"
+    at: [0, 10]
+    size: [50, 10]
+    items:
+      - type: text
+        value: "{gated_on_token}"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let inputs_all = template.inputs_all();
+
+        let b = inputs_all.iter().find(|i| i.name == "no_def_bool").unwrap();
+        assert!(b.required);
+        assert!(b.default.is_none());
+
+        let e = inputs_all.iter().find(|i| i.name == "no_def_enum").unwrap();
+        assert!(e.required);
+        assert!(e.default.is_none());
+
+        let dt = inputs_all.iter().find(|i| i.name == "no_def_dt").unwrap();
+        assert!(dt.required);
+        assert!(dt.default.is_none());
+
+        let tok = inputs_all.iter().find(|i| i.name == "token_def").unwrap();
+        assert!(!tok.required);
+        assert!(tok.default.is_none());
+
+        let lit = inputs_all.iter().find(|i| i.name == "lit_def").unwrap();
+        assert!(!lit.required);
+        assert_eq!(lit.default, Some(ParamValue::String("literal".to_string())));
+
+        // derive_inputs_for_label without variables/dt treats token_def as absent,
+        // so when: token_def: "my_site" is inactive, and gated_on_token is omitted from derived inputs
+        let derived = template.derive_inputs_for_label(&HashMap::new(), chrono::Local::now());
+        assert!(!derived.iter().any(|i| i.name == "gated_on_token"));
+    }
+
+    #[test]
+    fn thumbnail_tests_for_new_default_rules() {
+        // 1. Template with undefaulted datetime still renders a real date
+        let yaml_dt = r#"
+name: Thumbnail Undefaulted Datetime
+unit: mm
+dpi: 200
+params:
+  printed_on:
+    type: datetime
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{printed_on:short_date}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_dt = parse_template_ok(yaml_dt);
+        let now = chrono::Local::now();
+        let ph_dt = t_dt.placeholder_data(now);
+        let dt_formats = BTreeMap::from([("short_date".to_string(), "%m/%d/%Y".to_string())]);
+        let dt_res = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now,
+        };
+        let png =
+            crate::render::render_thumbnail_png(&t_dt, &ph_dt, None, &BTreeMap::new(), &dt_res)
+                .unwrap();
+        assert!(!png.is_empty());
+
+        // 2. Reading undefaulted boolean renders via placeholder (false)
+        let yaml_bool = r#"
+name: Thumbnail Undefaulted Bool
+unit: mm
+dpi: 200
+params:
+  flag:
+    type: boolean
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{flag}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_bool = parse_template_ok(yaml_bool);
+        let ph_bool = t_bool.placeholder_data(now);
+        assert_eq!(ph_bool.get("flag"), Some(&json!(false)));
+        let png =
+            crate::render::render_thumbnail_png(&t_bool, &ph_bool, None, &BTreeMap::new(), &dt_res)
+                .unwrap();
+        assert!(!png.is_empty());
+
+        // 3. Enum-gated container renders through option selection
+        let yaml_enum_gate = r#"
+name: Thumbnail Enum Gate
+unit: mm
+dpi: 200
+params:
+  mode:
+    type: enum
+    values: [primary, secondary]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      mode: primary
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Primary branch"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+"#;
+        let t_enum = parse_template_ok(yaml_enum_gate);
+        let ph_enum = t_enum.placeholder_data(now);
+        let opt = crate::render::default_option_selection(&t_enum);
+        assert_eq!(
+            opt.as_ref().unwrap().get("mode"),
+            Some(&"primary".to_string())
+        );
+        let png = crate::render::render_thumbnail_png(
+            &t_enum,
+            &ph_enum,
+            opt.as_ref(),
+            &BTreeMap::new(),
+            &dt_res,
+        )
+        .unwrap();
+        assert!(!png.is_empty());
+
+        // 4. Boolean-gated container with no default does NOT render in thumbnail
+        let yaml_bool_gate = r#"
+name: Thumbnail Bool Gate
+unit: mm
+dpi: 200
+params:
+  enabled:
+    type: boolean
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      enabled: "false"
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Disabled branch"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+"#;
+        let t_bg = parse_template_ok(yaml_bool_gate);
+        let ph_bg = t_bg.placeholder_data(now);
+        // enabled is not interpolated, so placeholder_data does not invent for it; it stays absent -> branch inactive
+        assert!(!ph_bg.contains_key("enabled"));
+        let Layout::Items(items_bg) = &t_bg.layout;
+        let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
+        let resolved =
+            crate::render::resolve_parameters(&t_bg, &ph_bg, None, None, Some(&dt_res)).unwrap();
+        let empty_settings = BTreeMap::new();
+        let env = crate::render::RenderEnv {
+            settings: &empty_settings,
+            datetime: &dt_res,
+        };
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images)
+            .with_instants(&resolved.instants);
+        assert!(
+            !ctx.is_item_active(&items_bg[0]),
+            "boolean container with no default must be inactive in thumbnail"
+        );
+
+        // 5. Broken default fails thumbnail
+        let yaml_bad_def = r#"
+name: Thumbnail Bad Def
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "{vars.missing}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_bad = parse_template_ok(yaml_bad_def);
+        let ph_bad = t_bad.placeholder_data(now);
+        let err =
+            crate::render::render_thumbnail_png(&t_bad, &ph_bad, None, &BTreeMap::new(), &dt_res)
+                .unwrap_err();
+        assert_eq!(err.reason(), Some("param_default_unresolvable"));
+    }
+
+    #[test]
+    fn load_time_unescaped_brace_in_default_rejected() {
+        let yaml = r#"
+name: Bad Brace
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "unclosed { brace"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        assert!(parse_and_validate(yaml).is_err());
     }
 }

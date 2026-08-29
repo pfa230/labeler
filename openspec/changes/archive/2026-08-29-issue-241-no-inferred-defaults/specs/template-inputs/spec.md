@@ -1,13 +1,4 @@
-# template-inputs Specification
-
-## Purpose
-
-Defines the input list: the set of controls an operator must be offered for one label, derived by the
-service from the template and the values the label already carries. It is the service's answer to
-"what does this label still need", so that no client has to walk a layout, evaluate a `when:`
-condition, or reproduce how a parameter value is coerced before it is compared.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: An input list describes the controls one label needs
 
@@ -251,52 +242,6 @@ inside `POST /api/batch` is reported as `422 BatchInvalid` carrying that label's
 
 - **WHEN** more labels are sent than `POST /api/batch` accepts
 - **THEN** the request is refused with the same status and `code` `/api/batch` uses for that condition
-
-### Requirement: The template detail carries the lists a client needs before it has a label
-
-`GET /api/templates/{id}` SHALL include:
-
-- `inputs.default`: the input list for a label carrying no `data`. A client renders its first form
-  from this without a second round trip.
-- `inputs.all`: the union of every entry any label could produce, one per distinct name, ignoring
-  every `when:` condition. It is what the thumbnail and the template preview fill their sample values
-  from, for the closure reason given in the thumbnail requirement, and what a view describing the
-  template rather than a label reads.
-- `variables`: the `{vars.<key>}` keys the layout reads, as a list of keys without the prefix,
-  ascending.
-
-Every other response carrying the same template-detail body SHALL include them too.
-
-An entry in `inputs.all` SHALL carry the same fields as one in `inputs.default`, decided by the same
-declaration-first rule. That rule already yields one `control` per name, so branches cannot disagree
-about a declared parameter. For a name the template does not declare, where different branches use it
-differently, `image` SHALL win over `textarea`, and `textarea` over `text`, so the union never offers
-a control that cannot hold what some branch needs.
-
-#### Scenario: The detail lists inputs from every branch
-
-- **WHEN** a template reads `{subtitle}` only under `orientation: horizontal` and `{tracking_url}`
-  only under `orientation: vertical`
-- **THEN** `inputs.all` holds both, and `inputs.default` holds only the one the default selection
-  reads when `orientation` declares a `default:`; when it declares none it is absent under
-  `param-resolution`, neither branch is active, and `inputs.default` holds neither
-
-#### Scenario: The union prefers the wider control for an undeclared name
-
-- **WHEN** undeclared `{title}` is read by a `wrap: true` `text` item in one branch and a `wrap: false`
-  one in another
-- **THEN** its `inputs.all` entry carries control `textarea` and `truncated_elsewhere` true
-
-#### Scenario: Variables are listed separately
-
-- **WHEN** a `qr` item interpolates `{vars.base_url}/{id}`
-- **THEN** `variables` holds `base_url`, and neither input list holds an entry for it
-
-#### Scenario: The addition does not disturb the rest of the body
-
-- **WHEN** a client reads `GET /api/templates/{id}`
-- **THEN** every other field of the response is unchanged, and the response still carries no
-  `options` key
 
 ### Requirement: The thumbnail renders the default selection from placeholder data
 
@@ -691,44 +636,48 @@ it has received none, and SHALL surface the failure rather than silently blockin
 - **THEN** the two cells render differently, and the first shows that its value continues past what
   the cell displays
 
-### Requirement: The CSV Import screen offers the parameters the chosen template can read
+### Requirement: The template detail carries the lists a client needs before it has a label
 
-*This requirement supersedes the paragraph of `docs/SPEC.md` "CSV import" describing the web UI's CSV
-Import screen (the paragraph beginning "The web UI's CSV Import screen") and restates its complete
-post-change contract. The rest of that section, covering `POST /import/csv`, is unchanged and remains
-authoritative.*
+`GET /api/templates/{id}` SHALL include:
 
-The web UI's CSV Import screen (`/import`, ADR-0014, ADR-0022, ADR-0055) is a client-side path
-separate from `POST /import/csv`: it parses and edits the CSV in the browser and posts resolved
-labels to `POST /api/batch`. It does not call `/api/import/csv`, which remains the self-contained
-automation endpoint.
+- `inputs.default`: the input list for a label carrying no `data`. A client renders its first form
+  from this without a second round trip.
+- `inputs.all`: the union of every entry any label could produce, one per distinct name, ignoring
+  every `when:` condition. It is what the thumbnail and the template preview fill their sample values
+  from, for the closure reason given in the thumbnail requirement, and what a view describing the
+  template rather than a label reads.
+- `variables`: the `{vars.<key>}` keys the layout reads, as a list of keys without the prefix,
+  ascending.
 
-A CSV MAY be loaded before any template is chosen: data columns show, and parameter columns and
-validation activate once a template is selected. The loaded CSV SHALL survive switching templates,
-including values for columns the newly chosen template does not read.
+Every other response carrying the same template-detail body SHALL include them too.
 
-Every parameter the chosen template can read SHALL be available for mapping, with batch-default
-fallback controls seeded from each entry's `default`. A parameter is available for a row when the
-service reports it as an input for that row; a parameter the template declares but never reads, and
-one read only inside a branch the row's own values deactivate, SHALL NOT be offered for that row.
+An entry in `inputs.all` SHALL carry the same fields as one in `inputs.default`, decided by the same
+declaration-first rule. That rule already yields one `control` per name, so branches cannot disagree
+about a declared parameter. For a name the template does not declare, where different branches use it
+differently, `image` SHALL win over `textarea`, and `textarea` over `text`, so the union never offers
+a control that cannot hold what some branch needs.
 
-#### Scenario: A CSV loads before a template is chosen
+#### Scenario: The detail lists inputs from every branch
 
-- **WHEN** a CSV is loaded with no template selected
-- **THEN** its data columns show, and no parameter column or validation is active
+- **WHEN** a template reads `{subtitle}` only under `orientation: horizontal` and `{tracking_url}`
+  only under `orientation: vertical`
+- **THEN** `inputs.all` holds both, and `inputs.default` holds only the one the default selection
+  reads when `orientation` declares a `default:`; when it declares none it is absent under
+  `param-resolution`, neither branch is active, and `inputs.default` holds neither
 
-#### Scenario: Every parameter the template reads is offered
+#### Scenario: The union prefers the wider control for an undeclared name
 
-- **WHEN** a template is chosen whose parameters are all read unconditionally
-- **THEN** every one of them is available for mapping, with its batch-default fallback control
+- **WHEN** undeclared `{title}` is read by a `wrap: true` `text` item in one branch and a `wrap: false`
+  one in another
+- **THEN** its `inputs.all` entry carries control `textarea` and `truncated_elsewhere` true
 
-#### Scenario: A parameter the template never reads is not offered
+#### Scenario: Variables are listed separately
 
-- **WHEN** a chosen template declares a parameter that no item, condition or attribute reads
-- **THEN** that parameter is not offered for mapping
+- **WHEN** a `qr` item interpolates `{vars.base_url}/{id}`
+- **THEN** `variables` holds `base_url`, and neither input list holds an entry for it
 
-#### Scenario: A CSV value survives a template switch
+#### Scenario: The addition does not disturb the rest of the body
 
-- **WHEN** a CSV carrying a column the newly chosen template does not read is loaded and the template
-  is switched
-- **THEN** the column's values are retained
+- **WHEN** a client reads `GET /api/templates/{id}`
+- **THEN** every other field of the response is unchanged, and the response still carries no
+  `options` key

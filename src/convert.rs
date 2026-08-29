@@ -315,6 +315,31 @@ impl TryFrom<RawTemplateFormat> for TemplateFormat {
     }
 }
 
+fn convert_raw_default(
+    default_raw: Option<serde_yaml_ng::Value>,
+    is_integer: bool,
+) -> Option<ParamValue> {
+    match default_raw {
+        None => None,
+        Some(serde_yaml_ng::Value::Bool(b)) => Some(ParamValue::Boolean(b)),
+        Some(serde_yaml_ng::Value::Number(n)) => {
+            if let Some(i) = n.as_i64() {
+                if is_integer {
+                    Some(ParamValue::Integer(i))
+                } else {
+                    Some(ParamValue::Float(i as f32))
+                }
+            } else if let Some(f) = n.as_f64() {
+                Some(ParamValue::Float(f as f32))
+            } else {
+                Some(ParamValue::String(n.to_string()))
+            }
+        }
+        Some(serde_yaml_ng::Value::String(s)) => Some(ParamValue::String(s)),
+        Some(other) => Some(ParamValue::String(format!("{other:?}"))),
+    }
+}
+
 impl TryFrom<RawParamSpec> for ParamSpec {
     type Error = TemplateError;
 
@@ -326,13 +351,13 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             });
         }
 
+        // Collapse an explicit YAML null default: to None for every type before any type-specific check runs.
+        let default_raw = match raw.default {
+            Some(serde_yaml_ng::Value::Null) | None => None,
+            Some(val) => Some(val),
+        };
+
         if raw.param_type == crate::raw::RawParamType::Datetime {
-            if raw.default.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "default".to_string(),
-                    msg: "default is not supported on datetime parameters; the default is always the render instant".to_string(),
-                });
-            }
             if raw.min.is_some() {
                 return Err(TemplateError::Validation {
                     path: "min".to_string(),
@@ -375,9 +400,11 @@ impl TryFrom<RawParamSpec> for ParamSpec {
                 }
             };
 
+            let default = convert_raw_default(default_raw, false);
+
             return Ok(ParamSpec {
                 param_type: ParamType::Datetime { time },
-                default: None,
+                default,
                 min: None,
                 max: None,
                 description: raw.description,
@@ -410,25 +437,7 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             crate::raw::RawParamType::Datetime => unreachable!(),
         };
 
-        let default = match raw.default {
-            None | Some(serde_yaml_ng::Value::Null) => None,
-            Some(serde_yaml_ng::Value::Bool(b)) => Some(ParamValue::Boolean(b)),
-            Some(serde_yaml_ng::Value::Number(n)) => {
-                if let Some(i) = n.as_i64() {
-                    if matches!(param_type, ParamType::Integer) {
-                        Some(ParamValue::Integer(i))
-                    } else {
-                        Some(ParamValue::Float(i as f32))
-                    }
-                } else if let Some(f) = n.as_f64() {
-                    Some(ParamValue::Float(f as f32))
-                } else {
-                    Some(ParamValue::String(n.to_string()))
-                }
-            }
-            Some(serde_yaml_ng::Value::String(s)) => Some(ParamValue::String(s)),
-            Some(other) => Some(ParamValue::String(format!("{other:?}"))),
-        };
+        let default = convert_raw_default(default_raw, matches!(param_type, ParamType::Integer));
 
         Ok(ParamSpec {
             param_type,
@@ -608,8 +617,8 @@ mod tests {
 
     #[test]
     fn datetime_param_rejects_forbidden_attributes() {
-        assert!(try_build_param("type: datetime\ndefault: 2026-08-19\n").is_err());
-        assert!(try_build_param("type: datetime\ndefault:\n").is_err());
+        assert!(try_build_param("type: datetime\ndefault: \"2026-08-19\"\n").is_ok());
+        assert!(try_build_param("type: datetime\ndefault:\n").is_ok());
         assert!(try_build_param("type: datetime\nformat: short_date\n").is_err());
         assert!(try_build_param("type: datetime\nmin: 0\n").is_err());
         assert!(try_build_param("type: datetime\nmax: 100\n").is_err());

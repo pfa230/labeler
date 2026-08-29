@@ -493,6 +493,7 @@ describe("CSV Import screen", () => {
 // that cannot be parsed must stop the run before it is submitted.
 describe("CSV Import screen: datetime parameters", () => {
   let dtControl: "datetime" | "date" = "datetime";
+  let dtRequired = false;
   const dtDetail = {
     ...detail,
     inputs: {
@@ -518,11 +519,24 @@ describe("CSV Import screen: datetime parameters", () => {
         return json({
           inputs: labels.map(() => [
             { name: "sku", control: "text" },
-            { name: "printed_on", control: dtControl, description: "Print date" },
+            { name: "printed_on", control: dtControl, required: dtRequired, description: "Print date" },
           ]),
         });
       }
-      if (url.startsWith("/api/templates/t1")) return json(dtDetail);
+      const tDetail = {
+        ...dtDetail,
+        inputs: {
+          all: [
+            { name: "sku", control: "text" as const },
+            { name: "printed_on", control: dtControl, required: dtRequired, description: "Print date" },
+          ],
+          default: [
+            { name: "sku", control: "text" as const },
+            { name: "printed_on", control: dtControl, required: dtRequired, description: "Print date" },
+          ],
+        },
+      };
+      if (url.startsWith("/api/templates/t1")) return json(tDetail);
       if (url.startsWith("/api/templates")) return json(dtList);
       if (url.startsWith("/api/printers")) return json(printers);
       if (url.startsWith("/api/render/label"))
@@ -539,6 +553,7 @@ describe("CSV Import screen: datetime parameters", () => {
 
   beforeEach(() => {
     dtControl = "datetime";
+    dtRequired = false;
     vi.unstubAllGlobals();
     fetchMock = stubDatetimeFetch();
     vi.stubGlobal("fetch", fetchMock);
@@ -594,6 +609,15 @@ describe("CSV Import screen: datetime parameters", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /download/i })).toBeDisabled(),
     );
+  });
+
+  it("flags a blank datetime cell when required and blocks the run", async () => {
+    dtRequired = true;
+    renderPage();
+    await loadCsv("");
+
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).toBeDisabled());
   });
 
   // A `datetime` parameter declaring `time: false` is reported as the `date` control, which the

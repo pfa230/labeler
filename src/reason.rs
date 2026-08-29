@@ -36,6 +36,7 @@ reasons! {
     TemplateGroupInvalid => "template_group_invalid",
     TemplateGroupCaseConflict => "template_group_case_conflict",
     TemplateGroupUnsafePath => "template_group_unsafe_path",
+    ParamDefaultUnresolvable => "param_default_unresolvable",
 
     // UnsupportedLayoutItem
     CoordOutOfFrame => "coord_out_of_frame",

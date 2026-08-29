@@ -126,7 +126,7 @@ pub(super) fn interpolate(
                 if let Some(instant) = instants.and_then(|inst| inst.get(name)) {
                     datetime.format(*instant, token.format, inner)?
                 } else if token.format.is_some() {
-                    return Err(AppError::missing_field(inner));
+                    return Err(AppError::missing_field(name));
                 } else {
                     value_to_string(
                         data.get(name)

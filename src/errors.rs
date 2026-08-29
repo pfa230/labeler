@@ -109,6 +109,10 @@ impl AppError {
         self.reason.map(Reason::as_slug)
     }
 
+    pub fn details(&self) -> Option<&Value> {
+        self.details.as_ref()
+    }
+
     pub fn message_text(&self) -> String {
         self.message.clone()
     }
@@ -272,6 +276,30 @@ impl AppError {
 
     pub fn template_group_case_conflict(message: impl Into<String>) -> Self {
         Self::template_invalid(Reason::TemplateGroupCaseConflict, message)
+    }
+
+    pub fn param_default_unresolvable(
+        param: &str,
+        token: Option<&str>,
+        value: Option<&str>,
+    ) -> Self {
+        let msg = match (token, value) {
+            (Some(tok), Some(val)) => {
+                format!("Failed to resolve default for parameter '{param}': token '{tok}' resolved to invalid value '{val}'")
+            }
+            (Some(tok), None) => {
+                format!("Failed to resolve default for parameter '{param}': token '{tok}' could not be resolved")
+            }
+            (None, Some(val)) => {
+                format!(
+                    "Failed to resolve default for parameter '{param}': value '{val}' is invalid"
+                )
+            }
+            (None, None) => {
+                format!("Failed to resolve default for parameter '{param}'")
+            }
+        };
+        Self::template_invalid(Reason::ParamDefaultUnresolvable, msg)
     }
 
     pub fn template_group_mismatch(message: impl Into<String>) -> Self {

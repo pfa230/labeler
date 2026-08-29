@@ -1,43 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
-  reconcileRowOptions,
-  hasServerDefault,
   datetimeCellError,
   formatLocalDate,
   formatLocalDateTime,
   isLeapYear,
   daysInMonth,
 } from "./templateFields";
-
-describe("hasServerDefault", () => {
-  it("returns true for datetime, boolean, enum/select with values, and spec with default", () => {
-    expect(hasServerDefault({ type: "datetime" })).toBe(true);
-    expect(hasServerDefault({ control: "datetime" })).toBe(true);
-    expect(hasServerDefault({ type: "boolean" })).toBe(true);
-    expect(hasServerDefault({ control: "checkbox" })).toBe(true);
-    expect(hasServerDefault({ type: "enum", values: ["a", "b"] })).toBe(true);
-    expect(hasServerDefault({ control: "select", values: ["a", "b"] })).toBe(true);
-    expect(hasServerDefault({ type: "string", default: "hello" })).toBe(true);
-    expect(hasServerDefault({ type: "string" })).toBe(false);
-    expect(hasServerDefault({ type: "integer" })).toBe(false);
-  });
-});
-
-describe("reconcileRowOptions", () => {
-  const opts = { orientation: ["horizontal", "vertical"], outline: ["yes"] };
-  it("defaults missing options to the first allowed value", () => {
-    expect(reconcileRowOptions({}, opts)).toEqual({ orientation: "horizontal", outline: "yes" });
-  });
-  it("keeps an existing value for a still-declared option", () => {
-    expect(reconcileRowOptions({ orientation: "vertical" }, opts)).toEqual({ orientation: "vertical", outline: "yes" });
-  });
-  it("keeps a present-but-blank value (so it stays invalid), only defaults absent options", () => {
-    expect(reconcileRowOptions({ orientation: "" }, opts)).toEqual({ orientation: "", outline: "yes" });
-  });
-  it("drops options not declared by the template", () => {
-    expect(reconcileRowOptions({ gone: "x", orientation: "vertical" }, opts)).toEqual({ orientation: "vertical", outline: "yes" });
-  });
-});
 
 describe("datetimeCellError", () => {
   it("accepts blank values", () => {
