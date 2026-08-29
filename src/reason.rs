@@ -79,6 +79,7 @@ reasons! {
     DatetimePatternInvalid => "datetime_pattern_invalid",
     DatetimeParamInvalid => "datetime_param_invalid",
     ConnectorUnknown => "connector_unknown",
+    ConnectorImmutable => "connector_immutable",
     ConnectionConnectorMissing => "connection_connector_missing",
     ConnectionTransformInvalid => "connection_transform_invalid",
     CredentialRequired => "credential_required",

@@ -93,6 +93,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0084](0084-centred-text-reserves-its-ink.md) | Centred text reserves its ink | Accepted |
 | [0085](0085-text-wrap-flag.md) | Text `wrap` flag, segmentation, and field-level shortening | Accepted |
 | [0086](0086-a-grid-cell-editor-follows-the-reported-control.md) | A grid cell editor follows the reported control | Accepted |
+| [0087](0087-connection-connector-is-immutable.md) | A connection's connector is immutable, and a contradiction is reported | Accepted |
 
 ## Adding an ADR
 

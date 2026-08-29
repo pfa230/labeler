@@ -565,7 +565,8 @@ mod http_tests {
         let v = json_response(res).await;
         assert_eq!(v["public_url"], Value::Null);
 
-        // Set to new public_url
+        // Set to new public_url. Sent with a trailing slash, so the update path is what proves the
+        // normalization, not the create path or the shared helper.
         let res = app
             .clone()
             .oneshot(
@@ -574,7 +575,7 @@ mod http_tests {
                     .uri(format!("/api/connections/{id}"))
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://hb2.example.com"}"#,
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://hb2.example.com/"}"#,
                     ))
                     .unwrap(),
             )
@@ -696,6 +697,12 @@ mod http_tests {
                 "PUT",
                 Body::from(r#"{"connector":"homebox","name":"x","base_url":"http://hb.lan:7745"}"#),
             ),
+            (
+                "PUT",
+                Body::from(
+                    r#"{"connector":"mismatched","name":"x","base_url":"http://hb.lan:7745"}"#,
+                ),
+            ),
             ("DELETE", Body::empty()),
         ] {
             let res = app
@@ -714,10 +721,10 @@ mod http_tests {
         }
     }
 
-    /// A connection's connector is fixed at creation: an update naming a different one is neither
-    /// applied nor refused (#197).
+    /// A connection's connector is fixed at creation: an update naming a different one is rejected
+    /// with 400 and reason connector_immutable (#197).
     #[tokio::test]
-    async fn update_connection_ignores_the_connector_in_the_payload() {
+    async fn update_connection_rejects_mismatched_connector() {
         let app = build_app();
         let res = app
             .clone()
@@ -749,8 +756,270 @@ mod http_tests {
             )
             .await
             .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "connector_immutable");
+    }
+
+    /// Updating a connection sending the stored connector returns 200 and updates fields (#197).
+    #[tokio::test]
+    async fn update_connection_with_matching_connector_succeeds() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"old-name","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"new-name","base_url":"http://hb-updated.lan:7745"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(json_response(res).await["connector"], "homebox");
+        let body = json_response(res).await;
+        assert_eq!(body["connector"], "homebox");
+        assert_eq!(body["name"], "new-name");
+        assert_eq!(body["base_url"], "http://hb-updated.lan:7745");
+    }
+
+    /// A rejected PUT with a mismatched connector changes nothing in the stored connection (#197).
+    #[tokio::test]
+    async fn update_connection_rejected_mismatched_connector_leaves_state_unchanged() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"orig-name","base_url":"http://hb.lan:7745","public_url":"http://pub.lan","credential":"secret","enabled":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"other-connector","name":"mutated-name","base_url":"http://other.lan:7745","public_url":"http://mutated-pub.lan","enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // Read it back: all fields must remain as originally created
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/connections/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_response(res).await;
+        assert_eq!(body["connector"], "homebox");
+        assert_eq!(body["name"], "orig-name");
+        assert_eq!(body["base_url"], "http://hb.lan:7745");
+        assert_eq!(body["public_url"], "http://pub.lan");
+        assert_eq!(body["enabled"], true);
+    }
+
+    /// A connector mismatch outranks every field the update itself validates: the check runs before
+    /// URL and transform validation, so the client is told which connection it is editing before it
+    /// is told which field is malformed. It cannot outrank deserialization, which happens before the
+    /// handler runs; the test below pins that boundary (#197).
+    #[tokio::test]
+    async fn update_connection_connector_mismatch_outranks_other_invalid_fields() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        for (field, payload) in [
+            (
+                "base_url",
+                r#"{"connector":"mismatched-connector","name":"home","base_url":"not a url"}"#,
+            ),
+            (
+                "public_url",
+                r#"{"connector":"mismatched-connector","name":"home","base_url":"http://hb.lan:7745","public_url":"ftp://nope"}"#,
+            ),
+            (
+                "transforms",
+                r#"{"connector":"mismatched-connector","name":"home","base_url":"http://hb.lan:7745","transforms":[{"resource":"nope","source":"x","pattern":"y"}]}"#,
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/api/connections/{id}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(payload))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad {field}");
+            let body = json_response(res).await;
+            assert_eq!(body["error"]["code"], "InvalidRequest", "bad {field}");
+            assert_eq!(
+                body["error"]["details"]["reason"], "connector_immutable",
+                "bad {field}"
+            );
+        }
+    }
+
+    /// A body that never deserializes is rejected by the request layer, before the handler and so
+    /// before the `connector` comparison, which cannot precede reading the payload that carries it.
+    /// What that rejection reports is the request layer's own contract, not this one's: since #225
+    /// the crate's `Json<T>` extractor maps every deserialization failure to `400 InvalidRequest`
+    /// with `json_malformed` (ADR-0075). Out of scope for #197; what matters here is only that the
+    /// rejection is not `connector_immutable` (#197).
+    #[tokio::test]
+    async fn update_connection_undeserializable_body_is_rejected_before_the_connector_check() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        for (case, expected, payload) in [
+            (
+                "not json",
+                StatusCode::BAD_REQUEST,
+                r#"{"connector":"nope","#,
+            ),
+            (
+                "connector of the wrong type",
+                StatusCode::BAD_REQUEST,
+                r#"{"connector":42,"name":"home","base_url":"http://hb.lan:7745"}"#,
+            ),
+            (
+                "required key missing",
+                StatusCode::BAD_REQUEST,
+                r#"{"connector":"nope","base_url":"http://hb.lan:7745"}"#,
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/api/connections/{id}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(payload))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), expected, "{case}");
+            let body = String::from_utf8(bytes_response(res).await).expect("utf-8 body");
+            assert!(
+                !body.contains("connector_immutable"),
+                "{case}: rejected before the connector check, got {body}"
+            );
+        }
+    }
+
+    /// The comparison is byte equality, not a case-insensitive one: `ConnectorRegistry::get` matches
+    /// ids literally, so a connector differing only in case is a different connector (#197).
+    #[tokio::test]
+    async fn update_connection_rejects_a_connector_differing_only_in_case() {
+        let app = build_app();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"Homebox","name":"home","base_url":"http://hb.lan:7745"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "connector_immutable");
     }
 
     #[tokio::test]
