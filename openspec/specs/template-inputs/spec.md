@@ -504,9 +504,57 @@ above until an operator chooses. A range presentation cannot express "nothing is
 always sits somewhere — so an entry with no `default` SHALL NOT be presented as one, whatever its `slider`
 flag says; it takes the plain numeric control until it has a value.
 
+**Deferring to a declared default.** The print form SHALL offer, for every entry carrying a `default`,
+a checkbox by which the operator says that the template decides this one. Its visible label SHALL read
+`Use default` and SHALL name the entry's **published** `default` beside it, as text. Its accessible name
+SHALL contain the entry's `name`, which is unique within a list, so two entries are distinguishable even
+when they share a `description` and a default; it MAY also carry the description and the default. The
+checkbox SHALL NOT share a label element with the entry's value control. The checkbox SHALL be checked
+whenever the entry first appears.
+
+**Deferral changes what a screen submits, and nothing else.** While an entry is deferred its value
+control SHALL be disabled and its name SHALL NOT appear in the `data` the screen submits, so the service
+resolves it under `param-resolution`.
+
+What that disabled control *displays* is whatever the seeding rule above already puts there. This
+requirement adds no claim that a published default can be shown in its control, held by it, or edited
+from it: that subject is reserved above, where `"80mm"` in a `length` and an RFC 3339 `datetime` are
+named as unsettled, and it is #262's. What the checkbox's label gives the operator is the entry's
+published default, named as text so no control need be able to hold it, and an `image` entry's file
+chooser could not. The label SHALL NOT be read as naming what the label will print: the published
+default is what the list carried when the screen rendered it, a published default may be one the render
+rejects rather than prints, and this requirement promises only that the label names it.
+
+Because deferral never empties a control, it cannot make an entry incomplete, and the meaning of
+`required` is untouched by this rule.
+
+Clearing the checkbox SHALL enable the control and SHALL leave whatever the seeding rule gave it in
+place; whatever it then holds is submitted like any other value, including a value equal to the default.
+Re-checking SHALL restore deferral and SHALL discard any value entered while it was cleared, returning
+the control to the state the seeding rule defines for it; for a control the browser owns rather than the
+screen, such as the file chooser an `image` entry renders, re-checking SHALL also clear that chooser's
+own selection, so a shown filename cannot outlast the value it stood for.
+
+Deferral is offered for every `control`, and for most of them it is the only gesture that reaches
+omission at all. The pruning rule below drops an empty value for `integer`, `number`, `select`,
+`checkbox`, `date` and `datetime`, but a screen can only send an empty value for a control that can be
+emptied: a `checkbox` presentation toggles between two booleans, a `select` offers only its declared
+options, and a bounded numeric entry is a slider that always sits somewhere. Emptying is therefore a
+real gesture on an unbounded numeric entry and on a `date` or `datetime` control, and on nothing else.
+For every remaining control, including `text`, `textarea` and `image` where an empty value is a value,
+the checkbox is the first way an operator can say it.
+
+The CSV import grid and the connector grid SHALL NOT offer deferral, and SHALL keep seeding and
+submitting each entry's `default` as they do today. #242 tracks the affordance for them.
+
 The print form SHALL render `inputs.default` for its first paint and SHALL then request a list for
-the label it would actually submit, including any value it seeded itself, before treating that label
-as complete. This matters because the form now seeds a `datetime` control from what the list
+the label it would actually submit, before treating that label as complete. "Would actually submit"
+means the same map submission would carry: the values it holds, pruned by the rules below, and without
+any name it is deferring. A deferred name reaches that derivation as an omission, which is what it will
+be at render time, so the branch the list reports is the branch the render takes. A published default
+the render would reject is not made safe by this: it resolves leniently here and strictly there,
+exactly as `param-resolution` already specifies for any omitted name, and this rule claims nothing
+more. This matters because the form now seeds a `datetime` control from what the list
 publishes for it (`datetime-params`), which is the same value the list was computed with, so the
 date-boundary divergence this rule once guarded against cannot arise. What remains, and still requires
 the re-request, is that a parameter whose declared default carries interpolation syntax is absent to that
@@ -562,7 +610,18 @@ before any row exists and can target a name only some branch reads.
 
 A value already entered for a name a later list omits SHALL be retained in the screen's own state, so
 that reselecting the branch restores it, and SHALL NOT be included in the `data` the screen submits.
-A screen SHALL submit exactly the names in its current list.
+A screen SHALL submit exactly the names in its current list, less any name it is deferring.
+
+Deferral is per entry and SHALL follow the entry, not the position: an entry that newly appears in a
+list because another value activated its branch SHALL arrive deferred if it publishes a `default`, and
+an entry that leaves the list SHALL keep its deferral state, restored if it returns, on the same terms
+the rule above retains its value.
+
+Selecting a different template SHALL reinitialise **both** the screen's values and its deferral state
+from the new template's `inputs.default`, overriding the retention rule above, which governs branch
+changes within one template only. A name the two templates share carries nothing across: not its value,
+not its deferral. Without this a shared name would display the previous template's value in a disabled
+control while the render resolved the new template's default.
 
 This is not an optimization. Rendering resolves and coerces every declared parameter before it
 evaluates any `when:`, so a value that fails coercion rejects the render whether or not the item that
@@ -690,6 +749,88 @@ it has received none, and SHALL surface the failure rather than silently blockin
   `line one line two`
 - **THEN** the two cells render differently, and the first shows that its value continues past what
   the cell displays
+
+#### Scenario: A declared default starts deferred and is not sent
+
+- **WHEN** the print form first paints a template whose `title` entry publishes `default: "Untitled"`
+- **THEN** `title` shows a checked checkbox whose visible label reads `Use default` and names
+  `Untitled`, whose accessible name includes `title`'s own label, its value control is disabled, and
+  submitting sends `data` with no `title` key
+
+#### Scenario: Two entries sharing a description and a default stay distinguishable
+
+- **WHEN** a template publishes `title` and `subtitle`, both with `description: "Line"` and
+  `default: "Untitled"`
+- **THEN** the two checkboxes have different accessible names, each containing its entry's `name`
+
+#### Scenario: A default no control can hold still defers
+
+- **WHEN** an entry publishes `default: "80mm"` with control `number`, and another publishes a default
+  with control `image`
+- **THEN** each shows a checked checkbox naming its published default as text, each control is
+  disabled, and submitting sends no key for either, whatever the controls display
+
+#### Scenario: Editing the template's default changes what a deferred entry prints
+
+- **WHEN** that template's `title` default becomes `Draft`, the templates are reloaded, and the form is
+  opened again with `title` left deferred
+- **THEN** the label prints `Draft`, with no edit to the form
+
+#### Scenario: Clearing the checkbox submits whatever the control holds
+
+- **WHEN** the operator clears `title`'s checkbox
+- **THEN** the control becomes editable, and submitting sends `title` as whatever it then holds
+
+#### Scenario: Re-checking discards the edit
+
+- **WHEN** the operator clears the checkbox, types `Kitchen`, and re-checks it
+- **THEN** the control is disabled, no longer holds `Kitchen`, and submitting sends no `title` key
+
+#### Scenario: Re-checking clears a chosen file
+
+- **WHEN** the operator clears an `image` entry's checkbox, chooses a file, and re-checks it
+- **THEN** the file chooser shows no selection and submitting sends no key for that entry
+
+#### Scenario: Switching templates carries nothing across a shared name
+
+- **WHEN** template A and template B both publish a `title` entry with different defaults, the operator
+  edits `title` under A and then selects B
+- **THEN** `title` is deferred again, its control holds nothing carried from A, and submitting sends no
+  `title` key
+
+#### Scenario: A text entry can defer, which emptying it cannot express
+
+- **WHEN** an entry with control `text` publishes a `default` and is left deferred
+- **THEN** the submitted `data` carries no key for it, rather than the empty string an emptied `text`
+  control would submit
+
+#### Scenario: The list request omits a deferred name
+
+- **WHEN** the form requests a list for a label with `orientation` deferred
+- **THEN** the request body's `data` carries no `orientation` key, and the returned list is the one for
+  the branch the declared default selects
+
+#### Scenario: An entry appearing later arrives deferred
+
+- **WHEN** switching `orientation` brings a `subtitle` entry publishing a `default` into the list for
+  the first time
+- **THEN** `subtitle` appears with its checkbox checked and its name absent from the submitted `data`
+
+#### Scenario: An entry that leaves and returns keeps its deferral state
+
+- **WHEN** the operator clears `subtitle`'s checkbox, switches the branch away and back
+- **THEN** `subtitle` returns with its checkbox still cleared
+
+#### Scenario: An entry with no published default offers no deferral
+
+- **WHEN** an entry publishes no `default`, whether the parameter declares none or its declared default
+  carries interpolation syntax
+- **THEN** no checkbox is rendered for it and it behaves exactly as it does today
+
+#### Scenario: A grid keeps seeding and submitting
+
+- **WHEN** the CSV import grid and the connector grid render a column whose entry publishes a `default`
+- **THEN** each cell is seeded with that default and submitted, and neither grid offers a checkbox
 
 ### Requirement: The CSV Import screen offers the parameters the chosen template can read
 
