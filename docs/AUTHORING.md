@@ -583,7 +583,7 @@ What to know:
 - **`time:` picks the control, not the output.** Nothing stops a template from declaring `time: false` and then printing `{printed_on:time}`; the date picker has no time to give, so that prints `00:00`. Pair a token that shows a time with `time: true`, and check the result the way you check any other template: render it and look.
 - **Which one to reach for.** Use `{sys.now}` / `{sys.now:<name>}` when the label should always say when it was printed and the caller has no say in it. Declare a `datetime` parameter when the caller must be able to choose the instant. Both use the same `datetime_formats` patterns.
 
-### Flow layout (`flow: { direction, gap }`)
+### Flow layout (`flow: { direction, gap, wrap, line_gap, overflow }`)
 
 A `container` may declare a `flow` block to pack its children sequentially in order rather than positioning each child with absolute `at` or `to` coordinates ([ADR-0083](adr/0083-packed-children-flow-layout.md)):
 
@@ -620,6 +620,33 @@ What to know:
   - **Beside a sibling:** An uncapped `fill` child claims the entire inner extent, advancing the cursor past the container frame and failing at render with `item_out_of_frame`. When pairing `fill` with siblings, cap it using `max_w` (in a row) or `max_h` (in a column).
 - **Wrapping `content`-sized text in a row:** A text child with `wrap: true` and `size: [content, ...]` measures its wrapped line box against the container's full padded inner width, so its content width equals the inner width. Consequently, it can only be packed first or alone; placed after a sibling (e.g. following a QR code), its width plus the preceding sibling's width overruns the container and fails with `item_out_of_frame`. To place multiline text beside a sibling, give it an explicit numeric width (or cap it).
 - **Nested flow containers.** A flow container inside another flow container packs its assembled extent (sum of child sizes + gaps) into the parent flow.
+
+To continue a row on another line, give the container a resolved width and enable `wrap`. This short
+snippet isolates wrapping; the first two 14mm boxes fill the first line exactly, and the third starts
+6mm lower plus the 1mm `line_gap`:
+
+```yaml
+- type: container
+  at: [0, 0]
+  size: [30, 20]
+  flow:
+    direction: row
+    gap: 2
+    wrap: true
+    line_gap: 1
+    overflow: fail
+  items:
+    - { type: text, value: "A", size: [14, 6], font_size: 8 }
+    - { type: text, value: "B", size: [14, 6], font_size: 8 }
+    - { type: text, value: "C", size: [14, 6], font_size: 8 }
+```
+
+Line breaks are decided from the child boxes, not their reported content requirements. Each line
+advances by its tallest drawn box, and `line_gap` appears only between lines. A row needs a resolved
+container width to wrap; a column needs a resolved height. `overflow: fail` keeps the default
+`item_out_of_frame` error if the stack of lines does not fit. `overflow: trim` instead omits the first
+child that does not fit and every child after it, without marking or reporting the trim. Because that
+removal must not resize the container, `trim` requires both container axes to be resolved.
 
 ### Rotation
 

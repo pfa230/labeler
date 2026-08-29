@@ -602,12 +602,62 @@ pub enum FlowDirection {
     Column,
 }
 
+#[derive(Debug, Default, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowOverflow {
+    #[default]
+    Fail,
+    Trim,
+    /// Parsing sentinel. Conversion refuses it before a `Flow` enters the domain model, and it is
+    /// neither serializable nor part of the published schema.
+    #[serde(skip)]
+    Invalid,
+}
+
+impl<'de> Deserialize<'de> for FlowOverflow {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "fail" => Self::Fail,
+            "trim" => Self::Trim,
+            _ => Self::Invalid,
+        })
+    }
+}
+
+#[cfg(test)]
+mod flow_overflow_tests {
+    use super::FlowOverflow;
+    use utoipa::PartialSchema;
+
+    #[test]
+    fn invalid_parse_sentinel_is_not_published() {
+        assert_eq!(
+            serde_yaml_ng::from_str::<FlowOverflow>("discard").unwrap(),
+            FlowOverflow::Invalid
+        );
+        let schema = serde_json::to_string(&FlowOverflow::schema()).unwrap();
+        assert!(schema.contains("fail"), "got {schema}");
+        assert!(schema.contains("trim"), "got {schema}");
+        assert!(!schema.contains("invalid"), "got {schema}");
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Flow {
     pub direction: FlowDirection,
     #[serde(default)]
     pub gap: f32,
+    #[serde(default)]
+    pub wrap: bool,
+    #[serde(default)]
+    pub line_gap: f32,
+    #[serde(default)]
+    pub overflow: FlowOverflow,
 }
 
 /// How a box item's extent is expressed on the wire: `size:` (width and height) xor `to:` (the

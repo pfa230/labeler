@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::models::{
-    DynamicValue, Extent, Flow, FlowDirection, Padding, Placement, Rotation, SizeValue,
+    DynamicValue, Extent, Flow, FlowDirection, FlowOverflow, Padding, Placement, Rotation,
+    SizeValue,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -532,105 +533,166 @@ pub fn arrange_flow(
 ) -> Result<FlowResult, (usize, Violation)> {
     let is_row = matches!(flow.direction, FlowDirection::Row);
     let primary_axis = if is_row { 0 } else { 1 };
+    let secondary_axis = if is_row { 1 } else { 0 };
     let inner_primary = if is_row { inner.0 } else { inner.1 };
+    let inner_secondary = if is_row { inner.1 } else { inner.0 };
 
-    let n = children.len();
-    let mut has_occupying_after = vec![false; n];
-    let mut occ_after = false;
-    for i in (0..n).rev() {
-        has_occupying_after[i] = occ_after;
-        let ext_p = if is_row {
-            children[i].resolved_box.0
-        } else {
-            children[i].resolved_box.1
-        };
-        if ext_p > 0.0 {
-            occ_after = true;
-        }
-    }
-
-    let mut cursor = 0.0_f32;
-    let mut is_first_occupying = true;
-    let mut num_occupying = 0usize;
-    let mut sum_occupying_req_primary = 0.0_f32;
-    let mut max_active_req_secondary = 0.0_f32;
-
-    let mut rects = Vec::with_capacity(children.len());
-
+    // Decide line membership from box extents only. Zero-primary children join the line current
+    // when they are encountered; they never trigger a break and never move to the line a later
+    // occupying child may start.
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    let mut line_box_primary = 0.0_f32;
+    let mut line_has_occupying = false;
     for (idx, child) in children.iter().enumerate() {
         let ext_p = if is_row {
             child.resolved_box.0
         } else {
             child.resolved_box.1
         };
-        let ext_s = if is_row {
-            child.resolved_box.1
-        } else {
-            child.resolved_box.0
-        };
-        let req_p = if is_row {
-            child.requirement.0
-        } else {
-            child.requirement.1
-        };
-        let req_s = if is_row {
-            child.requirement.1
-        } else {
-            child.requirement.0
-        };
-
-        max_active_req_secondary = max_active_req_secondary.max(req_s);
-
         let occupies = ext_p > 0.0;
-
-        let child_lead_p = if occupies {
-            if !is_first_occupying {
-                cursor += flow.gap;
+        let pending_gap = if line_has_occupying { flow.gap } else { 0.0 };
+        if flow.wrap
+            && occupies
+            && line_has_occupying
+            && line_box_primary + pending_gap + ext_p > inner_primary + BOUNDS_EPSILON
+        {
+            lines.push(Vec::new());
+            line_box_primary = 0.0;
+            line_has_occupying = false;
+        }
+        if lines.is_empty() {
+            lines.push(Vec::new());
+        }
+        lines.last_mut().expect("line exists").push(idx);
+        if occupies {
+            if line_has_occupying {
+                line_box_primary += flow.gap;
             }
-            is_first_occupying = false;
+            line_box_primary += ext_p;
+            line_has_occupying = true;
+        }
+    }
 
-            fits_frame(primary_axis, cursor, ext_p, inner_primary).map_err(|v| (idx, v))?;
+    let mut rects = Vec::with_capacity(children.len());
+    let mut assembled_primary = 0.0_f32;
+    let mut assembled_secondary = 0.0_f32;
+    let mut drawn_lines = 0usize;
+    let mut line_lead_secondary = 0.0_f32;
 
-            let lead = cursor;
-            cursor += ext_p;
-            num_occupying += 1;
-            sum_occupying_req_primary += req_p;
-            lead
-        } else {
-            let lead = if !is_first_occupying && has_occupying_after[idx] {
+    'lines: for line in &lines {
+        let mut has_occupying_after = vec![false; line.len()];
+        let mut occupying_after = false;
+        for (line_pos, &idx) in line.iter().enumerate().rev() {
+            has_occupying_after[line_pos] = occupying_after;
+            let ext_p = if is_row {
+                children[idx].resolved_box.0
+            } else {
+                children[idx].resolved_box.1
+            };
+            if ext_p > 0.0 {
+                occupying_after = true;
+            }
+        }
+
+        let mut cursor = 0.0_f32;
+        let mut num_occupying = 0usize;
+        let mut line_requirement_primary = 0.0_f32;
+        let mut line_box_secondary = 0.0_f32;
+        let mut line_requirement_secondary = 0.0_f32;
+        let mut drawn_on_line = 0usize;
+        let mut trim_here = false;
+
+        for (line_pos, &idx) in line.iter().enumerate() {
+            let child = &children[idx];
+            let ext_p = if is_row {
+                child.resolved_box.0
+            } else {
+                child.resolved_box.1
+            };
+            let ext_s = if is_row {
+                child.resolved_box.1
+            } else {
+                child.resolved_box.0
+            };
+            let req_p = if is_row {
+                child.requirement.0
+            } else {
+                child.requirement.1
+            };
+            let req_s = if is_row {
+                child.requirement.1
+            } else {
+                child.requirement.0
+            };
+            let occupies = ext_p > 0.0;
+
+            let child_lead_primary = if occupies {
+                if num_occupying > 0 {
+                    cursor += flow.gap;
+                }
+                cursor
+            } else if num_occupying > 0 && has_occupying_after[line_pos] {
                 cursor + flow.gap
             } else {
                 cursor
             };
-            fits_frame(primary_axis, lead, 0.0, inner_primary).map_err(|v| (idx, v))?;
-            lead
-        };
 
-        let placed = if is_row {
-            Placed {
-                x: child_lead_p,
-                y: inner.1 - ext_s,
-                w: ext_p.max(0.0),
-                h: ext_s.max(0.0),
+            let violation = fits_frame(primary_axis, child_lead_primary, ext_p, inner_primary)
+                .and_then(|()| {
+                    fits_frame(secondary_axis, line_lead_secondary, ext_s, inner_secondary)
+                });
+            if let Err(violation) = violation {
+                match flow.overflow {
+                    FlowOverflow::Fail | FlowOverflow::Invalid => return Err((idx, violation)),
+                    FlowOverflow::Trim => {
+                        trim_here = true;
+                        break;
+                    }
+                }
             }
-        } else {
-            Placed {
-                x: 0.0,
-                y: inner.1 - (child_lead_p + ext_p),
-                w: ext_s.max(0.0),
-                h: ext_p.max(0.0),
-            }
-        };
 
-        rects.push(placed);
+            let placed = if is_row {
+                Placed {
+                    x: child_lead_primary,
+                    y: inner.1 - line_lead_secondary - ext_s,
+                    w: ext_p.max(0.0),
+                    h: ext_s.max(0.0),
+                }
+            } else {
+                Placed {
+                    x: line_lead_secondary,
+                    y: inner.1 - (child_lead_primary + ext_p),
+                    w: ext_s.max(0.0),
+                    h: ext_p.max(0.0),
+                }
+            };
+            rects.push(placed);
+            drawn_on_line += 1;
+            line_box_secondary = line_box_secondary.max(ext_s);
+            line_requirement_secondary = line_requirement_secondary.max(req_s);
+            if occupies {
+                cursor += ext_p;
+                num_occupying += 1;
+                line_requirement_primary += req_p;
+            }
+        }
+
+        if drawn_on_line > 0 {
+            if num_occupying > 1 {
+                line_requirement_primary += (num_occupying - 1) as f32 * flow.gap;
+            }
+            assembled_primary = assembled_primary.max(line_requirement_primary);
+            if drawn_lines > 0 {
+                assembled_secondary += flow.line_gap;
+            }
+            assembled_secondary += line_requirement_secondary;
+            drawn_lines += 1;
+        }
+        if trim_here {
+            break 'lines;
+        }
+        line_lead_secondary += line_box_secondary + flow.line_gap;
     }
-
-    let assembled_primary = if num_occupying == 0 {
-        0.0
-    } else {
-        sum_occupying_req_primary + (num_occupying - 1) as f32 * flow.gap
-    };
-    let assembled_secondary = max_active_req_secondary;
 
     let assembled = if is_row {
         (assembled_primary, assembled_secondary)
@@ -925,6 +987,9 @@ mod tests {
         let flow = Flow {
             direction: FlowDirection::Row,
             gap: 5.0,
+            wrap: false,
+            line_gap: 0.0,
+            overflow: FlowOverflow::Fail,
         };
         // 3 active children (caller filters inactive children before calling arrange_flow)
         let children = vec![
@@ -982,6 +1047,9 @@ mod tests {
         let flow = Flow {
             direction: FlowDirection::Row,
             gap: 4.0,
+            wrap: false,
+            line_gap: 0.0,
+            overflow: FlowOverflow::Fail,
         };
         let children = vec![
             FlowChildInput {
@@ -1013,6 +1081,9 @@ mod tests {
         let flow = Flow {
             direction: FlowDirection::Column,
             gap: 10.0,
+            wrap: false,
+            line_gap: 0.0,
+            overflow: FlowOverflow::Fail,
         };
         let children = vec![
             FlowChildInput {
@@ -1053,6 +1124,9 @@ mod tests {
         let row_flow = Flow {
             direction: FlowDirection::Row,
             gap: 5.0,
+            wrap: false,
+            line_gap: 0.0,
+            overflow: FlowOverflow::Fail,
         };
         let row_children = vec![
             FlowChildInput {
@@ -1070,6 +1144,9 @@ mod tests {
         let col_flow = Flow {
             direction: FlowDirection::Column,
             gap: 5.0,
+            wrap: false,
+            line_gap: 0.0,
+            overflow: FlowOverflow::Fail,
         };
         let col_children = vec![
             FlowChildInput {
@@ -1083,5 +1160,284 @@ mod tests {
         ];
         let col_err = arrange_flow((50.0, 30.0), &col_flow, &col_children).expect_err("overflow");
         assert_eq!(col_err, (1, Violation::ExtentBeyondFrame { axis: 1 }));
+    }
+
+    #[test]
+    fn flow_wraps_rows_and_assembles_from_lines() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 2.0,
+            wrap: true,
+            line_gap: 1.0,
+            overflow: FlowOverflow::Fail,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (8.0, 4.0),
+                requirement: (8.0, 4.0),
+            },
+            FlowChildInput {
+                resolved_box: (8.0, 6.0),
+                requirement: (8.0, 6.0),
+            },
+            FlowChildInput {
+                resolved_box: (8.0, 5.0),
+                requirement: (8.0, 5.0),
+            },
+        ];
+
+        let res = arrange_flow((20.0, 30.0), &flow, &children).expect("wrapped row");
+        assert_eq!(
+            res.rects[0],
+            Placed {
+                x: 0.0,
+                y: 26.0,
+                w: 8.0,
+                h: 4.0
+            }
+        );
+        assert_eq!(
+            res.rects[1],
+            Placed {
+                x: 10.0,
+                y: 24.0,
+                w: 8.0,
+                h: 6.0
+            }
+        );
+        assert_eq!(
+            res.rects[2],
+            Placed {
+                x: 0.0,
+                y: 18.0,
+                w: 8.0,
+                h: 5.0
+            }
+        );
+        assert_eq!(res.assembled, (18.0, 12.0));
+    }
+
+    #[test]
+    fn flow_wraps_columns_in_author_space() {
+        let flow = Flow {
+            direction: FlowDirection::Column,
+            gap: 2.0,
+            wrap: true,
+            line_gap: 1.0,
+            overflow: FlowOverflow::Fail,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (4.0, 8.0),
+                requirement: (4.0, 8.0),
+            },
+            FlowChildInput {
+                resolved_box: (6.0, 8.0),
+                requirement: (6.0, 8.0),
+            },
+            FlowChildInput {
+                resolved_box: (5.0, 8.0),
+                requirement: (5.0, 8.0),
+            },
+        ];
+
+        let res = arrange_flow((30.0, 20.0), &flow, &children).expect("wrapped column");
+        assert_eq!(
+            res.rects[0],
+            Placed {
+                x: 0.0,
+                y: 12.0,
+                w: 4.0,
+                h: 8.0
+            }
+        );
+        assert_eq!(
+            res.rects[1],
+            Placed {
+                x: 0.0,
+                y: 2.0,
+                w: 6.0,
+                h: 8.0
+            }
+        );
+        assert_eq!(
+            res.rects[2],
+            Placed {
+                x: 7.0,
+                y: 12.0,
+                w: 5.0,
+                h: 8.0
+            }
+        );
+        assert_eq!(res.assembled, (12.0, 18.0));
+    }
+
+    #[test]
+    fn flow_positions_lines_from_boxes_but_assembles_from_requirements() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 0.0,
+            wrap: true,
+            line_gap: 1.0,
+            overflow: FlowOverflow::Fail,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (20.0, 30.0),
+                requirement: (20.0, 4.0),
+            },
+            FlowChildInput {
+                resolved_box: (1.0, 4.0),
+                requirement: (1.0, 4.0),
+            },
+        ];
+
+        let res = arrange_flow((20.0, 40.0), &flow, &children).expect("box/requirement split");
+        assert_eq!(
+            res.rects[1].y, 5.0,
+            "next line follows the 30-unit box plus line_gap"
+        );
+        assert_eq!(res.assembled, (20.0, 9.0));
+    }
+
+    #[test]
+    fn zero_primary_child_stays_on_line_before_later_wrap() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 2.0,
+            wrap: true,
+            line_gap: 1.0,
+            overflow: FlowOverflow::Fail,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (15.0, 4.0),
+                requirement: (15.0, 4.0),
+            },
+            FlowChildInput {
+                resolved_box: (0.0, 6.0),
+                requirement: (0.0, 6.0),
+            },
+            FlowChildInput {
+                resolved_box: (10.0, 4.0),
+                requirement: (10.0, 4.0),
+            },
+        ];
+
+        let res = arrange_flow((20.0, 20.0), &flow, &children).expect("zero before wrap");
+        assert_eq!(
+            res.rects[1],
+            Placed {
+                x: 15.0,
+                y: 14.0,
+                w: 0.0,
+                h: 6.0
+            }
+        );
+        assert_eq!(
+            res.rects[2],
+            Placed {
+                x: 0.0,
+                y: 9.0,
+                w: 10.0,
+                h: 4.0
+            }
+        );
+        assert_eq!(res.assembled, (15.0, 11.0));
+    }
+
+    #[test]
+    fn flow_wrap_boundary_including_pending_gap_uses_epsilon() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 2.0,
+            wrap: true,
+            line_gap: 3.0,
+            overflow: FlowOverflow::Fail,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (8.0, 4.0),
+                requirement: (8.0, 4.0),
+            },
+            FlowChildInput {
+                resolved_box: (10.0 + BOUNDS_EPSILON / 2.0, 4.0),
+                requirement: (10.0 + BOUNDS_EPSILON / 2.0, 4.0),
+            },
+        ];
+
+        let res = arrange_flow((20.0, 10.0), &flow, &children).expect("epsilon boundary");
+        assert_eq!(res.rects[1].x, 10.0);
+        assert_eq!(res.rects[1].y, 6.0, "child remains on the first line");
+    }
+
+    #[test]
+    fn trim_stops_at_primary_overrun_and_excludes_the_tail_from_assembly() {
+        let flow = Flow {
+            direction: FlowDirection::Row,
+            gap: 2.0,
+            wrap: false,
+            line_gap: 0.0,
+            overflow: FlowOverflow::Trim,
+        };
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (8.0, 4.0),
+                requirement: (8.0, 4.0),
+            },
+            FlowChildInput {
+                resolved_box: (8.0, 6.0),
+                requirement: (8.0, 6.0),
+            },
+            FlowChildInput {
+                resolved_box: (2.0, 10.0),
+                requirement: (2.0, 10.0),
+            },
+            FlowChildInput {
+                resolved_box: (1.0, 12.0),
+                requirement: (1.0, 12.0),
+            },
+        ];
+
+        let res = arrange_flow((20.0, 20.0), &flow, &children).expect("trim primary overrun");
+        assert_eq!(res.rects.len(), 2);
+        assert_eq!(res.assembled, (18.0, 6.0));
+    }
+
+    #[test]
+    fn trim_drops_first_line_that_overruns_secondary_axis() {
+        let children = vec![
+            FlowChildInput {
+                resolved_box: (20.0, 4.0),
+                requirement: (20.0, 4.0),
+            },
+            FlowChildInput {
+                resolved_box: (20.0, 4.0),
+                requirement: (20.0, 4.0),
+            },
+            FlowChildInput {
+                resolved_box: (20.0, 4.0),
+                requirement: (20.0, 4.0),
+            },
+        ];
+        let trim = Flow {
+            direction: FlowDirection::Row,
+            gap: 0.0,
+            wrap: true,
+            line_gap: 1.0,
+            overflow: FlowOverflow::Trim,
+        };
+        let fail = Flow {
+            overflow: FlowOverflow::Fail,
+            ..trim.clone()
+        };
+
+        let res = arrange_flow((20.0, 9.0), &trim, &children).expect("trim third line");
+        assert_eq!(res.rects.len(), 2);
+        assert_eq!(res.assembled, (20.0, 9.0));
+        assert_eq!(
+            arrange_flow((20.0, 9.0), &fail, &children),
+            Err((2, Violation::AnchorBeyondFrame { axis: 1 }))
+        );
     }
 }

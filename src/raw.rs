@@ -2,7 +2,8 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, DynamicValue, Fit, FontSize, Frame, Overflow, Position, QrParams, SheetPosition,
+    Alignment, DynamicValue, Fit, FlowOverflow, FontSize, Frame, Overflow, Position, QrParams,
+    SheetPosition,
 };
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +232,12 @@ pub struct FlowRaw {
     pub direction: Option<String>,
     #[serde(default)]
     pub gap: Option<f32>,
+    #[serde(default)]
+    pub wrap: bool,
+    #[serde(default)]
+    pub line_gap: Option<f32>,
+    #[serde(default)]
+    pub overflow: Option<FlowOverflow>,
 }
 
 #[derive(Debug, Deserialize)]

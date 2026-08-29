@@ -89,12 +89,13 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0080](0080-unify-size-resolution.md) | One size-resolution protocol across validation, measurement, and rendering | Accepted (amended by [0083](0083-packed-children-flow-layout.md)) |
 | [0081](0081-size-vocabulary-content-and-fill.md) | Sizing vocabulary is `content` and `fill` | Accepted (amended by [0083](0083-packed-children-flow-layout.md)) |
 | [0082](0082-text-overflow-policy.md) | Text overflow is an authored policy (`ellipsis` or `fail`) | Accepted |
-| [0083](0083-packed-children-flow-layout.md) | A packed child is anchorless, and its container's arrangement places it | Accepted |
+| [0083](0083-packed-children-flow-layout.md) | A packed child is anchorless, and its container's arrangement places it | Accepted (amended by [0089](0089-wrapping-and-the-overflow-policy.md)) |
 | [0084](0084-centred-text-reserves-its-ink.md) | Centred text reserves its ink | Accepted |
 | [0085](0085-text-wrap-flag.md) | Text `wrap` flag, segmentation, and field-level shortening | Accepted |
 | [0086](0086-a-grid-cell-editor-follows-the-reported-control.md) | A grid cell editor follows the reported control | Accepted |
 | [0087](0087-connection-connector-is-immutable.md) | A connection's connector is immutable, and a contradiction is reported | Accepted |
 | [0088](0088-explicit-parameter-defaults.md) | A parameter is required unless its template declares a default | Accepted |
+| [0089](0089-wrapping-and-the-overflow-policy.md) | Wrapping and the overflow policy | Accepted |
 
 ## Adding an ADR
 

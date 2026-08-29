@@ -7,9 +7,9 @@ use thiserror::Error;
 
 use crate::errors::TemplateError;
 use crate::models::{
-    resolve_coord, DynamicDimension, DynamicValue, Extent, FontSize, InputControl, InputSpec,
-    Layout, LayoutItem, Options, ParamSpec, ParamType, Placement, Point, Size, SizeValue,
-    TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
+    resolve_coord, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow, FontSize,
+    InputControl, InputSpec, Layout, LayoutItem, Options, ParamSpec, ParamType, Placement, Point,
+    Size, SizeValue, TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -1983,6 +1983,20 @@ fn validate_layout_item(
                 resolver::rotation_of(placement),
                 geometry_values,
             );
+            if let Some(flow) = flow {
+                let primary_axis = match flow.direction {
+                    FlowDirection::Row => 0,
+                    FlowDirection::Column => 1,
+                };
+                if flow.wrap && !child_axes_resolved[primary_axis] {
+                    return Err("flow wrap requires a resolved primary axis".to_string());
+                }
+                if matches!(flow.overflow, FlowOverflow::Trim)
+                    && child_axes_resolved.iter().any(|resolved| !resolved)
+                {
+                    return Err("flow overflow trim requires both axes to be resolved".to_string());
+                }
+            }
 
             let child_frame = match frame {
                 Some(outer_frame) => {
@@ -4940,6 +4954,38 @@ layout:
                 "layout[0].flow.gap",
             ),
             (
+                "negative_line_gap",
+                r#"
+name: Negative Line Gap
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: row, wrap: true, line_gap: -2 }
+    items: []
+"#,
+                "layout[0].flow.line_gap",
+            ),
+            (
+                "unknown_overflow",
+                r#"
+name: Unknown Overflow
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: row, overflow: discard }
+    items: []
+"#,
+                "layout[0].flow.overflow",
+            ),
+            (
                 "packed_with_at",
                 r#"
 name: Packed With At
@@ -5026,6 +5072,105 @@ layout:
 
             fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn flow_wrap_and_trim_require_resolved_author_axes() {
+        fn yaml(size: &str, direction: &str, rotate: Option<u16>, policy: &str) -> String {
+            let rotation =
+                rotate.map_or_else(String::new, |degrees| format!("    rotate: {degrees}\n"));
+            format!(
+                r#"
+name: Flow Axis Validation
+unit: mm
+dpi: 200
+format: {{ type: single, width: 100, height: 100 }}
+layout:
+  - type: container
+    at: [0, 0]
+    size: {size}
+{rotation}    flow: {{ direction: {direction}, {policy} }}
+    items: []
+"#
+            )
+        }
+
+        let refused = [
+            (
+                "row wrap",
+                yaml("[content, 10]", "row", None, "wrap: true"),
+                "wrap",
+            ),
+            (
+                "column wrap",
+                yaml("[10, content]", "column", None, "wrap: true"),
+                "wrap",
+            ),
+            (
+                "rotate 90 wrap",
+                yaml("[10, content]", "row", Some(90), "wrap: true"),
+                "wrap",
+            ),
+            (
+                "rotate 270 wrap",
+                yaml("[10, content]", "row", Some(270), "wrap: true"),
+                "wrap",
+            ),
+            (
+                "row trim",
+                yaml("[content, 10]", "row", None, "overflow: trim"),
+                "overflow",
+            ),
+            (
+                "column trim",
+                yaml("[10, content]", "column", None, "overflow: trim"),
+                "overflow",
+            ),
+            (
+                "rotate 90 trim",
+                yaml("[content, 10]", "row", Some(90), "overflow: trim"),
+                "overflow",
+            ),
+            (
+                "rotate 270 trim",
+                yaml("[content, 10]", "row", Some(270), "overflow: trim"),
+                "overflow",
+            ),
+        ];
+        for (name, yaml, key) in refused {
+            let error = parse_and_validate(&yaml).expect_err(name);
+            assert!(error.contains(key), "{name}: expected '{key}' in '{error}'");
+        }
+
+        let accepted = [
+            yaml("[30, 10]", "row", None, "wrap: true"),
+            yaml("[10, 30]", "column", None, "wrap: true"),
+            yaml("[content, 10]", "row", Some(90), "wrap: true"),
+            yaml("[content, 10]", "row", Some(270), "wrap: true"),
+            yaml("[content, 10]", "row", None, "overflow: fail"),
+            yaml("[10, content]", "column", None, "overflow: fail"),
+            yaml("[30, 10]", "row", None, "overflow: trim"),
+        ];
+        for yaml in accepted {
+            parse_and_validate(&yaml).expect("resolved flow axes should be accepted");
+        }
+    }
+
+    #[test]
+    fn flow_wrap_accepts_fill_from_sign_negative_anchor() {
+        let yaml = r#"
+name: Edge Relative Fill Flow
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 40 }
+layout:
+  - type: container
+    at: [-100.0, -40.0]
+    size: [fill, fill]
+    flow: { direction: row, wrap: true }
+    items: []
+"#;
+        parse_and_validate(yaml).expect("edge-relative fill axes are resolved");
     }
 
     #[test]
