@@ -7058,6 +7058,7 @@ mod auth_http_tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use http_body_util::BodyExt;
     use serde_json::Value;
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -8827,5 +8828,215 @@ layout:
             .unwrap();
         assert_eq!(input_val["required"], false);
         assert!(input_val.get("default").is_none() || input_val["default"].is_null());
+    }
+
+    #[tokio::test]
+    async fn flow_line_gap_is_inert_without_wrap() {
+        let without_line_gap = r#"
+name: Flow Without Line Gap
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 12 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 12]
+    flow: { direction: row, gap: 2 }
+    items:
+      - type: text
+        value: "A"
+        size: [10, 6]
+        font_size: 8
+      - type: text
+        value: "B"
+        size: [10, 6]
+        font_size: 8
+"#;
+        let with_line_gap = without_line_gap
+            .replace("Flow Without Line Gap", "Flow With Inert Line Gap")
+            .replace("gap: 2 }", "gap: 2, line_gap: 7 }");
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("flow_no_line_gap", without_line_gap),
+            ("flow_inert_line_gap", &with_line_gap),
+        ]);
+
+        let render = |template: &str| {
+            req_post_json(
+                "/api/render/label?format=png",
+                &serde_json::json!({ "template": template, "data": {} }).to_string(),
+            )
+        };
+        let without = app
+            .clone()
+            .oneshot(render("flow_no_line_gap"))
+            .await
+            .unwrap();
+        assert_eq!(without.status(), StatusCode::OK);
+        let without = without.into_body().collect().await.unwrap().to_bytes();
+        let with = app
+            .clone()
+            .oneshot(render("flow_inert_line_gap"))
+            .await
+            .unwrap();
+        assert_eq!(with.status(), StatusCode::OK);
+        let with = with.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(without, with, "line_gap must not alter an unwrapped layout");
+    }
+
+    #[tokio::test]
+    async fn flow_wrap_and_overflow_policies_hold_at_http_boundary() {
+        let wrapped = r#"
+name: Wrapped Flow
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [30, 20]
+    flow: { direction: row, gap: 2, wrap: true, line_gap: 1 }
+    items:
+      - { type: text, value: "A", size: [14, 6], font_size: 8 }
+      - { type: text, value: "B", size: [14, 6], font_size: 8 }
+      - { type: text, value: "C", size: [14, 6], font_size: 8 }
+"#;
+        let unwrapped = wrapped
+            .replace("Wrapped Flow", "Unwrapped Flow")
+            .replace(", wrap: true, line_gap: 1", "");
+        let trim = r#"
+name: Trim Flow
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [20, 10]
+    flow: { direction: row, gap: 2, overflow: trim }
+    items:
+      - { type: container, size: [8, 6], items: [] }
+      - { type: container, size: [8, 6], items: [] }
+      - { type: container, size: [2, 6], items: [] }
+"#;
+        let fail = trim
+            .replace("Trim Flow", "Fail Flow")
+            .replace("overflow: trim", "overflow: fail");
+        let trim_missing_text = r#"
+name: Trim Still Evaluates Text
+unit: mm
+dpi: 200
+params:
+  missing:
+    type: string
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [20, 10]
+    flow: { direction: row, overflow: trim }
+    items:
+      - { type: container, size: [20, 10], items: [] }
+      - { type: text, value: "{missing}", size: [content, 4], font_size: 8 }
+"#;
+        let trim_missing_image = r#"
+name: Trim Does Not Draw Image
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [20, 10]
+    flow: { direction: row, overflow: trim }
+    items:
+      - { type: container, size: [20, 10], items: [] }
+      - { type: image, name: missing_image, size: [4, 4] }
+"#;
+        let trim_child_too_large = r#"
+name: Trim Does Not Bypass Child Bounds
+unit: mm
+dpi: 200
+params:
+  box_w:
+    type: length
+    default: 8
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [20, 10]
+    flow: { direction: row, overflow: trim }
+    items:
+      - { type: container, size: ["{box_w}", 6], items: [] }
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("wrapped", wrapped),
+            ("unwrapped", &unwrapped),
+            ("trim", trim),
+            ("fail", &fail),
+            ("trim_missing_text", trim_missing_text),
+            ("trim_missing_image", trim_missing_image),
+            ("trim_child_too_large", trim_child_too_large),
+        ]);
+
+        for template in ["wrapped", "trim", "trim_missing_image"] {
+            let response = app
+                .clone()
+                .oneshot(req_post_json(
+                    "/api/render/label?format=png",
+                    &serde_json::json!({ "template": template, "data": {} }).to_string(),
+                ))
+                .await
+                .unwrap();
+            if response.status() != StatusCode::OK {
+                let status = response.status();
+                let body = body_json(response).await;
+                panic!("{template} should render, got {status}: {body}");
+            }
+        }
+
+        for template in ["unwrapped", "fail"] {
+            let response = app
+                .clone()
+                .oneshot(req_post_json(
+                    "/api/render/label?format=png",
+                    &serde_json::json!({ "template": template, "data": {} }).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let body = body_json(response).await;
+            assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
+            assert_eq!(body["error"]["details"]["reason"], "item_out_of_frame");
+        }
+
+        let response = app
+            .clone()
+            .oneshot(req_post_json(
+                "/api/render/label?format=png",
+                &serde_json::json!({ "template": "trim_missing_text", "data": {} }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "missing");
+
+        let response = app
+            .oneshot(req_post_json(
+                "/api/render/label?format=png",
+                &serde_json::json!({
+                    "template": "trim_child_too_large",
+                    "data": { "box_w": 30 }
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(response).await;
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(body["error"]["details"]["reason"], "item_out_of_frame");
     }
 }

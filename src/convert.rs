@@ -1,7 +1,7 @@
 use crate::errors::TemplateError;
 use crate::models::{
-    DynamicDimension, Extent, Flow, FlowDirection, Layout, LayoutItem, Padding, ParamSpec,
-    ParamType, ParamValue, Placement, Size, SizeValue, TemplateFormat,
+    DynamicDimension, Extent, Flow, FlowDirection, FlowOverflow, Layout, LayoutItem, Padding,
+    ParamSpec, ParamType, ParamValue, Placement, Size, SizeValue, TemplateFormat,
 };
 use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
@@ -142,7 +142,32 @@ impl ContainerRaw {
                     Some(g) => g,
                     None => 0.0,
                 };
-                Some(Flow { direction, gap })
+                let line_gap = match flow_raw.line_gap {
+                    Some(g) if !g.is_finite() || g < 0.0 => {
+                        return Err(TemplateError::Validation {
+                            path: "flow.line_gap".to_string(),
+                            msg: "flow line_gap must be >= 0 and finite".to_string(),
+                        });
+                    }
+                    Some(g) => g,
+                    None => 0.0,
+                };
+                let overflow = match flow_raw.overflow.unwrap_or_default() {
+                    FlowOverflow::Invalid => {
+                        return Err(TemplateError::Validation {
+                            path: "flow.overflow".to_string(),
+                            msg: "flow overflow must be 'fail' or 'trim'".to_string(),
+                        });
+                    }
+                    overflow => overflow,
+                };
+                Some(Flow {
+                    direction,
+                    gap,
+                    wrap: flow_raw.wrap,
+                    line_gap,
+                    overflow,
+                })
             }
             Some(None) => {
                 return Err(TemplateError::Validation {
