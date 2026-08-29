@@ -59,9 +59,13 @@ if [ -f "$lock" ]; then
 fi
 printf '%s started %s (pid %s)\n' "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
 
-log="$wt/.agy-apply.log"
-conv_file="$wt/.agy-conversation"
-raw="$wt/.agy-apply.json"
+# Every run artifact lands in one ignored directory, so a `git add -A` in the
+# worktree cannot sweep a transcript into the change's commit (#255).
+runs="$wt/.agent-runs"
+mkdir -p "$runs"
+log="$runs/agy-apply.log"
+conv_file="$runs/agy-apply.conversation"
+raw="$runs/agy-apply.json"
 
 # Salvage whatever the stream has already written, then release the lock. A killed
 # apply used to leave an empty file and no conversation id, so the work was there in
@@ -209,7 +213,7 @@ echo "agy status: $agy_status"
 # A clean exit is not success. agy answering a question about its own flags exits 0
 # having written nothing, and that read as a completed apply. Success is a changed
 # tree, so check the tree. The change folder itself is excluded: it was there before.
-changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agy-apply.log' | wc -l | tr -d ' ')
+changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agent-runs' | wc -l | tr -d ' ')
 echo "files touched: $changed"
 echo "--- last 30 lines ---"
 tail -30 "$log"

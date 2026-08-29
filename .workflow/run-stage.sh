@@ -53,9 +53,13 @@ if [ "$role" = "implement" ] && ! "$here/review-gate-check.sh" --plan-only "$wt"
   exit 1
 fi
 
-log="$wt/.agent-$role-$agent.log"
-raw="$wt/.agent-$role-$agent.json"
-conv_file="$wt/.agent-$role-$agent.conversation"
+# Every run artifact lands in one ignored directory, so a `git add -A` in the
+# worktree cannot sweep a transcript into the change's commit (#255).
+runs="$wt/.agent-runs"
+mkdir -p "$runs"
+log="$runs/$role-$agent.log"
+raw="$runs/$role-$agent.json"
+conv_file="$runs/$role-$agent.conversation"
 
 resume=""
 if [ "$resume_requested" -eq 1 ]; then
@@ -92,9 +96,9 @@ cmd=$(agent_command "$agent" "$role" "$prompt" "$resume") || { echo "no invocati
 worktree_digest() {
   (
     cd "$wt" || exit
-    git status --porcelain -- . ':!openspec/changes' ':!.agent-*'
-    git diff HEAD -- . ':!openspec/changes' ':!.agent-*'
-    git ls-files --others --exclude-standard -- . ':!openspec/changes' ':!.agent-*' \
+    git status --porcelain -- . ':!openspec/changes' ':!.agent-runs'
+    git diff HEAD -- . ':!openspec/changes' ':!.agent-runs'
+    git ls-files --others --exclude-standard -- . ':!openspec/changes' ':!.agent-runs' \
       | LC_ALL=C sort | tr '\n' '\0' | xargs -0 -r sha256sum
   ) 2>/dev/null | sha256sum | cut -d' ' -f1
 }
@@ -105,9 +109,9 @@ status=$?
 after_digest=$(worktree_digest)
 
 # Only the FINAL lines are searched for the agent's own result envelope. An agent
-# that reads another agent's `.agent-*.json` echoes that file's envelope into its
-# transcript, and a whole-file grep then stored the wrong agent's id: a codex review
-# that had read `.agent-implement-agy.json` recorded agy's conversation as its own,
+# that reads another agent's `.agent-runs/*.json` echoes that file's envelope into
+# its transcript, and a whole-file grep then stored the wrong agent's id: a codex
+# review that had read `implement-agy.json` recorded agy's conversation as its own,
 # so `--resume` would have continued the implementer's session instead.
 json=$(tail -5 "$raw" | grep -o '{"conversation_id".*}' | tail -1 || true)
 if [ -n "$json" ]; then
@@ -123,7 +127,7 @@ else
   [ -n "$codex_session" ] && printf '%s' "$codex_session" > "$conv_file"
 fi
 
-changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agent-*' | wc -l | tr -d ' ')
+changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agent-runs' | wc -l | tr -d ' ')
 echo "role: $role   agent: $agent   status: $agent_status   exit: $status"
 echo "files touched: $changed"
 echo "log: $log"

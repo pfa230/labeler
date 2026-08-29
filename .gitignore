@@ -32,6 +32,6 @@ ui/dist
 # Personal, machine-specific instructions. Loaded alongside CLAUDE.md, never committed.
 /CLAUDE.local.md
 
-# Agent transcripts and scratch
-.agy-*
-.agent-*
+# Agent run artifacts: logs, raw transcripts and resume ids, written by
+# .workflow/run-stage.sh and apply-with-agy.sh into the worktree they run in (#255).
+.agent-runs/
