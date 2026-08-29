@@ -64,7 +64,8 @@ if [ "$resume_requested" -eq 1 ]; then
 fi
 
 if [ "$role" = "implement" ]; then
-  base="/opsx-apply $change. Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it."
+  apply_step=$(agent_apply_prompt "$agent" "$change") || { echo "no apply prompt for $agent" >&2; exit 2; }
+  base="$apply_step Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it."
   [ "$resume_requested" -eq 1 ] && base="Review findings on your implementation of $change. Fix each one, then stop. The same limits still hold: do not commit, archive, sync specs, move the change folder or edit docs/SPEC.md."
 else
   # The verdict line is what lets apply.sh decide whether to loop. Without a
@@ -104,23 +105,14 @@ before_digest=$(worktree_digest)
 status=$?
 after_digest=$(worktree_digest)
 
-# Only the FINAL lines are searched for the agent's own result envelope. An agent
-# that reads another agent's `.agent-*.json` echoes that file's envelope into its
-# transcript, and a whole-file grep then stored the wrong agent's id: a codex review
-# that had read `.agent-implement-agy.json` recorded agy's conversation as its own,
-# so `--resume` would have continued the implementer's session instead.
-json=$(tail -5 "$raw" | grep -o '{"conversation_id".*}' | tail -1 || true)
-if [ -n "$json" ]; then
-  printf '%s' "$json" | jq -r '.response // ""' > "$log"
-  printf '%s' "$json" | jq -r '.conversation_id // empty' > "$conv_file"
-  agent_status=$(printf '%s' "$json" | jq -r '.status // "UNKNOWN"')
-else
+# How an answer is separated from a transcript is per-CLI knowledge, so it lives in
+# agents.sh beside the invocation that produced it. Here only the outcome matters:
+# either the agent's own answer is in $log, or $log is the console capture.
+extracted=1
+if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
   cp "$raw" "$log"
   agent_status="NO_STRUCTURED_RESULT"
-  # codex emits no envelope, but prints its own session id, so `--resume` can still
-  # continue it rather than starting the round from scratch.
-  codex_session=$(grep -o 'session id: [0-9a-f-]\{36\}' "$raw" | tail -1 | sed 's/session id: //')
-  [ -n "$codex_session" ] && printf '%s' "$codex_session" > "$conv_file"
+  extracted=0
 fi
 
 changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agent-*' | wc -l | tr -d ' ')
@@ -134,8 +126,10 @@ tail -30 "$log"
 # answer. For a review that is not a small problem: the caller would read a verdict
 # out of a transcript, hand the transcript to the implementer, and commit it as the
 # review artifact (#264). Stop instead; a review that cannot be extracted did not
-# happen.
-if [ "$role" = "review" ] && [ "$agent_status" = "NO_STRUCTURED_RESULT" ]; then
+# happen. Keyed on extraction having failed for THIS agent rather than on one agent's
+# envelope being absent: keyed the latter way, no agent but agy could pass a review it
+# had actually written, and agy is the one agent with no read-only mode (#274).
+if [ "$role" = "review" ] && [ "$extracted" -eq 0 ]; then
   echo >&2
   echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2
   echo "Refusing to treat a transcript as a review. The capture is at $raw." >&2

@@ -115,34 +115,117 @@ else
 fi
 teardown
 
+# --- run-stage.sh reads each agent's own result envelope (#274) ---------------------
+# Every CLI wraps its answer differently, and reading one shape for all of them left
+# claude and codex reporting NO_STRUCTURED_RESULT on every run, unresumable, and
+# unable to review at all. Stand-ins print the shapes those CLIs really emit, so the
+# assertion is that the log holds the ANSWER rather than the console capture, and
+# that the id a later --resume would need was recorded.
+setup
+add_change issue-8-envelope
+bin=$(mktemp -d)
+cat > "$bin/claude" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"result","subtype":"success","is_error":false,"result":"REVIEW BODY","session_id":"11111111-2222-3333-4444-555555555555"}'
+FAKE
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"01a04dc2-867a-7293-9777-5a2d07e4dbac"}'
+echo '{"type":"turn.started"}'
+echo '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"reading the diff now"}}'
+# A previous run's transcript, read back by this one: escaped inside one event, so
+# line-anchored parsing never mistakes its thread id for this run's (#264).
+echo '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","aggregated_output":"{\"type\":\"thread.started\",\"thread_id\":\"99999999-9999-9999-9999-999999999999\"}"}}'
+echo '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"REVIEW BODY"}}'
+echo '{"type":"turn.completed"}'
+FAKE
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"conversation_id":"conv-abc","status":"COMPLETED","response":"REVIEW BODY"}'
+FAKE
+cat > "$bin/opencode" <<'FAKE'
+#!/usr/bin/env bash
+echo "REVIEW BODY"
+FAKE
+chmod +x "$bin/claude" "$bin/codex" "$bin/agy" "$bin/opencode"
+
+for agent in claude codex agy opencode; do
+  case "$agent" in
+    claude) want_id="11111111-2222-3333-4444-555555555555" ;;
+    codex) want_id="01a04dc2-867a-7293-9777-5a2d07e4dbac" ;;
+    agy) want_id="conv-abc" ;;
+    # `opencode run` documents no structured output, so its stdout is the answer and
+    # there is nothing to resume from.
+    opencode) want_id="" ;;
+  esac
+  out=$(cd "$repo" && PATH="$bin:$PATH" "$here/run-stage.sh" review "$agent" issue-8-envelope 2>&1); rc=$?
+  got_log=$(cat "$repo/.worktrees/issue-8/.agent-review-$agent.log" 2>/dev/null)
+  got_id=$(cat "$repo/.worktrees/issue-8/.agent-review-$agent.conversation" 2>/dev/null)
+  if [ "$rc" = "0" ] && [ "$got_log" = "REVIEW BODY" ]; then
+    pass=$((pass + 1)); printf "ok    %s's answer is extracted as the review\n" "$agent"
+  else
+    fail=$((fail + 1)); printf "FAIL  %s's answer is extracted as the review (exit %s, log %s)\n" "$agent" "$rc" "${got_log:-empty}"
+    printf '%s\n' "$out" | sed 's/^/        /' | head -4
+  fi
+  if [ "$got_id" = "$want_id" ]; then
+    pass=$((pass + 1)); printf "ok    and %s's resumable id is recorded as '%s'\n" "$agent" "$want_id"
+  else
+    fail=$((fail + 1)); printf "FAIL  %s's resumable id is '%s', wanted '%s'\n" "$agent" "$got_id" "$want_id"
+  fi
+done
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
 # --- run-stage.sh refuses a review it could not extract -----------------------------
-# The one case that can be driven without a real agent: a stand-in on PATH that
-# prints something and never emits the JSON envelope, which is exactly the
-# NO_STRUCTURED_RESULT shape that used to hand a transcript back as a review (#264).
+# A stand-in that prints console noise and no envelope at all: the NO_STRUCTURED_RESULT
+# shape that used to hand a transcript back as a review (#264). Checked for both agents
+# whose answer is an envelope, because the guard used to key on agy's shape alone, so
+# these two could not pass a review even when they had written one (#274).
 setup
 add_change issue-9-delta
 bin=$(mktemp -d)
-cat > "$bin/codex" <<'FAKE'
+for agent in codex claude; do
+  cat > "$bin/$agent" <<'FAKE'
 #!/usr/bin/env bash
-echo "OpenAI Codex v0.0.0"
 echo "some console noise, and no structured result anywhere"
 echo "VERDICT: APPROVE"
 FAKE
-chmod +x "$bin/codex"
-out=$(cd "$repo" && PATH="$bin:$PATH" "$here/run-stage.sh" review codex issue-9-delta 2>&1); rc=$?
-if [ "$rc" = "7" ]; then
-  pass=$((pass + 1)); printf 'ok    a review with no structured result exits 7\n'
-else
-  fail=$((fail + 1)); printf 'FAIL  a review with no structured result exits 7 (got %s)\n' "$rc"
-  printf '%s\n' "$out" | sed 's/^/        /' | head -4
-fi
-if printf '%s\n' "$out" | grep -q 'Refusing to treat a transcript as a review'; then
-  pass=$((pass + 1)); printf 'ok    and says why\n'
-else
-  fail=$((fail + 1)); printf 'FAIL  and says why\n'
-fi
+  chmod +x "$bin/$agent"
+  out=$(cd "$repo" && PATH="$bin:$PATH" "$here/run-stage.sh" review "$agent" issue-9-delta 2>&1); rc=$?
+  if [ "$rc" = "7" ]; then
+    pass=$((pass + 1)); printf 'ok    a %s review with no structured result exits 7\n' "$agent"
+  else
+    fail=$((fail + 1)); printf 'FAIL  a %s review with no structured result exits 7 (got %s)\n' "$agent" "$rc"
+    printf '%s\n' "$out" | sed 's/^/        /' | head -4
+  fi
+  if printf '%s\n' "$out" | grep -q 'Refusing to treat a transcript as a review'; then
+    pass=$((pass + 1)); printf 'ok    and says why\n'
+  else
+    fail=$((fail + 1)); printf 'FAIL  and says why\n'
+  fi
+done
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
+
+# --- each agent is sent its own spelling of the apply step (#274) -------------------
+# One spelling for all four is a command three of them do not have: claude dies on
+# "Unknown command" given the workflow form, which is two apply runs that did nothing.
+. "$here/agents.sh"
+for pair in "claude:/opsx:apply issue-3-c" "agy:/opsx-apply issue-3-c" \
+            "opencode:/opsx-apply issue-3-c" "codex:openspec/changes/issue-3-c"; do
+  agent="${pair%%:*}"; want="${pair#*:}"
+  got=$(agent_apply_prompt "$agent" issue-3-c)
+  if printf '%s' "$got" | grep -qF "$want"; then
+    pass=$((pass + 1)); printf "ok    %s is told to apply with '%s'\n" "$agent" "$want"
+  else
+    fail=$((fail + 1)); printf "FAIL  %s was told '%s', wanted '%s'\n" "$agent" "$got" "$want"
+  fi
+done
+if ! agent_apply_prompt nosuchagent issue-3-c >/dev/null 2>&1; then
+  pass=$((pass + 1)); printf 'ok    an unknown agent gets no apply prompt at all\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  an unknown agent got an apply prompt\n'
+fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]
