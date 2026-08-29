@@ -6952,10 +6952,23 @@ layout:
     async fn template_with_flow_container_http_round_trip() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
+        // Every interpolated name is read only from inside the flow container, so the derived
+        // inputs are empty unless the walk descends into packed children.
         let flow_yaml = r#"name: Flow HTTP
 description: Flow test
 unit: mm
 dpi: 200
+params:
+  mode:
+    type: enum
+    values: [short, long]
+    default: short
+  title:
+    type: string
+  subtitle:
+    type: string
+  code:
+    type: string
 format:
   type: single
   width: 60.0
@@ -6969,12 +6982,22 @@ layout:
       gap: 5.0
     items:
       - type: text
-        value: "Item A"
+        value: "{title}"
         size: [20.0, 10.0]
         font_size: 8.0
       - type: qr
-        value: "QR-123"
+        value: "{code}"
         size: [10.0, 10.0]
+      - type: container
+        size: [15.0, 10.0]
+        when:
+          mode: long
+        items:
+          - type: text
+            value: "{subtitle}"
+            at: [0.0, 0.0]
+            size: [15.0, 10.0]
+            font_size: 6.0
 "#;
         let resp = app
             .clone()
@@ -7026,6 +7049,36 @@ layout:
             child_qr.get("to").is_none(),
             "packed qr child must not serialize 'to'"
         );
+
+        let input_names = |inputs: &Value| -> Vec<String> {
+            inputs
+                .as_array()
+                .expect("inputs array")
+                .iter()
+                .map(|input| input["name"].as_str().expect("input name").to_string())
+                .collect()
+        };
+
+        let all_names = input_names(&detail["inputs"]["all"]);
+        for name in ["mode", "title", "subtitle", "code"] {
+            assert!(
+                all_names.contains(&name.to_string()),
+                "{name} is read only by a packed child, so inputs.all must carry it, got {all_names:?}"
+            );
+        }
+
+        let default_names = input_names(&detail["inputs"]["default"]);
+        assert!(
+            !default_names.contains(&"subtitle".to_string()),
+            "subtitle sits under a packed child whose when: fails at mode=short, so the per-label \
+             inputs must drop it, got {default_names:?}"
+        );
+        for name in ["mode", "title", "code"] {
+            assert!(
+                default_names.contains(&name.to_string()),
+                "{name} is unconditional, so the per-label inputs must keep it, got {default_names:?}"
+            );
+        }
 
         let resp_src = app
             .clone()
