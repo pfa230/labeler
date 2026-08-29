@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { useLabelInputs, pruneDataForSubmit } from "../../lib/labelInputs";
+import { useLabelInputs, pruneDataForSubmit, getOwnKey, hasOwnKey, setOwnKey } from "../../lib/labelInputs";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { usePrinters } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
@@ -18,22 +18,55 @@ const MIN_COPIES = 1;
 const MAX_COPIES = 100;
 const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Math.floor(Number.isFinite(n) ? n : 1)));
 
-function initialDataFromInputs(inputs: InputSpec[]): Record<string, ParamValue> {
+// Every entry publishing a default is seeded from it and arrives deferred: the template decides it
+// until an operator says otherwise. An entry publishing none is absent from both maps, which is not
+// the same as holding an empty value or a `false` deferral.
+function initialFieldState(inputs: InputSpec[]): Pick<FormValue, "data" | "deferred"> {
   const data: Record<string, ParamValue> = {};
+  const deferred: Record<string, boolean> = {};
   for (const input of inputs) {
     if (input.default !== undefined && input.default !== null) {
-      data[input.name] = input.default;
+      setOwnKey(data, input.name, input.default);
+      setOwnKey(deferred, input.name, true);
     }
   }
-  return data;
+  return { data, deferred };
+}
+
+// Deferral follows the entry, not the position. An entry a later list brings in for the first time
+// is seeded and deferred here, exactly as one present at first paint; an entry already known keeps
+// whatever value and deferral it had, which is what restores them when it returns.
+function withArrivals(value: FormValue, inputs: InputSpec[]): FormValue {
+  let data = value.data;
+  let deferred = value.deferred;
+  for (const input of inputs) {
+    if (input.default === undefined || input.default === null) continue;
+    if (hasOwnKey(deferred, input.name)) continue;
+    if (deferred === value.deferred) deferred = { ...deferred };
+    setOwnKey(deferred, input.name, true);
+    if (hasOwnKey(data, input.name)) continue;
+    if (data === value.data) data = { ...data };
+    setOwnKey(data, input.name, input.default);
+  }
+  return deferred === value.deferred ? value : { ...value, data, deferred };
 }
 
 export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
   const [value, setValue] = useState<FormValue>(() => ({
-    data: initialDataFromInputs(detail.inputs?.default ?? []),
+    ...initialFieldState(detail.inputs?.default ?? []),
     printer: undefined,
     startSlot: 0,
   }));
+
+  // Selecting a different template reinitialises BOTH values and deferral from the new template's
+  // list. The retention rule governs branch changes within one template only: a name both templates
+  // declare must carry nothing across, or template A's value would sit in a disabled control while
+  // the render resolved B's default.
+  const [renderedTemplateId, setRenderedTemplateId] = useState(detail.id);
+  if (renderedTemplateId !== detail.id) {
+    setRenderedTemplateId(detail.id);
+    setValue((prev) => ({ ...prev, ...initialFieldState(detail.inputs?.default ?? []) }));
+  }
   const [fmt, setFmt] = useState<"png" | "pdf">("png");
   const [copies, setCopies] = useState(1);
   const [formError, setFormError] = useState<string | null>(null);
@@ -43,11 +76,21 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const isLg = useMediaQuery("(min-width: 1024px)");
   const [previewOpen, setPreviewOpen] = useState(false);
 
+  // The list is requested for the label this form would actually submit: the same pruning, and no
+  // name it is deferring. A deferred name reaches the service as an omission here exactly as it
+  // will at render time, so the branch the list reports is the branch the render takes.
   const { inputs, pending: inputsPending, error: inputsError } = useLabelInputs(
     detail.id,
-    value.data,
+    (currentInputs) => pruneDataForSubmit(value.data, currentInputs, value.deferred),
     detail.inputs?.default ?? [],
   );
+
+  // Only a list that answers the values the form now holds can say which entries are present: while
+  // one is in flight the previous list is still rendered, and `useLabelInputs` reports a list only for
+  // the template it was requested for, so one template's entries can never seed another's, on the
+  // failure path included.
+  const form = inputsPending ? value : withArrivals(value, inputs);
+  if (form !== value) setValue(form);
 
   // Printer preselect, derived at render (no effect; #116): default -> sole printer -> none.
   // `value.printer` stores only EXPLICIT user choices ("" = explicit None, an id = explicit pick,
@@ -57,7 +100,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     const all = printers ?? [];
     return all.find((p) => p.is_default)?.id ?? (all.length === 1 ? all[0].id : undefined);
   }, [printers]);
-  const effectivePrinter = value.printer === undefined ? preselect : value.printer || undefined;
+  const effectivePrinter = form.printer === undefined ? preselect : form.printer || undefined;
 
   const showSummary = (summary: BatchSummary) => {
     const { succeeded, total, failed } = summary;
@@ -70,12 +113,12 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
     !inputsPending &&
     inputs.every((input) => {
       if (!input.required) return true;
-      const current = value.data[input.name];
+      const current = getOwnKey(form.data, input.name);
       return current !== undefined && current !== "" && current !== null;
     });
 
-  const startSlot = isSheet ? value.startSlot : undefined;
-  const submittedData = pruneDataForSubmit(value.data, inputs);
+  const startSlot = isSheet ? form.startSlot : undefined;
+  const submittedData = pruneDataForSubmit(form.data, inputs, form.deferred);
   const label = { data: submittedData };
 
   const preview = useLivePreview(
@@ -157,7 +200,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       <div className="flex flex-col gap-4">
-        <FieldForm detail={detail} inputs={inputs} value={{ ...value, printer: effectivePrinter }} onChange={setValue} />
+        <FieldForm detail={detail} inputs={inputs} value={{ ...form, printer: effectivePrinter }} onChange={setValue} />
 
         {inputsError && <p style={{ color: "var(--bad)" }}>{inputsError}</p>}
         {formError && <p style={{ color: "var(--bad)" }}>{formError}</p>}

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { InputSpec, ParamSpec, ParamValue } from "../api/types";
 
 export interface ParamInputProps {
@@ -40,6 +41,18 @@ export function ParamInput({
   unit,
   noteId,
 }: ParamInputProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // A file chooser is the browser's own state, not the form's: clearing the value it stands for
+  // leaves the filename on screen unless the element is cleared too.
+  const disabledRef = useRef(disabled);
+
+  useEffect(() => {
+    disabledRef.current = disabled;
+    if ((!value || disabled) && fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  }, [value, disabled]);
+
   const label = spec.description || name;
   const inputSpec = spec as InputSpec;
   const paramSpec = spec as ParamSpec;
@@ -50,6 +63,7 @@ export function ParamInput({
     return (
       <div className="flex flex-col gap-1">
         <input
+          ref={fileInputRef}
           type="file"
           accept="image/*"
           aria-label={label}
@@ -58,7 +72,13 @@ export function ParamInput({
           disabled={disabled}
           onChange={async (e) => {
             const file = e.target.files?.[0];
-            if (file) onChange(await readFileAsDataUrl(file));
+            if (!file) return;
+            const dataUrl = await readFileAsDataUrl(file);
+            // The read finishes after the render that started it. If the entry was deferred again
+            // meanwhile, or the chooser no longer holds this file, the value it stood for is gone
+            // and must not come back.
+            if (disabledRef.current || fileInputRef.current?.files?.[0] !== file) return;
+            onChange(dataUrl);
           }}
           className="text-sm"
         />
