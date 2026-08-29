@@ -158,6 +158,22 @@ agent_extract() {
   printf '%s' "$status"
 }
 
+# clean_capture — filter a pty capture on stdin into plain text on stdout.
+#
+# Three artefacts, none of them the agent's answer:
+#   ^D\b\b  BSD script(1) opens the stream with the terminal's echo of EOF, the two
+#           literal characters ^D and two backspaces that erase them on a screen. It
+#           broke a line-anchored match for codex's first event and prefixed
+#           opencode's verbatim stdout. Stripped FIRST, as the whole four-byte
+#           sequence: once the backspaces are gone a bare ^D is indistinguishable
+#           from text an agent wrote.
+#   ESC[…   ANSI colour and cursor sequences.
+#   \r      carriage returns from the pty's line discipline.
+clean_capture() {
+  local bs=$'\b'
+  sed "s/\\^D${bs}${bs}//g" | sed 's/\x1B\[[0-9;]*[A-Za-z]//g' | tr -d '\r'
+}
+
 # pty_run <command-string> — run under a pseudo-TTY.
 # script(1) is util-linux (`-c CMD FILE`) or BSD (`FILE CMD ARGS`, no -c), and each
 # form is an error on the other platform. This repo is developed on macOS with
