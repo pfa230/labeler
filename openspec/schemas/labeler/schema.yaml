@@ -196,10 +196,35 @@ artifacts:
          rather than assuming them, and confirm the captured output is the reviewer's
          analysis and not wrapper text.
 
-      CAPTURING THE OUTPUT. A read-only reviewer cannot write files, so redirect its
-      stdout straight into review.md. These instructions already contain the template,
-      so the reviewer emits the filled form directly and there is no transcription
-      step. review.md IS the reviewer's output.
+      LAUNCHING IT. Write the reviewer's prompt to a file OUTSIDE the repository and
+      assert it is non-empty before you start: `codex exec` handed a missing prompt
+      file reads an empty stdin, prints nothing, and EXITS 0. A clean exit is not
+      evidence of a review.
+
+      Launch it detached, so no agent harness can reap it at a turn boundary:
+
+        setsid nohup timeout 5400 codex exec --ignore-user-config -s read-only \
+          -c model_reasoning_effort=high < "$prompt" > "$raw" 2>&1 &
+
+      A run held as a harness-managed background task is not safe: one was killed 4.3
+      seconds after its turn ended, taking 15,127 lines of review with it, with no
+      reason recorded anywhere and no way to distinguish it from a deliberate stop.
+      Judge liveness by CPU time and by $raw growing, never by the process existing.
+
+      CAPTURING THE OUTPUT. A read-only reviewer cannot write files, so it writes its
+      analysis to stdout and you place it. These instructions already contain the
+      template, so the reviewer emits the filled form directly and there is nothing to
+      summarise or rewrite.
+
+      $raw is NOT review.md. `codex exec` writes a banner, a session id and its whole
+      tool-call transcript to stdout, and emits the filled template only as its final
+      message. review.md is that final message extracted from $raw; $raw itself stays
+      outside the repository, because a raw capture in the change folder is what
+      `git add -A` commits (#244).
+
+      Assert the extracted review.md contains a `VERDICT:` line before treating the run
+      as a review at all. A zero exit with no verdict is the failure this catches, and
+      it is the one that looks most like success.
 
       NEVER read the review into the authoring context in order to copy it into place.
       It is already on disk, a reviewer transcript runs to thousands of lines, and
