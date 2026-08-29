@@ -162,7 +162,9 @@ describe("CSV Import screen", () => {
     fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } }); // no option.color column
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByText("1");
-    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).not.toBeDisabled());
+    fireEvent.click(download);
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
     expect(body.labels[0]).toEqual({ data: { sku: "1" } });
@@ -404,6 +406,86 @@ describe("CSV Import screen", () => {
 
     // Download stays enabled even though the preview endpoint errored.
     expect(screen.getByRole("button", { name: /download/i })).not.toBeDisabled();
+  });
+
+  it("imports a CSV with a quoted multiline field, displays the line-count marker, and edits with Shift+Enter", async () => {
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+    const multilineDetail = {
+      ...detail,
+      id: "t3",
+      name: "Tag3",
+      inputs: {
+        all: [
+          { name: "sku", control: "text" as const },
+          { name: "message", control: "textarea" as const },
+        ],
+        default: [
+          { name: "sku", control: "text" as const },
+          { name: "message", control: "textarea" as const },
+        ],
+      },
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "sku", control: "text" },
+            { name: "message", control: "textarea" },
+          ]),
+        });
+      }
+      if (url.startsWith("/api/templates/t3")) return json(multilineDetail);
+      if (url.startsWith("/api/templates")) return json({ templates: [{ id: "t3", name: "Tag3", description: "", unit: "mm", dpi: 300, format: detail.format }] });
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) {
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      }
+      if (url.startsWith("/api/batch")) {
+        return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag3" });
+    fireEvent.change(picker, { target: { value: "t3" } });
+
+    // Import a CSV whose quoted field holds a newline
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: 'sku,message\n1,"line one\nline two"\n' } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    // Confirm the cell shows the first line and the line-count marker
+    expect(await screen.findByText("line one")).toBeInTheDocument();
+    expect(screen.getByText("+1")).toBeInTheDocument();
+
+    // Edit it with Shift+Enter
+    fireEvent.doubleClick(screen.getByText("line one"));
+    const textarea = (await screen.findByLabelText("edit message")) as HTMLTextAreaElement;
+    expect(textarea.tagName).toBe("TEXTAREA");
+    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
+    fireEvent.change(textarea, { target: { value: "first line\nsecond line\nthird line" } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() => expect(screen.queryByLabelText("edit message")).toBeNull());
+    // Confirm updated display has '+2' marker
+    expect(await screen.findByText("first line")).toBeInTheDocument();
+    expect(screen.getByText("+2")).toBeInTheDocument();
+
+    // Submit download and confirm submitted payload has the newlines intact
+    const download = await screen.findByRole("button", { name: /download/i });
+    fireEvent.click(download);
+    await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
+    const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
+    expect(body.labels[0]).toEqual({ data: { sku: "1", message: "first line\nsecond line\nthird line" } });
   });
 });
 

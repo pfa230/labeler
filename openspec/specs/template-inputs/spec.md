@@ -465,6 +465,19 @@ cell held before the row deactivated the name SHALL be retained and SHALL become
 the name returns to the row's list. That is how a union column and a per-row list coexist without
 either rule bending.
 
+A grid cell's **editor** follows that same reported `control`. A cell whose control is `textarea`
+SHALL be edited in a control that accepts a line break, and its keys SHALL be: Enter commits the
+edit, Shift+Enter inserts a newline, Escape abandons it, and moving focus away commits. Enter SHALL
+NOT insert a newline. A grid owns Enter for commit, an operator reaches for it out of habit, and one
+that silently broke the line instead would cost a row of typing with no way back. A newline the
+operator enters SHALL reach the submitted `data` unaltered.
+
+A cell SHALL show that its value holds a line break rather than rendering it as one collapsed line,
+so that a two-line value is distinguishable from the same words written with a space, and so that an
+operator can tell the cell holds more than the row has room to show. This applies to every cell whose
+value holds a newline, not only to one whose control is `textarea`: a CSV import and a connector both
+deliver such a value into a cell the operator never opens.
+
 No screen SHALL treat a label as complete, or allow it to be submitted, while the list for that
 label's current values has been requested and not yet received. A stale list would otherwise report
 one branch's names as satisfied while the render followed another. The only exception is the failure
@@ -586,6 +599,29 @@ it has received none, and SHALL surface the failure rather than silently blockin
 - **WHEN** the request for a fresh list fails
 - **THEN** the last list received keeps rendering, the failure is surfaced, and the operator can still
   submit
+
+#### Scenario: A newline typed into a grid cell reaches the request
+
+- **WHEN** the operator edits a cell whose control is `textarea` and presses Shift+Enter between two
+  words
+- **THEN** the cell's value carries a newline at that point, and the row submits it unaltered
+
+#### Scenario: Enter commits a grid cell rather than breaking the line
+
+- **WHEN** the operator presses Enter while editing a cell whose control is `textarea`
+- **THEN** the edit is committed and no newline is inserted
+
+#### Scenario: Escape abandons a grid cell edit
+
+- **WHEN** the operator types into a cell whose control is `textarea` and presses Escape
+- **THEN** the cell holds the value it held before the edit
+
+#### Scenario: A cell holding a newline is distinguishable from one holding a space
+
+- **WHEN** one row's `message` holds `line one`, a newline, then `line two`, and another row's holds
+  `line one line two`
+- **THEN** the two cells render differently, and the first shows that its value continues past what
+  the cell displays
 
 ### Requirement: The CSV Import screen offers the parameters the chosen template can read
 

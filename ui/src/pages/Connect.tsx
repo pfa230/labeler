@@ -15,7 +15,7 @@ import { useRowPreview } from "../lib/rowPreview";
 import { useBatchRowInputs, pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
-import type { TemplateDetail } from "../api/types";
+import type { TemplateDetail, InputSpec } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
@@ -160,10 +160,10 @@ function Composer({
 
   const displayedFields = requiredUnion;
 
-  const isCellEditable = (row: LabelGridRow, field: string): boolean => {
+  const cellInput = (row: LabelGridRow, field: string): InputSpec | undefined => {
     const inputs = getRowInputs(row.id);
-    if (!inputs) return true;
-    return inputs.some((i) => i.name === field);
+    if (!inputs) return { name: field, control: "text" };
+    return inputs.find((i) => i.name === field);
   };
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
@@ -332,7 +332,7 @@ function Composer({
           <LabelGrid
             rows={viewRows}
             fields={displayedFields}
-            isCellEditable={isCellEditable}
+            cellInput={cellInput}
             onRowsChange={(next, { indexes }) => {
               const dirty = new Set(indexes);
               commitRows(next.map((r, i) => ({ ...r, validation: {}, annotation: dirty.has(i) ? undefined : r.annotation })));

@@ -18,7 +18,7 @@ import { useBatchRowInputs, pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
 import { EmptyTemplates } from "../components/EmptyTemplates";
-import type { TemplateDetail } from "../api/types";
+import type { TemplateDetail, InputSpec } from "../api/types";
 
 type BatchFailures = { failures?: { index: number; code: string; message: string }[] };
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
@@ -127,11 +127,11 @@ function CsvEditor({
     return [...set];
   }, [csvFields, requiredUnion]);
 
-  const isCellEditable = (row: LabelGridRow, field: string): boolean => {
-    if (!detail) return true;
+  const cellInput = (row: LabelGridRow, field: string): InputSpec | undefined => {
+    if (!detail) return { name: field, control: "text" };
     const inputs = getRowInputs(row.id);
-    if (!inputs) return true;
-    return inputs.some((i) => i.name === field);
+    if (!inputs) return { name: field, control: "text" };
+    return inputs.find((i) => i.name === field);
   };
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
@@ -442,7 +442,7 @@ function CsvEditor({
           <LabelGrid
             rows={viewRows}
             fields={displayedFields}
-            isCellEditable={isCellEditable}
+            cellInput={cellInput}
             onRowsChange={(next, { indexes }) => {
               // viewRows carries derived validation (and rows may carry a prior run's annotation); store
               // only canonical data: drop validation everywhere and clear annotation on the edited rows.
