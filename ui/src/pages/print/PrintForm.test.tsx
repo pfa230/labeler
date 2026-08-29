@@ -304,7 +304,9 @@ describe("PrintForm gating and submission pruning", () => {
     const message = (await screen.findByLabelText("message")) as HTMLInputElement;
     fireEvent.change(message, { target: { value: "hello" } });
 
-    // Switch to pro tier to reveal pro_code
+    // tier publishes a default, so it arrives deferred and disabled; clearing that is what puts the
+    // operator's own choice into the request and into the submitted data.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use default for tier" }));
     const tierSelect = (await screen.findByLabelText("tier")) as HTMLSelectElement;
     fireEvent.change(tierSelect, { target: { value: "pro" } });
 
@@ -383,10 +385,361 @@ describe("PrintForm gating and submission pruning", () => {
     // Fill in the required fields
     fireEvent.change(dtInput, { target: { value: "2026-08-19T14:30" } });
     fireEvent.change(choiceSelect, { target: { value: "one" } });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: "flag" }));
     fireEvent.change(await screen.findByLabelText("printer"), { target: { value: "p1" } });
 
     // Now form is complete and Print button is enabled
     await waitFor(() => expect(printBtn).not.toBeDisabled());
+  });
+});
+
+describe("PrintForm deferring to a declared default", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // A list request answers from whatever `data` it is given, so these stubs echo the branch the
+  // request selects; the assertions read the request bodies themselves.
+  function stubInputs(listFor: (data: Record<string, unknown>) => unknown[]) {
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/printers")) {
+        return new Response(JSON.stringify(printers), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
+        const parsed = init?.body ? JSON.parse(init.body as string) : null;
+        return new Response(JSON.stringify({ inputs: [listFor(parsed?.labels?.[0]?.data ?? {})] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/print")) {
+        return new Response(JSON.stringify(summary), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    fetchMock = mock;
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  }
+
+  const lastInputsData = () => {
+    const call = [...fetchMock.mock.calls]
+      .reverse()
+      .find(([u]) => String(u).startsWith("/api/templates/") && String(u).includes("/inputs"));
+    return JSON.parse((call![1] as RequestInit).body as string).labels[0].data as Record<string, unknown>;
+  };
+
+  const printFields = async () => {
+    const print = screen.getByRole("button", { name: /^print$/i });
+    await waitFor(() => expect(print).not.toBeDisabled());
+    const before = countCalls("/api/print");
+    fireEvent.click(print);
+    await waitFor(() => expect(countCalls("/api/print")).toBe(before + 1));
+    return JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string).fields as Record<string, unknown>;
+  };
+
+  const withInputs = (list: unknown[]): TemplateDetail => ({
+    ...tape,
+    id: "def_tpl",
+    inputs: { all: list as TemplateDetail["inputs"]["all"], default: list as TemplateDetail["inputs"]["default"] },
+  });
+
+  it("omits a deferred name from the submitted data and from the list request, and sends it once cleared", async () => {
+    const list = [
+      { name: "message", control: "text", required: true },
+      { name: "title", control: "text", default: "Untitled" },
+    ];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
+
+    expect(await printFields()).toEqual({ message: "hello" });
+    await waitFor(() => expect(lastInputsData()).toEqual({ message: "hello" }));
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use default for title" }));
+
+    expect(await printFields()).toEqual({ message: "hello", title: "Untitled" });
+    await waitFor(() => expect(lastInputsData()).toEqual({ message: "hello", title: "Untitled" }));
+  });
+
+  it("defers a published default no control can hold", async () => {
+    const list = [
+      { name: "message", control: "text", required: true },
+      { name: "width", control: "number", default: "80mm" },
+      { name: "logo", control: "image", default: "data:image/png;base64,AAAA" },
+    ];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
+
+    for (const name of ["width", "logo"]) {
+      const box = screen.getByRole("checkbox", { name: `Use default for ${name}` }) as HTMLInputElement;
+      expect(box.checked).toBe(true);
+      expect(screen.getByLabelText(name)).toBeDisabled();
+    }
+    const widthBox = screen.getByRole("checkbox", { name: "Use default for width" });
+    expect(widthBox.closest("label")).toHaveTextContent("Use default: 80mm");
+
+    expect(await printFields()).toEqual({ message: "hello" });
+  });
+
+  it("submits what the control holds once cleared, and discards it on re-checking", async () => {
+    const list = [
+      { name: "message", control: "text", required: true },
+      { name: "title", control: "text", default: "Untitled" },
+    ];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
+    const box = screen.getByRole("checkbox", { name: "Use default for title" });
+    fireEvent.click(box);
+
+    const title = screen.getByLabelText("title") as HTMLInputElement;
+    expect(title).not.toBeDisabled();
+    fireEvent.change(title, { target: { value: "Kitchen" } });
+    expect(await printFields()).toEqual({ message: "hello", title: "Kitchen" });
+
+    fireEvent.click(box);
+    expect(screen.getByLabelText("title")).toBeDisabled();
+    expect((screen.getByLabelText("title") as HTMLInputElement).value).toBe("Untitled");
+    expect(await printFields()).toEqual({ message: "hello" });
+  });
+
+  it("clears the file chooser's own selection when an image entry is re-checked", async () => {
+    const list = [
+      { name: "message", control: "text", required: true },
+      { name: "logo", control: "image", default: "data:image/png;base64,AAAA" },
+    ];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
+    const box = screen.getByRole("checkbox", { name: "Use default for logo" });
+    fireEvent.click(box);
+
+    const chooser = screen.getByLabelText("logo") as HTMLInputElement;
+    const file = new File(["png-bytes"], "logo.png", { type: "image/png" });
+    fireEvent.change(chooser, { target: { files: [file] } });
+    await waitFor(() => expect(screen.getByText("image selected")).toBeInTheDocument());
+
+    // jsdom leaves `files` in place, so the chooser's own value is what shows the reset.
+    Object.defineProperty(chooser, "value", {
+      value: "C:\\fakepath\\logo.png",
+      writable: true,
+      configurable: true,
+    });
+
+    fireEvent.click(box);
+    expect(chooser.value).toBe("");
+    expect(await printFields()).toEqual({ message: "hello" });
+  });
+
+  it("brings a later entry in deferred, and keeps a cleared one cleared across a branch switch", async () => {
+    const base = [
+      { name: "message", control: "text", required: true },
+      { name: "tier", control: "select", values: ["standard", "pro"], required: true },
+    ];
+    const pro = [...base, { name: "pro_note", control: "text", default: "note" }];
+    stubInputs((data) => (data.tier === "pro" ? pro : base));
+    renderForm(withInputs(base));
+
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
+    fireEvent.change(screen.getByLabelText("tier"), { target: { value: "pro" } });
+
+    const box = (await screen.findByRole("checkbox", {
+      name: "Use default for pro_note",
+    })) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(await printFields()).toEqual({ message: "hello", tier: "pro" });
+
+    fireEvent.click(box);
+    fireEvent.change(screen.getByLabelText("tier"), { target: { value: "standard" } });
+    await waitFor(() => expect(screen.queryByLabelText("pro_note")).toBeNull());
+    fireEvent.change(screen.getByLabelText("tier"), { target: { value: "pro" } });
+
+    const returned = (await screen.findByRole("checkbox", {
+      name: "Use default for pro_note",
+    })) as HTMLInputElement;
+    expect(returned.checked).toBe(false);
+    expect(await printFields()).toEqual({ message: "hello", tier: "pro", pro_note: "note" });
+  });
+
+  // A parameter name reserves no words, so an entry may be called `constructor` or `__proto__`. Both
+  // read as present on any `{}` through the prototype, and `__proto__` cannot even be assigned onto
+  // one, so these assert the deferral and the submission the names would otherwise silently lose.
+  const ownEntries = (o: Record<string, unknown>) =>
+    Object.keys(o)
+      .sort()
+      .map((k) => [k, Object.getOwnPropertyDescriptor(o, k)!.value]);
+
+  it("defers and submits entries named for Object.prototype members", async () => {
+    const list = [
+      { name: "constructor", control: "text", required: true },
+      { name: "__proto__", control: "text", default: "proto-default" },
+    ];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    // `constructor` is required and holds nothing: the prototype's own `constructor` must not read
+    // as its value.
+    const ctor = (await screen.findByLabelText("constructor")) as HTMLInputElement;
+    expect(ctor.value).toBe("");
+    expect(screen.queryByRole("checkbox", { name: "Use default for constructor" })).toBeNull();
+    expect(screen.getByRole("button", { name: /^print$/i })).toBeDisabled();
+
+    const protoBox = screen.getByRole("checkbox", { name: "Use default for __proto__" }) as HTMLInputElement;
+    expect(protoBox.checked).toBe(true);
+    const proto = screen.getByLabelText("__proto__") as HTMLInputElement;
+    expect(proto).toBeDisabled();
+    expect(proto.value).toBe("proto-default");
+
+    fireEvent.change(ctor, { target: { value: "hello" } });
+
+    expect(ownEntries(await printFields())).toEqual([["constructor", "hello"]]);
+    await waitFor(() => expect(ownEntries(lastInputsData())).toEqual([["constructor", "hello"]]));
+
+    fireEvent.click(protoBox);
+    expect(screen.getByLabelText("__proto__")).not.toBeDisabled();
+
+    expect(ownEntries(await printFields())).toEqual([
+      ["__proto__", "proto-default"],
+      ["constructor", "hello"],
+    ]);
+  });
+
+  it("brings a later entry named for an Object.prototype member in deferred", async () => {
+    const base = [
+      { name: "message", control: "text", required: true },
+      { name: "tier", control: "select", values: ["standard", "pro"], required: true },
+    ];
+    const pro = [
+      ...base,
+      { name: "constructor", control: "text", default: "ctor-default" },
+      { name: "__proto__", control: "text", default: "proto-default" },
+    ];
+    stubInputs((data) => (data.tier === "pro" ? pro : base));
+    renderForm(withInputs(base));
+
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
+    fireEvent.change(screen.getByLabelText("tier"), { target: { value: "pro" } });
+
+    for (const name of ["constructor", "__proto__"]) {
+      const box = (await screen.findByRole("checkbox", {
+        name: `Use default for ${name}`,
+      })) as HTMLInputElement;
+      expect(box.checked).toBe(true);
+      const control = screen.getByLabelText(name) as HTMLInputElement;
+      expect(control).toBeDisabled();
+      expect(control.value).toBe(name === "constructor" ? "ctor-default" : "proto-default");
+    }
+
+    expect(ownEntries(await printFields())).toEqual([
+      ["message", "hello"],
+      ["tier", "pro"],
+    ]);
+  });
+
+  it("does not seed the previous template's entries when the new template's list request fails", async () => {
+    const listA = [
+      { name: "message", control: "text", required: true },
+      { name: "a_only", control: "text", default: "A-only" },
+    ];
+    const listB = [{ name: "message", control: "text", required: true }];
+
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/printers")) {
+        return new Response(JSON.stringify(printers), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
+        // Template B's very first list request fails, which clears `pending` while the form holds no
+        // list of its own.
+        if (url.includes("tpl_b")) return new Response("boom", { status: 500 });
+        return new Response(JSON.stringify({ inputs: [listA] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    fetchMock = mock as unknown as ReturnType<typeof stubFetch>;
+    vi.stubGlobal("fetch", mock);
+
+    const a: TemplateDetail = { ...withInputs(listA), id: "tpl_a" };
+    const b: TemplateDetail = { ...withInputs(listB), id: "tpl_b" };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (detail: TemplateDetail) => (
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <PrintForm detail={detail} />
+        </ToastProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree(a));
+
+    expect(await screen.findByRole("checkbox", { name: "Use default for a_only" })).toBeInTheDocument();
+
+    rerender(tree(b));
+
+    await screen.findByText(/Failed to derive inputs \(500\)/);
+    expect(screen.queryByLabelText("a_only")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Use default for a_only" })).toBeNull();
+    expect(screen.getByLabelText("message")).toBeInTheDocument();
+  });
+
+  it("carries neither value nor deferral across a template change", async () => {
+    const listA = [
+      { name: "message", control: "text", required: true },
+      { name: "title", control: "text", default: "A-title" },
+    ];
+    const listB = [
+      { name: "message", control: "text", required: true },
+      { name: "title", control: "text", default: "B-title" },
+    ];
+    stubInputs((data) => ((data.title ?? "").toString().startsWith("B") ? listB : listA));
+
+    const a: TemplateDetail = { ...withInputs(listA), id: "tpl_a" };
+    const b: TemplateDetail = { ...withInputs(listB), id: "tpl_b" };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = (detail: TemplateDetail) => (
+      <QueryClientProvider client={qc}>
+        <ToastProvider>
+          <PrintForm detail={detail} />
+        </ToastProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree(a));
+
+    fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use default for title" }));
+    fireEvent.change(screen.getByLabelText("title"), { target: { value: "Edited" } });
+
+    rerender(tree(b));
+
+    const box = (await screen.findByRole("checkbox", {
+      name: "Use default for title",
+    })) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    const title = screen.getByLabelText("title") as HTMLInputElement;
+    expect(title).toBeDisabled();
+    expect(title.value).toBe("B-title");
+    expect(screen.getByLabelText("message")).toHaveValue("");
   });
 });

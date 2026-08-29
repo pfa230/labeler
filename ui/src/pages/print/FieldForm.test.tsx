@@ -58,7 +58,14 @@ function renderForm(
   return Object.assign(onChange, { unmount });
 }
 
-const singleValue: FormValue = { data: {}, printer: undefined, startSlot: 0 };
+const singleValue: FormValue = { data: {}, deferred: {}, printer: undefined, startSlot: 0 };
+
+// FieldForm updates functionally, so that a value read at render time cannot overwrite a later one.
+// A test applies the last update to the value the form rendered with.
+function lastUpdate(onChange: ReturnType<typeof vi.fn>, prev: FormValue): FormValue {
+  const update = onChange.mock.calls.at(-1)![0] as (p: FormValue) => FormValue;
+  return update(prev);
+}
 
 describe("FieldForm", () => {
   beforeEach(() => {
@@ -106,7 +113,8 @@ describe("FieldForm", () => {
     const inputs: InputSpec[] = [
       { name: "opacity", control: "number", slider: true, min: 0, max: 100, default: 50 },
     ];
-    const onChange = renderForm(single, { ...singleValue, data: { opacity: 50 } }, inputs);
+    const value = { ...singleValue, data: { opacity: 50 } };
+    const onChange = renderForm(single, value, inputs);
 
     const slider = (await screen.findByLabelText("opacity")) as HTMLInputElement;
     expect(slider.type).toBe("range");
@@ -115,7 +123,7 @@ describe("FieldForm", () => {
     expect(slider.step).toBe("any");
 
     fireEvent.change(slider, { target: { value: "75" } });
-    expect(onChange).toHaveBeenCalledWith(
+    expect(lastUpdate(onChange, value)).toEqual(
       expect.objectContaining({ data: { opacity: 75 } }),
     );
   });
@@ -136,14 +144,15 @@ describe("FieldForm", () => {
     const inputs: InputSpec[] = [
       { name: "active", control: "checkbox", default: true },
     ];
-    const onChange = renderForm(single, { ...singleValue, data: { active: true } }, inputs);
+    const value = { ...singleValue, data: { active: true } };
+    const onChange = renderForm(single, value, inputs);
 
     const checkbox = (await screen.findByLabelText("active")) as HTMLInputElement;
     expect(checkbox.type).toBe("checkbox");
     expect(checkbox.checked).toBe(true);
 
     fireEvent.click(checkbox);
-    expect(onChange).toHaveBeenCalledWith(
+    expect(lastUpdate(onChange, value)).toEqual(
       expect.objectContaining({ data: { active: false } }),
     );
   });
@@ -179,7 +188,7 @@ describe("FieldForm", () => {
   });
 
   it("renders a start-slot number input for a sheet template", async () => {
-    renderForm(sheet, { data: {}, printer: undefined, startSlot: 0 });
+    renderForm(sheet, { data: {}, deferred: {}, printer: undefined, startSlot: 0 });
     const slot = (await screen.findByLabelText(/start slot/i)) as HTMLInputElement;
     expect(slot.type).toBe("number");
   });
@@ -187,8 +196,61 @@ describe("FieldForm", () => {
   it("fires onChange with typed field value", async () => {
     const onChange = renderForm(single, singleValue, [{ name: "message", control: "text" }]);
     fireEvent.change(await screen.findByLabelText("message"), { target: { value: "hello" } });
-    expect(onChange).toHaveBeenCalledWith(
+    expect(lastUpdate(onChange, singleValue)).toEqual(
       expect.objectContaining({ data: { message: "hello" } }),
     );
+  });
+
+  it("renders a checked Use default checkbox naming the published default and disables the control", async () => {
+    const inputs: InputSpec[] = [{ name: "title", control: "text", default: "Untitled" }];
+    renderForm(single, { ...singleValue, data: { title: "Untitled" }, deferred: { title: true } }, inputs);
+
+    const checkbox = (await screen.findByRole("checkbox", {
+      name: "Use default for title",
+    })) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(screen.getByText(/Use default/)).toHaveTextContent("Untitled");
+    expect(screen.getByRole("textbox", { name: "title" })).toBeDisabled();
+  });
+
+  it("renders no Use default checkbox for an entry publishing no default", async () => {
+    renderForm(single, singleValue, [{ name: "message", control: "text" }]);
+
+    await screen.findByLabelText("message");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Use default/)).not.toBeInTheDocument();
+  });
+
+  it("clears deferral without touching the value, and restores the default on re-checking", async () => {
+    const inputs: InputSpec[] = [{ name: "title", control: "text", default: "Untitled" }];
+    const deferredValue: FormValue = { ...singleValue, data: { title: "Untitled" }, deferred: { title: true } };
+    const onChange = renderForm(single, deferredValue, inputs);
+
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Use default for title" }));
+    const cleared = lastUpdate(onChange, deferredValue);
+    expect(cleared.deferred).toEqual({ title: false });
+    expect(cleared.data).toEqual({ title: "Untitled" });
+    onChange.unmount();
+
+    // Re-checking after an edit discards it, whatever the control then held.
+    const editedValue: FormValue = { ...singleValue, data: { title: "Kitchen" }, deferred: { title: false } };
+    const onChange2 = renderForm(single, editedValue, inputs);
+    expect(screen.getByRole("textbox", { name: "title" })).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use default for title" }));
+    const recheck = lastUpdate(onChange2, editedValue);
+    expect(recheck.deferred).toEqual({ title: true });
+    expect(recheck.data).toEqual({ title: "Untitled" });
+  });
+
+  it("gives two entries sharing a description and a default distinct accessible names", async () => {
+    const inputs: InputSpec[] = [
+      { name: "title", description: "Line", control: "text", default: "Untitled" },
+      { name: "subtitle", description: "Line", control: "text", default: "Untitled" },
+    ];
+    renderForm(single, { ...singleValue, deferred: { title: true, subtitle: true } }, inputs);
+
+    expect(await screen.findByRole("checkbox", { name: "Use default for title" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Use default for subtitle" })).toBeInTheDocument();
   });
 });
