@@ -274,7 +274,9 @@ tail -30 "$log"
 # review artifact (#264). Stop instead; a review that cannot be extracted did not
 # happen. Keyed on extraction having failed for THIS agent rather than on one agent's
 # envelope being absent: keyed the latter way, no agent but agy could pass a review it
-# had actually written, and agy is the one agent with no read-only mode (#274).
+# had actually written, and agy is the one agent with no read-only mode (#274). codex
+# enforces one with -s read-only, opencode by denying edit/write/bash to its reviewer
+# agent, which drops those tools from the model's toolset entirely (#286).
 if [ "$writes" = "0" ] && [ "$extracted" -eq 0 ]; then
   echo >&2
   echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2

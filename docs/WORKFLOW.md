@@ -92,8 +92,10 @@ Also available: `/opsx:explore` for thinking something through before an issue e
 
 Roles are largely interchangeable, under two constraints. The reviewer is never the author, which the
 commit gate checks. And an author must be resumable, because every loop sends findings back to
-whoever wrote the thing: `opencode` exposes no way to continue a session, so it can review but cannot
-plan or implement, and naming it as an author is refused before anything is launched.
+whoever wrote the thing; naming an author that cannot be resumed is refused before anything is
+launched. Every agent currently satisfies that, so the refusal has nothing to fire on today. It is
+kept because it is what a new entry is checked against: `opencode` failed it until it grew a way to
+continue a session, and it took every role from that point.
 
 The stage commands differ per agent, because OpenSpec writes a separate command set for each and not
 every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` and the **skill** form
@@ -104,7 +106,7 @@ every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` 
 | Claude Code | `/opsx:propose`, `/opsx:apply`, `/opsx:archive` | Colon-separated. From `.claude/commands/opsx/`. |
 | `agy` (Antigravity) | `/openspec-propose`, `/openspec-apply-change`, `/openspec-archive-change` | **Skill form.** The CLI reads `.agent/skills/` and ignores `.agent/workflows/`, so `/opsx-apply` is not a command despite what OpenSpec's tool table implies. |
 | `codex` | none needed | Used for reviews via `codex exec`, with the instructions piped in. |
-| `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Unverified. |
+| `opencode` | `/opsx-apply` and friends, from `.opencode/commands/` | Verified: a slash command in the run message is expanded, not passed through as text. |
 
 Implementation and its review run on two named agents, given when the stage is started rather than
 decided later:

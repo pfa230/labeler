@@ -26,13 +26,15 @@ agent_known() {
 # agent_resumable <agent> — whether a later stage can continue this one's session.
 #
 # An AUTHOR must be resumable: every loop here sends findings back to whoever wrote the
-# thing, and an author that cannot be resumed either starts over or stops. opencode
-# documents no structured output and no resume flag, so agent_extract has nothing to
-# record and --resume has nothing to read; a run naming it as author died at the first
-# REVISE. Refused up front instead, because a silent fallback to a fresh session would
-# hand the next round to an agent that has never seen the work.
+# thing, and an author that cannot be resumed either starts over or stops. Every
+# registered agent now satisfies this, so the list below is empty; the guard stays
+# because it is the registry's check on a new entry, not a statement about today's.
+#
+# opencode was refused here until 1.18.20, on the grounds that it documented neither
+# structured output nor a resume flag. Both exist: `--format json` emits one JSON event
+# per line carrying sessionID, and `-s <sessionID>` continues that session (#286).
 agent_resumable() {
-  case "$1" in opencode) return 1 ;; *) return 0 ;; esac
+  case "$1" in *) return 0 ;; esac
 }
 
 # agent_command <agent> <role> <prompt> [resume_id] -> command string on stdout
@@ -72,8 +74,19 @@ agent_command() {
       printf -v out 'claude -p --output-format json %s%q' "$r" "$prompt"
       ;;
     opencode)
-      # `opencode run [message..]` per --help; no resume flag documented there.
-      printf -v out 'opencode run %q' "$prompt"
+      # --pure is opencode's --ignore-user-config: the run must not depend on whatever
+      # plugins a given machine has installed globally.
+      # < /dev/null for the same reason codex needs it above: `opencode run` reads stdin
+      # and blocks forever without it. Omitting it produced a silent multi-minute hang
+      # with zero bytes of output, which looks identical to a slow model (#286).
+      local ro="" r=""
+      # Read-only where the CLI can enforce it, as for codex. A permission block that
+      # denies edit/write/bash removes those tools from the model's toolset entirely,
+      # so the reviewer cannot be talked into fixing what it found.
+      case "$role" in review|plan-review) ro='--agent reviewer ' ;; esac
+      [ -n "$resume" ] && printf -v r -- '-s %q ' "$resume"
+      printf -v out 'opencode run --pure --format json -m %q %s%s%q < /dev/null' \
+        "${OPENCODE_MODEL:-meta/muse-spark-1.2-contributor}" "$ro" "$r" "$prompt"
       ;;
     *) return 1 ;;
   esac
@@ -102,7 +115,8 @@ agent_step_prompt() {
     # agy has worked with the workflow form despite docs/WORKFLOW.md recording that
     # it reads the skill form. Left as it was found until someone runs it both ways.
     agy) printf '/opsx-%s %s.' "$step" "$change" ;;
-    # From .opencode/commands/; unverified, as docs/WORKFLOW.md already says.
+    # From .opencode/commands/, and verified: a slash command in the `opencode run`
+    # message is expanded and executed, not passed through as text (#286).
     opencode) printf '/opsx-%s %s.' "$step" "$change" ;;
     codex)
       case "$step" in
@@ -169,14 +183,19 @@ agent_extract() {
       status="OK"
       ;;
     opencode)
-      # No structured output documented, so `opencode run`'s stdout is the answer
-      # itself and there is nothing to resume from. Copied rather than round-tripped
-      # through a variable, so the bytes are the ones the agent printed.
-      [ -s "$raw" ] || return 1
-      cp "$raw" "$log"
-      : > "$conv"
-      printf 'OK'
-      return 0
+      # `--format json` prints one JSON event per line. sessionID rides every event,
+      # the answer is the concatenation of the text parts, and step_finish carries the
+      # terminal reason. Whole-file parsing is safe here for the reason codex's is:
+      # one event per line, so an echoed foreign file arrives escaped inside a single
+      # event and no foreign line survives line-anchored parsing.
+      id=$(jq -sRr '[splits("\n") | fromjson?] | map(.sessionID // empty) | first // empty' "$raw" 2>/dev/null)
+      # Written before the answer is required, as for codex: a run that died mid-turn
+      # still has a session, and resuming it beats restarting the round.
+      printf '%s' "$id" > "$conv"
+      resp=$(jq -sRr '[splits("\n") | fromjson?]
+                      | map(select(.type == "text") | .part.text // empty) | join("")' "$raw" 2>/dev/null)
+      status=$(jq -sRr '[splits("\n") | fromjson?]
+                        | map(select(.type == "step_finish")) | last | .part.reason // "UNKNOWN"' "$raw" 2>/dev/null)
       ;;
     *) return 1 ;;
   esac
