@@ -472,5 +472,235 @@ find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
+# --- detaching a long run (#284) ---------------------------------------------------
+# The line this replaced named setsid and timeout, and macOS ships neither: nohup does
+# report the missing binary and exits 127, but the `&` throws that away, because a shell
+# reports 0 for having STARTED a background job whatever becomes of it.
+DETACH="$here/detach.sh"
+
+# Every launcher is exercised where it exists, through DETACH_LAUNCHER. Left to pick for
+# itself, a Linux runner would only ever take the setsid branch and a macOS one only the
+# python3 branch, so half the code would never run anywhere.
+detach_case() { # detach_case <launcher>
+  local L="$1" d h out st
+  d=$(mktemp -d)
+  h=$(DETACH_LAUNCHER="$L" "$DETACH" "$d/run" bash -c 'echo one; echo two; exit 4' 2>/dev/null)
+  "$DETACH" --wait "$h" 60 >/dev/null 2>&1; st=$?
+  if [ "$st" = "4" ]; then ok "$L: the run's exit status comes back"
+  else bad "$L: --wait returned $st, wanted 4"; fi
+  out=$(cat "$h" 2>/dev/null)
+  if [ "$out" = "one
+two" ]; then ok "$L: the log holds the run's output and nothing else"
+  else bad "$L: the log reads '$out'"; fi
+  find "$d" -mindepth 0 -delete 2>/dev/null
+}
+detach_case nohup
+for L in python3 setsid; do
+  if command -v "$L" >/dev/null 2>&1; then detach_case "$L"
+  else printf 'SKIP  %s: not on this machine; another platform covers it\n' "$L"; fi
+done
+
+# Detachment is the point, and only a new session survives a harness reaping a process
+# group. nohup gives SIGHUP immunity and nothing more, which is why it is the last
+# resort rather than the macOS answer.
+if command -v python3 >/dev/null 2>&1; then
+  d=$(mktemp -d)
+  mine=$(python3 -c 'import os; print(os.getsid(0))')
+  h=$(DETACH_LAUNCHER='python3' "$DETACH" "$d/sid" python3 -c 'import os; print(os.getsid(0))' 2>/dev/null)
+  "$DETACH" --wait "$h" 60 >/dev/null 2>&1
+  theirs=$(tr -d '[:space:]' < "$h" 2>/dev/null)
+  if [ -n "$theirs" ] && [ "$theirs" != "$mine" ]; then ok "python3: the run gets its own session"
+  else bad "python3: the run shares session '$mine' with the launcher"; fi
+  h=$(DETACH_LAUNCHER='nohup' "$DETACH" "$d/sid2" python3 -c 'import os; print(os.getsid(0))' 2>/dev/null)
+  "$DETACH" --wait "$h" 60 >/dev/null 2>&1
+  theirs=$(tr -d '[:space:]' < "$h" 2>/dev/null)
+  if [ "$theirs" = "$mine" ]; then ok "nohup: and does not, which is why it warns"
+  else bad "nohup unexpectedly created a session: '$theirs' vs '$mine'"; fi
+  find "$d" -mindepth 0 -delete 2>/dev/null
+fi
+
+d=$(mktemp -d)
+# Two launches on one prefix are two runs, not a race to be survived. Earlier versions
+# shared a log and kept the launches apart with a pointer and then a lock; four review
+# rounds found four races in that machinery. Nothing is shared here, so there is none.
+h1=$("$DETACH" "$d/p" bash -c 'echo A; sleep 4; exit 11' 2>/dev/null)
+h2=$("$DETACH" "$d/p" bash -c 'echo B; exit 22' 2>/dev/null)
+# Structural rather than probabilistic: mktemp creates the name atomically, so this
+# asserts the interface rather than trying to provoke a collision, which no sequential
+# test could do reliably.
+if [ "$h1" != "$h2" ]; then ok "two launches on one prefix get different handles"
+else bad "two launches collided on the handle $h1"; fi
+"$DETACH" --wait "$h2" 60 >/dev/null 2>&1; st=$?
+if [ "$st" = "22" ] && [ "$(cat "$h2")" = "B" ]; then ok "the second answers for itself while the first still runs"
+else bad "the second launch returned $st with log '$(cat "$h2" 2>/dev/null)'"; fi
+"$DETACH" --wait "$h1" 60 >/dev/null 2>&1; st=$?
+if [ "$st" = "11" ] && [ "$(cat "$h1")" = "A" ]; then ok "and the first keeps its own status and transcript"
+else bad "the first launch returned $st with log '$(cat "$h1" 2>/dev/null)'"; fi
+
+# An empty log counts as zero lines, not "0\n0". `grep -c` prints 0 and exits 1 when it
+# matches nothing, so the obvious `|| echo 0` fallback fires on top of the 0 it printed.
+h=$("$DETACH" "$d/quiet" bash -c 'exit 0' 2>/dev/null)
+out=$("$DETACH" --wait "$h" 60 2>&1); st=$?
+if [ "$st" = "0" ] && [ "$out" = "finished: exit 0 after 0 lines" ]; then
+  ok "a silent run reports zero lines and exit 0"
+else bad "a silent run reported '$out' (exit $st)"; fi
+# Gated on a file rather than a timer, so the suite ends it deterministically instead of
+# hunting it with a system-wide pkill that could match somebody else's work.
+h=$("$DETACH" "$d/slow" bash -c 'while [ ! -f "'"$d"'/release" ]; do sleep 1; done' 2>/dev/null)
+started=$(date +%s)
+out=$("$DETACH" --wait "$h" 6 2>&1); st=$?
+elapsed=$(( $(date +%s) - started ))
+if [ "$st" = "1" ] && printf '%s' "$out" | grep -q 'still running after 6s'; then
+  ok "--wait gives up at its deadline rather than blocking forever"
+else bad "--wait past its deadline gave '$out' (exit $st)"; fi
+# A fixed five-second step would sleep past a deadline of six and accept a run that
+# finished at seven, which is a bound the caller did not give.
+# Nine, not eight: the distinction being proved is 6 against the 10 a fixed five-second
+# step would reach, so the tolerance only has to stay under 10, and a loaded runner
+# should not fail correct code for a second of scheduling.
+if [ "$elapsed" -le 9 ]; then ok "and returns at the deadline, not past the next whole step"
+else bad "--wait with a 6s deadline took ${elapsed}s"; fi
+: > "$d/release"
+"$DETACH" --wait "$h" 30 >/dev/null 2>&1
+
+# Nothing announced itself, so there is no run to wait for. This is the original bug's
+# shape: a launcher that starts nothing, reported as a clean pass.
+: > "$d/ghost"
+out=$("$DETACH" --wait "$d/ghost" 5 2>&1); st=$?
+if [ "$st" = "1" ] && printf '%s' "$out" | grep -q 'nothing has started'; then
+  ok "a launch that started nothing is reported, not waited on forever"
+else bad "a ghost launch gave '$out' (exit $st)"; fi
+
+# A launcher that cannot detach must not run the command anyway, and the launch must say
+# so in its status. The REAL handler is exercised: python imports
+# sitecustomize at startup, so making os.setsid raise there drives detach.sh's own except
+# branch. Reverting that branch to a bare `pass` fails this, which a stand-in python could
+# never do.
+if command -v python3 >/dev/null 2>&1; then
+  pylib=$(mktemp -d)
+  cat > "$pylib/sitecustomize.py" <<'FAKE'
+import os
+def _fail():
+    raise OSError("forced by the test suite")
+os.setsid = _fail
+FAKE
+  out=$(DETACH_LAUNCHER='python3' PYTHONPATH="$pylib" DETACH_PATIENCE=2 \
+        "$DETACH" "$d/nosid" bash -c 'echo should-not-run' 2>&1 >/dev/null); st=$?
+  if [ "$st" = "1" ] && printf '%s' "$out" | grep -q 'nothing started'; then
+    ok "a launcher that cannot detach fails the launch"
+  else bad "a failed detach gave '$out' (exit $st)"; fi
+  log=$(find "$d" -maxdepth 1 -name 'nosid.*' ! -name '*.started' ! -name '*.exit' | head -1)
+  if grep -q 'setsid failed' "$log" 2>/dev/null && ! grep -q 'should-not-run' "$log" 2>/dev/null; then
+    ok "and the command did not run, which is the point"
+  else bad "the failed-detach log reads '$(cat "$log" 2>/dev/null)'"; fi
+  find "$pylib" -mindepth 0 -delete 2>/dev/null
+fi
+
+# A launch that cannot see its run start must say so in its STATUS. The handle is printed
+# either way: an earlier version withheld it and gated the child on a go-ahead marker, and
+# that machinery cost three ordering bugs in three review rounds to defend against a late
+# child that then runs correctly. What matters is that the caller can tell.
+qbin=$(mktemp -d)
+printf '#!/usr/bin/env bash\nexit 0\n' > "$qbin/python3"
+chmod +x "$qbin/python3"
+out=$(DETACH_LAUNCHER='python3' PATH="$qbin:$PATH" DETACH_PATIENCE=1 "$DETACH" "$d/quietfail" bash -c 'true' 2>/dev/null); st=$?
+if [ "$st" = "1" ]; then ok "a launch whose run never announces itself exits non-zero"
+else bad "a silent launcher returned $st"; fi
+if [ -n "$out" ]; then ok "and still hands back the handle, so the caller can look"
+else bad "a failed launch printed no handle"; fi
+find "$qbin" -mindepth 0 -delete 2>/dev/null
+
+# An announcement landing in the loop's FINAL tick. The loop tests and then sleeps, so
+# without a check after the last sleep this child is reported as never having started.
+# Pinned to one whole-second tick with a one-second patience, so the announcement at half
+# a second falls squarely inside that last sleep rather than depending on timing luck.
+fbin=$(mktemp -d)
+cat > "$fbin/python3" <<'FAKE'
+#!/usr/bin/env bash
+shift 2
+( sleep 0.5; exec "$@" ) >/dev/null 2>&1 &
+exit 0
+FAKE
+chmod +x "$fbin/python3"
+fh=$(DETACH_LAUNCHER='python3' PATH="$fbin:$PATH" DETACH_TICK=1 DETACH_PATIENCE=1 \
+     "$DETACH" "$d/finaltick" bash -c 'echo ok; exit 0' 2>/dev/null); fst=$?
+if [ "$fst" = "0" ]; then ok "an announcement in the final tick is seen, not missed"
+else bad "a child announcing in the final tick was reported as never started (exit $fst)"; fi
+"$DETACH" --wait "$fh" 30 >/dev/null 2>&1
+find "$fbin" -mindepth 0 -delete 2>/dev/null
+
+# The other half: a child that announces late. The stand-in delays and then execs the REAL
+# child body, so what is being observed is the code under test. The run happens, late, and
+# --wait on the handle the launch returned still gets the truth about it.
+sbin=$(mktemp -d)
+cat > "$sbin/python3" <<'FAKE'
+#!/usr/bin/env bash
+# argv here is: -c <program> bash -c <the real child body> _ <command...>
+shift 2
+( sleep 3; exec "$@" ) >/dev/null 2>&1 &
+exit 0
+FAKE
+chmod +x "$sbin/python3"
+lh=$(DETACH_LAUNCHER='python3' PATH="$sbin:$PATH" DETACH_PATIENCE=1 \
+     "$DETACH" "$d/late" bash -c 'echo LATE-RAN; exit 9' 2>/dev/null); lst=$?
+if [ "$lst" = "1" ] && [ -n "$lh" ]; then ok "a late child's launch reports non-zero and returns its handle"
+else bad "a late child's launch returned $lst with handle '$lh'"; fi
+"$DETACH" --wait "$lh" 30 >/dev/null 2>&1; st=$?
+if [ "$st" = "9" ] && grep -q 'LATE-RAN' "$lh" 2>/dev/null; then
+  ok "and waiting on that handle still gets the truth about the run"
+else bad "waiting on a late run gave $st with log '$(cat "$lh" 2>/dev/null)'"; fi
+find "$sbin" -mindepth 0 -delete 2>/dev/null
+
+# The log going away WHILE the wait is in progress, which is the case the post-exit
+# check below cannot reach.
+h=$("$DETACH" "$d/vanish" bash -c 'while [ ! -f "'"$d"'/vrelease" ]; do sleep 1; done' 2>/dev/null)
+( sleep 2; find "$h" -mindepth 0 -delete 2>/dev/null ) &
+"$DETACH" --wait "$h" 30 >/dev/null 2>&1
+if [ "$?" = "2" ]; then ok "a log that vanishes mid-wait is an error, not a silent wait"
+else bad "a log vanishing mid-wait was not reported"; fi
+: > "$d/vrelease"
+
+# The run's own files are what --wait reports on; without them it has nothing to say.
+: > "$d/gone"
+: > "$d/gone.started"
+printf '0\n' > "$d/gone.exit"
+find "$d/gone" -mindepth 0 -delete 2>/dev/null
+"$DETACH" --wait "$d/gone" 5 >/dev/null 2>&1
+if [ "$?" = "2" ]; then ok "a handle whose log has gone is an error, not a zero-line run"
+else bad "a vanished log was reported as a run"; fi
+
+# A status that is empty, not a number, or above 255 is a run that ended without saying
+# how. `exit 999` would silently become 231.
+for bad_status in '' 'garbage' '999'; do
+  name="s$(printf '%s' "${bad_status:-empty}" | tr -cd 'a-z0-9')"
+  : > "$d/$name"
+  : > "$d/$name.started"
+  printf '%s\n' "$bad_status" > "$d/$name.exit"
+  out=$("$DETACH" --wait "$d/$name" 5 2>&1); st=$?
+  if [ "$st" = "1" ]; then ok "an exit status of '${bad_status:-empty}' is a failure, not a pass"
+  else bad "an exit status of '${bad_status:-empty}' gave exit $st: $out"; fi
+done
+
+# The refusals. A command that is not there must fail loudly, since the whole point is
+# that the old form failed silently with a zero exit.
+for args in "" "--wait" "$d/only"; do
+  # shellcheck disable=SC2086
+  "$DETACH" $args >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" = "2" ]; then ok "detach refuses '${args:-no arguments}'"
+  else bad "detach with '${args:-no arguments}' exited $rc, wanted 2"; fi
+done
+"$DETACH" --wait "$d/no-such-handle" 5 >/dev/null 2>&1
+if [ "$?" = "2" ]; then ok "and refuses to wait on a handle that does not exist"
+else bad "waiting on a nonexistent handle was accepted"; fi
+out=$("$DETACH" "$d/x" nosuchcommandanywhere 2>&1); rc=$?
+if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q 'not on PATH'; then
+  ok "and refuses a command that is not on PATH, loudly"
+else bad "a missing command exited $rc: $out"; fi
+if ! DETACH_LAUNCHER='wat' "$DETACH" "$d/y" true >/dev/null 2>&1; then
+  ok "and refuses an unknown DETACH_LAUNCHER"
+else bad "an unknown DETACH_LAUNCHER was accepted"; fi
+find "$d" -mindepth 0 -delete 2>/dev/null
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]
