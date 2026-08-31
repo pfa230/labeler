@@ -79,6 +79,7 @@ reasons! {
     SettingValueInvalid => "setting_value_invalid",
     DatetimePatternInvalid => "datetime_pattern_invalid",
     DatetimeParamInvalid => "datetime_param_invalid",
+    InkParamInvalid => "ink_param_invalid",
     ConnectorUnknown => "connector_unknown",
     ConnectorImmutable => "connector_immutable",
     ConnectionConnectorMissing => "connection_connector_missing",

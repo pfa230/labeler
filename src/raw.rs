@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, DynamicValue, Fit, FlowOverflow, FontSize, Frame, Overflow, Position, QrParams,
+    Alignment, DynamicValue, Fit, FlowOverflow, FontSize, Frame, Ink, Overflow, Position, QrParams,
     SheetPosition,
 };
 
@@ -102,6 +102,59 @@ where
     Ok(map.map(|m| m.into_iter().map(|(k, v)| (k, v.to_string())).collect()))
 }
 
+pub(crate) fn deserialize_dynamic_ink<'de, D>(
+    deserializer: D,
+) -> Result<Option<Dynamic<Ink>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct DynamicInkVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for DynamicInkVisitor {
+        type Value = Option<Dynamic<Ink>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a named colour, '#'-prefixed hex, or a '{param_name}' reference")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            let trimmed = v.trim();
+            if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
+                let inner = trimmed[1..trimmed.len() - 1].trim();
+                return Ok(Some(DynamicValue::Ref(inner.to_string())));
+            }
+            let ink: Ink = trimmed.parse().map_err(serde::de::Error::custom)?;
+            Ok(Some(DynamicValue::Literal(ink)))
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            deserializer.deserialize_any(DynamicInkVisitor)
+        }
+    }
+
+    deserializer.deserialize_any(DynamicInkVisitor)
+}
+
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum RawDimension {
@@ -175,6 +228,8 @@ pub struct TextRaw {
     pub font_size: FontSize,
     #[serde(default)]
     pub font_weight: Option<Dynamic<u16>>,
+    #[serde(default, deserialize_with = "deserialize_dynamic_ink")]
+    pub ink: Option<Dynamic<Ink>>,
     #[serde(default)]
     pub wrap: bool,
     #[serde(default, deserialize_with = "deserialize_present")]
@@ -363,4 +418,67 @@ pub struct PlacementRaw {
     pub max_h: Option<f32>,
     #[serde(default)]
     pub rotate: Option<f32>,
+}
+
+#[cfg(test)]
+mod raw_tests {
+    use super::*;
+    use std::str::FromStr;
+
+    #[test]
+    fn text_raw_ink_deserialization() {
+        let make_yaml = |ink_str: &str| {
+            format!(
+                r#"
+value: "Hello"
+font_size: 12
+ink: {ink_str}
+"#
+            )
+        };
+
+        // Valid literal named color
+        let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("red")).unwrap();
+        assert_eq!(
+            raw.ink,
+            Some(DynamicValue::Literal(Ink::from_str("red").unwrap()))
+        );
+
+        // Valid hex color
+        let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("\"#ff4136\"")).unwrap();
+        assert_eq!(
+            raw.ink,
+            Some(DynamicValue::Literal(Ink::from_str("#ff4136").unwrap()))
+        );
+
+        // Valid reference
+        let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("\"{brand}\"")).unwrap();
+        assert_eq!(raw.ink, Some(DynamicValue::Ref("brand".to_string())));
+
+        // Refused ink strings and values: chartreuse, redmm, "#ff0000in", "ff0000", "#ff000", "", 16711680
+        for bad in [
+            "chartreuse",
+            "redmm",
+            "\"#ff0000in\"",
+            "\"ff0000\"",
+            "\"#ff000\"",
+            "\"\"",
+            "16711680",
+            "true",
+            "[255, 0, 0]",
+        ] {
+            let res = serde_yaml_ng::from_str::<TextRaw>(&make_yaml(bad));
+            assert!(res.is_err(), "expected ink '{bad}' to be rejected");
+        }
+
+        // Absent ink is None
+        let raw_no_ink: TextRaw =
+            serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\n").unwrap();
+        assert_eq!(raw_no_ink.ink, None);
+
+        // Null ink is None
+        let raw_null_ink: TextRaw =
+            serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\nink: null\n").unwrap();
+        assert_eq!(raw_null_ink.ink, None);
+    }
 }

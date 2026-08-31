@@ -2739,6 +2739,113 @@ layout:
         );
     }
 
+    #[tokio::test]
+    async fn template_put_rejects_invalid_ink_literal() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+        let yaml = r#"
+name: BadInk
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: chartreuse
+"#;
+        let res = app
+            .oneshot(yaml_post("/api/templates/bad_ink", "PUT", yaml.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("layout[0]") && msg.contains("invalid ink 'chartreuse'"),
+            "expected error naming layout path and invalid ink, got: {msg}"
+        );
+        assert!(
+            !dir.join("bad_ink.yaml").exists(),
+            "no file should be written on rejection"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn startup_with_bad_ink_template_quarantines_it_and_serves_valid_sibling() {
+        let dir = temp_templates_dir();
+        let valid_yaml = r#"
+name: ValidSibling
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Good"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: blue
+"#;
+        let bad_yaml = r#"
+name: BadSibling
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Bad"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: invalid_colour_here
+"#;
+        std::fs::write(dir.join("valid.yaml"), valid_yaml).unwrap();
+        std::fs::write(dir.join("bad.yaml"), bad_yaml).unwrap();
+
+        let app = build_app_in(&dir);
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_response(res).await;
+        let templates = body["templates"].as_array().unwrap();
+        let broken = body["broken"].as_array().unwrap();
+
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0]["id"], "valid");
+
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0]["path"], "bad.yaml");
+        let broken_err = broken[0]["error"].as_str().unwrap();
+        assert!(
+            broken_err.contains("layout[0]")
+                && broken_err.contains("invalid ink 'invalid_colour_here'"),
+            "expected broken template error naming layout path and invalid ink, got: {broken_err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
     /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
     /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates
@@ -6111,6 +6218,23 @@ layout:
             schemas.contains_key("ParamValue"),
             "ParamValue missing in openapi schemas"
         );
+        assert!(
+            schemas.contains_key("Ink"),
+            "Ink missing in openapi schemas"
+        );
+        assert!(
+            schemas.contains_key("DynamicValue_Ink"),
+            "DynamicValue_Ink missing in openapi schemas"
+        );
+        assert!(
+            !schemas.contains_key("String"),
+            "String must not be a schema component"
+        );
+        let ink_schema = serde_json::to_value(&schemas["Ink"]).unwrap();
+        assert_eq!(
+            ink_schema["type"], "string",
+            "Ink schema must have type: string, got: {ink_schema}"
+        );
     }
 
     // Verify the API-wide behavior: oversized bodies on non-/print JSON endpoints also return 413.
@@ -9091,5 +9215,359 @@ layout:
         let body = body_json(response).await;
         assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["reason"], "item_out_of_frame");
+    }
+
+    async fn body_bytes(res: axum::response::Response) -> Vec<u8> {
+        axum::body::to_bytes(res.into_body(), 10 * 1024 * 1024)
+            .await
+            .expect("collect body")
+            .to_vec()
+    }
+
+    #[tokio::test]
+    async fn render_label_and_batch_invalid_ink_parameter_refusals() {
+        let yaml = r#"
+name: DynamicInk
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: "{brand}"
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("dyn_ink", yaml)]);
+
+        // 1. Task 5.1: POST /api/render/label supplying non-colour returns 400 InvalidRequest / ink_param_invalid naming parameter
+        let req1 = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "dyn_ink",
+                "data": { "brand": "octarine" }
+            })
+            .to_string(),
+        );
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::BAD_REQUEST);
+        let body1 = body_json(res1).await;
+        assert_eq!(body1["error"]["code"], "InvalidRequest");
+        assert_eq!(body1["error"]["details"]["reason"], "ink_param_invalid");
+        let msg1 = body1["error"]["message"].as_str().unwrap();
+        assert!(
+            msg1.contains("brand"),
+            "error message '{msg1}' must name the failing parameter 'brand'"
+        );
+
+        // 2. Task 5.3: POST /api/render/label supplying "{other}" chained reference returns 400 InvalidRequest / ink_param_invalid
+        let req2 = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "dyn_ink",
+                "data": { "brand": "{other}" }
+            })
+            .to_string(),
+        );
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::BAD_REQUEST);
+        let body2 = body_json(res2).await;
+        assert_eq!(body2["error"]["code"], "InvalidRequest");
+        assert_eq!(body2["error"]["details"]["reason"], "ink_param_invalid");
+        let msg2 = body2["error"]["message"].as_str().unwrap();
+        assert!(
+            msg2.contains("brand"),
+            "error message '{msg2}' must name the failing parameter 'brand'"
+        );
+
+        // 3. Task 5.2: POST /api/batch with 2 labels (second bad ink) returns 422 BatchInvalid with failure at index 1
+        let req3 = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "dyn_ink",
+                "labels": [
+                    { "data": { "brand": "red" } },
+                    { "data": { "brand": "octarine" } }
+                ],
+                "mode": "download"
+            })
+            .to_string(),
+        );
+        let res3 = app.clone().oneshot(req3).await.unwrap();
+        assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body3 = body_json(res3).await;
+        assert_eq!(body3["error"]["code"], "BatchInvalid");
+        let failures = body3["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["index"], 1);
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(failures[0]["reason"], "ink_param_invalid");
+        let msg3 = failures[0]["message"].as_str().unwrap();
+        assert!(
+            msg3.contains("brand"),
+            "failure message '{msg3}' must name the failing parameter 'brand'"
+        );
+    }
+
+    #[tokio::test]
+    async fn white_ink_template_loads_and_renders_successfully() {
+        let yaml = r#"
+name: WhiteInk
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "White on White"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: white
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("white_ink", yaml)]);
+
+        // 1. Render PNG
+        let req_png = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({ "template": "white_ink", "data": {} }).to_string(),
+        );
+        let res_png = app.clone().oneshot(req_png).await.unwrap();
+        assert_eq!(res_png.status(), StatusCode::OK);
+        let png = body_bytes(res_png).await;
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        // 2. Render PDF
+        let req_pdf = req_post_json(
+            "/api/render/label?format=pdf",
+            &serde_json::json!({ "template": "white_ink", "data": {} }).to_string(),
+        );
+        let res_pdf = app.clone().oneshot(req_pdf).await.unwrap();
+        assert_eq!(res_pdf.status(), StatusCode::OK);
+        let pdf = body_bytes(res_pdf).await;
+        assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[tokio::test]
+    async fn colored_ink_and_alpha_composite_png_rendering() {
+        let red_yaml = r#"
+name: RedInk
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Red Text"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: red
+"#;
+        let alpha_yaml = r#"
+name: AlphaInk
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Alpha Text"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: '#00000080'
+"#;
+        let (app, _state) =
+            test_app_with_custom_templates(vec![("red_ink", red_yaml), ("alpha_ink", alpha_yaml)]);
+
+        // 1. Red ink PNG produces (255, 65, 54) glyph pixels
+        let req_red = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({ "template": "red_ink", "data": {} }).to_string(),
+        );
+        let res_red = app.clone().oneshot(req_red).await.unwrap();
+        assert_eq!(res_red.status(), StatusCode::OK);
+        let png_red = body_bytes(res_red).await;
+        let img_red = image::load_from_memory(&png_red)
+            .expect("decode red png")
+            .to_rgba8();
+        let red_count = img_red
+            .pixels()
+            .filter(|p| (p[0], p[1], p[2]) == (255, 65, 54))
+            .count();
+        assert!(
+            red_count > 0,
+            "rendered PNG must contain red (255, 65, 54) glyph pixels, found {red_count}"
+        );
+
+        // 2. Alpha ink (#00000080 over white background) composites to (128, 128, 128)
+        let req_alpha = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({ "template": "alpha_ink", "data": {} }).to_string(),
+        );
+        let res_alpha = app.clone().oneshot(req_alpha).await.unwrap();
+        assert_eq!(res_alpha.status(), StatusCode::OK);
+        let png_alpha = body_bytes(res_alpha).await;
+        let img_alpha = image::load_from_memory(&png_alpha)
+            .expect("decode alpha png")
+            .to_rgba8();
+        let composite_count = img_alpha
+            .pixels()
+            .filter(|p| (p[0], p[1], p[2]) == (128, 128, 128))
+            .count();
+        assert!(
+            composite_count > 0,
+            "rendered PNG with #00000080 over white must composite to (128, 128, 128), found {composite_count}"
+        );
+    }
+
+    #[tokio::test]
+    async fn template_get_reports_declared_ink_and_omits_when_absent() {
+        let yaml = r#"
+name: TemplateWithAndWithoutInk
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Declared Ink"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+    ink: red
+  - type: text
+    value: "Default Ink"
+    at: [0, 10]
+    size: [50, 10]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("ink_readback", yaml)]);
+        let req = Request::builder()
+            .uri("/api/templates/ink_readback")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+        let items = detail["layout"].as_array().expect("layout items");
+        assert_eq!(items.len(), 2);
+        assert_eq!(
+            items[0]["ink"], "red",
+            "item 0 must report declared ink 'red'"
+        );
+        assert!(
+            items[1].get("ink").is_none(),
+            "item 1 must omit 'ink' key when no ink was declared, got: {:?}",
+            items[1].get("ink")
+        );
+    }
+
+    #[tokio::test]
+    async fn ink_multi_slot_sheet_and_bilevel_rendering() {
+        let sheet_yaml = r#"
+name: SheetInk
+unit: mm
+dpi: 200
+format:
+  type: sheet
+  paper_width: 50
+  paper_height: 50
+  label_width: 20
+  label_height: 20
+  positions:
+    - [0, 0]
+    - [25, 0]
+params:
+  color:
+    type: string
+    default: "blue"
+layout:
+  - type: text
+    value: "Label"
+    at: [0, 0]
+    size: [20, 20]
+    font_size: 8
+    ink: "{color}"
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("sheet_ink", sheet_yaml)]);
+
+        // 1. Multi-slot sheet PDF rendering with ink
+        let req_sheet = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "sheet_ink",
+                "mode": "download",
+                "labels": [
+                    { "data": { "color": "red" } },
+                    { "data": { "color": "navy" } }
+                ]
+            })
+            .to_string(),
+        );
+        let res_sheet = app.clone().oneshot(req_sheet).await.unwrap();
+        assert_eq!(res_sheet.status(), StatusCode::OK);
+        let pdf = body_bytes(res_sheet).await;
+        assert!(pdf.starts_with(b"%PDF"));
+
+        // 2. Bilevel thresholding with light ink
+        // A single label with a light yellow ink rendered with color_mode=bilevel produces pure B/W pixels
+        // and 0 black pixels because yellow thresholds to white.
+        let light_yaml = r#"
+name: LightInk
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 30
+  height: 15
+layout:
+  - type: text
+    value: "Light"
+    at: [0, 0]
+    size: [30, 15]
+    font_size: 10
+    ink: yellow
+"#;
+        let (app2, _state2) = test_app_with_custom_templates(vec![("light_ink", light_yaml)]);
+        let req_bilevel = req_post_json(
+            "/api/render/label?format=png&color_mode=bilevel",
+            &serde_json::json!({ "template": "light_ink", "data": {} }).to_string(),
+        );
+        let res_bilevel = app2.clone().oneshot(req_bilevel).await.unwrap();
+        assert_eq!(res_bilevel.status(), StatusCode::OK);
+        let png = body_bytes(res_bilevel).await;
+        let img = image::load_from_memory(&png).expect("decode").to_rgba8();
+        let black_count = img
+            .pixels()
+            .filter(|p| (p[0], p[1], p[2]) == (0, 0, 0))
+            .count();
+        assert_eq!(
+            black_count, 0,
+            "yellow ink must threshold to white, yielding 0 black pixels in bilevel mode"
+        );
+        assert!(
+            img.pixels().all(|p| {
+                let (r, g, b) = (p[0], p[1], p[2]);
+                (r, g, b) == (0, 0, 0) || (r, g, b) == (255, 255, 255)
+            }),
+            "bilevel output with yellow ink must be pure B/W (thresholded)"
+        );
     }
 }

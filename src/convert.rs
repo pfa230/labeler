@@ -242,6 +242,7 @@ impl LayoutItem {
                     placement: raw.placement.into_placement("text", None, is_packed)?,
                     font_size: raw.font_size,
                     font_weight: raw.font_weight,
+                    ink: raw.ink,
                     wrap: raw.wrap,
                     alignment: raw.alignment,
                     overflow: raw.overflow,

@@ -12,8 +12,9 @@ use crate::templates::TemplateContent;
 use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, interpolate,
-    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32, resolve_dynamic_value_u16,
-    resolve_image_asset, to_page_coords, typst_alignment, typst_font_options,
+    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32, resolve_dynamic_value_ink,
+    resolve_dynamic_value_u16, resolve_image_asset, to_page_coords, typst_alignment,
+    typst_font_options,
 };
 
 pub(crate) use helpers::value_to_string;
@@ -1111,6 +1112,15 @@ struct ContainerRenderArgs<'a> {
     pub path: &'a str,
 }
 
+struct TextRenderArgs<'a> {
+    pub placement: &'a Placement,
+    pub font_weight: Option<u16>,
+    pub ink: Option<&'a crate::models::Ink>,
+    pub alignment: &'a crate::models::Alignment,
+    pub pbox: PlacedBox,
+    pub text_fit: &'a helpers::TextFit,
+}
+
 impl<'a> RenderContext<'a> {
     pub(crate) fn new(
         unit: &'a str,
@@ -1755,6 +1765,7 @@ impl<'a> RenderContext<'a> {
             LayoutItem::Text {
                 placement,
                 font_weight,
+                ink,
                 alignment,
                 ..
             } => {
@@ -1762,13 +1773,20 @@ impl<'a> RenderContext<'a> {
                     Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
                     None => None,
                 };
+                let resolved_ink = match ink {
+                    Some(dyn_val) => Some(resolve_dynamic_value_ink(dyn_val, self.data)?),
+                    None => None,
+                };
                 self.render_text_item(
                     out,
-                    placement,
-                    resolved_weight,
-                    alignment,
-                    args.pbox,
-                    args.measured_node.text.as_ref().unwrap(),
+                    TextRenderArgs {
+                        placement,
+                        font_weight: resolved_weight,
+                        ink: resolved_ink.as_ref(),
+                        alignment,
+                        pbox: args.pbox,
+                        text_fit: args.measured_node.text.as_ref().unwrap(),
+                    },
                 )?;
             }
             LayoutItem::Qr {
@@ -1842,49 +1860,51 @@ impl<'a> RenderContext<'a> {
         })
     }
 
-    fn render_text_item(
-        &self,
-        out: &mut String,
-        placement: &Placement,
-        font_weight: Option<u16>,
-        alignment: &crate::models::Alignment,
-        pbox: PlacedBox,
-        text_fit: &helpers::TextFit,
-    ) -> Result<(), AppError> {
-        let weight_arg = font_weight
+    fn render_text_item(&self, out: &mut String, args: TextRenderArgs<'_>) -> Result<(), AppError> {
+        let weight_arg = args
+            .font_weight
             .map(|w| format!(", weight: {w}"))
             .unwrap_or_default();
-        let weight = font_weight.unwrap_or(400);
+        let weight = args.font_weight.unwrap_or(400);
 
-        let mut body = text_fit
+        let fill_arg = args
+            .ink
+            .map(|i| {
+                let [r, g, b, a] = i.rgba();
+                format!(", fill: rgb({r}, {g}, {b}, {a})")
+            })
+            .unwrap_or_default();
+
+        let mut body = args
+            .text_fit
             .lines
             .iter()
             .map(|l| format!("#text(\"{}\")", escape_typst_string(l)))
             .collect::<Vec<_>>()
             .join("#linebreak()");
 
-        if text_fit.lines.last().is_some_and(|l| l.is_empty()) {
+        if args.text_fit.lines.last().is_some_and(|l| l.is_empty()) {
             body.push_str("#linebreak()");
         }
 
         let body = format!(
-            "#text(size: {}pt{weight_arg})[{body}]",
-            text_fit.font_size_pt
+            "#text(size: {}pt{weight_arg}{fill_arg})[{body}]",
+            args.text_fit.font_size_pt
         );
 
         let body = pad_block(
             &body,
-            helpers::pad_pt(weight, text_fit.font_size_pt, alignment.vertical)?,
-            alignment.vertical,
+            helpers::pad_pt(weight, args.text_fit.font_size_pt, args.alignment.vertical)?,
+            args.alignment.vertical,
         );
 
-        let inner = format!("#align({})[{body}]", typst_alignment(alignment));
-        let top = pbox.y + pbox.h;
-        let dx = format_length(pbox.x, self.unit)?;
-        let dy = format_length(pbox.frame.1 - top, self.unit)?;
-        let box_width = format_length(pbox.w, self.unit)?;
-        let box_height = format_length(pbox.h, self.unit)?;
-        let content = self.wrap_rotation(inner, placement.rotate);
+        let inner = format!("#align({})[{body}]", typst_alignment(args.alignment));
+        let top = args.pbox.y + args.pbox.h;
+        let dx = format_length(args.pbox.x, self.unit)?;
+        let dy = format_length(args.pbox.frame.1 - top, self.unit)?;
+        let box_width = format_length(args.pbox.w, self.unit)?;
+        let box_height = format_length(args.pbox.h, self.unit)?;
+        let content = self.wrap_rotation(inner, args.placement.rotate);
 
         writeln!(
             out,
@@ -2220,6 +2240,7 @@ mod tests {
             ),
             font_size,
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: crate::models::Alignment {
                 horizontal,
@@ -2253,6 +2274,7 @@ mod tests {
             ),
             font_size,
             font_weight: weight.map(Into::into),
+            ink: None,
             wrap: false,
             alignment: crate::models::Alignment {
                 horizontal,
@@ -2397,6 +2419,7 @@ mod tests {
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
@@ -2427,6 +2450,7 @@ mod tests {
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
@@ -2539,6 +2563,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
@@ -2597,6 +2622,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: weight.map(Into::into),
+                ink: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -2668,6 +2694,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -2749,6 +2776,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -2887,6 +2915,7 @@ layout:
             },
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -2982,6 +3011,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3055,6 +3085,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3088,6 +3119,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3120,6 +3152,7 @@ layout:
                     },
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
+                    ink: None,
                     wrap: false,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -3280,6 +3313,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3334,6 +3368,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3410,6 +3445,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3482,6 +3518,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3553,6 +3590,7 @@ layout:
                     max: 28.0,
                 },
                 font_weight: None,
+                ink: None,
                 wrap: true,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3860,6 +3898,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3997,6 +4036,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4082,6 +4122,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
+                ink: None,
                 wrap,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
@@ -4361,6 +4402,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4392,11 +4434,14 @@ layout:
             };
             ctx.render_text_item(
                 &mut typst_rendered,
-                placement,
-                None,
-                &Alignment::default(),
-                pbox,
-                measured[0].text.as_ref().unwrap(),
+                super::TextRenderArgs {
+                    placement,
+                    font_weight: None,
+                    ink: None,
+                    alignment: &Alignment::default(),
+                    pbox,
+                    text_fit: measured[0].text.as_ref().unwrap(),
+                },
             )
             .unwrap();
 
@@ -4558,6 +4603,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4654,6 +4700,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4710,6 +4757,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
+                    ink: None,
                     wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -4789,6 +4837,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5029,6 +5078,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5193,6 +5243,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
+                    ink: None,
                     wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -5243,6 +5294,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5323,6 +5375,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5355,6 +5408,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
+                    ink: None,
                     wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -5424,6 +5478,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5802,6 +5857,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
+            ink: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -5856,6 +5912,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
+                    ink: None,
                     wrap: false,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -6123,6 +6180,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -6224,6 +6282,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -7852,6 +7911,7 @@ layout:
                 max: 32.0,
             },
             font_weight: None,
+            ink: None,
             wrap: true,
             alignment: crate::models::Alignment {
                 horizontal: HorizontalAlign::Center,
@@ -8212,5 +8272,269 @@ layout:
             ctx.is_item_active(&items[1]),
             "horizontal container must be active"
         );
+    }
+
+    #[test]
+    fn emitted_typst_source_ink_fill_and_omission() {
+        use std::str::FromStr;
+        // 1. Named ink emits fill: rgb(...) with pinned components
+        let named_item = LayoutItem::Text {
+            value: "Hello".to_string(),
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
+            ),
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            ink: Some(DynamicValue::Literal(
+                crate::models::Ink::from_str("red").unwrap(),
+            )),
+            wrap: false,
+            alignment: Alignment::default(),
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+        let src_named = render_test_items(&[named_item], (50.0, 20.0)).expect("render named");
+        assert!(
+            src_named.contains("fill: rgb(255, 65, 54, 255)"),
+            "red must emit rgb(255, 65, 54, 255), got: {src_named}"
+        );
+
+        // 2. Hex ink emits fill: rgb(...) with exact same components
+        let hex_item = LayoutItem::Text {
+            value: "Hello".to_string(),
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
+            ),
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            ink: Some(DynamicValue::Literal(
+                crate::models::Ink::from_str("#ff4136").unwrap(),
+            )),
+            wrap: false,
+            alignment: Alignment::default(),
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+        let src_hex = render_test_items(&[hex_item], (50.0, 20.0)).expect("render hex");
+        assert!(
+            src_hex.contains("fill: rgb(255, 65, 54, 255)"),
+            "#ff4136 must emit rgb(255, 65, 54, 255), got: {src_hex}"
+        );
+
+        // 3. No ink emits no fill: argument at all
+        let no_ink_item = LayoutItem::Text {
+            value: "Hello".to_string(),
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
+            ),
+            font_size: FontSize::Fixed(10.0),
+            font_weight: None,
+            ink: None,
+            wrap: false,
+            alignment: Alignment::default(),
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+        let src_no_ink = render_test_items(&[no_ink_item], (50.0, 20.0)).expect("render no ink");
+        assert!(
+            !src_no_ink.contains("fill:"),
+            "item with no ink must emit no fill: argument, got: {src_no_ink}"
+        );
+    }
+
+    #[test]
+    fn ink_changes_no_layout_metrics() {
+        use std::str::FromStr;
+        let make_item = |ink: Option<&str>| LayoutItem::Text {
+            value: "Some longer text that might wrap or size dynamically".to_string(),
+            placement: Placement::sized(
+                Position([2.0, 3.0]),
+                Size([SizeValue::content(), SizeValue::fixed(15.0)]),
+            ),
+            font_size: FontSize::Range {
+                min: 8.0,
+                max: 24.0,
+            },
+            font_weight: None,
+            ink: ink.map(|s| DynamicValue::Literal(crate::models::Ink::from_str(s).unwrap())),
+            wrap: true,
+            alignment: Alignment::default(),
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let geometry_values = HashMap::new();
+
+        let item_no_ink = make_item(None);
+        let item_red = make_item(Some("red"));
+        let item_hex = make_item(Some("#0074d9"));
+
+        let (measured_none, _) = ctx
+            .measure_items(
+                &[item_no_ink],
+                (100.0, 50.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
+            .unwrap();
+        let (measured_red, _) = ctx
+            .measure_items(
+                &[item_red],
+                (100.0, 50.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
+            .unwrap();
+        let (measured_hex, _) = ctx
+            .measure_items(
+                &[item_hex],
+                (100.0, 50.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
+            .unwrap();
+
+        assert_eq!(measured_none[0].intrinsic, measured_red[0].intrinsic);
+        assert_eq!(measured_none[0].intrinsic, measured_hex[0].intrinsic);
+
+        let fit_none = measured_none[0].text.as_ref().unwrap();
+        let fit_red = measured_red[0].text.as_ref().unwrap();
+        let fit_hex = measured_hex[0].text.as_ref().unwrap();
+
+        assert_eq!(fit_none.font_size_pt, fit_red.font_size_pt);
+        assert_eq!(fit_none.font_size_pt, fit_hex.font_size_pt);
+        assert_eq!(fit_none.lines, fit_red.lines);
+        assert_eq!(fit_none.lines, fit_hex.lines);
+        assert_eq!(fit_none.width_units, fit_red.width_units);
+        assert_eq!(fit_none.width_units, fit_hex.width_units);
+        assert_eq!(fit_none.height_units, fit_red.height_units);
+        assert_eq!(fit_none.height_units, fit_hex.height_units);
+    }
+
+    #[test]
+    fn sheet_multi_slot_ink_rendering() {
+        let yaml = r#"
+name: SheetInk
+unit: mm
+dpi: 200
+format:
+  type: sheet
+  paper_width: 50
+  paper_height: 50
+  label_width: 20
+  label_height: 20
+  positions:
+    - [0, 0]
+    - [25, 0]
+params:
+  color:
+    type: string
+    default: "blue"
+layout:
+  - type: text
+    value: "Label"
+    at: [0, 0]
+    size: [20, 20]
+    font_size: 8
+    ink: "{color}"
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+
+        // Render slot 0 with color: "red"
+        let data_red = HashMap::from([("color".to_string(), serde_json::json!("red"))]);
+        let resolved_red =
+            super::resolve_parameters(&template, &data_red, None, Some(&settings), Some(&datetime))
+                .unwrap();
+        let images_red = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx_red =
+            super::RenderContext::new("mm", 200, &resolved_red.data, None, &env, &images_red);
+        let (meas_red, _) = ctx_red
+            .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        let src_red = ctx_red
+            .render_items(
+                items,
+                &meas_red,
+                (20.0, 20.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+
+        // Render slot 1 with color: "navy"
+        let data_navy = HashMap::from([("color".to_string(), serde_json::json!("navy"))]);
+        let resolved_navy = super::resolve_parameters(
+            &template,
+            &data_navy,
+            None,
+            Some(&settings),
+            Some(&datetime),
+        )
+        .unwrap();
+        let images_navy = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx_navy =
+            super::RenderContext::new("mm", 200, &resolved_navy.data, None, &env, &images_navy);
+        let (meas_navy, _) = ctx_navy
+            .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        let src_navy = ctx_navy
+            .render_items(
+                items,
+                &meas_navy,
+                (20.0, 20.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+
+        // Slot 0 carries red (255, 65, 54, 255) and not navy; slot 1 carries navy (0, 31, 63, 255) and not red
+        assert!(
+            src_red.contains("fill: rgb(255, 65, 54, 255)"),
+            "slot 0 must carry red fill, got: {src_red}"
+        );
+        assert!(
+            !src_red.contains("fill: rgb(0, 31, 63, 255)"),
+            "slot 0 must not carry navy fill"
+        );
+        assert!(
+            src_navy.contains("fill: rgb(0, 31, 63, 255)"),
+            "slot 1 must carry navy fill, got: {src_navy}"
+        );
+        assert!(
+            !src_navy.contains("fill: rgb(255, 65, 54, 255)"),
+            "slot 1 must not carry red fill"
+        );
+
+        // And render_sheet_pages compiles the multi-slot sheet to PDF
+        let labels = vec![
+            crate::models::LabelInput { data: data_red },
+            crate::models::LabelInput { data: data_navy },
+        ];
+        let pdf = super::render_sheet_pages(&template, &labels, 0, &settings, &datetime).unwrap();
+        assert!(pdf.starts_with(b"%PDF"));
     }
 }
