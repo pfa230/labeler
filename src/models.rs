@@ -827,6 +827,146 @@ pub enum Overflow {
     Fail,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ink {
+    spelling: String,
+    rgba: [u8; 4],
+}
+
+impl utoipa::PartialSchema for Ink {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, Type};
+        ObjectBuilder::new()
+            .schema_type(Type::String)
+            .description(Some("A named colour or '#'-prefixed hex colour string"))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for Ink {}
+
+impl Ink {
+    pub fn spelling(&self) -> &str {
+        &self.spelling
+    }
+
+    pub fn rgba(&self) -> [u8; 4] {
+        self.rgba
+    }
+}
+
+impl std::str::FromStr for Ink {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let rgba = match s {
+            "black" => Some([0, 0, 0, 255]),
+            "gray" => Some([170, 170, 170, 255]),
+            "silver" => Some([221, 221, 221, 255]),
+            "white" => Some([255, 255, 255, 255]),
+            "navy" => Some([0, 31, 63, 255]),
+            "blue" => Some([0, 116, 217, 255]),
+            "aqua" => Some([127, 219, 255, 255]),
+            "teal" => Some([57, 204, 204, 255]),
+            "eastern" => Some([35, 157, 173, 255]),
+            "purple" => Some([177, 13, 201, 255]),
+            "fuchsia" => Some([240, 18, 190, 255]),
+            "maroon" => Some([133, 20, 75, 255]),
+            "red" => Some([255, 65, 54, 255]),
+            "orange" => Some([255, 133, 27, 255]),
+            "yellow" => Some([255, 220, 0, 255]),
+            "olive" => Some([61, 153, 112, 255]),
+            "green" => Some([46, 204, 64, 255]),
+            "lime" => Some([1, 255, 112, 255]),
+            _ => None,
+        };
+
+        if let Some(rgba) = rgba {
+            return Ok(Ink {
+                spelling: s.to_string(),
+                rgba,
+            });
+        }
+
+        if let Some(hex) = s.strip_prefix('#') {
+            if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!(
+                    "invalid ink '{s}': expected a named colour or '#'-prefixed hex"
+                ));
+            }
+            let parse_hex_digit = |c: u8| -> u8 {
+                match c {
+                    b'0'..=b'9' => c - b'0',
+                    b'a'..=b'f' => c - b'a' + 10,
+                    b'A'..=b'F' => c - b'A' + 10,
+                    _ => unreachable!(),
+                }
+            };
+            let bytes = hex.as_bytes();
+            let rgba = match bytes.len() {
+                3 => {
+                    let r = parse_hex_digit(bytes[0]) * 17;
+                    let g = parse_hex_digit(bytes[1]) * 17;
+                    let b = parse_hex_digit(bytes[2]) * 17;
+                    [r, g, b, 255]
+                }
+                4 => {
+                    let r = parse_hex_digit(bytes[0]) * 17;
+                    let g = parse_hex_digit(bytes[1]) * 17;
+                    let b = parse_hex_digit(bytes[2]) * 17;
+                    let a = parse_hex_digit(bytes[3]) * 17;
+                    [r, g, b, a]
+                }
+                6 => {
+                    let r = (parse_hex_digit(bytes[0]) << 4) | parse_hex_digit(bytes[1]);
+                    let g = (parse_hex_digit(bytes[2]) << 4) | parse_hex_digit(bytes[3]);
+                    let b = (parse_hex_digit(bytes[4]) << 4) | parse_hex_digit(bytes[5]);
+                    [r, g, b, 255]
+                }
+                8 => {
+                    let r = (parse_hex_digit(bytes[0]) << 4) | parse_hex_digit(bytes[1]);
+                    let g = (parse_hex_digit(bytes[2]) << 4) | parse_hex_digit(bytes[3]);
+                    let b = (parse_hex_digit(bytes[4]) << 4) | parse_hex_digit(bytes[5]);
+                    let a = (parse_hex_digit(bytes[6]) << 4) | parse_hex_digit(bytes[7]);
+                    [r, g, b, a]
+                }
+                _ => {
+                    return Err(format!(
+                        "invalid ink '{s}': expected 3, 4, 6, or 8 hex digits"
+                    ))
+                }
+            };
+            return Ok(Ink {
+                spelling: s.to_string(),
+                rgba,
+            });
+        }
+
+        Err(format!(
+            "invalid ink '{s}': expected a named colour or '#'-prefixed hex"
+        ))
+    }
+}
+
+impl Serialize for Ink {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.spelling)
+    }
+}
+
+impl<'de> Deserialize<'de> for Ink {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<Ink>().map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LayoutItem {
@@ -837,6 +977,8 @@ pub enum LayoutItem {
         font_size: FontSize,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font_weight: Option<DynamicValue<u16>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ink: Option<DynamicValue<Ink>>,
         #[serde(default)]
         wrap: bool,
         #[serde(default)]
@@ -1144,5 +1286,115 @@ mod placement_tests {
         let p = Position([-0.0, 5.0]);
         assert!(p.x().is_sign_negative());
         assert!(!p.y().is_sign_negative());
+    }
+}
+
+#[cfg(test)]
+mod ink_tests {
+    use super::Ink;
+
+    #[test]
+    fn all_18_names_resolve_to_pinned_rgba() {
+        let cases = [
+            ("black", [0, 0, 0, 255]),
+            ("gray", [170, 170, 170, 255]),
+            ("silver", [221, 221, 221, 255]),
+            ("white", [255, 255, 255, 255]),
+            ("navy", [0, 31, 63, 255]),
+            ("blue", [0, 116, 217, 255]),
+            ("aqua", [127, 219, 255, 255]),
+            ("teal", [57, 204, 204, 255]),
+            ("eastern", [35, 157, 173, 255]),
+            ("purple", [177, 13, 201, 255]),
+            ("fuchsia", [240, 18, 190, 255]),
+            ("maroon", [133, 20, 75, 255]),
+            ("red", [255, 65, 54, 255]),
+            ("orange", [255, 133, 27, 255]),
+            ("yellow", [255, 220, 0, 255]),
+            ("olive", [61, 153, 112, 255]),
+            ("green", [46, 204, 64, 255]),
+            ("lime", [1, 255, 112, 255]),
+        ];
+        assert_eq!(cases.len(), 18);
+        for (name, expected_rgba) in cases {
+            let ink: Ink = name.parse().unwrap();
+            assert_eq!(ink.spelling(), name);
+            assert_eq!(ink.rgba(), expected_rgba, "failed for name '{name}'");
+        }
+    }
+
+    #[test]
+    fn hex_forms_and_short_forms_resolve_equal() {
+        let f00: Ink = "#f00".parse().unwrap();
+        let ff0000: Ink = "#ff0000".parse().unwrap();
+        assert_eq!(f00.rgba(), [255, 0, 0, 255]);
+        assert_eq!(ff0000.rgba(), [255, 0, 0, 255]);
+        assert_eq!(f00.rgba(), ff0000.rgba());
+
+        let f008: Ink = "#f008".parse().unwrap();
+        let ff000088: Ink = "#ff000088".parse().unwrap();
+        assert_eq!(f008.rgba(), [255, 0, 0, 136]);
+        assert_eq!(ff000088.rgba(), [255, 0, 0, 136]);
+        assert_eq!(f008.rgba(), ff000088.rgba());
+    }
+
+    #[test]
+    fn invalid_ink_strings_are_rejected() {
+        let invalid = [
+            "chartreuse",
+            "ff0000",
+            "#ff000",   // 5 hex digits
+            "#ff",      // 2 hex digits
+            "#f",       // 1 hex digit
+            "#1234567", // 7 hex digits
+            "#ggg",     // non-hex characters
+            "",         // empty string
+            "Red",      // uppercase named color (exact lowercase required)
+        ];
+        for s in invalid {
+            assert!(s.parse::<Ink>().is_err(), "expected '{s}' to be rejected");
+        }
+    }
+
+    #[test]
+    fn parsed_ink_serializes_back_to_exact_authored_string() {
+        let spellings = ["red", "#ff4136", "#F00", "#00000080", "#f008", "navy"];
+        for spelling in spellings {
+            let ink: Ink = spelling.parse().unwrap();
+            let json = serde_json::to_string(&ink).unwrap();
+            assert_eq!(json, format!("\"{spelling}\""));
+
+            let de: Ink = serde_json::from_str(&json).unwrap();
+            assert_eq!(de.spelling(), spelling);
+            assert_eq!(de.rgba(), ink.rgba());
+        }
+    }
+
+    #[test]
+    fn non_string_is_rejected_in_deserialization() {
+        assert!(serde_json::from_str::<Ink>("16711680").is_err());
+        assert!(serde_json::from_str::<Ink>("true").is_err());
+        assert!(serde_json::from_str::<Ink>("[255, 0, 0]").is_err());
+        assert!(serde_json::from_str::<Ink>("{\"r\": 255}").is_err());
+    }
+}
+
+#[cfg(test)]
+mod dynamic_value_tests {
+    use super::DynamicValue;
+
+    #[test]
+    fn shared_visitor_parses_length_suffixes_and_infinity() {
+        let v80: DynamicValue<f32> = serde_yaml_ng::from_str("\"80mm\"").unwrap();
+        assert_eq!(v80, DynamicValue::Literal(80.0));
+
+        let v80_in: DynamicValue<f32> = serde_yaml_ng::from_str("\"80in\"").unwrap();
+        assert_eq!(v80_in, DynamicValue::Literal(80.0));
+
+        let vinf: DynamicValue<f32> = serde_yaml_ng::from_str("\"infmm\"").unwrap();
+        assert_eq!(vinf, DynamicValue::Literal(f32::INFINITY));
+
+        let vref: DynamicValue<f32> = serde_yaml_ng::from_str("\"{width}\"").unwrap();
+        assert_eq!(vref, DynamicValue::Ref("width".to_string()));
     }
 }

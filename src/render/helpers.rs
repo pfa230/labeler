@@ -220,6 +220,39 @@ pub(super) fn resolve_dynamic_value_u16(
     }
 }
 
+pub(super) fn resolve_dynamic_value_ink(
+    dyn_val: &crate::models::DynamicValue<crate::models::Ink>,
+    data: &HashMap<String, JsonValue>,
+) -> Result<crate::models::Ink, AppError> {
+    match dyn_val {
+        crate::models::DynamicValue::Literal(ink) => Ok(ink.clone()),
+        crate::models::DynamicValue::Ref(name) => {
+            let val = data
+                .get(name)
+                .ok_or_else(|| AppError::ink_param_invalid(name, "parameter was not supplied"))?;
+            let s = match val {
+                JsonValue::String(s) => s,
+                _ => {
+                    return Err(AppError::ink_param_invalid(
+                        name,
+                        "expected a colour string",
+                    ))
+                }
+            };
+            let trimmed = s.trim();
+            if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
+                return Err(AppError::ink_param_invalid(
+                    name,
+                    "references cannot be chained",
+                ));
+            }
+            trimmed.parse::<crate::models::Ink>().map_err(|_| {
+                AppError::ink_param_invalid(name, format!("unrecognised colour '{s}'"))
+            })
+        }
+    }
+}
+
 pub(super) fn resolve_dimension(
     dimension: &crate::models::DynamicDimension,
     data: &HashMap<String, JsonValue>,

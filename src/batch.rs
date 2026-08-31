@@ -214,6 +214,7 @@ mod tests {
                     ),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
+                    ink: None,
                     wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,

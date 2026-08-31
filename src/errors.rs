@@ -260,6 +260,13 @@ impl AppError {
         )
     }
 
+    pub fn ink_param_invalid(param: &str, detail: impl std::fmt::Display) -> Self {
+        Self::invalid_request(
+            Reason::InkParamInvalid,
+            format!("Invalid value for ink parameter '{param}': {detail}"),
+        )
+    }
+
     pub fn template_invalid(reason: Reason, message: impl Into<String>) -> Self {
         Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,

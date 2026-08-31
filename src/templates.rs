@@ -281,6 +281,7 @@ impl TemplateContent {
                     LayoutItem::Text {
                         placement,
                         font_weight,
+                        ink,
                         value,
                         wrap,
                         ..
@@ -293,6 +294,9 @@ impl TemplateContent {
                             }
                         }
                         if let Some(DynamicValue::Ref(r)) = font_weight {
+                            record_ref(r, false, false, false);
+                        }
+                        if let Some(DynamicValue::Ref(r)) = ink {
                             record_ref(r, false, false, false);
                         }
                         for name in bare_token_names(value) {
@@ -1448,6 +1452,7 @@ fn validate_item_references(
             value,
             placement,
             font_weight,
+            ink,
             when,
             ..
         } => {
@@ -1455,6 +1460,9 @@ fn validate_item_references(
             validate_interpolated_string(value, params)?;
             if let Some(DynamicValue::Ref(ref_name)) = font_weight {
                 check_param_ref(params, ref_name, "font_weight", &["integer"])?;
+            }
+            if let Some(DynamicValue::Ref(ref_name)) = ink {
+                check_param_ref(params, ref_name, "ink", &["string", "enum"])?;
             }
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
@@ -1693,6 +1701,7 @@ fn instantiate_item_defaults(
             placement,
             font_size,
             font_weight,
+            ink,
             wrap,
             alignment,
             overflow,
@@ -1707,6 +1716,7 @@ fn instantiate_item_defaults(
                 placement: inst_placement(placement),
                 font_size: font_size.clone(),
                 font_weight: fw,
+                ink: ink.clone(),
                 wrap: *wrap,
                 alignment: alignment.clone(),
                 overflow: *overflow,
@@ -2899,6 +2909,7 @@ layout: []
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: Some(DynamicValue::Literal(350)),
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3003,6 +3014,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3149,6 +3161,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3221,6 +3234,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: true,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3257,6 +3271,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3290,6 +3305,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
+                ink: None,
                 wrap: true,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -5487,5 +5503,309 @@ layout:
     font_size: 10
 "#;
         assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn invalid_ink_literal_on_text_item_fails_load() {
+        for bad_ink in [
+            "chartreuse",
+            "redmm",
+            "\"#ff0000in\"",
+            "\"ff0000\"",
+            "\"#ff000\"",
+            "\"\"",
+            "16711680",
+        ] {
+            let bad_yaml = format!(
+                r#"
+name: BadInk
+unit: mm
+dpi: 200
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: {bad_ink}
+"#
+            );
+            let err = match parse_and_validate(&bad_yaml) {
+                Ok(val) => panic!("bad_ink '{bad_ink}' unexpectedly succeeded validation: {val:?}"),
+                Err(err) => err,
+            };
+            let err_str = err.to_string();
+            assert!(
+                err_str.contains("layout[0]")
+                    && (err_str.contains("invalid ink")
+                        || err_str.contains("expected a named colour")),
+                "expected error naming layout path and invalid ink for '{bad_ink}', got: {err_str}"
+            );
+        }
+    }
+
+    #[test]
+    fn ink_rejected_on_non_text_items() {
+        let qr_yaml = r#"
+name: QR Ink
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: qr
+    value: "test"
+    at: [0, 0]
+    size: [20, 20]
+    ink: red
+"#;
+        let err = parse_and_validate(qr_yaml).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            "got: {err_str}"
+        );
+
+        let image_yaml = r#"
+name: Image Ink
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: image
+    name: "logo.png"
+    at: [0, 0]
+    size: [20, 20]
+    ink: red
+"#;
+        let err = parse_and_validate(image_yaml).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            "got: {err_str}"
+        );
+
+        let line_yaml = r#"
+name: Line Ink
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: line
+    at: [0, 0]
+    to: [50, 20]
+    thickness: 1
+    ink: red
+"#;
+        let err = parse_and_validate(line_yaml).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            "got: {err_str}"
+        );
+
+        let container_yaml = r#"
+name: Container Ink
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    ink: red
+    items: []
+"#;
+        let err = parse_and_validate(container_yaml).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            "got: {err_str}"
+        );
+    }
+
+    #[test]
+    fn reject_undeclared_or_bad_type_ink_parameter_reference() {
+        let undeclared_yaml = r#"
+name: Undeclared Ink Ref
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: "{missing}"
+"#;
+        let err = parse_and_validate(undeclared_yaml).unwrap_err();
+        assert!(err.to_string().contains("missing"), "got: {err}");
+
+        for bad_type in ["length", "number", "integer", "boolean", "datetime"] {
+            let yaml = format!(
+                r#"
+name: Bad Type Ink Ref
+unit: mm
+dpi: 200
+params:
+  color_param:
+    type: {bad_type}
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: "{{color_param}}"
+"#
+            );
+            let err = parse_and_validate(&yaml).unwrap_err();
+            let err_str = err.to_string().to_lowercase();
+            assert!(
+                err_str.contains("color_param"),
+                "expected error to name color_param for type {bad_type}, got: {err}"
+            );
+            assert!(
+                err_str.contains(bad_type),
+                "expected error to name type {bad_type}, got: {err}"
+            );
+        }
+
+        // string and enum are accepted
+        let string_yaml = r#"
+name: String Ink Ref
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: "{brand}"
+"#;
+        assert!(parse_and_validate(string_yaml).is_ok());
+
+        let enum_yaml = r#"
+name: Enum Ink Ref
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: enum
+    values: [red, blue]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: "{brand}"
+"#;
+        assert!(parse_and_validate(enum_yaml).is_ok());
+    }
+
+    #[test]
+    fn input_derivation_for_ink_references() {
+        // 1. Ungated ink: "{brand}" puts brand in the list marked not interpolated
+        let ungated_yaml = r#"
+name: Ungated Ink
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: "{brand}"
+"#;
+        let t_ungated = parse_template_ok(ungated_yaml);
+        let inputs = t_ungated.inputs_all();
+        let brand_input = inputs
+            .iter()
+            .find(|i| i.name == "brand")
+            .expect("brand in inputs_all");
+        assert!(
+            !brand_input.interpolated,
+            "ink reference must not be marked interpolated"
+        );
+
+        // 2. when-gated-off item contributes nothing while when's own parameters still appear
+        let gated_yaml = r#"
+name: Gated Ink
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+  show_brand:
+    type: boolean
+    default: false
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: "{brand}"
+    when:
+      show_brand: "true"
+"#;
+        let t_gated = parse_template_ok(gated_yaml);
+        let mut data = HashMap::new();
+        data.insert("show_brand".to_string(), serde_json::json!(false));
+        let inputs_for_label = t_gated.derive_inputs_for_label(&data, chrono::Local::now());
+        assert!(
+            !inputs_for_label.iter().any(|i| i.name == "brand"),
+            "gated-off ink param must not be in input list"
+        );
+        assert!(
+            inputs_for_label.iter().any(|i| i.name == "show_brand"),
+            "when param must be in input list"
+        );
+
+        // 3. Parameter used as an ink and interpolated elsewhere appears once, interpolated
+        let dual_yaml = r#"
+name: Dual Ink
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Brand: {brand}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+  - type: text
+    value: "Title"
+    at: [0, 10]
+    size: [50, 10]
+    font_size: 10
+    ink: "{brand}"
+"#;
+        let t_dual = parse_template_ok(dual_yaml);
+        let inputs = t_dual.inputs_all();
+        let matching: Vec<_> = inputs.iter().filter(|i| i.name == "brand").collect();
+        assert_eq!(matching.len(), 1, "brand must appear exactly once");
+        assert!(
+            matching[0].interpolated,
+            "interpolated wins when parameter is used both ways"
+        );
     }
 }
