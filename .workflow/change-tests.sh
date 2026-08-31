@@ -225,6 +225,21 @@ if agent_command codex implement "p" | grep -q -- '-s workspace-write'; then
   ok "and codex implements with write access"
 else bad "codex cannot write while implementing"; fi
 
+# agy's equivalent is plan mode (#290). It is an approval gate rather than a sandbox: told
+# plainly to write a file it answers that it needs a Proceed first, and writes nothing.
+# Weaker than codex's enforced read-only, stronger than asking in the prompt, and the
+# digest guard above is what decides either way.
+for role in review plan-review; do
+  if agent_command agy "$role" "p" | grep -q -- '--mode plan'; then
+    ok "agy runs $role in plan mode"
+  else bad "agy runs $role able to edit"; fi
+done
+for role in propose tasks implement gate-fix archive commit-msg; do
+  if agent_command agy "$role" "p" | grep -q -- '--mode accept-edits'; then
+    ok "and agy $role with edits accepted"
+  else bad "agy cannot write while running $role"; fi
+done
+
 # --- the stages that need a pty ----------------------------------------------------
 # A shell whose stdin is not a terminal cannot allocate one, and script(1) then fails
 # before the stand-in agent runs at all, so every case below would fail for the same
