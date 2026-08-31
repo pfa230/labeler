@@ -6681,6 +6681,58 @@ layout:
         );
     }
 
+    /// Asserts one endpoint answers a malformed JSON body with the documented envelope (ADR-0075).
+    ///
+    /// Shared by the enumerated sweep below and the OpenAPI-derived one after it, so the two cannot
+    /// come to check different things about the same contract.
+    async fn assert_malformed_body_returns_envelope(method: &str, uri: &str) {
+        let app = build_app();
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header("origin", "http://localhost")
+            .body(Body::from("{ not valid json"))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.expect(uri);
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "status for {method} {uri}"
+        );
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .expect("content-type")
+            .to_str()
+            .unwrap();
+        assert!(
+            ct.starts_with("application/json"),
+            "content-type for {method} {uri} must be application/json, got {ct}"
+        );
+
+        let body = json_response(resp).await;
+        assert_eq!(
+            body["error"]["code"], "InvalidRequest",
+            "code for {method} {uri}"
+        );
+        assert_eq!(
+            body["error"]["details"]["reason"], "json_malformed",
+            "reason for {method} {uri} (a path parameter that fails to deserialize surfaces here \
+             as path_param_invalid instead)"
+        );
+        assert!(
+            body["error"]["details"]["error"].is_string()
+                && !body["error"]["details"]["error"]
+                    .as_str()
+                    .unwrap()
+                    .is_empty(),
+            "details.error for {method} {uri} must be a non-empty string, got {body}"
+        );
+    }
+
     #[tokio::test]
     async fn all_nineteen_json_endpoints_reject_malformed_body_identically() {
         let endpoints = [
@@ -6708,50 +6760,89 @@ layout:
         assert_eq!(endpoints.len(), 19);
 
         for (method, uri) in endpoints {
-            let app = build_app();
-            let req = Request::builder()
-                .method(method)
-                .uri(uri)
-                .header("content-type", "application/json")
-                .header("host", "localhost")
-                .header("origin", "http://localhost")
-                .body(Body::from("{ not valid json"))
-                .unwrap();
+            assert_malformed_body_returns_envelope(method, uri).await;
+        }
+    }
 
-            let resp = app.oneshot(req).await.expect(uri);
-            assert_eq!(
-                resp.status(),
-                StatusCode::BAD_REQUEST,
-                "status for {method} {uri}"
-            );
-            let ct = resp
-                .headers()
-                .get("content-type")
-                .expect("content-type")
-                .to_str()
-                .unwrap();
-            assert!(
-                ct.starts_with("application/json"),
-                "content-type for {method} {uri} must be application/json, got {ct}"
-            );
+    /// Every JSON-body operation in the published OpenAPI document rejects a malformed body with the
+    /// documented envelope.
+    ///
+    /// `all_nineteen_json_endpoints_reject_malformed_body_identically` enumerates today's endpoints,
+    /// so a handler added tomorrow against `axum::Json` is invisible to it. This one derives its list
+    /// from `ApiDoc::openapi()` instead, so endpoint number twenty is covered on the day it is
+    /// documented with a JSON request body. Dropping the `request_body` attribute does not hide an
+    /// operation: utoipa's `axum_extras` infers the body from a handler argument typed `Json`, `Form`
+    /// or `Bytes`, matched on the type's last path segment, so `crate::extract::Json` fires it and
+    /// renaming that extractor would silently stop it. What stays invisible is a route missing from
+    /// `openapi.rs` altogether, which is #229. Defence in depth, not a guarantee (#230).
+    #[tokio::test]
+    async fn every_documented_json_body_endpoint_returns_the_error_envelope() {
+        use utoipa::OpenApi;
 
-            let body = json_response(resp).await;
-            assert_eq!(
-                body["error"]["code"], "InvalidRequest",
-                "code for {method} {uri}"
-            );
-            assert_eq!(
-                body["error"]["details"]["reason"], "json_malformed",
-                "reason for {method} {uri}"
-            );
-            assert!(
-                body["error"]["details"]["error"].is_string()
-                    && !body["error"]["details"]["error"]
-                        .as_str()
-                        .unwrap()
-                        .is_empty(),
-                "details.error for {method} {uri} must be a non-empty string, got {body}"
-            );
+        fn is_json(content_type: &str) -> bool {
+            let base = content_type[..content_type.find(';').unwrap_or(content_type.len())]
+                .trim()
+                .to_ascii_lowercase();
+            base == "application/json" || base.ends_with("+json")
+        }
+
+        /// `/templates/{id}` -> `/templates/ph`. The placeholder has to route and to deserialize as
+        /// the declared parameter type; every path parameter is a `String` today, and a future
+        /// endpoint typing one as an integer would fail the `reason` assertion rather than the
+        /// envelope it is aimed at.
+        fn substitute_path_params(path: &str) -> String {
+            let mut out = String::with_capacity(path.len());
+            let mut rest = path;
+            while let Some(open) = rest.find('{') {
+                out.push_str(&rest[..open]);
+                let close = rest[open..]
+                    .find('}')
+                    .map(|i| open + i)
+                    .unwrap_or_else(|| panic!("unclosed path parameter in {path}"));
+                out.push_str("ph");
+                rest = &rest[close + 1..];
+            }
+            out.push_str(rest);
+            out
+        }
+
+        let doc = crate::openapi::ApiDoc::openapi();
+        let mut endpoints: Vec<(&'static str, String)> = Vec::new();
+        for (path, item) in &doc.paths.paths {
+            let operations = [
+                ("GET", &item.get),
+                ("PUT", &item.put),
+                ("POST", &item.post),
+                ("DELETE", &item.delete),
+                ("PATCH", &item.patch),
+                ("HEAD", &item.head),
+                ("OPTIONS", &item.options),
+                ("TRACE", &item.trace),
+            ];
+            for (method, operation) in operations {
+                let Some(operation) = operation else { continue };
+                let Some(body) = operation.request_body.as_ref() else {
+                    continue;
+                };
+                if body.content.keys().any(|ct| is_json(ct)) {
+                    endpoints.push((method, format!("/api{}", substitute_path_params(path))));
+                }
+            }
+        }
+
+        // Today's true count, not the enumerated test's 19. A floor set below it would let the two
+        // endpoints only this test covers -- `POST /templates/{id}/inputs` and
+        // `PUT /template-groups/{path}` -- drop out of discovery with every test still green, which
+        // is the coverage hole this test exists to close. The floor moves up when an endpoint is
+        // added and only ever moves down deliberately.
+        assert!(
+            endpoints.len() >= 21,
+            "expected at least the 21 documented JSON-body operations, found {}: {endpoints:?}",
+            endpoints.len()
+        );
+
+        for (method, uri) in &endpoints {
+            assert_malformed_body_returns_envelope(method, uri).await;
         }
     }
 
