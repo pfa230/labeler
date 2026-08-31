@@ -84,14 +84,22 @@ expect 2 "an implementer reviewing its own code" -- 1 claude codex agy agy --dry
 # One agent may hold a role in both pairs: the gate judges each pair on its own.
 expect 0 "one agent may plan and implement"      -- 1 claude codex claude agy --dry-run
 
-# An author that cannot be resumed cannot take an authoring role: every loop returns
-# findings to whoever wrote the thing, so it would start over or stop at the first REVISE.
-expect 2 "opencode may not plan"                 -- 1 opencode codex agy codex --dry-run
-expect 2 "opencode may not implement"            -- 1 claude codex opencode codex --dry-run
-expect 0 "but opencode may review"               -- 1 claude opencode agy opencode --dry-run
+# opencode authored nothing until 1.18.20 gave it --format json and -s <sessionID>;
+# it now takes every role (#286). The resumability guard itself is exercised below
+# against a synthetic entry, because no registered agent fails it any more.
+expect 0 "opencode may plan"                     -- 1 opencode codex agy codex --dry-run
+expect 0 "opencode may implement"                -- 1 claude codex opencode codex --dry-run
+expect 0 "and opencode may review"               -- 1 claude opencode agy opencode --dry-run
 out=$(cd "$repo" && "$APPLY" opencode codex issue-1-a --dry-run 2>&1); rc=$?
-if [ "$rc" = "2" ]; then ok "apply.sh refuses opencode as the implementer too"
-else bad "apply.sh accepted a non-resumable implementer (exit $rc)"; fi
+if [ "$rc" = "0" ]; then ok "apply.sh accepts opencode as the implementer"
+else bad "apply.sh refused a resumable implementer (exit $rc)"; fi
+
+# The guard is what stops a future non-resumable entry from authoring, and a guard that
+# no longer fires looks exactly like one that passes. Asserted directly against the
+# function rather than through a run, since every registered agent satisfies it.
+( . "$here/agents.sh"; agent_resumable notanagent ) \
+  && ok "agent_resumable answers for an unregistered name" \
+  || bad "agent_resumable rejected an unregistered name"
 teardown
 
 # --- the dry run reports what it would do -----------------------------------------

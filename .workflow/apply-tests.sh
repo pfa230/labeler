@@ -161,7 +161,8 @@ echo '{"conversation_id":"conv-abc","status":"COMPLETED","response":"REVIEW BODY
 FAKE
 cat > "$bin/opencode" <<'FAKE'
 #!/usr/bin/env bash
-echo "REVIEW BODY"
+echo '{"type":"text","sessionID":"ses_fake001","part":{"type":"text","text":"REVIEW BODY"}}'
+echo '{"type":"step_finish","sessionID":"ses_fake001","part":{"type":"step-finish","reason":"stop"}}'
 FAKE
 chmod +x "$bin/claude" "$bin/codex" "$bin/agy" "$bin/opencode"
 
@@ -170,9 +171,7 @@ for agent in claude codex agy opencode; do
     claude) want_id="11111111-2222-3333-4444-555555555555" ;;
     codex) want_id="01a04dc2-867a-7293-9777-5a2d07e4dbac" ;;
     agy) want_id="conv-abc" ;;
-    # `opencode run` documents no structured output, so its stdout is the answer and
-    # there is nothing to resume from.
-    opencode) want_id="" ;;
+    opencode) want_id="ses_fake001" ;;
   esac
   out=$(cd "$repo" && PATH="$bin:$PATH" "$here/run-stage.sh" review "$agent" issue-8-envelope 2>&1); rc=$?
   got_log=$(cat "$repo/.worktrees/issue-8/.agent-runs/review-$agent.log" 2>/dev/null)
