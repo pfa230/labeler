@@ -547,6 +547,7 @@ say "gates: fmt, clippy, test"
 if ! run_gates; then
   tail -30 "$gates_log"
   say "gates failed: $implementer gets one round"
+  # run-stage.sh decides whether this continues a session, under its own lock (#292).
   "$stage" gate-fix "$implementer" "$change" --resume; rc=$?
   ask_stop "gate fix ($implementer)" gate-fix
   [ "$rc" -eq 0 ] || { echo "the gate fix round failed; stopping." >&2; exit 1; }

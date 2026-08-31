@@ -37,6 +37,70 @@ agent_resumable() {
   case "$1" in *) return 0 ;; esac
 }
 
+# last_implementer <worktree> — the agent that last ran a code-writing role here, and
+# note_implementer <worktree> <agent> — record it.
+#
+# WHICH WAY IT FAILS, ON PURPOSE. The marker is written before the agent runs and is not
+# rolled back, so a run that failed to launch, died, or wrote nothing still claims the
+# tree. That over-claims, and the cost is a later return by the real author being treated
+# as a swap: it is handed over to rather than resumed, and its own session is cleared. The
+# alternative, recording after the run, under-claims instead - a signal between the edits
+# and the record leaves the previous owner named, and the next run resumes a session that
+# predates those edits. Over-claiming costs continuity; under-claiming applies stale
+# reasoning to a tree it does not describe. The first is the failure worth having, and
+# three attempts at a rollback to avoid both cost more than either (#292).
+#
+# RECORDED, not inferred. The conversation files cannot answer this and it is not a close
+# call: extraction writes them AFTER the agent has already touched the tree, so their
+# mtimes lag the edits, and an extraction that fails leaves no file at all for a run that
+# changed everything. Ordering by mtime therefore names the wrong predecessor exactly when
+# it matters most (#292). Who wrote a tree is not a property any artifact in it carries.
+last_implementer() { tr -d '[:space:]' < "$1/.agent-runs/implement.last" 2>/dev/null; }
+note_implementer() {
+  mkdir -p "$1/.agent-runs" 2>/dev/null || return 1
+  printf '%s\n' "$2" > "$1/.agent-runs/implement.last"
+}
+
+# handover_plan <worktree> <incoming> — decide how a code-writing run should start here.
+# Sets HANDOVER_RESUME and HANDOVER_TEXT, which run-stage.sh reads under its own lock. A
+# non-empty HANDOVER_TEXT is what makes a run one that continues work it did not write;
+# a separate flag saying the same thing was two names for one fact. It lives here rather than there because the tests drive it directly, and
+# because deciding this in a caller is a guess with a window in it (#292).
+#
+# One function, called from one place, because two copies of this reasoning in two callers
+# is how they would stop agreeing. That was the shape before: apply.sh and run-change.sh
+# each decided, and each could decide differently and before the lock (#292).
+# shellcheck disable=SC2034  # both are read by run-stage.sh, which sources this
+handover_plan() {
+  local wt="$1" incoming="$2" previous own dirty
+  HANDOVER_RESUME=""; HANDOVER_TEXT=""
+  own="$wt/.agent-runs/implement-$incoming.conversation"
+  previous=$(last_implementer "$wt")
+  # Is there work here to inherit at all? Everything below turns on this: "verify what you
+  # were handed" has no referent on a clean tree, and a handover claimed over one lets a
+  # run that does nothing pass as a run that checked.
+  dirty=$( (cd "$wt" && git status --porcelain -- . ':!.agent-runs' ':!QUESTIONS.md' ':!ANSWERS.md' ':!openspec/changes') 2>/dev/null )
+
+  # The gate comes FIRST, before any resume. A clean tree has nothing to continue, whatever
+  # the record and the session say: a run that changed nothing still leaves both behind, and
+  # resuming on that basis tells the next attempt to "continue your work" when there is no
+  # work (#292).
+  [ -n "$dirty" ] || return 0
+
+  if [ -n "$previous" ] && [ "$previous" = "$incoming" ] && [ -s "$own" ]; then
+    HANDOVER_RESUME="--resume"
+    return 0
+  fi
+
+  if [ -z "$previous" ]; then
+    HANDOVER_TEXT="This worktree has work in it and no record of who wrote it. Nothing establishes that any earlier session of yours matches what is on disk, so you are not continuing one. Read 'git diff' before changing anything, and treat every checked box in tasks.md as a claim to verify rather than as fact."
+  elif [ "$previous" = "$incoming" ]; then
+    HANDOVER_TEXT="Your own earlier run left work in this worktree and its session could not be recovered, so you are starting without that reasoning. Read 'git diff' before changing anything, and treat every checked box in tasks.md as a claim to verify rather than as fact."
+  else
+    HANDOVER_TEXT="A previous implementer, $previous, worked on this change and its work is in your worktree, uncommitted. You are NOT continuing anyone's session and do not have $previous's reasoning. Read 'git diff' before you change anything, and $previous's own log under .agent-runs/, which is implement-$previous.log or gate-fix-$previous.log depending on which stage it ran. Treat every checked box in tasks.md as $previous's claim rather than as fact: the task text may have been revised after it was ticked, so verify each one against what the task now says and against the code, and redo any whose requirement is not actually met. If you find the inherited work already correct and complete, say so and change nothing."
+  fi
+}
+
 # agent_command <agent> <role> <prompt> [resume_id] -> command string on stdout
 agent_command() {
   local agent="$1" role="$2" prompt="$3" resume="${4:-}" out=""

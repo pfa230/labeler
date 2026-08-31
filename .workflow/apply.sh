@@ -129,10 +129,12 @@ ask_stop() { # ask_stop <label> <role>
   exit 8
 }
 
-# Resumed when this worktree already holds a session: a re-run after a stop continues
-# the implementation rather than starting a second one over the top of the first.
-first=""
-[ -s "$wt/.agent-runs/implement-$implementer.conversation" ] && first="--resume"
+# Whether this continues a session is run-stage.sh's decision, made under its own lock:
+# made here it would be a guess with a window in it, since another writing stage can
+# finish between deciding and locking (#292). --resume says what this caller intends; for
+# an implementing role run-stage.sh settles it against the record of who holds the tree.
+first="--resume"
+
 say "implement: $implementer"
 "$stage" implement "$implementer" "$change" $first; rc=$?
 ask_stop "implement ($implementer)" implement
