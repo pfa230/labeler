@@ -35,3 +35,9 @@ ui/dist
 # Agent run artifacts: logs, raw transcripts and resume ids, written by
 # .workflow/run-stage.sh and apply-with-agy.sh into the worktree they run in (#255).
 .agent-runs/
+
+# The blocking-question protocol (#283): a stage that cannot decide something writes
+# QUESTIONS.md at its worktree root and stops, and the answers come back beside it.
+# Working state, never record: what a question settled belongs in the plan.
+/QUESTIONS.md
+/ANSWERS.md
