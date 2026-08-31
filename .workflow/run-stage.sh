@@ -1,13 +1,30 @@
 #!/usr/bin/env bash
-# Run one stage of a change on a named agent (#224).
+# Run one stage of a change on a named agent (#224, #283).
 #
 #   .workflow/run-stage.sh <role> <agent> <change> [--resume] [extra prompt...]
 #
 # Exit 5 = the reviewer edited files. 7 = the review produced no structured result,
 # so its log is a transcript rather than a review. 3 = implement changed nothing.
 #
-#   role   implement | review
+#   role   propose | plan-review | tasks | implement | review | gate-fix | archive |
+#          commit-msg
 #   agent  see .workflow/agents.sh
+#
+# Roles carry two independent properties, and every guard below keys on a property
+# rather than on a role name, so a role added later cannot quietly opt out of one:
+#
+#   writes    needs write access and the apply lock
+#   guarded   must leave the worktree as it found it, checked by a digest across the
+#             stage. Both reviewers, because a reviewer that edits has produced a delta
+#             nobody reviewed. And commit-msg, because it runs after both the review and
+#             the gates, so anything it changed would be committed without either.
+#   produces  must leave the worktree DIFFERENT, by the same digest. A stage that was
+#             asked for an artifact and exited cleanly having written nothing did not
+#             run, and the caller would otherwise record the work as done.
+#
+# Both are measured as a delta ACROSS the stage, never as the absolute dirtiness of the
+# tree: by the time a fix round runs, the tree is already dirty with the work being
+# fixed, and counting files there reports every no-op as a change.
 #
 # The pairing is the point: an implementer and a reviewer that are different agents,
 # expressed at dispatch rather than left to whoever remembers. /apply drives both.
@@ -17,7 +34,7 @@
 # one through the orchestrator is waste.
 set -uo pipefail
 
-role="${1:?role required: implement | review}"; shift
+role="${1:?role required: propose | plan-review | tasks | implement | review | gate-fix | archive | commit-msg}"; shift
 agent="${1:?agent required, e.g. agy}"; shift
 change="${1:?change name required, e.g. issue-186-pin-rust-toolchain}"; shift || true
 
@@ -25,7 +42,20 @@ resume_requested=0
 if [ "${1:-}" = "--resume" ]; then shift; resume_requested=1; fi
 extra="$*"
 
-case "$role" in implement|review) ;; *) echo "role must be implement or review: $role" >&2; exit 2 ;; esac
+case "$role" in
+  propose|tasks|implement|gate-fix|archive|commit-msg) writes=1 ;;
+  plan-review|review)                                 writes=0 ;;
+  *) echo "unknown role: $role (propose | plan-review | tasks | implement | review | gate-fix | archive | commit-msg)" >&2; exit 2 ;;
+esac
+case "$role" in plan-review|review|commit-msg) guarded=1 ;; *) guarded=0 ;; esac
+# A resumed implement is a fix round, and a fix round that changes nothing can be
+# legitimate: the implementer may have answered every finding in prose. Loud there, not
+# fatal. The first implement, and every other producing role, must leave something.
+case "$role" in
+  propose|tasks|gate-fix|archive) produces=1 ;;
+  implement)                      produces=1 ;;
+  *)                              produces=0 ;;
+esac
 
 # Siblings are resolved beside this script, and .worktrees/ hangs off the main
 # checkout rather than whichever worktree we were called from: --show-toplevel
@@ -34,6 +64,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
 root=$(dirname "$common")
 . "$here/agents.sh"
+. "$here/questions.sh"
 
 agent_known "$agent" || { echo "unknown agent: $agent" >&2; exit 2; }
 command -v "$agent" >/dev/null 2>&1 || { echo "$agent is not on PATH; nothing would run." >&2; exit 2; }
@@ -42,7 +73,16 @@ issue=$(printf '%s' "$change" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
 [ -n "$issue" ] || { echo "change name must start with issue-<N>-: $change" >&2; exit 2; }
 wt="$root/.worktrees/$issue"
 [ -d "$wt" ] || { echo "no worktree at $wt" >&2; exit 2; }
-[ -d "$wt/openspec/changes/$change" ] || { echo "no change '$change' in $wt" >&2; exit 2; }
+# propose is the one role that runs before the folder exists; a resumed propose finds
+# it there. Every other role requires it, live or archived: the gate fix and the commit
+# message both run after archive has moved it, and demanding the live path there would
+# refuse the last two stages of every completed change.
+if [ "$role" != "propose" ]; then
+  found=0
+  [ -d "$wt/openspec/changes/$change" ] && found=1
+  for d in "$wt"/openspec/changes/archive/*"$change"/; do [ -d "$d" ] && found=1; done
+  [ "$found" = "1" ] || { echo "no change '$change' in $wt, live or archived" >&2; exit 2; }
+fi
 
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
 # --plan-only because this fires before the diff review exists: demanding one here
@@ -57,9 +97,23 @@ fi
 # worktree cannot sweep a transcript into the change's commit (#255).
 runs="$wt/.agent-runs"
 mkdir -p "$runs"
+# Parked before the agent starts, so a QUESTIONS.md found afterwards was written by
+# this stage rather than left by an earlier one.
+questions_park "$wt"
 log="$runs/$role-$agent.log"
 raw="$runs/$role-$agent.json"
-conv_file="$runs/$role-$agent.conversation"
+# propose and archive share one conversation slot, so archive resumes the session that
+# wrote the deltas rather than reading them back cold (#283). Every other role is its
+# own slot, which leaves the existing files named as they were.
+# propose and archive share the planning session; the commit message is written by the
+# implementer, resuming the session that wrote the diff, because that is the only
+# participant that knows why the diff looks as it does.
+case "$role" in
+  propose|tasks|archive)  session=plan ;;
+  commit-msg|gate-fix)    session=implement ;;
+  *)                      session="$role" ;;
+esac
+conv_file="$runs/$session-$agent.conversation"
 
 resume=""
 if [ "$resume_requested" -eq 1 ]; then
@@ -67,22 +121,70 @@ if [ "$resume_requested" -eq 1 ]; then
   resume=$(cat "$conv_file")
 fi
 
-if [ "$role" = "implement" ]; then
-  apply_step=$(agent_apply_prompt "$agent" "$change") || { echo "no apply prompt for $agent" >&2; exit 2; }
-  base="$apply_step Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it."
-  [ "$resume_requested" -eq 1 ] && base="Review findings on your implementation of $change. Fix each one, then stop. The same limits still hold: do not commit, archive, sync specs, move the change folder or edit docs/SPEC.md."
-else
-  # The verdict line is what lets apply.sh decide whether to loop. Without a
-  # machine-readable answer the caller has to interpret prose, which is how a
-  # review that found problems gets read as one that passed.
-  base="Adversarially review the implementation diff for $change against its proposal, specs, design and tasks, and against AGENTS.md. Find real problems; do not rubber-stamp. Cite file:line evidence and verify each finding against the actual code before raising it. Report findings only: you must not edit any file. End your output with exactly one line, on its own line, reading either VERDICT: APPROVE or VERDICT: REVISE. Use REVISE if any finding must be fixed before this can land; any blocking finding forbids APPROVE."
-fi
+# Every role may stop and ask, because a stage that cannot ask has to guess, and a
+# guess buried in an artifact is worse than an hour of waiting (#283). The bar is in
+# the sentence: this is for what the stage cannot decide, not for what it would
+# rather not decide.
+questions="If ANSWERS.md exists at the root of your worktree, read it first: it holds the answers to questions earlier runs asked. If something genuinely blocks you, write your questions to QUESTIONS.md at that same root and stop rather than guessing. Use it only for what you cannot decide yourself: a contradiction in what you were given, or a missing decision that changes the contract. Anything you can decide, decide it and record the assumption."
+
+case "$role" in
+  propose)
+    step=$(agent_step_prompt "$agent" propose "$change") || { echo "no propose prompt for $agent" >&2; exit 2; }
+    # review.md and tasks.md are explicitly withheld: the schema has tasks requiring
+    # review, and the review is performed by a different agent. A propose workflow that
+    # walks the whole dependency closure will otherwise write both, which is a task list
+    # for an unjudged plan and, worse, a review of its own work.
+    base="$step Planning only: write proposal.md, the delta specs under specs/, and design.md, and nothing else. Do NOT write review.md: a different agent reviews this plan, and writing it yourself is reviewing your own work. Do NOT write tasks.md: the task list is written after the review, by a separate stage. Do not write or edit project code. Do not commit. Do not edit docs/SPEC.md, which is frozen. $questions"
+    # Neutral on purpose: a resumed propose is a revision after a review, a continuation
+    # after a question, or the application of required changes, and the caller says which.
+    [ "$resume_requested" -eq 1 ] && base="Continue your work on the plan for $change. The same limits still hold: planning only, no project code, no commit, and docs/SPEC.md is frozen. $questions"
+    ;;
+  implement)
+    step=$(agent_step_prompt "$agent" apply "$change") || { echo "no apply prompt for $agent" >&2; exit 2; }
+    base="$step Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it. $questions"
+    # Neutral for the same reason: a resumed implement is a fix round, a gate fix, or a
+    # continuation after a question. Telling it to "fix the findings" when the caller is
+    # handing it a gate log describes the wrong task.
+    [ "$resume_requested" -eq 1 ] && base="Continue your work on $change. The same limits still hold: do not commit, archive, sync specs, move the change folder or edit docs/SPEC.md. $questions"
+    ;;
+  tasks)
+    # No tool ships a command for this step, so every agent gets plain instructions. It
+    # runs after the plan review, because the schema has tasks requiring review: a task
+    # list written before the verdict describes a plan that may not survive it.
+    base="Write the implementation task list for $change to openspec/changes/$change/tasks.md, relative to your worktree root. Run 'openspec instructions tasks --change $change --json' and follow the instruction and the template it returns. The plan has been reviewed and approved, so the tasks must match its proposal, its delta specs and its design, and must add nothing that is not in them. Do not write or edit project code. Do not commit. $questions"
+    ;;
+  gate-fix)
+    # Its own role because it runs AFTER archive: the change folder has moved under
+    # archive/, so the apply step's prompt - which names openspec/changes/<change> or
+    # invokes /opsx:apply on it - refers to a path that is no longer there.
+    base="The verification gates failed on your implementation of $change. Their output is in .agent-runs/gates.log, relative to your worktree root. Read it and fix the cause in the project code; never silence a lint with an allow attribute. The change folder has already been archived, so do not look for it under openspec/changes/ and do not move or edit it. Do not commit. $questions"
+    ;;
+  archive)
+    step=$(agent_step_prompt "$agent" archive "$change") || { echo "no archive prompt for $agent" >&2; exit 2; }
+    base="$step Sync every delta into openspec/specs/. The tool will offer to skip that sync or to accept unchecked tasks; both are forbidden here, so refuse both offers. Do not commit. Do not merge. Do not edit docs/SPEC.md, which is frozen. $questions"
+    ;;
+  plan-review)
+    # Three verdicts, and the middle one is load-bearing: APPROVE_WITH_CHANGES ends the
+    # loop, so the author applies the listed changes and nobody looks at them again. A
+    # reviewer that files a vague requirement there has written an unreviewed edit.
+    base="Adversarially review the PLAN for $change: proposal.md, the delta specs under specs/, and design.md, judged against AGENTS.md and openspec/config.yaml. Find real problems; do not rubber-stamp. Cite file:line evidence and verify each finding against the artifacts before raising it. Report findings only: you must not edit any file, review.md included. End your output with exactly one line, on its own line, reading VERDICT: APPROVE, VERDICT: APPROVE_WITH_CHANGES or VERDICT: REVISE. APPROVE means nothing must change. APPROVE_WITH_CHANGES means the plan is sound once specific edits are made: list them under a 'Required changes' heading, state each one completely, and note that the author applies them and NO further review follows, so anything you cannot state precisely belongs in REVISE instead. REVISE means the plan needs rework and a full re-review in a fresh context. $questions"
+    ;;
+  commit-msg)
+    base="Write the git commit message for the work implemented in $change to .agent-runs/commit-msg.txt at the root of your worktree, and change nothing else. An imperative subject line under 72 characters, a blank line, then a short body saying what changed and why. Add no Co-Authored-By line, no 'Generated with' line and no AI attribution of any kind. Do not commit, and do not edit any other file. $questions"
+    ;;
+  review)
+    # The verdict line is what lets apply.sh decide whether to loop. Without a
+    # machine-readable answer the caller has to interpret prose, which is how a
+    # review that found problems gets read as one that passed.
+    base="Adversarially review the implementation diff for $change against its proposal, specs, design and tasks, and against AGENTS.md. Find real problems; do not rubber-stamp. Cite file:line evidence and verify each finding against the actual code before raising it. Report findings only: you must not edit any file. End your output with exactly one line, on its own line, reading either VERDICT: APPROVE or VERDICT: REVISE. Use REVISE if any finding must be fixed before this can land; any blocking finding forbids APPROVE. $questions"
+    ;;
+esac
 prompt="$base $extra"
 
-# Only the implementer takes the lock: it is the one that must not commit, merge or
-# push mid-run. A read-only reviewer has nothing to hold back.
+# Every writing role takes the lock: each one must not have a commit, a merge or a
+# push land underneath it mid-run. A read-only reviewer has nothing to hold back.
 lock=""
-if [ "$role" = "implement" ]; then
+if [ "$writes" = "1" ]; then
   lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
   [ -f "$lock" ] && { echo "a run is already in progress: $(cat "$lock")" >&2; exit 1; }
   printf '%s %s started %s (pid %s)\n' "$agent" "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
@@ -94,20 +196,59 @@ cmd=$(agent_command "$agent" "$role" "$prompt" "$resume") || { echo "no invocati
 # needs a DELTA across the stage, not the absolute dirtiness of the tree: apply never
 # commits, so the implementer's work is always uncommitted when the reviewer runs, and
 # counting `git status` lines blamed the reviewer for the implementer's diff every time.
-worktree_digest() {
+#
+# What a stage may touch without that counting as an edit: this script's own output,
+# and the two files the question protocol runs on, which every role may write.
+# One list for both review roles, and openspec/changes is NOT on it. An earlier version
+# excluded it for the diff reviewer, reasoning that the implementer's checked task boxes
+# would otherwise trip the guard; they do not, because this is a delta across THIS stage
+# and the implementer's edits are in both digests. The exclusion bought nothing and let
+# a reviewer rewrite the proposal, the tasks, the delta specs or an earlier review
+# without detection, which is the whole guarantee.
+# .agent-runs, QUESTIONS.md and ANSWERS.md are all gitignored, so git never reports them
+# and excluding them by pathspec would be a no-op dressed up as a rule. The list below
+# excludes only what git WOULD report; ANSWERS.md is covered explicitly in the digest,
+# because a stage is told to read it and never to write it, and a stage that rewrote a
+# person's answer would otherwise be invisible to every check here.
+# ':(glob)**' is the identity pathspec, and it is here rather than an empty array
+# because macOS ships bash 3.2, where expanding an empty array under `set -u` aborts the
+# script. Never leave either of these lists empty.
+guard_excl=(':(glob)**')
+# What counts as having produced something. For implement it excludes the change folder:
+# checking a task box is a claim about work, not the work, and a run that only ticked
+# boxes did not implement anything.
+work_excl=("${guard_excl[@]}")
+[ "$role" = "implement" ] && work_excl+=(':!openspec/changes')
+# sha256sum is GNU; macOS spells it shasum -a 256, and where it is missing entirely the
+# unguarded form produced an EMPTY digest on both sides of the stage, which compares
+# equal and lets every reviewer edit through. A guard that fails open is worse than none.
+sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; }
+worktree_digest() { # worktree_digest <pathspec>...
   (
     cd "$wt" || exit
-    git status --porcelain -- . ':!openspec/changes' ':!.agent-runs'
-    git diff HEAD -- . ':!openspec/changes' ':!.agent-runs'
-    git ls-files --others --exclude-standard -- . ':!openspec/changes' ':!.agent-runs' \
-      | LC_ALL=C sort | tr '\n' '\0' | xargs -0 -r sha256sum
-  ) 2>/dev/null | sha256sum | cut -d' ' -f1
+    # HEAD is part of the state. Without it a stage can edit a file and commit only that
+    # file: status comes back clean, `git diff HEAD` shows nothing, and the edit sits in
+    # a commit that neither digest ever looked at.
+    git rev-parse HEAD
+    # Gitignored, so no git command below will mention it. Stages read it; none writes it.
+    [ -f ANSWERS.md ] && sha < ANSWERS.md
+    git status --porcelain -- . "$@"
+    git diff HEAD -- . "$@"
+    # One fixed-length hash per path. Printing the path and then the bytes runs them
+    # together, and two different sets of untracked files can emit identical bytes.
+    git ls-files --others --exclude-standard -- . "$@" \
+      | LC_ALL=C sort | while IFS= read -r f; do
+          printf '%s %s\n' "$(sha < "$f" 2>/dev/null | cut -d' ' -f1)" "$f"
+        done
+  ) 2>/dev/null | sha | cut -d' ' -f1
 }
-before_digest=$(worktree_digest)
+before_guard=$(worktree_digest "${guard_excl[@]}")
+before_work=$(worktree_digest "${work_excl[@]}")
 
 ( cd "$wt" && pty_run "$cmd" ) 2>&1 | clean_capture > "$raw"
 status=$?
-after_digest=$(worktree_digest)
+after_guard=$(worktree_digest "${guard_excl[@]}")
+after_work=$(worktree_digest "${work_excl[@]}")
 
 # How an answer is separated from a transcript is per-CLI knowledge, so it lives in
 # agents.sh beside the invocation that produced it. Here only the outcome matters:
@@ -119,9 +260,10 @@ if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
   extracted=0
 fi
 
-changed=$(cd "$wt" && git status --porcelain -- . ':!openspec/changes' ':!.agent-runs' | wc -l | tr -d ' ')
+produced="no"
+[ "$before_work" != "$after_work" ] && produced="yes"
 echo "role: $role   agent: $agent   status: $agent_status   exit: $status"
-echo "files touched: $changed"
+echo "changed the worktree: $produced"
 echo "log: $log"
 echo "--- last 30 lines ---"
 tail -30 "$log"
@@ -133,7 +275,7 @@ tail -30 "$log"
 # happen. Keyed on extraction having failed for THIS agent rather than on one agent's
 # envelope being absent: keyed the latter way, no agent but agy could pass a review it
 # had actually written, and agy is the one agent with no read-only mode (#274).
-if [ "$role" = "review" ] && [ "$extracted" -eq 0 ]; then
+if [ "$writes" = "0" ] && [ "$extracted" -eq 0 ]; then
   echo >&2
   echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2
   echo "Refusing to treat a transcript as a review. The capture is at $raw." >&2
@@ -141,13 +283,29 @@ if [ "$role" = "review" ] && [ "$extracted" -eq 0 ]; then
 fi
 # A reviewer that changed files has broken the rule it was told to follow. Judged by
 # whether this stage altered the tree, not by whether the tree was already dirty.
-if [ "$role" = "review" ] && [ "$before_digest" != "$after_digest" ]; then
-  echo >&2; echo "the reviewer altered the worktree during its stage. Reviewers report; they do not edit." >&2
+if [ "$guarded" = "1" ] && [ "$before_guard" != "$after_guard" ]; then
+  echo >&2
+  case "$role" in
+    commit-msg) echo "the commit-message stage altered the worktree. It runs after the review and the gates, so anything it changed would be committed without either." >&2 ;;
+    *)          echo "the reviewer altered the worktree during its stage. Reviewers report; they do not edit." >&2 ;;
+  esac
   exit 5
 fi
-# An implement run that exits cleanly having written nothing did not run.
-if [ "$role" = "implement" ] && [ "$status" -eq 0 ] && [ "$changed" -eq 0 ]; then
-  echo >&2; echo "implement produced no changes despite a clean exit. It did not run. See $raw" >&2
-  exit 3
+# A producing stage that exits cleanly having changed nothing did not run. Measured as a
+# delta across this stage, so a fix round on an already-dirty tree is judged on what IT
+# did rather than on what the tree looked like when it started.
+if [ "$produces" = "1" ] && [ "$status" -eq 0 ] && [ "$produced" = "no" ]; then
+  # A resumed implement is the one case where nothing is a defensible answer: the
+  # implementer may have justified every finding rather than acted on it. Said loudly,
+  # because it also looks exactly like a round that did nothing at all, and the caller
+  # is about to record the findings as addressed.
+  if [ "$role" = "implement" ] && [ "$resume_requested" -eq 1 ]; then
+    echo >&2
+    echo "warning: this fix round changed nothing. Either every finding was answered in" >&2
+    echo "prose, or none was acted on. $log is the whole of what it said." >&2
+  else
+    echo >&2; echo "$role produced no changes despite a clean exit. It did not run. See $raw" >&2
+    exit 3
+  fi
 fi
 exit $status

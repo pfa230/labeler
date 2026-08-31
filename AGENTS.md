@@ -68,7 +68,21 @@ folder is checked by nobody, which `docs/WORKFLOW.md` records under what is not 
 
 OpenSpec (CLI 1.9.0) on this project's own schema, `openspec/schemas/labeler/`:
 `proposal → specs → design → review → tasks → apply`. Order matters, because the review gates
-implementation and archive rewrites the main specs *after* it:
+implementation and archive rewrites the main specs *after* it.
+
+**Run it with `/change <issue#> <planner> <plan-reviewer> <implementer> <code-reviewer>`** (#283). That
+scopes the issue with the user, then hands every stage below to `.workflow/run-change.sh`, which runs
+them unattended through to a green branch run and stops there. **The issue body is the scope**: the
+driver writes it to `.agent-runs/issue-<N>.md` in the worktree and the planner works from that file,
+so a vague issue produces a vague plan and refining it is the point of the scoping stage. The four agents are named up front
+because the pairing is the guarantee: nobody reviews their own plan, and nobody reviews their own code.
+Which stage runs next is read off the artifacts, never off a ledger, so re-running after any stop
+resumes rather than redoes. One function decides it, and `--dry-run` prints its answer, so what the
+driver would do next is both testable and inspectable. `.workflow/run-stage.sh` still runs a single
+stage when you want one.
+
+The steps below are what those stages mean. Read them to understand the loop or to drive it by hand;
+`/change` is how it is normally driven.
 
 1. **Issue**, then a worktree: `git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>`.
 2. **`/opsx:propose`** writes `openspec/changes/issue-<N>-<slug>/`. Planning only; it must not touch
@@ -77,33 +91,47 @@ implementation and archive rewrites the main specs *after* it:
    `proposal.md` + `specs/` + `design.md`. A second model in read-only mode, else a fresh-context
    subagent. **Never** self-review inside the authoring context. It writes `review.md` ending in a
    `VERDICT:` line. `REVISE` → fix the artifacts and re-run the *full* review in a fresh context;
-   `APPROVE_WITH_CHANGES` → apply the listed edits, reviewer re-checks only those, then set
-   `CHANGES_APPLIED: yes`. Editing `specs/` afterwards voids the verdict, and the gate detects it;
-   editing `proposal.md` or `design.md` does not, because they are context and not the contract.
+   `APPROVE_WITH_CHANGES` → the author applies the listed edits and sets `CHANGES_APPLIED: yes`, and
+   the loop then proceeds with **no second review**, which is why a reviewer is told to file anything it
+   cannot state completely as `REVISE` instead. The digest is written after those edits, so it covers
+   the contract that will actually be built. Editing `specs/` afterwards voids the verdict, and the
+   gate detects it; editing `proposal.md` or `design.md` does not, because they are context and not
+   the contract.
 
    **This is the only place a human enters the loop, and only on failure.** Three consecutive `REVISE`
    rounds is a hard stop: do not implement, do not keep retrying. Surface `review.md` and the
-   artifacts, and wait. On the converging path the loop runs unattended through to the merge.
+   artifacts, and wait. On the converging path the loop runs unattended through to the merge. The cap
+   is weighed *after* the author has been given the last findings, never before: stopping first leaves
+   that `REVISE` unacted on, so a restart re-reviews the same artifacts, reaches the same verdict and
+   stops again, which is a loop no number of restarts can move.
 
-   **Launching it (#275).** Write the reviewer's prompt to a file outside the repository and assert it
-   is non-empty *before* the run: `codex exec` given a missing prompt file reads an empty stdin, prints
-   nothing and **exits 0**, which is indistinguishable from a clean pass unless you look. Then launch
-   it detached, so no harness can reap it at a turn boundary:
+   **`tasks.md` is written after this review, never before it.** The schema has `tasks` requiring
+   `review` (`openspec/schemas/labeler/schema.yaml`), because a task list written for a plan the
+   reviewer then sends back describes work nobody approved. `run-change.sh` runs a `tasks` stage on
+   the planner once the verdict passes, and rewrites it whenever the plan moved in that run.
+
+   **Launching it (#275).** `run-stage.sh plan-review <agent> <change>` owns the invocation, and
+   `run-change.sh` owns the loop around it: the reviewer is launched **fresh every round**, because a
+   resumed reviewer judges the delta since its own last message rather than the artifact in front of
+   it, so a regression the fix round introduced outside its findings is never examined. The author
+   resumes, because it must keep what it built. `review.md` is written by the driver from the
+   reviewer's own final message, not by the reviewer, because the canonical fields are the gate's
+   contract and an agent asked to fill them in can fill them in wrong.
+
+   Launch any long run **detached**, never as a harness background task: one was killed 4.3 seconds
+   after its turn ended, taking 15,127 lines of review with it, with no reason recorded and no way to
+   tell that from a `TaskStop`. Judge liveness by CPU time and by the log growing, never by the process
+   existing.
 
    ```bash
-   setsid nohup timeout 5400 codex exec --ignore-user-config -s read-only \
-     -c model_reasoning_effort=high < "$prompt" > "$raw" 2>&1 &
+   setsid nohup .workflow/run-change.sh 283 claude codex agy codex > "$log" 2>&1 < /dev/null &
    ```
 
-   A run held as an agent-harness background task is not safe: one was killed 4.3 seconds after its
-   turn ended, taking 15,127 lines of review with it, with no reason recorded and no way to tell that
-   from a `TaskStop`. Judge liveness by CPU time and by `$raw` growing, never by the process existing.
+   A zero exit with no verdict is the failure to watch for: `codex exec` given an empty stdin prints
+   nothing and exits 0, which is indistinguishable from a clean pass unless you look. `run-stage.sh`
+   refuses a review it could not extract (exit 7) and `run-change.sh` refuses a log with no readable
+   `VERDICT:` line (exit 4), so that failure now has a name rather than a silent pass.
 
-   `$raw` lives outside the repository, for the reason the transcript rule below gives. `codex exec`
-   writes a banner, a session id and its whole tool-call transcript to stdout, and emits the filled
-   template only as its final message, so **`review.md` is that final message extracted**, not the
-   redirected stream. Assert the extraction contains a `VERDICT:` line before treating the run as a
-   review at all; a zero exit with no verdict is the failure that assertion exists to catch.
 4. **Apply and review the diff**, as a named pair:
    `.workflow/apply.sh <implementer> <reviewer> [change]`, or `/apply` with the same arguments. The
    pair is named first because it is the guarantee; the change is last and optional, resolved from the
@@ -141,7 +169,24 @@ implementation and archive rewrites the main specs *after* it:
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
-6. **Verify**, then one commit covering code, ADR, specs, and the archived change, with `Fixes #N`.
+6. **Verify** with the three cargo gates, then one commit covering code, ADR, specs, and the archived
+   change, with `Fixes #N`. Push the branch and wait for its run. `run-change.sh` does all of this and
+   stops there: the merge into `main` is the one step a person approves, and by then it is mechanical.
+   A gate failure gets the implementer one resumed round with the output, and a second failure stops
+   the run, because a lint is what an unattended round should absorb and a second failure is a defect.
+
+### When a stage cannot decide something
+
+Any stage may write `QUESTIONS.md` at its worktree root and stop rather than guess; the driver stops
+with exit 8, and `/change` relays the questions and writes the answers to `ANSWERS.md` beside it. Every
+stage prompt says to read that file first, so the answer reaches the stage that asked without anything
+being threaded through. Both files are gitignored: a question is working state, and what it settled
+belongs in the plan.
+
+The bar is in the prompt: this is for a contradiction in what the stage was given, or a missing
+decision that changes the contract. Anything a stage can decide, it decides and records. A stage that
+asks instead of deciding has traded an hour of yours for a minute of its own; a stage that guesses at
+the contract has buried something a later reader will trust.
 
 ## What the gates check
 
@@ -182,6 +227,10 @@ archived to review the diff it had just produced (#218), which is a self-review,
 `--plan-only` drops the diff-review check for callers that fire mid-implementation, when no diff
 review can exist yet: `run-stage.sh`'s pre-flight probe and `.claude/hooks/review-gate.sh`, the
 edit-time signal for Claude Code.
+
+`.workflow/change-tests.sh` does the same for `run-change.sh` and the roles it drives: the self-review
+and non-resumable refusals, every stage the resumption logic can resolve to, the guards in
+`run-stage.sh` that a role change could silently unkey, and the question protocol.
 
 `.workflow/gate-tests.sh` asserts both scripts against a throwaway repo, mostly on the refusals: a
 gate that stops firing looks exactly like a gate that passes, and both of these did that once during
