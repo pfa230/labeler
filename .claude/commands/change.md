@@ -25,12 +25,17 @@ Detached, never as a background task this session holds: one such run was killed
 its turn ended, taking 15,127 lines of review with it (#275).
 
 ```bash
-log=/tmp/run-change-$1.log
-setsid nohup .workflow/run-change.sh $ARGUMENTS > "$log" 2>&1 < /dev/null &
+run=$(.workflow/detach.sh /tmp/run-change-$1 .workflow/run-change.sh $ARGUMENTS)
+.workflow/detach.sh --wait "$run"
 ```
 
-`setsid` is util-linux; on a macOS without it, drop it and keep `nohup`. Judge liveness by the log
-growing and by CPU time, never by the process existing.
+The launch prints a handle on stdout, which is the log file and what `--wait` takes; every launch gets
+its own. `detach.sh` puts the run in its own session (`setsid`, else `python3`'s `os.setsid()`, else `nohup`,
+which is only SIGHUP-proof and says so). `--wait` is how you learn the outcome, never the process
+existing: it gives you the run's exit status, or tells you its deadline passed. The
+launch prints the handle either way and uses its exit status to say whether the run was seen to
+start, so a non-zero launch is worth checking before you wait on it. Do not hand-roll the launch. The line this replaced named `setsid` and `timeout`,
+macOS ships neither, and backgrounding hid the resulting 127 (#284).
 
 Then wait on it. Report only the `== stage ==` lines, the per-stage status lines and the tails. Do
 **NOT** read the agent logs under `.agent-runs/` in full: they run to thousands of lines, and keeping
