@@ -45,10 +45,17 @@ agent_command() {
     agy)
       local r=""
       [ -n "$resume" ] && printf -v r -- '--conversation=%q ' "$resume"
-      # agy has no read-only mode; the review role relies on the prompt plus the
-      # commit-time gate. Noted rather than papered over.
-      printf -v out 'agy --mode accept-edits --print-timeout %q --output-format json %s-p=%q' \
-        "$timeout" "$r" "$prompt"
+      # plan mode is agy's answer to "the reviewer must not edit", and it is an APPROVAL
+      # GATE rather than a sandbox: told plainly to write a file it replies that it needs
+      # a Proceed first, and writes nothing. codex's -s read-only is enforced by the
+      # harness and cannot be talked past; this is the agent declining, which is stronger
+      # than a sentence in the prompt and weaker than codex's. Either way run-stage.sh's
+      # before/after digest is what actually decides whether a reviewer edited, and this
+      # does not make it unnecessary (#290).
+      local mode="accept-edits"
+      case "$role" in review|plan-review) mode="plan" ;; esac
+      printf -v out 'agy --mode %q --print-timeout %q --output-format json %s-p=%q' \
+        "$mode" "$timeout" "$r" "$prompt"
       ;;
     codex)
       local sandbox="workspace-write"
