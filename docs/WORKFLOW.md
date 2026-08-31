@@ -30,6 +30,23 @@ one in flight, and it is never parked as an unchecked task.
 
 ## Running it
 
+One command runs the whole loop:
+
+```
+/change 283 claude codex agy codex
+```
+
+The issue number, then the four agents: who plans, who reviews the plan, who implements, who reviews
+the code. It scopes the issue with you first, which is the only part that asks anything, and then runs
+worktree, plan, plan review, implementation, diff review, archive, the gates, the commit and the push
+unattended, stopping when the branch run is green. The merge into `main` is left to you, and by that
+point it is mechanical.
+
+Which stage runs next is read off the artifacts on disk rather than off a record of what ran, so
+re-running the same command after any stop resumes where it left off instead of starting over.
+
+The stages can also be driven one at a time, which is what the rest of this section describes.
+
 File the issue, then drive the stages. Use the slash commands explicitly — a plain-English request
 like "implement #181" is unreliable, because it matches the *apply* skill ("Implement tasks from an
 OpenSpec change") rather than propose, and would try to apply a change that does not exist yet.
@@ -42,7 +59,9 @@ gh issue create --title "Duplicate template id should not be fatal" --body "..."
 /opsx:propose issue #181
 ```
 
-Writes the proposal, the delta specs and the design, then **stops**. Planning does not run on into
+Writes the proposal, the delta specs and the design, then **stops**. Not the task list: that is
+written after the review, because a task list drawn up for a plan the reviewer then sends back
+describes work nobody approved. Planning does not run on into
 implementation in the same turn, by design: the artifacts are meant to be settled before code exists.
 The adversarial review of that plan runs next, on a different model, and gates what follows.
 
@@ -71,8 +90,10 @@ Also available: `/opsx:explore` for thinking something through before an issue e
 
 ### Which agent runs which stage
 
-Any of the four can take the propose or the apply step. Roles are interchangeable; the only fixed
-constraint is that the reviewer is not the author.
+Roles are largely interchangeable, under two constraints. The reviewer is never the author, which the
+commit gate checks. And an author must be resumable, because every loop sends findings back to
+whoever wrote the thing: `opencode` exposes no way to continue a session, so it can review but cannot
+plan or implement, and naming it as an author is refused before anything is launched.
 
 The stage commands differ per agent, because OpenSpec writes a separate command set for each and not
 every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` and the **skill** form
@@ -89,8 +110,12 @@ Implementation and its review run on two named agents, given when the stage is s
 decided later:
 
 ```bash
-.workflow/apply.sh issue-186-pin-rust-toolchain agy codex
+.workflow/apply.sh agy codex issue-186-pin-rust-toolchain
 ```
+
+The pair comes first because it is the guarantee. The change comes last and is optional: left out, it
+is resolved from the worktree you are standing in, and refused rather than guessed when several are in
+flight.
 
 The first agent implements, the second reviews, and naming the same one twice is refused. The script
 owns the loop: findings return to the implementer, which resumes its session, and the reviewer
@@ -160,16 +185,21 @@ the gate refuses a change where they match, so the rule is checked rather than t
 recorded as files, `review.md` and `diff-review.md`, because a verdict that lives only in a transcript
 is a verdict nothing can check.
 
-The reviewer runs read-only and cannot write files, so its stdout is redirected straight into
-`review.md`: that file is its output, not a summary of it. Nothing transcribes the review, which keeps
-the interested party out of the record and avoids pulling a thousand-line transcript through the
-author's context to copy something already on disk. The reviewer
-works from the files alone, without access to the conversation that produced them, and cannot edit
-what it reviews.
+The body of `review.md` is the reviewer's own final message, not a summary of it. Nothing transcribes
+a review, which keeps the interested party out of the record and avoids pulling a thousand-line
+transcript through the author's context to copy something already on disk. The heading fields above it
+are written by the driver rather than by the reviewer, because those fields are what the commit gate
+reads and an agent asked to fill them in can fill them in wrong.
+
+The reviewer works from the files alone, without access to the conversation that produced them. Where
+its tool can enforce read-only it is launched that way; where it cannot, a check compares the worktree
+before and after its turn and throws the verdict out if anything moved. Either way a reviewer that
+edited what it reviewed does not get to approve it.
 
 A review ends in one of three verdicts. `APPROVE` proceeds. `APPROVE WITH CHANGES` lists specific
-required edits, applied and re-checked before anything continues. `REVISE` marks a fundamental
-defect: the plan is fixed and reviewed again from scratch.
+required edits: the author applies them and the work continues, with no second review, which is why a
+reviewer is told to file anything it cannot state completely as `REVISE` instead. `REVISE` marks a
+fundamental defect: the plan is fixed and reviewed again from scratch, by a reviewer starting fresh.
 
 Four things the process refuses to let slide:
 
@@ -184,15 +214,25 @@ Four things the process refuses to let slide:
 
 ## Where it stops
 
-Stages are started by hand, but only one thing stops the work and needs a *decision*: a plan revised
-three times that still has not passed review.
+Four things stop the work, and each wants something different from you.
 
-The change halts with nothing implemented, and the review and artifacts are surfaced for a decision.
+**A stage asks a question.** It hit something it could not decide: a contradiction in what it was
+given, or a missing decision that changes the contract. It writes the question down and stops rather
+than guessing, and you answer it. This is the cheapest of the four, and the point of allowing it is
+that the alternative is a guess buried in an artifact a later reader trusts.
 
-The decision needed there is direction, not proofreading. Correctness, scope, and edge cases have
-already been examined more thoroughly than a read-through would manage. What remains unanswerable by
-a reviewer is whether the change solves the right problem, whether its scope is right, and whether it
-is worth doing at all.
+**A review will not converge.** A plan revised three times that still has not passed, or a diff
+reviewed three times that still has not. The change halts with the findings surfaced. The decision
+needed there is direction, not proofreading: correctness, scope and edge cases have already been
+examined more thoroughly than a read-through would manage, and what remains unanswerable by a reviewer
+is whether the change solves the right problem, whether its scope is right, and whether it is worth
+doing at all.
+
+**A gate fails twice.** The implementer gets one round to fix what `fmt`, `clippy` or the tests
+reported. A second failure is a defect rather than a lint, and it stops.
+
+**The merge.** Nothing reaches `main` unattended. The work is committed, pushed and green on its
+branch when you are asked, so what is left is a decision, not an inspection.
 
 ## What is not guaranteed
 
@@ -200,6 +240,9 @@ is worth doing at all.
   lands, so a skipped hook delays the refusal rather than avoiding it.
 - The gates check a change that exists. Whether a given diff *should* have been a change at all is a
   judgement no gate can make, so a commit carrying no change folder is checked by nobody.
+- The one round the implementer gets to fix a failed gate produces a diff that no reviewer sees. It is
+  bounded to what the gate reported and the gate itself re-runs over the result, but a lint fix that
+  quietly changed behavior would land unreviewed.
 - Whether a rendered label looks right is checked by nobody either. It is a visual judgement made
   against a running server, no artifact of it reaches the repository, and the process says so rather
   than carrying a checkbox that cannot fail.

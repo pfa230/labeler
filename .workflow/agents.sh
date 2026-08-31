@@ -23,6 +23,18 @@ agent_known() {
   case "$1" in claude|agy|codex|opencode) return 0 ;; *) return 1 ;; esac
 }
 
+# agent_resumable <agent> — whether a later stage can continue this one's session.
+#
+# An AUTHOR must be resumable: every loop here sends findings back to whoever wrote the
+# thing, and an author that cannot be resumed either starts over or stops. opencode
+# documents no structured output and no resume flag, so agent_extract has nothing to
+# record and --resume has nothing to read; a run naming it as author died at the first
+# REVISE. Refused up front instead, because a silent fallback to a fresh session would
+# hand the next round to an agent that has never seen the work.
+agent_resumable() {
+  case "$1" in opencode) return 1 ;; *) return 0 ;; esac
+}
+
 # agent_command <agent> <role> <prompt> [resume_id] -> command string on stdout
 agent_command() {
   local agent="$1" role="$2" prompt="$3" resume="${4:-}" out=""
@@ -38,7 +50,9 @@ agent_command() {
       ;;
     codex)
       local sandbox="workspace-write"
-      [ "$role" = "review" ] && sandbox="read-only"
+      # Both review roles are read-only where the CLI can enforce it: a reviewer that
+      # cannot write is a reviewer that cannot be talked into fixing what it found.
+      case "$role" in review|plan-review) sandbox="read-only" ;; esac
       # --json turns the transcript into JSONL events, which is the only form
       # carrying the thread id and the final message as data rather than prose.
       if [ -n "$resume" ]; then
@@ -66,28 +80,43 @@ agent_command() {
   printf '%s' "$out"
 }
 
-# agent_apply_prompt <agent> <change> -> how THAT tool is told to run the apply step.
+# agent_step_prompt <agent> <step> <change> -> how THAT tool is told to run <step>.
+# step is one of propose | apply | archive: the three OpenSpec workflow steps a stage
+# hands to an agent. plan-review and review get no workflow command, because neither
+# tool ships one and the review prompt is written in full by run-stage.sh.
 #
 # OpenSpec writes a separate command set per tool and not every tool reads the same
 # one, so a single spelling for all four is a command that does not exist for three
 # of them: claude dies on "Unknown command" given the workflow form, and two apply
 # attempts produced nothing (#274). The caller appends the limits, which are
 # workflow policy and hold whatever the spelling is.
-agent_apply_prompt() {
-  local change="$2"
-  case "$1" in
-    # From .claude/commands/opsx/apply.md; colon-separated (docs/WORKFLOW.md).
-    claude) printf '/opsx:apply %s.' "$change" ;;
+#
+# The spellings were read off the generated trees: .claude/commands/opsx/ is
+# colon-separated, .agent/workflows/ and .opencode/commands/ are hyphenated. codex
+# ships no OpenSpec command at all, so it gets plain instructions.
+agent_step_prompt() {
+  local agent="$1" step="$2" change="$3"
+  case "$step" in propose|apply|archive) ;; *) return 1 ;; esac
+  case "$agent" in
+    claude) printf '/opsx:%s %s.' "$step" "$change" ;;
     # agy has worked with the workflow form despite docs/WORKFLOW.md recording that
     # it reads the skill form. Left as it was found until someone runs it both ways.
-    agy) printf '/opsx-apply %s.' "$change" ;;
+    agy) printf '/opsx-%s %s.' "$step" "$change" ;;
     # From .opencode/commands/; unverified, as docs/WORKFLOW.md already says.
-    opencode) printf '/opsx-apply %s.' "$change" ;;
-    # codex ships no OpenSpec command at all, so it gets plain instructions.
-    codex) printf 'Implement the tasks in openspec/changes/%s, following its proposal, specs, design and tasks.' "$change" ;;
+    opencode) printf '/opsx-%s %s.' "$step" "$change" ;;
+    codex)
+      case "$step" in
+        propose) printf 'Create the OpenSpec change openspec/changes/%s: write its proposal, its delta specs, its design and its tasks, following openspec/config.yaml and the schema under openspec/schemas/labeler/. Planning only.' "$change" ;;
+        apply)   printf 'Implement the tasks in openspec/changes/%s, following its proposal, specs, design and tasks.' "$change" ;;
+        archive) printf 'Archive the completed change openspec/changes/%s: sync every delta spec into openspec/specs/, then move the change folder to openspec/changes/archive/ prefixed with today'"'"'s date.' "$change" ;;
+      esac ;;
     *) return 1 ;;
   esac
 }
+
+# The apply step by its old name. run-stage.sh and apply-tests.sh call this; keeping
+# it means the generalisation above changed no caller.
+agent_apply_prompt() { agent_step_prompt "$1" apply "$2"; }
 
 # agent_extract <agent> <raw> <log> <conv> -> status word on stdout.
 # Writes the agent's own answer to <log> and its resumable id to <conv>.

@@ -134,6 +134,7 @@ jobs:
         run: |
           .workflow/gate-tests.sh
           .workflow/apply-tests.sh
+          .workflow/change-tests.sh
 
       # The same scripts the pre-commit hook runs, on what actually landed.
       # Tool-agnostic: they judge files, never which agent produced them (#191).
