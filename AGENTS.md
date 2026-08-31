@@ -120,12 +120,27 @@ The steps below are what those stages mean. Read them to understand the loop or 
 
    Launch any long run **detached**, never as a harness background task: one was killed 4.3 seconds
    after its turn ended, taking 15,127 lines of review with it, with no reason recorded and no way to
-   tell that from a `TaskStop`. Judge liveness by CPU time and by the log growing, never by the process
-   existing.
+   tell that from a `TaskStop`. `.workflow/detach.sh` is the one spelling, because the previous one was
+   prose that named `setsid` and `timeout`, and macOS ships neither (#284):
 
    ```bash
-   setsid nohup .workflow/run-change.sh 283 claude codex agy codex > "$log" 2>&1 < /dev/null &
+   run=$(.workflow/detach.sh /tmp/change-283 .workflow/run-change.sh 283 claude codex agy codex)
+   .workflow/detach.sh --wait "$run"
    ```
+
+   The launch prints a **handle** on stdout, which is the log file, and that handle is what `--wait`
+   takes: every launch gets its own, so two runs never share a transcript and no launch has to be
+   cleaned up before the next. It puts the run in its own **session**, which is what survives a
+   harness reaping a process group: `setsid` where there is one, else `python3`'s `os.setsid()`,
+   else plain `nohup`, which is only SIGHUP-proof and says so when it is used. `--wait` is how you learn the outcome, never the process
+   existing: where `setsid` forks rather than execs, the pid belongs to a parent that exits at once
+   while the real run is orphaned into another session. It reports the run's exit status or that its deadline
+   passed. The launch prints the handle either way and uses its **exit status** to say whether the run
+   was seen to start, so `run=$(...)` always gives you something to wait on and a non-zero launch is
+   the signal to look before you do. The
+   status file exists because backgrounding throws the status away: a shell reports 0 for having
+   *started* a background job whatever becomes of it, which is how the old line's missing `timeout`
+   (a real 127) came back as a clean pass.
 
    A zero exit with no verdict is the failure to watch for: `codex exec` given an empty stdin prints
    nothing and exits 0, which is indistinguishable from a clean pass unless you look. `run-stage.sh`

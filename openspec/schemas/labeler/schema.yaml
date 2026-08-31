@@ -201,15 +201,28 @@ artifacts:
       file reads an empty stdin, prints nothing, and EXITS 0. A clean exit is not
       evidence of a review.
 
-      Launch it detached, so no agent harness can reap it at a turn boundary:
+      Launch it detached, so no agent harness can reap it at a turn boundary, and use
+      .workflow/detach.sh rather than writing the launch by hand:
 
-        setsid nohup timeout 5400 codex exec --ignore-user-config -s read-only \
-          -c model_reasoning_effort=high < "$prompt" > "$raw" 2>&1 &
+        raw=$(.workflow/detach.sh /tmp/plan-review codex exec \
+          --ignore-user-config -s read-only -c model_reasoning_effort=high \
+          "$(cat "$prompt")")
+        .workflow/detach.sh --wait "$raw"
+
+      The prefix is OUTSIDE the repository for the reason given below: the launcher
+      names the log after it, and a log written inside the worktree is one `git add -A`
+      away from being committed.
 
       A run held as a harness-managed background task is not safe: one was killed 4.3
       seconds after its turn ended, taking 15,127 lines of review with it, with no
       reason recorded anywhere and no way to distinguish it from a deliberate stop.
-      Judge liveness by CPU time and by $raw growing, never by the process existing.
+      The launcher puts the run in its own session where the platform allows it, which
+      is what survives that, and --wait reports the run's exit status or that the deadline
+      passed. The launch prints the handle either way and uses its exit
+      status to say whether the run was seen to start, so a non-zero launch is worth
+      checking before waiting on it. Do not hand-roll it: the line this replaced
+      named setsid and timeout, macOS ships neither, and the `&` hid the resulting 127
+      (#284).
 
       CAPTURING THE OUTPUT. A read-only reviewer cannot write files, so it writes its
       analysis to stdout and you place it. These instructions already contain the
