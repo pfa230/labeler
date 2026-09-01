@@ -26,8 +26,11 @@ section it supersedes. A `MODIFIED` delta is only valid against a requirement th
 `openspec/specs/`: the tooling resolves `MODIFIED` by locating that requirement, so a `MODIFIED`
 against an unmigrated section has nothing to resolve against.
 
-`docs/adr/` holds append-only Nygard ADRs. Every behavior change adds or supersedes an ADR and adds
-its row to `docs/adr/README.md`, in the same change. Supersede rather than edit.
+`docs/adr/` is **frozen** at ADR-0091 (2026-08-31), for the reason `docs/SPEC.md` is: it was the right
+record for its era and a better one superseded it. Do not write ADRs and do not add rows. Its 87
+entries stay readable and stay cited, because for behavior predating OpenSpec they are the only
+account of *why*. Rationale for a change now lives in its `proposal.md` and `design.md`, kept
+permanently under `openspec/changes/archive/`, and the contract lives in `openspec/specs/` (#285).
 
 Also in `docs/`: `WORKFLOW.md` (how changes get made, for humans), `AUTHORING.md` (template model by worked example), `VISION.md`, `DEPLOY.md`.
 
@@ -184,7 +187,7 @@ The steps below are what those stages mean. Read them to understand the loop or 
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
-6. **Verify** with the three cargo gates, then one commit covering code, ADR, specs, and the archived
+6. **Verify** with the three cargo gates, then one commit covering code, specs, and the archived
    change, with `Fixes #N`. Push the branch and wait for its run. `run-change.sh` does all of this and
    stops there: the merge into `main` is the one step a person approves, and by then it is mechanical.
    A gate failure gets the implementer one resumed round with the output, and a second failure stops

@@ -285,7 +285,6 @@ artifacts:
         contract and naming the section it supersedes.
       - An ADDED requirement that supersedes a frozen section without naming it, or
         that silently widens beyond the section it names.
-      - No ADR named for a behavior change, or no `docs/adr/README.md` row.
       - No linked GitHub issue, or more than one issue in scope.
       - tasks.md parking future work as unchecked tasks instead of filing an issue.
       - A template or rendering change whose tasks contain no render-and-look step.
