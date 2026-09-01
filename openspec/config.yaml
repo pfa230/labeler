@@ -129,10 +129,13 @@ operations:
         time, in pre-commit and in CI; there is no separate step asking you to review a diff you
         just produced.
       - >-
-        The landing commit needs the change's `diff-review.md`, carrying `AUTHOR:`, `REVIEWER:` and
-        `VERDICT: APPROVE`; the gate refuses the commit without it and refuses one whose author is
-        its reviewer. `.workflow/apply.sh` writes it. If the diff was reviewed some other way, write
-        the file with the same fields, naming who implemented and who reviewed.
+        The landing commit needs the change's `diff-review.md`, carrying `AUTHORS:`, `REVIEWER:`,
+        `VERDICT: APPROVE` and `TREE_SHA256:`; the gate refuses the commit without it, refuses an
+        empty `AUTHORS:` list, and refuses one naming its reviewer among the authors.
+        `.workflow/apply.sh` writes it. If the diff was reviewed some other way, write the file with
+        the same fields: `AUTHORS:` is every agent that actually changed the worktree,
+        comma-separated and first-written-first, and `TREE_SHA256:` is the digest of the tree the
+        review judged, which `.workflow/run-stage.sh` prints as its `tree:` line.
       - >-
         Then verify, in this order: `openspec doctor`, `openspec validate --all --strict
         --no-interactive`, `openspec validate --archived --no-interactive`, `cargo fmt`,

@@ -153,9 +153,9 @@ expect_stage plan-review "and an approved review with no digest does not pass th
 expect_stage tasks "an approved, digested plan writes its task list"
 printf -- '- [ ] 1.1 do it\n' > "$d/tasks.md"
 expect_stage apply "and then implements"
-printf '# Diff review\n\nAUTHOR: agy\nREVIEWER: codex\nVERDICT: REVISE\n' > "$d/diff-review.md"
+printf '# Diff review\n\nAUTHORS: agy\nREVIEWER: codex\nVERDICT: REVISE\n' > "$d/diff-review.md"
 expect_stage apply "a REVISE diff review stays in apply"
-printf '# Diff review\n\nAUTHOR: agy\nREVIEWER: codex\nVERDICT: APPROVE\n' > "$d/diff-review.md"
+printf '# Diff review\n\nAUTHORS: agy\nREVIEWER: codex\nVERDICT: APPROVE\n' > "$d/diff-review.md"
 expect_stage apply "an approved diff review with no recorded contract is not trusted"
 printf 'SPECS_SHA256: %s\n' "$("$here/specs-digest.sh" "$d")" >> "$d/diff-review.md"
 expect_stage archive "an approved diff review naming the contract it read archives"
@@ -1022,6 +1022,244 @@ out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" review codex issue-8-nosuch 2>&1)
 if [ "$rc" = "2" ]; then ok "and a change that exists nowhere is still refused"
 else bad "a nonexistent change was accepted (exit $rc)"; fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- what was judged, and who wrote it (#299) --------------------------------------
+# Both halves are plumbing facts the driver already had and wrote nowhere: run-stage.sh
+# knows the digest of the tree it left and whether the stage changed anything, and apply.sh
+# knew neither. What is asserted here is that both now reach the artifact, and that the
+# refusal built on the first one fires before a reviewer is launched.
+if [ "$pty_available" = "1" ]; then
+
+# A worktree digest is printed by every stage, and it is the only place it can be measured.
+setup
+add_change issue-30-tree
+add_passing_review issue-30-tree
+tbin=$(mktemp -d)
+cat > "$tbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo worked >> worked.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$tbin/agy"
+out=$(cd "$repo" && PATH="$tbin:$PATH" "$STAGE" implement agy issue-30-tree 2>&1); rc=$?
+first=$(printf '%s\n' "$out" | grep -E '^tree: [0-9a-f]{64}$' | tail -1 | sed 's/^tree: //')
+if [ "$rc" = "0" ] && [ -n "$first" ]; then ok "a stage prints the digest of the tree it left"
+else bad "no 'tree: <64 hex>' line from a stage that ran (exit $rc)"; fi
+# Same tree, second stage: the measurement is of the tree, not of the run.
+cat > "$tbin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"t-30"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$tbin/codex"
+out=$(cd "$repo" && PATH="$tbin:$PATH" "$STAGE" review codex issue-30-tree 2>&1)
+second=$(printf '%s\n' "$out" | grep -E '^tree: [0-9a-f]{64}$' | tail -1 | sed 's/^tree: //')
+if [ -n "$second" ] && [ "$first" = "$second" ]; then ok "and two stages over one unchanged tree print the same digest"
+else bad "the digest moved across a stage that changed nothing ('$first' then '$second')"; fi
+# The change folder is excluded, or apply.sh writing a round artifact between rounds would
+# move the digest every round and the refusal below could never fire.
+printf 'a round artifact\n' > "$repo/.worktrees/issue-30/openspec/changes/issue-30-tree/diff-review-1.md"
+out=$(cd "$repo" && PATH="$tbin:$PATH" "$STAGE" review codex issue-30-tree 2>&1)
+third=$(printf '%s\n' "$out" | grep -E '^tree: [0-9a-f]{64}$' | tail -1 | sed 's/^tree: //')
+if [ "$first" = "$third" ]; then ok "and writing into openspec/changes does not move it"
+else bad "the change folder counts toward the tree digest, so no round can ever match another"; fi
+find "$tbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# apply.sh reads the digest off the stage's stdout, so the stage now runs through a pipe, and
+# a pipeline reports the LAST command's status. `set -o pipefail` is what currently saves
+# this, and it is one line away in a different file: drop it, or move the wrapper into a
+# script that never had it, and every failed implement reads as a clean one while the
+# reviewer is handed a tree nobody finished writing. Asserted on the status rather than on
+# the spelling, so it holds however the wrapper is written; the digest is asserted above.
+setup
+add_change issue-34-status
+add_passing_review issue-34-status
+xbin=$(mktemp -d)
+cat > "$xbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo worked >> worked.txt
+echo '{"conversation_id":"c","status":"FAILED","response":"ran out of quota"}'
+exit 4
+FAKE
+cat > "$xbin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo x >> "$REVIEW_COUNT"
+echo '{"type":"thread.started","thread_id":"t-34"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$xbin/agy" "$xbin/codex"
+xcount="$xbin/reviews"; : > "$xcount"
+out=$(cd "$repo" && REVIEW_COUNT="$xcount" PATH="$xbin:$PATH" "$APPLY" agy codex issue-34-status --rounds 1 2>&1); rc=$?
+if [ "$rc" = "1" ]; then ok "an implement stage that failed still fails apply.sh through the pipe"
+else
+  bad "a failed implement was read as a clean one (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if [ "$(grep -c . "$xcount")" = "0" ]; then ok "and no reviewer was handed the unfinished tree"
+else bad "the reviewer ran after a failed implement"; fi
+find "$xbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The author ledger. run-stage.sh is the only place that knows both the agent's name and
+# whether its stage changed anything; every caller knows one or the other.
+setup
+add_change issue-31-ledger
+add_passing_review issue-31-ledger
+led="$repo/.worktrees/issue-31/openspec/changes/issue-31-ledger/authors"
+lbin=$(mktemp -d)
+cat > "$lbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo worked >> worked.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+cat > "$lbin/opencode" <<'FAKE'
+#!/usr/bin/env bash
+[ -n "${OPENCODE_WRITES:-}" ] && echo more >> worked.txt
+echo '{"type":"result","sessionID":"s-31","parts":[{"type":"text","text":"done"}]}'
+FAKE
+chmod +x "$lbin/agy" "$lbin/opencode"
+(cd "$repo" && PATH="$lbin:$PATH" "$STAGE" implement agy issue-31-ledger) >/dev/null 2>&1
+if [ "$(cat "$led" 2>/dev/null)" = "agy" ]; then ok "an implement stage that changed the tree records its author"
+else bad "the ledger reads '$(cat "$led" 2>/dev/null)', not 'agy'"; fi
+# In the change folder, which is committed. .agent-runs/ is gitignored working state these
+# scripts create and delete, and a record a passing broom can carry off is not a record.
+if [ ! -e "$repo/.worktrees/issue-31/.agent-runs/authors" ]; then ok "and it is not in .agent-runs/"
+else bad "the ledger was written to gitignored working state"; fi
+(cd "$repo" && PATH="$lbin:$PATH" "$STAGE" implement agy issue-31-ledger --resume) >/dev/null 2>&1
+if [ "$(grep -c '^agy$' "$led" 2>/dev/null)" = "1" ]; then ok "and a second round by the same agent names it once"
+else bad "the ledger repeated an author"; fi
+# A swapped implementer that reads the inherited tree and correctly changes nothing wrote
+# none of it. That is #291's shape, and naming it was the misattribution.
+(cd "$repo" && PATH="$lbin:$PATH" "$STAGE" implement opencode issue-31-ledger --resume) >/dev/null 2>&1
+if ! grep -qx 'opencode' "$led" 2>/dev/null; then ok "an implementer that changed nothing claims no authorship"
+else bad "an agent that wrote nothing was recorded as an author"; fi
+(cd "$repo" && OPENCODE_WRITES=1 PATH="$lbin:$PATH" "$STAGE" implement opencode issue-31-ledger --resume) >/dev/null 2>&1
+if [ "$(tr '\n' ',' < "$led" 2>/dev/null)" = "agy,opencode," ]; then ok "and a swap that does write names both, in the order they wrote"
+else bad "the ledger reads '$(tr '\n' ',' < "$led" 2>/dev/null)', not 'agy,opencode,'"; fi
+# gate-fix edits src/ after archive has moved the folder, so it must find the ledger there.
+mv "$repo/.worktrees/issue-31/openspec/changes/issue-31-ledger" \
+   "$repo/.worktrees/issue-31/openspec/changes/archive/2026-01-01-issue-31-ledger"
+led2="$repo/.worktrees/issue-31/openspec/changes/archive/2026-01-01-issue-31-ledger/authors"
+cat > "$lbin/claude" <<'FAKE'
+#!/usr/bin/env bash
+echo lintfix >> worked.txt
+echo '{"type":"result","subtype":"success","session_id":"cs-31","result":"done"}'
+FAKE
+chmod +x "$lbin/claude"
+(cd "$repo" && PATH="$lbin:$PATH" "$STAGE" gate-fix claude issue-31-ledger --resume) >/dev/null 2>&1
+if [ "$(tr '\n' ',' < "$led2" 2>/dev/null)" = "agy,opencode,claude," ]; then ok "a gate fix appends to the ledger the archive moved"
+else bad "the archived ledger reads '$(tr '\n' ',' < "$led2" 2>/dev/null)'"; fi
+find "$lbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The refusal. During #291 two rounds returned opposite verdicts on a byte-identical tree,
+# and the second one shipped. run-stage.sh already warned that the fix round changed
+# nothing; that warning is what the run flapped past, so this stops instead, and stops
+# BEFORE the launch, because the waste is the review.
+setup
+add_change issue-32-same
+add_passing_review issue-32-same
+sbin=$(mktemp -d)
+cat > "$sbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+if [ -e .agent-runs/agy-ran ]; then
+  echo '{"conversation_id":"c","status":"COMPLETED","response":"every finding is answered in prose"}'
+else
+  mkdir -p .agent-runs; : > .agent-runs/agy-ran
+  echo worked >> worked.txt
+  echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+fi
+FAKE
+cat > "$sbin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo x >> "$REVIEW_COUNT"
+echo '{"type":"thread.started","thread_id":"t-32"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: REVISE"}}'
+FAKE
+chmod +x "$sbin/agy" "$sbin/codex"
+count="$sbin/reviews"; : > "$count"
+out=$(cd "$repo" && REVIEW_COUNT="$count" PATH="$sbin:$PATH" "$APPLY" agy codex issue-32-same --rounds 3 2>&1); rc=$?
+if [ "$rc" = "10" ]; then ok "a fix round that changed nothing stops the loop"
+else
+  bad "the same tree went to a second review (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if [ "$(grep -c . "$count")" = "1" ]; then ok "and the second reviewer was never launched"
+else bad "the reviewer ran $(grep -c . "$count") times, so the stop came after the launch"; fi
+if printf '%s' "$out" | grep -q 'diff-review-1.md' && printf '%s' "$out" | grep -q 'diff-review-2.md'; then
+  ok "and it names the round already judged and the one it did not write"
+else bad "the refusal named neither round file"; fi
+if [ ! -e "$repo/.worktrees/issue-32/openspec/changes/issue-32-same/diff-review-2.md" ]; then
+  ok "and wrote no second round artifact"
+else bad "a round artifact was written for a review that never ran"; fi
+# The comparison reads the digest back from the round file, so a restarted apply.sh - whose
+# own round counter begins at 1 again - still sees what the previous invocation judged.
+: > "$count"
+out=$(cd "$repo" && REVIEW_COUNT="$count" PATH="$sbin:$PATH" "$APPLY" agy codex issue-32-same --rounds 3 2>&1); rc=$?
+if [ "$rc" = "10" ]; then ok "and the refusal survives a restart of apply.sh"
+else
+  bad "a restart reviewed the same tree again (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if [ "$(grep -c . "$count")" = "0" ]; then ok "launching no reviewer at all on the restart"
+else bad "the restart launched a reviewer before comparing"; fi
+find "$sbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# What apply.sh writes down, on the path that approves.
+setup
+add_change issue-33-record
+add_passing_review issue-33-record
+rbin=$(mktemp -d)
+cat > "$rbin/opencode" <<'FAKE'
+#!/usr/bin/env bash
+echo worked >> worked.txt
+echo '{"type":"result","sessionID":"s-33","parts":[{"type":"text","text":"done"}]}'
+FAKE
+cat > "$rbin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"t-33"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$rbin/opencode" "$rbin/codex"
+# The predecessor whose work this run inherits, recorded the way run-stage.sh records it.
+printf 'agy\n' > "$repo/.worktrees/issue-33/openspec/changes/issue-33-record/authors"
+d="$repo/.worktrees/issue-33/openspec/changes/issue-33-record"
+out=$(cd "$repo" && PATH="$rbin:$PATH" "$APPLY" opencode codex issue-33-record --rounds 1 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "an approving run records its outcome"
+else
+  bad "the approving run failed (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if grep -qx 'AUTHORS: agy, opencode' "$d/diff-review.md" 2>/dev/null; then
+  ok "naming every agent that wrote, not the one this invocation was handed"
+else bad "AUTHORS reads '$(grep '^AUTHORS:' "$d/diff-review.md" 2>/dev/null)'"; fi
+if ! grep -q '^AUTHOR:' "$d/diff-review.md" 2>/dev/null; then ok "and the singular field is gone"
+else bad "diff-review.md still carries an AUTHOR: line"; fi
+dtree=$(grep -E '^TREE_SHA256: [0-9a-f]{64}$' "$d/diff-review.md" 2>/dev/null | sed 's/^TREE_SHA256: //')
+rtree=$(grep -E '^TREE_SHA256: [0-9a-f]{64}$' "$d/diff-review-1.md" 2>/dev/null | sed 's/^TREE_SHA256: //')
+if [ -n "$dtree" ] && [ "$dtree" = "$rtree" ]; then ok "and the tree the approving round judged, on both the round and the verdict"
+else bad "diff-review.md says '$dtree' and diff-review-1.md says '$rtree'"; fi
+# What apply.sh writes must be what the gate accepts. Asserted end to end rather than by
+# reading both scripts: they are edited separately, and a field renamed in one and not the
+# other stops the run at the commit, after every agent has already been paid for.
+arch="$repo/.worktrees/issue-33/openspec/changes/archive/2026-01-01-issue-33-record"
+mkdir -p "$repo/.worktrees/issue-33/openspec/changes/archive"
+cp -r "$d" "$arch"
+( cd "$repo/.worktrees/issue-33" && "$here/review-gate-check.sh" . \
+    openspec/changes/archive/2026-01-01-issue-33-record/diff-review.md src/main.rs ) >/dev/null 2>&1
+grc=$?
+if [ "$grc" = "0" ]; then ok "and the landing gate accepts what apply.sh wrote"
+else
+  bad "the landing gate refuses the diff-review.md apply.sh just wrote (exit $grc)"
+  ( cd "$repo/.worktrees/issue-33" && "$here/review-gate-check.sh" . \
+      openspec/changes/archive/2026-01-01-issue-33-record/diff-review.md src/main.rs ) 2>&1 \
+    | sed 's/^/        /' | head -3
+fi
+find "$rbin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
