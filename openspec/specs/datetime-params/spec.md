@@ -122,23 +122,35 @@ selection as a date control when `time` is `false` and as a date-and-time contro
 deactivates is not reported as an input and SHALL NOT be rendered, on the same rule that governs
 every other control (`template-inputs`).
 
-The form SHALL seed the control from the `default` the input list publishes for it, and SHALL leave it
-empty when the list publishes none — which is the case both for a parameter declaring no `default:` and
-for one whose declared default carries interpolation syntax the client cannot resolve
-(`template-inputs`). It SHALL NOT read a default out of the raw parameter declaration. It SHALL NOT seed the operator's browser date: that
-was the client half of the render-instant fallback this change removes, and it made the form print a
-value no template declared. The consequence the removed rule recorded — that a browser and server
-straddling a date boundary print the browser's date — goes with it. Publishing a *resolved* default to
-the client, so an empty control can show what will actually print, is #262.
+The form SHALL seed the control from the `default` the input list publishes for it, which is the value
+the render path resolves for that parameter (`template-inputs`), and SHALL leave it empty when the list
+publishes none — which is the case both for a parameter declaring no `default:` and for one whose
+declared default failed to resolve. It SHALL NOT read a default out of the raw parameter declaration. It
+SHALL NOT seed the operator's browser date: that was the client half of the render-instant fallback this
+change removes, and it made the form print a value no template declared. The consequence the removed
+rule recorded — that a browser and server straddling a date boundary print the browser's date — goes
+with it.
+
+A published `datetime` default is a bare `YYYY-MM-DD`, because that is the form the render path coerces a
+datetime to. A date control holds it as published. A date-and-time control cannot, so a screen seeding
+one SHALL widen the published value to `YYYY-MM-DDT00:00`, which names the instant the service resolved
+and which that control holds. This is the only reshaping any screen performs on a published default, and
+it is confined to the seeded control: what the screen shows as the entry's default, and what the
+template detail's report carries, stay the published value.
+
+An entry whose declared default failed to resolve SHALL be presented as one with no default: an empty
+control, marked required, with the failure's message surfaced against it (`template-inputs`). The
+operator SHALL still be able to supply an instant and print.
 
 Clearing the control SHALL submit an omission. What that omission prints is `param-resolution`'s answer:
 the declared default, or `422 MissingField` when there is none.
 
 A blank `datetime` parameter SHALL be flagged as a missing required value, in the print form, the CSV
-import grid and the connector grid alike, exactly when the parameter declares no `default:` — on the
-same terms every other parameter type is flagged, and on the same terms the input list the service
-reports marks it required (`template-inputs`). A `datetime` parameter that declares one SHALL NOT be
-flagged, for the same reason.
+import grid and the connector grid alike, exactly when the input list the service reports marks it
+`required` — on the same terms every other parameter type is flagged, and read from that field rather
+than re-derived (`template-inputs`). That is the case when the parameter declares no `default:`, and
+also when its declared default fails to resolve, since neither leaves the service a value to use. A
+`datetime` parameter whose declared default resolves SHALL NOT be flagged, for the same reason.
 
 The CSV import grid and the connector grid SHALL accept a `datetime` parameter as a text cell taking
 the same three input forms as the API. A cell that cannot be parsed SHALL be flagged on its row,
@@ -162,6 +174,24 @@ carries a `422 BatchInvalid` failure back to its row in both grids.
   operator selects `mode: brief`
 - **THEN** the print form renders no control for `stamped_at`, and the label prints
 
+#### Scenario: A tokened default seeds the control
+
+- **WHEN** the print form loads a template declaring `printed_on: { type: datetime, default: "{sys.now}" }`
+  with `time: false`
+- **THEN** the date control holds the date the service resolved, rather than being empty
+
+#### Scenario: A date-and-time control widens the published value
+
+- **WHEN** the same parameter declares `time: true` and the list publishes `default: "2026-09-01"`
+- **THEN** the date-and-time control holds `2026-09-01T00:00`, while the value shown as the entry's
+  default remains `2026-09-01`
+
+#### Scenario: A datetime default that cannot resolve leaves the control empty and required
+
+- **WHEN** `printed_on` declares `default: "{vars.stamp}"` and the store holds no `stamp`
+- **THEN** the control is empty, the entry is flagged as needing a value, and the failure's message is
+  surfaced against it
+
 #### Scenario: A cleared control still prints
 
 - **WHEN** `printed_on` declares `default: "{sys.now}"` and an operator clears the control and submits
@@ -183,6 +213,13 @@ carries a `422 BatchInvalid` failure back to its row in both grids.
 - **WHEN** a CSV import row leaves a `datetime` column empty and the parameter declares
   `default: "{sys.now}"`
 - **THEN** the row is valid, the run is not blocked, and the label prints the request's date
+
+#### Scenario: A blank cell whose default cannot resolve blocks the run
+
+- **WHEN** a CSV import row leaves a `datetime` column empty, the parameter declares
+  `default: "{vars.stamp}"`, and the store holds no `stamp`
+- **THEN** the row is flagged and the run is blocked, because the list reports that entry `required`,
+  rather than the row being submitted for a label the service would refuse
 
 #### Scenario: An unparseable cell blocks the run
 
@@ -360,8 +397,17 @@ that carries every other required name.
 A thumbnail or preview render SHALL supply the current instant as the placeholder for a `datetime`
 parameter it invents for, rather than a placeholder string, because a placeholder string is not a legal
 instant. Which parameters it invents for is `template-inputs`' rule and not this capability's: a
-`datetime` declaring a `default:` is not one of them, because the service has a value for it and resolves
-it. This is placeholder substitution and not a default: it never reaches a render a caller asked for.
+`datetime` whose declared `default:` **resolves** is not one of them, because the service has a value for
+it; one declaring none, and one whose declared default fails to resolve, both are, because in neither
+case does the service have a value. This is placeholder substitution and not a default: it never reaches
+a render a caller asked for.
+
+#### Scenario: A datetime whose default cannot resolve is invented for in a preview
+
+- **WHEN** a thumbnail is rendered for a template printing `{printed_on:short_date}` where `printed_on`
+  declares `default: "{vars.stamp}"` and the store holds no `stamp`
+- **THEN** the thumbnail shows the current date in that format, as it does for a `datetime` declaring no
+  default, rather than failing with `param_default_unresolvable`
 
 #### Scenario: An omitted parameter with no default fails
 

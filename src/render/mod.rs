@@ -314,6 +314,197 @@ pub fn resolve_parameters_mode(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamDefaultFailure {
+    pub param: String,
+    pub message: String,
+    pub token: Option<String>,
+    pub value: Option<String>,
+}
+
+impl ParamDefaultFailure {
+    pub fn new(param: impl Into<String>, token: Option<String>, value: Option<String>) -> Self {
+        let param = param.into();
+        let message = match (&token, &value) {
+            (Some(tok), Some(val)) => {
+                format!("Failed to resolve default for parameter '{param}': token '{tok}' resolved to invalid value '{val}'")
+            }
+            (Some(tok), None) => {
+                format!("Failed to resolve default for parameter '{param}': token '{tok}' could not be resolved")
+            }
+            (None, Some(val)) => {
+                format!(
+                    "Failed to resolve default for parameter '{param}': value '{val}' is invalid"
+                )
+            }
+            (None, None) => {
+                format!("Failed to resolve default for parameter '{param}'")
+            }
+        };
+        Self {
+            param,
+            message,
+            token,
+            value,
+        }
+    }
+
+    pub fn to_error_report(&self) -> crate::models::ParamDefaultError {
+        crate::models::ParamDefaultError {
+            reason: crate::reason::Reason::ParamDefaultUnresolvable
+                .as_slug()
+                .to_string(),
+            message: self.message.clone(),
+            token: self.token.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
+pub fn json_to_param_value(val: &serde_json::Value) -> crate::models::ParamValue {
+    match val {
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                crate::models::ParamValue::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                crate::models::ParamValue::Float(f as f32)
+            } else {
+                crate::models::ParamValue::Float(0.0)
+            }
+        }
+        serde_json::Value::Bool(b) => crate::models::ParamValue::Boolean(*b),
+        serde_json::Value::String(s) => crate::models::ParamValue::String(s.clone()),
+        other => crate::models::ParamValue::String(other.to_string()),
+    }
+}
+
+fn resolve_parameter_default_candidate(
+    name: &str,
+    spec: &ParamSpec,
+    variables: Option<&BTreeMap<String, String>>,
+    datetime: Option<&crate::datetime_fmt::DateTimeResolver>,
+    mode: ResolveMode,
+) -> Result<Option<CoercedParam>, Result<ParamDefaultFailure, String>> {
+    let default_val = match &spec.default {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+
+    let candidate = match default_val {
+        crate::models::ParamValue::String(s) => {
+            if s.contains('{') || s.contains('}') {
+                if let (Some(vars), Some(dt)) = (variables, datetime) {
+                    match helpers::interpolate(s, &HashMap::new(), vars, dt, None) {
+                        Ok(interpolated) => JsonValue::String(interpolated),
+                        Err(err) => {
+                            if mode == ResolveMode::Lenient {
+                                return Ok(None);
+                            } else {
+                                let token = match err.details() {
+                                    Some(serde_json::Value::Object(map)) => {
+                                        map.get("field").and_then(|v| v.as_str()).map(String::from)
+                                    }
+                                    _ => None,
+                                };
+                                return Err(Ok(ParamDefaultFailure::new(name, token, None)));
+                            }
+                        }
+                    }
+                } else if mode == ResolveMode::Lenient {
+                    return Ok(None);
+                } else {
+                    return Err(Err(format!(
+                        "strict resolution called without required variables or datetime context for tokened default of parameter '{name}'"
+                    )));
+                }
+            } else {
+                JsonValue::String(s.clone())
+            }
+        }
+        crate::models::ParamValue::Float(f) => serde_json::json!(f),
+        crate::models::ParamValue::Integer(i) => serde_json::json!(i),
+        crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
+    };
+
+    match coerce_param_value(&candidate, &spec.param_type) {
+        Ok(coerced) => Ok(Some(coerced)),
+        Err(bad_str) => {
+            if mode == ResolveMode::Lenient {
+                Ok(None)
+            } else {
+                Err(Ok(ParamDefaultFailure::new(name, None, Some(bad_str))))
+            }
+        }
+    }
+}
+
+pub fn resolve_parameter_default(
+    name: &str,
+    declared_default: &crate::models::ParamValue,
+    param_type: &crate::models::ParamType,
+    variables: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
+) -> Result<serde_json::Value, ParamDefaultFailure> {
+    // Build a temporary ParamSpec to reuse the candidate logic without reimplementing
+    // interpolation/coercion. The only caller is resolve_declared_defaults, which has
+    // already unwrapped the declared default, so this function cannot be called for a
+    // parameter that declares none; the type makes that a compile-time property of the
+    // call site rather than a runtime panic on `spec.default.is_none()`.
+    let spec = ParamSpec {
+        param_type: param_type.clone(),
+        default: Some(declared_default.clone()),
+        min: None,
+        max: None,
+        description: None,
+    };
+    match resolve_parameter_default_candidate(
+        name,
+        &spec,
+        Some(variables),
+        Some(datetime),
+        ResolveMode::Strict,
+    ) {
+        Ok(Some(CoercedParam::Datetime(_dt, formatted))) => Ok(JsonValue::String(formatted)),
+        Ok(Some(CoercedParam::Value(coerced))) => Ok(coerced),
+        Ok(None) => unreachable!(
+            "resolve_parameter_default: candidate returned None for declared default of '{name}' in Strict mode"
+        ),
+        Err(Ok(failure)) => Err(failure),
+        Err(Err(internal_msg)) => Err(ParamDefaultFailure::new(name, None, Some(internal_msg))),
+    }
+}
+
+pub fn resolve_declared_defaults(
+    template: &TemplateContent,
+    variables: &BTreeMap<String, String>,
+    datetime: &crate::datetime_fmt::DateTimeResolver,
+) -> crate::models::ResolvedDefaults {
+    let mut map = BTreeMap::new();
+    for (name, spec) in &template.params {
+        if let Some(declared) = spec.default.as_ref() {
+            match resolve_parameter_default(name, declared, &spec.param_type, variables, datetime) {
+                Ok(val) => {
+                    map.insert(
+                        name.clone(),
+                        crate::models::ParamDefaultReport::Resolved {
+                            resolved: json_to_param_value(&val),
+                        },
+                    );
+                }
+                Err(failure) => {
+                    map.insert(
+                        name.clone(),
+                        crate::models::ParamDefaultReport::Error {
+                            error: failure.to_error_report(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+    map
+}
+
 fn resolve_and_coerce_default(
     name: &str,
     spec: &ParamSpec,
@@ -323,74 +514,22 @@ fn resolve_and_coerce_default(
     resolved: &mut HashMap<String, JsonValue>,
     mode: ResolveMode,
 ) -> Result<(), AppError> {
-    if let Some(default_val) = &spec.default {
-        let candidate = match default_val {
-            crate::models::ParamValue::String(s) => {
-                if s.contains('{') || s.contains('}') {
-                    if let (Some(vars), Some(dt)) = (variables, datetime) {
-                        match helpers::interpolate(s, &HashMap::new(), vars, dt, None) {
-                            Ok(interpolated) => JsonValue::String(interpolated),
-                            Err(err) => {
-                                if mode == ResolveMode::Lenient {
-                                    resolved.remove(name);
-                                    return Ok(());
-                                } else {
-                                    let token = match err.details() {
-                                        Some(serde_json::Value::Object(map)) => {
-                                            map.get("field").and_then(|v| v.as_str())
-                                        }
-                                        _ => None,
-                                    };
-                                    return Err(AppError::param_default_unresolvable(
-                                        name, token, None,
-                                    ));
-                                }
-                            }
-                        }
-                    } else if mode == ResolveMode::Lenient {
-                        // Variables or datetime not available (e.g. derive_inputs_for_label)
-                        resolved.remove(name);
-                        return Ok(());
-                    } else {
-                        return Err(AppError::internal(format!(
-                            "strict resolution called without required variables or datetime context for tokened default of parameter '{name}'"
-                        )));
-                    }
-                } else {
-                    JsonValue::String(s.clone())
-                }
-            }
-            crate::models::ParamValue::Float(f) => serde_json::json!(f),
-            crate::models::ParamValue::Integer(i) => serde_json::json!(i),
-            crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
-        };
-
-        match coerce_param_value(&candidate, &spec.param_type) {
-            Ok(CoercedParam::Datetime(dt, formatted)) => {
-                instants.insert(name.to_string(), dt);
-                resolved.insert(name.to_string(), JsonValue::String(formatted));
-                Ok(())
-            }
-            Ok(CoercedParam::Value(coerced)) => {
-                resolved.insert(name.to_string(), coerced);
-                Ok(())
-            }
-            Err(bad_str) => {
-                if mode == ResolveMode::Lenient {
-                    resolved.remove(name);
-                    Ok(())
-                } else {
-                    Err(AppError::param_default_unresolvable(
-                        name,
-                        None,
-                        Some(&bad_str),
-                    ))
-                }
-            }
+    match resolve_parameter_default_candidate(name, spec, variables, datetime, mode) {
+        Ok(Some(CoercedParam::Datetime(dt, formatted))) => {
+            instants.insert(name.to_string(), dt);
+            resolved.insert(name.to_string(), JsonValue::String(formatted));
+            Ok(())
         }
-    } else {
-        resolved.remove(name);
-        Ok(())
+        Ok(Some(CoercedParam::Value(coerced))) => {
+            resolved.insert(name.to_string(), coerced);
+            Ok(())
+        }
+        Ok(None) => {
+            resolved.remove(name);
+            Ok(())
+        }
+        Err(Ok(failure)) => Err(AppError::param_default_unresolvable(&failure)),
+        Err(Err(internal_msg)) => Err(AppError::internal(internal_msg)),
     }
 }
 
@@ -3455,6 +3594,33 @@ layout:
         );
     }
 
+    fn test_defaults(template: &TemplateContent) -> crate::models::ResolvedDefaults {
+        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now: chrono::Local::now(),
+        };
+        super::resolve_declared_defaults(template, &BTreeMap::new(), &dt)
+    }
+
+    fn test_inputs_all(template: &TemplateContent) -> Vec<crate::models::InputSpec> {
+        let defaults = test_defaults(template);
+        template.inputs_all(&defaults)
+    }
+
+    fn test_placeholder_data(
+        template: &TemplateContent,
+        now: chrono::DateTime<chrono::Local>,
+    ) -> HashMap<String, serde_json::Value> {
+        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now,
+        };
+        let defaults = super::resolve_declared_defaults(template, &BTreeMap::new(), &dt);
+        template.placeholder_data(&defaults, now)
+    }
+
     /// #152. `brother_24mm_weights.yaml` sets `max_w: 117` at `at.x: 1.5` on a `width.max: 120`
     /// tape, so the budget goes from 118.5 to 117 — a cap that binds by only 1.5mm. With the short
     /// placeholder data the suite uses, the render must be unchanged: this pins that a cap this
@@ -3475,7 +3641,7 @@ layout:
             panic!("expected a dynamic-width single format");
         };
         assert_eq!(*max_w, 120.0, "budget math below assumes width.max: 120");
-        let data = capped.placeholder_data(chrono::Local::now());
+        let data = test_placeholder_data(capped, chrono::Local::now());
         let capped_png = render_thumbnail_png(capped, &data, None, &no_settings(), &no_datetime())
             .expect("render capped");
 
@@ -4639,8 +4805,7 @@ layout:
     fn template_fields_lists_request_keys_only() {
         let registry = crate::templates::load_all_for_tests().0;
         let t = registry.get("homebox-qr").expect("homebox-qr");
-        let fields: Vec<String> = t
-            .inputs_all()
+        let fields: Vec<String> = test_inputs_all(t)
             .into_iter()
             .filter(|i| i.required)
             .map(|i| i.name)
@@ -5228,7 +5393,7 @@ layout:
         };
         for summary in registry.summaries() {
             let template = registry.get(&summary.id).expect("template");
-            let data = template.placeholder_data(dt.now);
+            let data = test_placeholder_data(template, dt.now);
             let selection = default_option_selection(template);
             let png = render_thumbnail_png(template, &data, selection.as_ref(), &settings, &dt)
                 .unwrap_or_else(|e| panic!("render {}: {e:?}", summary.id));
@@ -5475,7 +5640,7 @@ layout:
     }
 
     #[test]
-    fn placeholder_data_fills_fields_excludes_vars_and_marks_images() {
+    fn placeholder_data_includes_interpolated_keys_only() {
         use crate::models::{Alignment, Fit, FontSize, Position, Size, SizeValue};
         let template = TemplateContent {
             name: "t".into(),
@@ -5490,10 +5655,10 @@ layout:
             params: BTreeMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
-                    value: "{title}".into(),
+                    value: "{title} {url} {vars.base} {sys.now} {sys.now:short_date}".into(),
                     placement: Placement::sized(
                         Position([0.0, 0.0]),
-                        Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
+                        Size([SizeValue::fixed(40.0), SizeValue::fixed(10.0)]),
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
@@ -5503,20 +5668,11 @@ layout:
                     overflow: Overflow::Ellipsis,
                     when: None,
                 },
-                LayoutItem::Qr {
-                    value: "{url} {vars.base} {sys.now} {sys.now:short_date}".into(),
-                    placement: Placement::sized(
-                        Position([0.0, 0.0]),
-                        Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
-                    ),
-                    params: None,
-                    when: None,
-                },
                 LayoutItem::Image {
                     name: Some("logo".into()),
                     src: None,
                     placement: Placement::sized(
-                        Position([0.0, 0.0]),
+                        Position([0.0, 10.0]),
                         Size([SizeValue::fixed(5.0), SizeValue::fixed(5.0)]),
                     ),
                     fit: Fit::default(),
@@ -5525,7 +5681,7 @@ layout:
             ]),
             version: None,
         };
-        let data = template.placeholder_data(chrono::Local::now());
+        let data = test_placeholder_data(&template, chrono::Local::now());
         assert_eq!(data.get("title").and_then(|v| v.as_str()), Some("title"));
         assert_eq!(data.get("url").and_then(|v| v.as_str()), Some("url"));
         assert!(!data.contains_key("base"), "vars.* must be excluded");
@@ -5575,7 +5731,7 @@ layout:
             }]),
             version: None,
         };
-        let data = template.placeholder_data(chrono::Local::now());
+        let data = test_placeholder_data(&template, chrono::Local::now());
         assert!(
             !data.contains_key(""),
             "empty token must not produce an empty-string key"
@@ -5726,7 +5882,7 @@ layout:
         };
         for summary in registry.summaries() {
             let template = registry.get(&summary.id).expect("template");
-            let data = template.placeholder_data(datetime.now);
+            let data = test_placeholder_data(template, datetime.now);
             // Render every orientation variant explicitly (default_option_selection picks only the
             // first). Start each variant from the FULL default selection and override orientation,
             // so other option defaults (avery's `outline: yes`) stay in effect.
@@ -6904,8 +7060,7 @@ layout:
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let mut fields: Vec<String> = template
-            .inputs_all()
+        let mut fields: Vec<String> = test_inputs_all(&template)
             .into_iter()
             .filter(|i| i.required)
             .map(|i| i.name)
@@ -6913,7 +7068,7 @@ layout:
         fields.sort();
         assert_eq!(fields, vec!["printed_on".to_string(), "title".to_string()]);
 
-        let ph = template.placeholder_data(chrono::Local::now());
+        let ph = test_placeholder_data(&template, chrono::Local::now());
         assert!(ph.contains_key("title"));
         assert!(ph.contains_key("printed_on"));
         assert!(!ph.contains_key("printed_on:short_date"));
@@ -7033,7 +7188,7 @@ layout:
         let formats = short_date_formats();
         let resolver = dt_resolver(&formats, fixed_instant());
 
-        let data = template.placeholder_data(resolver.now);
+        let data = test_placeholder_data(&template, resolver.now);
         assert_eq!(
             interpolated(&template, &data, &resolver).unwrap(),
             "06/25/2026"
@@ -7071,8 +7226,7 @@ layout:
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let fields: Vec<String> = template
-            .inputs_all()
+        let fields: Vec<String> = test_inputs_all(&template)
             .into_iter()
             .filter(|i| i.required)
             .map(|i| i.name)
@@ -7154,7 +7308,7 @@ layout:
             formats: &dt_formats,
             now: chrono::Local::now(),
         };
-        let data = template.placeholder_data(dt.now);
+        let data = test_placeholder_data(template, dt.now);
         assert!(!data.contains_key("orientation"));
         assert!(!data.contains_key("outline"));
         let option = default_option_selection(template);
@@ -8566,11 +8720,11 @@ layout:
         let s = interpolated(&template, &HashMap::new(), &resolver()).unwrap();
         assert_eq!(s, "80.0");
 
-        let inputs = template.inputs_all();
+        let inputs = test_inputs_all(&template);
         let input_w = inputs.iter().find(|i| i.name == "w").unwrap();
         assert_eq!(
             input_w.default,
-            Some(crate::models::ParamValue::String("80mm".to_string()))
+            Some(crate::models::ParamValue::Float(80.0))
         );
     }
 

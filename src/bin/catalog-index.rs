@@ -65,9 +65,19 @@ fn main() {
     yaml_files(root, &mut files);
     files.sort();
 
+    let variables = std::collections::BTreeMap::new();
+    let dt_formats = labeler::settings::resolve_datetime_formats_from(None).unwrap_or_default();
+    let now = chrono::Local::now();
+    let dt = labeler::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now,
+    };
+
     let mut entries = Vec::new();
     for path in &files {
         let template = load(path);
+        let resolved_defaults =
+            labeler::render::resolve_declared_defaults(&template.content, &variables, &dt);
         let rel = path.strip_prefix(root).expect("under catalog");
         let parts: Vec<String> = rel
             .components()
@@ -94,7 +104,7 @@ fn main() {
             "format": format_kind(&template),
             "media_width_mm": media_width(&template),
             "fields": template
-                .inputs_all()
+                .inputs_all(&resolved_defaults)
                 .into_iter()
                 .filter(|i| i.required)
                 .map(|i| i.name)

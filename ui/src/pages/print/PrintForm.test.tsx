@@ -742,4 +742,17 @@ describe("PrintForm deferring to a declared default", () => {
     expect(title.value).toBe("B-title");
     expect(screen.getByLabelText("message")).toHaveValue("");
   });
+
+  it("widens a bare YYYY-MM-DD default to YYYY-MM-DDT00:00 for datetime control", async () => {
+    const list = [
+      { name: "message", control: "text", required: true },
+      { name: "event_time", control: "datetime", default: "2026-03-24", required: false },
+    ];
+    stubInputs(() => list);
+    const detail: TemplateDetail = { ...withInputs(list), id: "tpl_dt" };
+    renderForm(detail);
+
+    const input = (await screen.findByLabelText("event_time")) as HTMLInputElement;
+    expect(input.value).toBe("2026-03-24T00:00");
+  });
 });
