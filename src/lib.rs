@@ -4854,11 +4854,11 @@ layout:
     #[tokio::test]
     async fn template_group_case_sibling_created_on_case_sensitive_fs() {
         let dir = temp_templates_dir();
+        let case_sensitive = crate::fs_safe::probe_is_case_sensitive(&dir);
         std::fs::create_dir_all(dir.join("Warehouse")).unwrap();
         std::fs::write(dir.join("Warehouse/t1.yaml"), template_yaml("t1")).unwrap();
         let app = build_app_in(&dir);
 
-        // Create into sibling group "warehouse" -> 201 Created on case-sensitive filesystem
         let resp = app
             .clone()
             .oneshot(yaml_post(
@@ -4868,13 +4868,36 @@ layout:
             ))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let (status, groups) = get_json(&app, "/api/template-groups").await;
-        assert_eq!(status, StatusCode::OK);
-        let list: Vec<String> = serde_json::from_value(groups).unwrap();
-        assert!(list.contains(&"Warehouse".to_string()));
-        assert!(list.contains(&"warehouse".to_string()));
+        if case_sensitive {
+            assert_eq!(resp.status(), StatusCode::CREATED);
+            let (status, groups) = get_json(&app, "/api/template-groups").await;
+            assert_eq!(status, StatusCode::OK);
+            let list: Vec<String> = serde_json::from_value(groups).unwrap();
+            assert!(list.contains(&"Warehouse".to_string()));
+            assert!(list.contains(&"warehouse".to_string()));
+        } else {
+            assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let body = json_response(resp).await;
+            assert_eq!(
+                body["error"]["details"]["reason"],
+                "template_group_case_conflict"
+            );
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Warehouse"),
+                "case conflict must name stored spelling Warehouse"
+            );
+            let (status, groups) = get_json(&app, "/api/template-groups").await;
+            assert_eq!(status, StatusCode::OK);
+            let list: Vec<String> = serde_json::from_value(groups).unwrap();
+            assert!(list.contains(&"Warehouse".to_string()));
+            assert!(
+                !list.contains(&"warehouse".to_string()),
+                "case-folding volume must not contain distinct warehouse"
+            );
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5168,39 +5191,120 @@ layout:
     #[tokio::test]
     async fn template_group_rename_recasing() {
         let dir = temp_templates_dir();
+        let case_sensitive = crate::fs_safe::probe_is_case_sensitive(&dir);
         std::fs::create_dir_all(dir.join("shipping")).unwrap();
         std::fs::write(dir.join("shipping/t1.yaml"), template_yaml("t1")).unwrap();
         let app = build_app_in(&dir);
 
-        // Recase shipping -> Shipping on free destination succeeds
-        let resp = app
-            .clone()
-            .oneshot(json_req(
-                "PUT",
-                "/api/template-groups/shipping",
-                json!({ "name": "Shipping" }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let res_json = json_response(resp).await;
-        assert_eq!(res_json["group"], "Shipping");
+        if case_sensitive {
+            // Recase shipping -> Shipping on free destination succeeds
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "PUT",
+                    "/api/template-groups/shipping",
+                    json!({ "name": "Shipping" }).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            let res_json = json_response(resp).await;
+            assert_eq!(res_json["group"], "Shipping");
 
-        // Now create shipping again alongside Shipping
-        std::fs::create_dir_all(dir.join("shipping")).unwrap();
-        let (_, _) = get_json(&app, "/api/template-groups").await;
+            // Now create shipping again alongside Shipping
+            std::fs::create_dir_all(dir.join("shipping")).unwrap();
+            let (_, _) = get_json(&app, "/api/template-groups").await;
 
-        // Renaming shipping -> Shipping when Shipping exists gives 409
-        let resp = app
-            .clone()
-            .oneshot(json_req(
-                "PUT",
-                "/api/template-groups/shipping",
-                json!({ "name": "Shipping" }).to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
+            // Renaming shipping -> Shipping when Shipping exists gives 409
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "PUT",
+                    "/api/template-groups/shipping",
+                    json!({ "name": "Shipping" }).to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::CONFLICT);
+        } else {
+            // Case-folding: recasing behaviour depends on whether the
+            // filesystem reports the destination as existing for a
+            // no-replace rename. APFS allows the rename (200) where
+            // creation of a sibling would be 409; both are permitted
+            // by spec 889-893, so we assert the contract for what we
+            // actually get without returning early.
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "PUT",
+                    "/api/template-groups/shipping",
+                    json!({ "name": "Shipping" }).to_string(),
+                ))
+                .await
+                .unwrap();
+            if resp.status() == StatusCode::OK {
+                // Filesystem performed the recasing; confirm new spelling is served
+                let res_json = json_response(resp).await;
+                assert_eq!(res_json["group"], "Shipping");
+                let (status, groups) = get_json(&app, "/api/template-groups").await;
+                assert_eq!(status, StatusCode::OK);
+                let list: Vec<String> = serde_json::from_value(groups).unwrap();
+                assert_eq!(list.len(), 1);
+                assert!(
+                    list.contains(&"Shipping".to_string()),
+                    "after recasing, listing must contain Shipping, got {list:?}"
+                );
+                // Second phase cannot create a distinct sibling on this filesystem,
+                // so the listing still holds exactly one entry and a repeat recasing
+                // to the same spelling is idempotent (200) or 409 depending on
+                // whether the source alias is considered existing. We assert that
+                // we do not create a second group and that the service still
+                // answers consistently.
+                std::fs::create_dir_all(dir.join("shipping")).unwrap();
+                let (status, groups) = get_json(&app, "/api/template-groups").await;
+                assert_eq!(status, StatusCode::OK);
+                let list: Vec<String> = serde_json::from_value(groups).unwrap();
+                assert_eq!(list.len(), 1);
+                // Attempt recasing again in either direction; should not create a second group
+                let resp2 = app
+                    .clone()
+                    .oneshot(json_req(
+                        "PUT",
+                        "/api/template-groups/Shipping",
+                        json!({ "name": "shipping" }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(resp2.status(), StatusCode::OK);
+                let (status, groups) = get_json(&app, "/api/template-groups").await;
+                assert_eq!(status, StatusCode::OK);
+                let list: Vec<String> = serde_json::from_value(groups).unwrap();
+                assert_eq!(list.len(), 1);
+            } else {
+                // Filesystem reported destination as existing: 409 and nothing renamed
+                assert_eq!(resp.status(), StatusCode::CONFLICT);
+                let (status, groups) = get_json(&app, "/api/template-groups").await;
+                assert_eq!(status, StatusCode::OK);
+                let list: Vec<String> = serde_json::from_value(groups).unwrap();
+                assert_eq!(list.len(), 1);
+                assert!(
+                    list.contains(&"shipping".to_string()),
+                    "after failed recasing, listing must still contain shipping, got {list:?}"
+                );
+                // Second phase cannot create a second directory, so listing
+                // still holds exactly one entry and a repeat request is 409 again
+                let resp2 = app
+                    .clone()
+                    .oneshot(json_req(
+                        "PUT",
+                        "/api/template-groups/shipping",
+                        json!({ "name": "Shipping" }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(resp2.status(), StatusCode::CONFLICT);
+            }
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }
