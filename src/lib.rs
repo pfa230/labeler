@@ -6365,7 +6365,7 @@ layout:
         let payload = json!({
             "template": "brother_24mm_qr",
             "printer": "ok-printer",
-            "fields": { "message": "Hello", "code": "QR-1" },
+            "data": { "message": "Hello", "code": "QR-1" },
             "copies": 2
         });
         let resp = app
@@ -6387,7 +6387,7 @@ layout:
         let payload = json!({
             "template": "brother_24mm_qr",
             "printer": "ok-printer",
-            "fields": { "message": "Hi", "code": "Q" }
+            "data": { "message": "Hi", "code": "Q" }
         });
         let resp = app
             .clone()
@@ -6403,14 +6403,16 @@ layout:
         let app = build_app();
         create_fake_printer(&app, "ok-printer", false).await;
         for bad in [0u32, 101] {
-            let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","fields":{"message":"x","code":"y"},"copies":bad});
+            let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","data":{"message":"x","code":"y"},"copies":bad});
             let resp = app
                 .clone()
                 .oneshot(json_req("POST", "/api/print", payload.to_string()))
                 .await
                 .expect("request");
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "copies={bad}");
-            assert_eq!(json_response(resp).await["error"]["code"], "InvalidRequest");
+            let body = json_response(resp).await;
+            assert_eq!(body["error"]["code"], "InvalidRequest");
+            assert_eq!(body["error"]["details"]["reason"], "copies_invalid");
         }
     }
 
@@ -6418,7 +6420,7 @@ layout:
     async fn print_webhook_unknown_template_is_404() {
         let app = build_app();
         create_fake_printer(&app, "ok-printer", false).await;
-        let payload = json!({"template":"nope","printer":"ok-printer","fields":{}});
+        let payload = json!({"template":"nope","printer":"ok-printer","data":{}});
         let resp = app
             .clone()
             .oneshot(json_req("POST", "/api/print", payload.to_string()))
@@ -6443,7 +6445,7 @@ layout:
         let app = build_app();
         // > 64 KiB body via a huge field value.
         let big = "x".repeat(80 * 1024);
-        let payload = json!({"template":"brother_24mm_qr","printer":"p","fields":{"message":big}});
+        let payload = json!({"template":"brother_24mm_qr","printer":"p","data":{"message":big}});
         let resp = app
             .clone()
             .oneshot(json_req("POST", "/api/print", payload.to_string()))
@@ -6474,46 +6476,171 @@ layout:
     }
 
     #[tokio::test]
-    async fn api_print_accepts_data_or_fields() {
+    async fn api_print_fields_is_rejected() {
         let app = build_app();
         create_fake_printer(&app, "ok-printer", false).await;
         let payload = json!({
-            "template": "brother_18mm",
+            "template": "brother_24mm_qr",
             "printer": "ok-printer",
-            "data": {
-                "message": "Printed via data",
-                "target_width": 70
-            }
+            "fields": { "message": "Hello", "code": "QR-1" }
         });
         let res = app
             .clone()
             .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("request");
-        assert_ne!(res.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+        let err = body["error"]["details"]["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("fields"),
+            "expected error to name `fields`, got {err}"
+        );
+        // No dispatch: recent-templates still empty (rejection before handler).
+        let recents = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recent-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recents.status(), StatusCode::OK);
+        assert_eq!(json_response(recents).await, json!([]));
     }
 
     #[tokio::test]
-    async fn api_print_data_precedes_fields() {
+    async fn api_print_fields_alongside_data_is_rejected() {
         let app = build_app();
         create_fake_printer(&app, "ok-printer", false).await;
         let payload = json!({
-            "template": "brother_18mm",
+            "template": "brother_24mm_qr",
             "printer": "ok-printer",
-            "data": {
-                "message": "From data"
-            },
-            "fields": {
-                "message": "From fields"
-            }
+            "data": { "message": "Hello", "code": "QR-1" },
+            "fields": { "message": "From fields" }
         });
         let res = app
             .clone()
             .oneshot(json_req("POST", "/api/print", payload.to_string()))
             .await
             .expect("request");
-        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+        // No dispatch: recent-templates still empty (rejection before handler).
+        let recents = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recent-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recents.status(), StatusCode::OK);
+        assert_eq!(json_response(recents).await, json!([]));
+    }
+
+    #[tokio::test]
+    async fn api_print_neither_data_nor_fields_is_rejected() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","copies":1});
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+        // No label was printed from an empty map: recent-templates still empty.
+        let recents = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recent-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recents.status(), StatusCode::OK);
+        assert_eq!(json_response(recents).await, json!([]));
+    }
+
+    #[tokio::test]
+    async fn api_print_unknown_key_is_rejected() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "printer": "ok-printer",
+            "data": { "message": "Hello", "code": "QR-1" },
+            "extra": 1
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+        let err = body["error"]["details"]["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("extra"),
+            "expected error to name `extra`, got {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_print_missing_data_reports_json_malformed_not_copies_invalid() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","copies":0});
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+    }
+
+    #[tokio::test]
+    async fn api_print_empty_data_is_passed_to_template() {
+        let app = build_app();
+        create_fake_printer(&app, "ok-printer", false).await;
+        let payload = json!({"template":"brother_24mm_qr","printer":"ok-printer","data":{}});
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"]
+            .as_array()
+            .expect("failures array");
+        assert!(!failures.is_empty(), "expected at least one failure");
+        let first = &failures[0];
+        let msg = first["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("message") || msg.contains("code"),
+            "expected failure to name missing param, got {msg}"
+        );
     }
 
     #[test]
@@ -6557,6 +6684,37 @@ layout:
         assert_eq!(
             color_schema["type"], "string",
             "Color schema must have type: string, got: {color_schema}"
+        );
+    }
+
+    #[test]
+    fn openapi_print_request_is_strict() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let schemas = doc.components.as_ref().unwrap().schemas.clone();
+        assert!(
+            schemas.contains_key("PrintRequest"),
+            "PrintRequest missing in openapi schemas"
+        );
+        let schema = serde_json::to_value(&schemas["PrintRequest"]).unwrap();
+        let required = schema["required"].as_array().expect("required array");
+        let req_strs: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            req_strs.contains(&"data"),
+            "data must be required, got {schema}"
+        );
+        let props = schema["properties"].as_object().expect("properties object");
+        assert!(
+            !props.contains_key("fields"),
+            "fields must not be a property, got {schema}"
+        );
+        assert!(
+            props.contains_key("data"),
+            "data must be a property, got {schema}"
+        );
+        assert_eq!(
+            schema["additionalProperties"], false,
+            "additionalProperties must be false, got {schema}"
         );
     }
 
@@ -7238,7 +7396,7 @@ layout:
             .uri("/api/print")
             .header("content-type", "application/problem+json")
             .body(Body::from(
-                r#"{"template":"non_existent_template","printer":"some-printer","copies":1}"#,
+                r#"{"template":"non_existent_template","printer":"some-printer","data":{},"copies":1}"#,
             ))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -7954,7 +8112,7 @@ mod auth_http_tests {
     async fn print_webhook_requires_auth() {
         let app = test_app();
         let payload =
-            serde_json::json!({"template":"brother_24mm_qr","printer":"ok-printer","fields":{}});
+            serde_json::json!({"template":"brother_24mm_qr","printer":"ok-printer","data":{}});
         let resp = app
             .clone()
             .oneshot(req_post_json("/api/print", &payload.to_string()))
@@ -8845,7 +9003,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/print",
-                r#"{"template":"brother_24mm_qr","printer":"ok-printer","fields":{"message":"x","code":"y"},"copies":1}"#,
+                r#"{"template":"brother_24mm_qr","printer":"ok-printer","data":{"message":"x","code":"y"},"copies":1}"#,
             ))
             .await
             .unwrap();
