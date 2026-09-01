@@ -49,15 +49,21 @@ fi
 # Hold a lock for the duration. The apply stage implements and stops; it does not
 # commit, merge, push or archive. Telling an agent that is a request, and agents have
 # merged and left main in a broken state anyway, so git refuses instead: pre-commit,
-# pre-merge-commit and pre-push all check this file. It lives in the common git dir,
-# so it applies from every worktree and from the repo root.
-lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
-if [ -f "$lock" ]; then
-  echo "an apply is already in progress: $(cat "$lock")" >&2
+# pre-merge-commit and pre-push all check this file. It lives in the worktree's own git
+# dir, so it locks this tree and only this tree; run-stage.sh says why at length (#294).
+#
+# noclobber, not test-then-write, and for the same reason run-stage.sh gives: two callers
+# can both pass a test before either writes. This script is not under `set -e`, so the
+# redirection is also the only thing that reports failure here - a write that could not
+# happen must not read as a lock that was taken.
+lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-dir)/APPLY_IN_PROGRESS"
+if ! ( set -o noclobber
+       printf '%s started %s (pid %s)\n' "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
+     ) 2>/dev/null; then
+  echo "an apply is already in progress: $(cat "$lock" 2>/dev/null)" >&2
   echo "if that is stale, remove $lock" >&2
   exit 1
 fi
-printf '%s started %s (pid %s)\n' "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
 
 # Every run artifact lands in one ignored directory, so a `git add -A` in the
 # worktree cannot sweep a transcript into the change's commit (#255).

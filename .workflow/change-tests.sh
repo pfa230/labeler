@@ -337,6 +337,119 @@ find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
+# --- the apply lock is per worktree, not per repository (#294) ------------------------
+# Keyed on the shared git dir it blocked every tree while any one was written: a finished,
+# reviewed change could not be pushed because an unrelated agent was writing elsewhere.
+#
+# Proven with the same barrier the atomicity test uses, and for the same reason: two
+# stages that merely start near each other prove nothing, because a suite that runs them
+# sequentially passes a test that only checks both exit 0. Held in `date` until both have
+# arrived, they reach their lock lines together. Keyed per worktree both take one and both
+# launch; keyed on the common dir this is the old race, and exactly one survives it.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-40-locka
+add_passing_review issue-40-locka
+add_change issue-41-lockb
+add_passing_review issue-41-lockb
+kbin=$(mktemp -d)
+kbar=$(mktemp -d)
+cat > "$kbin/date" <<FAKE
+#!/usr/bin/env bash
+touch "$kbar/\$\$"
+for _ in \$(seq 1 100); do
+  [ "\$(find "$kbar" -type f -name '[0-9]*' | wc -l)" -ge 2 ] && break
+  sleep 0.1
+done
+exec /bin/date "\$@"
+FAKE
+cat > "$kbin/agy" <<FAKE
+#!/usr/bin/env bash
+echo launched >> "$kbar/launches"
+echo worked >> worked.txt   # in the worktree: a run that changes nothing exits 3
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$kbin/date" "$kbin/agy"
+( cd "$repo" && PATH="$kbin:$PATH" "$STAGE" implement agy issue-40-locka >"$kbar/out1" 2>&1 ) &
+first_pid=$!
+( cd "$repo" && PATH="$kbin:$PATH" "$STAGE" implement agy issue-41-lockb >"$kbar/out2" 2>&1 ) &
+second_pid=$!
+# These jobs only. A bare `wait` waits on every background job the shell still has, which
+# in a suite that launches detached runs is a wait on things that outlive it.
+wait "$first_pid"; first=$?
+wait "$second_pid"; second=$?
+arrived=$(find "$kbar" -type f -name '[0-9]*' | wc -l | tr -d ' ')
+launches=$(grep -c '' "$kbar/launches" 2>/dev/null || true)
+if [ "$arrived" = "2" ] && [ "${launches:-0}" = "2" ] && [ "$first" = "0" ] && [ "$second" = "0" ]; then
+  ok "two stages overlapping in different worktrees both run"
+else bad "overlap: $arrived arrived, ${launches:-0} launched, exits $first/$second; wanted 2/2/0/0"; fi
+
+# And the same worktree still refuses, which is the case the lock exists for. The path is
+# spelled out rather than asked of git, because asking git the question the code asks
+# would pass whatever the code decided the answer was.
+printf 'agy issue-40-locka started now (pid 1)\n' > "$repo/.git/worktrees/issue-40/APPLY_IN_PROGRESS"
+out=$(cd "$repo" && PATH="$kbin:$PATH" "$STAGE" implement agy issue-40-locka 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'already in progress'; then
+  ok "and the worktree holding the lock still refuses a second stage"
+else bad "a second stage in the locked worktree exited $rc"; fi
+
+# The hooks must find the same file the runner writes. A hook that stops seeing the lock
+# looks exactly like a hook that passes, and silently removes the protection this whole
+# change is about, so each one is run against a lock a stage really left behind.
+( cd "$repo/.worktrees/issue-40" && git config core.hooksPath "$here/../.githooks" )
+( cd "$repo/.worktrees/issue-41" && git config core.hooksPath "$here/../.githooks" )
+hc=$(cd "$repo/.worktrees/issue-40" && "$here/../.githooks/pre-commit" 2>&1); hcrc=$?
+if [ "$hcrc" = "1" ] && printf '%s' "$hc" | grep -q 'apply is in progress here'; then
+  ok "pre-commit sees the lock the runner wrote"
+else bad "pre-commit missed the runner's lock (exit $hcrc)"; fi
+hp=$(cd "$repo/.worktrees/issue-40" && "$here/../.githooks/pre-push" 2>&1); hprc=$?
+if [ "$hprc" = "1" ] && printf '%s' "$hp" | grep -q 'apply is in progress here'; then
+  ok "pre-push sees it too"
+else bad "pre-push missed the runner's lock (exit $hprc)"; fi
+# The other tree is not locked, and must not be stopped by this one.
+if (cd "$repo/.worktrees/issue-41" && "$here/../.githooks/pre-commit" >/dev/null 2>&1) &&
+   (cd "$repo/.worktrees/issue-41" && "$here/../.githooks/pre-push" >/dev/null 2>&1); then
+  ok "an unlocked worktree may still commit and push"
+else bad "an unlocked worktree was refused by a lock held elsewhere"; fi
+# The merge hook is the deliberate exception: repository-wide, from any tree.
+hm=$(cd "$repo" && "$here/../.githooks/pre-merge-commit" 2>&1); hmrc=$?
+if [ "$hmrc" = "1" ] && printf '%s' "$hm" | grep -q 'apply is in progress'; then
+  ok "pre-merge-commit refuses from the root while a worktree is locked"
+else bad "pre-merge-commit missed a locked worktree (exit $hmrc)"; fi
+find "$repo/.git/worktrees/issue-40/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
+if (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
+  ok "and allows the merge once nothing holds a lock"
+else bad "pre-merge-commit refused a merge with no lock held"; fi
+# A worktree whose PATH contains a space. Git names its admin directory after the
+# basename and sanitises it, so the entry is `has-space` and the glob never meets a space
+# at all - which is a further reason to key on the git dir rather than to walk
+# .worktrees/ in the checkout, where the space is real. Spelt out rather than asked of
+# git, so that a future git which stopped sanitising would fail here rather than quietly
+# hand the hook a path it splits.
+git -C "$repo" worktree add -q ".worktrees/has space" -b spacey 2>/dev/null
+printf 'someone\n' > "$repo/.git/worktrees/has-space/APPLY_IN_PROGRESS"
+if ! (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
+  ok "pre-merge-commit reaches a worktree whose path has a space in it"
+else bad "a worktree path with a space hid its lock from pre-merge-commit"; fi
+find "$repo/.git/worktrees/has-space/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
+printf 'someone\n' > "$repo/.git/APPLY_IN_PROGRESS"
+if ! (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
+  ok "and the main checkout's own lock, which is the other arm of the glob"
+else bad "pre-merge-commit missed a lock held by the main checkout"; fi
+find "$repo/.git/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
+find "$kbin" "$kbar" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# A repository with no linked worktree at all: the glob matches nothing and stays a
+# literal path, which the test then simply fails. Nothing special-cases it, so nothing
+# reintroduces a special case that was never needed.
+setup
+if (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
+  ok "pre-merge-commit passes in a repository with no worktrees"
+else bad "an unmatched worktree glob refused a merge"; fi
+teardown
+
 # --- swapping the implementer mid-change (#292) -------------------------------------
 # Legitimate, and it used to happen silently: the incoming agent got the "start
 # implementing" prompt while inheriting the previous one's uncommitted diff and its
@@ -823,12 +936,12 @@ out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-7-zeta 2>&1);
 if [ "$rc" = "3" ]; then ok "an implement run that changed nothing is refused"
 else bad "a no-op implement was reported as a run (exit $rc)"; fi
 # The lock is what keeps a commit, a merge or a push from landing under a writing stage.
-printf 'someone else\n' > "$repo/.git/APPLY_IN_PROGRESS"
+printf 'someone else\n' > "$repo/.git/worktrees/issue-7/APPLY_IN_PROGRESS"
 out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-7-zeta 2>&1); rc=$?
 if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'already in progress'; then
   ok "a writing stage refuses to start while another holds the lock"
 else bad "the apply lock did not stop a second writing stage (exit $rc)"; fi
-find "$repo/.git/APPLY_IN_PROGRESS" -delete 2>/dev/null
+find "$repo/.git/worktrees/issue-7/APPLY_IN_PROGRESS" -delete 2>/dev/null
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 
