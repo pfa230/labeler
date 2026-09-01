@@ -40,6 +40,10 @@ change="${1:?change name required, e.g. issue-186-pin-rust-toolchain}"; shift ||
 
 resume_requested=0
 if [ "${1:-}" = "--resume" ]; then shift; resume_requested=1; fi
+# Whether this run found work already on the tree. It is the only thing that can excuse a
+# producing run that changes nothing: "there was nothing left to do" is a claim about
+# inherited work, and on a clean tree there is none to have been done (#292).
+inherited=no
 extra="$*"
 
 case "$role" in
@@ -48,9 +52,10 @@ case "$role" in
   *) echo "unknown role: $role (propose | plan-review | tasks | implement | review | gate-fix | archive | commit-msg)" >&2; exit 2 ;;
 esac
 case "$role" in plan-review|review|commit-msg) guarded=1 ;; *) guarded=0 ;; esac
-# A resumed implement is a fix round, and a fix round that changes nothing can be
-# legitimate: the implementer may have answered every finding in prose. Loud there, not
-# fatal. The first implement, and every other producing role, must leave something.
+# A producing role must leave something behind, with one exception: a run that INHERITED
+# work may legitimately conclude there is nothing left to do, having answered the findings
+# in prose or verified what it was handed. That is judged by the tree, not by the role,
+# further down.
 case "$role" in
   propose|tasks|gate-fix|archive) produces=1 ;;
   implement)                      produces=1 ;;
@@ -117,14 +122,75 @@ conv_file="$runs/$session-$agent.conversation"
 
 resume=""
 if [ "$resume_requested" -eq 1 ]; then
-  [ -s "$conv_file" ] || { echo "--resume needs a previous run; no id at $conv_file" >&2; exit 2; }
-  resume=$(cat "$conv_file")
+  case "$role" in
+    # Advisory for the writing roles: the caller states intent, and the decision under the
+    # lock below settles it against the record of who holds this tree. A missing session is
+    # not an error there, it is a handover.
+    implement|gate-fix) : ;;
+    *)
+      [ -s "$conv_file" ] || { echo "--resume needs a previous run; no id at $conv_file" >&2; exit 2; }
+      resume=$(cat "$conv_file") ;;
+  esac
 fi
 
 # Every role may stop and ask, because a stage that cannot ask has to guess, and a
 # guess buried in an artifact is worse than an hour of waiting (#283). The bar is in
 # the sentence: this is for what the stage cannot decide, not for what it would
 # rather not decide.
+lock=""
+if [ "$writes" = "1" ]; then
+  lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
+  # noclobber makes the create atomic. Testing for the file and then writing it is two
+  # steps, and two callers can both pass the test before either writes, which is exactly
+  # the concurrency the lock exists to prevent. The suite provokes exactly that race, by
+  # putting a barrier in the `date` call below so two stages arrive at the redirection
+  # together: this form lets one through, the check-then-write form let both.
+  if ! ( set -o noclobber
+         printf '%s %s started %s (pid %s)\n' "$agent" "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
+       ) 2>/dev/null; then
+    echo "a run is already in progress: $(cat "$lock" 2>/dev/null)" >&2; exit 1
+  fi
+  # A signal handler that only cleans up is worse than none: bash runs it and then CARRIES
+  # ON, so an interrupt could release the lock and the run would launch its writer with no
+  # protection at all. Each signal exits with its own conventional status.
+  trap 'rm -f "$lock"' EXIT
+  trap 'rm -f "$lock"; exit 130' INT
+  trap 'rm -f "$lock"; exit 143' TERM
+fi
+
+
+# THE HANDOVER DECISION IS MADE HERE, under the lock and before the command is built.
+# Computed by the caller instead, it is a guess with a window in it: another writing stage
+# can finish between the caller deciding and this one locking, which makes the chosen
+# session stale before it launches (#292). The caller's --resume is therefore advisory for
+# these roles; what decides is who the record says holds this tree, read while nobody else
+# can be writing it.
+case "$role" in
+  implement|gate-fix)
+    # From zero, not from the flag: the caller's --resume is intent, and a first run on a
+    # clean tree that kept resume_requested=1 would be given "Continue your work" and
+    # allowed to change nothing, both of which are wrong for a run continuing nothing.
+    [ -n "$(cd "$wt" && git status --porcelain -- . ':!.agent-runs' ':!QUESTIONS.md' ':!ANSWERS.md' ':!openspec/changes' 2>/dev/null)" ] && inherited=yes
+    handover_plan "$wt" "$agent"
+    resume=""; resume_requested=0; handover_extra=""
+    if [ -n "$HANDOVER_TEXT" ]; then
+      handover_extra="$HANDOVER_TEXT"
+      # Cleared HERE, not after the run. Deciding not to resume this session already means
+      # it is unusable, and leaving it on disk while recording this agent as the one
+      # holding the tree is a state a signal can freeze: INT between the record and the
+      # post-run cleanup leaves a fresh record beside a stale id, and the next decision
+      # reads that pair as a session to resume (#292).
+      : > "$conv_file" || {
+        echo "cannot clear the stale session at $conv_file; not running." >&2
+        echo "Leaving it beside a fresh record is the pairing this exists to prevent." >&2
+        exit 1; }
+      echo "handover: this run continues no session; it is told what it inherits." >&2
+    elif [ -n "$HANDOVER_RESUME" ]; then
+      resume=$(cat "$conv_file" 2>/dev/null)
+      [ -n "$resume" ] && resume_requested=1
+    fi ;;
+esac
+
 questions="If ANSWERS.md exists at the root of your worktree, read it first: it holds the answers to questions earlier runs asked. If something genuinely blocks you, write your questions to QUESTIONS.md at that same root and stop rather than guessing. Use it only for what you cannot decide yourself: a contradiction in what you were given, or a missing decision that changes the contract. Anything you can decide, decide it and record the assumption."
 
 case "$role" in
@@ -179,17 +245,10 @@ case "$role" in
     base="Adversarially review the implementation diff for $change against its proposal, specs, design and tasks, and against AGENTS.md. Find real problems; do not rubber-stamp. Cite file:line evidence and verify each finding against the actual code before raising it. Report findings only: you must not edit any file. End your output with exactly one line, on its own line, reading either VERDICT: APPROVE or VERDICT: REVISE. Use REVISE if any finding must be fixed before this can land; any blocking finding forbids APPROVE. $questions"
     ;;
 esac
-prompt="$base $extra"
+prompt="$base $extra ${handover_extra:-}"
 
 # Every writing role takes the lock: each one must not have a commit, a merge or a
 # push land underneath it mid-run. A read-only reviewer has nothing to hold back.
-lock=""
-if [ "$writes" = "1" ]; then
-  lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
-  [ -f "$lock" ] && { echo "a run is already in progress: $(cat "$lock")" >&2; exit 1; }
-  printf '%s %s started %s (pid %s)\n' "$agent" "$change" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" > "$lock"
-  trap 'rm -f "$lock"' EXIT INT TERM
-fi
 
 cmd=$(agent_command "$agent" "$role" "$prompt" "$resume") || { echo "no invocation for $agent/$role" >&2; exit 2; }
 # What the worktree looks like right now, content included. The reviewer guard below
@@ -245,6 +304,19 @@ worktree_digest() { # worktree_digest <pathspec>...
 before_guard=$(worktree_digest "${guard_excl[@]}")
 before_work=$(worktree_digest "${work_excl[@]}")
 
+# The last point before the agent can touch anything, and past everything that could
+# refuse the run: the resume check, the lock, building the command. Recorded sooner, a
+# launch that never happened still named its agent, and the next run read that agent as
+# the one holding the tree and resumed its stale session (#292). Failing to record is
+# fatal, because the alternative is an agent editing a tree the marker attributes to
+# somebody else.
+case "$role" in
+  implement|gate-fix)
+    note_implementer "$wt" "$agent" || {
+      echo "cannot record the implementer at $runs/implement.last; not running." >&2
+      exit 1; } ;;
+esac
+
 ( cd "$wt" && pty_run "$cmd" ) 2>&1 | clean_capture > "$raw"
 status=$?
 after_guard=$(worktree_digest "${guard_excl[@]}")
@@ -258,6 +330,13 @@ if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
   cp "$raw" "$log"
   agent_status="NO_STRUCTURED_RESULT"
   extracted=0
+  # There WAS a truncation here, for a writing role whose extraction failed leaving a
+  # stale id behind. It is gone because it became unreachable, not because it stopped
+  # mattering: the decision above already clears any session it declined to resume, so by
+  # the time this runs the file is either empty, or holds an id this run resumed from, or
+  # holds one this run captured. A stale id that was not resumed cannot survive to here.
+  # Left in place it would have been dead code with a fatal-or-warning question attached
+  # to it, which is a question about nothing (#292).
 fi
 
 produced="no"
@@ -299,11 +378,12 @@ fi
 # delta across this stage, so a fix round on an already-dirty tree is judged on what IT
 # did rather than on what the tree looked like when it started.
 if [ "$produces" = "1" ] && [ "$status" -eq 0 ] && [ "$produced" = "no" ]; then
-  # A resumed implement is the one case where nothing is a defensible answer: the
-  # implementer may have justified every finding rather than acted on it. Said loudly,
-  # because it also looks exactly like a round that did nothing at all, and the caller
-  # is about to record the findings as addressed.
-  if [ "$role" = "implement" ] && [ "$resume_requested" -eq 1 ]; then
+  # A run that inherited work is the one case where nothing is a defensible answer: the
+  # implementer may have justified every finding rather than acting on it, or verified that
+  # what it was handed was already right. Said loudly, because it also looks exactly like a
+  # round that did nothing at all, and the caller is about to record the findings as
+  # addressed.
+  if { [ "$role" = "implement" ] || [ "$role" = "gate-fix" ]; } && [ "$inherited" = "yes" ]; then
     echo >&2
     echo "warning: this fix round changed nothing. Either every finding was answered in" >&2
     echo "prose, or none was acted on. $log is the whole of what it said." >&2
