@@ -32,6 +32,17 @@
 # The agent's transcript goes to a log, never to stdout. Only the status, the files
 # touched and a tail come back; a full transcript is thousands of lines and pulling
 # one through the orchestrator is waste.
+#
+# Two facts about the tree go out with it, because this is the only place that knows
+# them and nothing downstream can recover them (#299):
+#
+#   tree: <sha>   the digest of the worktree this stage left behind, minus
+#                 openspec/changes. apply.sh records it as the TREE_SHA256 of the review
+#                 it is about to launch, and refuses to launch one on a tree a previous
+#                 round already judged.
+#   the author ledger, openspec/changes/<change>/authors: the agent's name, appended when
+#                 an implement or gate-fix stage actually changed the tree. apply.sh
+#                 renders diff-review.md's AUTHORS: line from it.
 set -uo pipefail
 
 role="${1:?role required: propose | plan-review | tasks | implement | review | gate-fix | archive | commit-msg}"; shift
@@ -87,6 +98,16 @@ if [ "$role" != "propose" ]; then
   [ -d "$wt/openspec/changes/$change" ] && found=1
   for d in "$wt"/openspec/changes/archive/*"$change"/; do [ -d "$d" ] && found=1; done
   [ "$found" = "1" ] || { echo "no change '$change' in $wt, live or archived" >&2; exit 2; }
+fi
+
+# Where that folder is right now. The author ledger is written into it, and the two stages
+# that write it straddle archive's move: implement runs before it, gate-fix after. Resolved
+# the way the check above resolves it, so the two cannot disagree about where the change is.
+change_dir=""
+if [ -d "$wt/openspec/changes/$change" ]; then
+  change_dir="$wt/openspec/changes/$change"
+else
+  for d in "$wt"/openspec/changes/archive/*"$change"/; do [ -d "$d" ] && change_dir="$d"; done
 fi
 
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
@@ -289,6 +310,14 @@ guard_excl=(':(glob)**')
 # boxes did not implement anything.
 work_excl=("${guard_excl[@]}")
 [ "$role" = "implement" ] && work_excl+=(':!openspec/changes')
+# The tree a review judges, and the one digest a caller records. Its scope is fixed rather
+# than the role's, so every stage reports the same measurement of the same thing.
+# openspec/changes is excluded because apply.sh writes each round's artifact into it
+# between rounds: a digest that counted those would differ every round, and the repeated
+# tree refusal could never fire (#299). Excluding it costs nothing already guaranteed
+# elsewhere - review.md's SPECS_SHA256 binds the contract, and review-gate-check.sh
+# enforces that binding.
+tree_excl=(':(glob)**' ':!openspec/changes')
 # sha256sum is GNU; macOS spells it shasum -a 256, and where it is missing entirely the
 # unguarded form produced an EMPTY digest on both sides of the stage, which compares
 # equal and lets every reviewer edit through. A guard that fails open is worse than none.
@@ -332,6 +361,7 @@ esac
 status=$?
 after_guard=$(worktree_digest "${guard_excl[@]}")
 after_work=$(worktree_digest "${work_excl[@]}")
+after_tree=$(worktree_digest "${tree_excl[@]}")
 
 # How an answer is separated from a transcript is per-CLI knowledge, so it lives in
 # agents.sh beside the invocation that produced it. Here only the outcome matters:
@@ -354,7 +384,30 @@ produced="no"
 [ "$before_work" != "$after_work" ] && produced="yes"
 echo "role: $role   agent: $agent   status: $agent_status   exit: $status"
 echo "changed the worktree: $produced"
+echo "tree: $after_tree"
 echo "log: $log"
+
+# Who actually wrote the code. Appended here because this is the only place that knows both
+# the agent's name and whether its stage changed anything; every caller knows one or the
+# other. In the change folder rather than .agent-runs/, for the reason the apply lock is not
+# there either: that directory is gitignored working state these scripts create and delete,
+# and a record a passing broom can carry off is not a record. It must also survive across
+# separate apply.sh invocations, because an implementer swap can land in a later one than
+# the work it inherits (#292, #299).
+#
+# Writing it here cannot make a no-op look like work: implement's own digest excludes
+# openspec/changes, and every digest above was taken before this line runs.
+if { [ "$role" = "implement" ] || [ "$role" = "gate-fix" ]; } && [ "$produced" = "yes" ]; then
+  [ -n "$change_dir" ] || {
+    echo >&2; echo "no folder for '$change' in $wt, so the author cannot be recorded." >&2
+    exit 1; }
+  if ! grep -qxF "$agent" "$change_dir/authors" 2>/dev/null; then
+    printf '%s\n' "$agent" >> "$change_dir/authors" || {
+      echo >&2; echo "cannot append to the author ledger at $change_dir/authors; stopping." >&2
+      echo "An unrecorded author is the silent misattribution this ledger exists to prevent." >&2
+      exit 1; }
+  fi
+fi
 echo "--- last 30 lines ---"
 tail -30 "$log"
 
