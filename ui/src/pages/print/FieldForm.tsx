@@ -2,7 +2,7 @@ import type { Dispatch, SetStateAction } from "react";
 import { usePrinters } from "../../api/queries";
 import type { InputSpec, ParamValue, TemplateDetail } from "../../api/types";
 import { ParamInput } from "../../components/ParamInput";
-import { getOwnKey } from "../../lib/labelInputs";
+import { getOwnKey, seedDefaultValue } from "../../lib/labelInputs";
 
 export type FormValue = {
   data: Record<string, ParamValue>;
@@ -44,11 +44,11 @@ export function FieldForm({
 
   // Re-checking discards whatever was entered while the checkbox was cleared, putting the control
   // back to what the seeding rule gave it. Clearing leaves that value in place, to be submitted.
-  const toggleDeferred = (field: string, checked: boolean, publishedDefault: ParamValue) =>
+  const toggleDeferred = (input: InputSpec, checked: boolean) =>
     onChange((prev) => ({
       ...prev,
-      deferred: { ...prev.deferred, [field]: checked },
-      data: checked ? { ...prev.data, [field]: publishedDefault } : prev.data,
+      deferred: { ...prev.deferred, [input.name]: checked },
+      data: checked ? { ...prev.data, [input.name]: seedDefaultValue(input) } : prev.data,
     }));
 
   const positions = detail.format.type === "sheet" ? detail.format.positions.length : 0;
@@ -74,7 +74,7 @@ export function FieldForm({
                 </span>
               )}
             </div>
-            {input.default !== undefined && input.default !== null && (
+            {hasDefault && (
               <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs select-none" style={{ color: "var(--muted)" }}>
                 <input
                   type="checkbox"
@@ -83,7 +83,7 @@ export function FieldForm({
                   // is the checkbox's own; the value control never shares it.
                   aria-label={`Use default for ${input.name}`}
                   checked={isDeferred}
-                  onChange={(e) => toggleDeferred(input.name, e.target.checked, input.default!)}
+                  onChange={(e) => toggleDeferred(input, e.target.checked)}
                   className="h-3.5 w-3.5 rounded border"
                   style={{ accentColor: "var(--accent)" }}
                 />
@@ -91,6 +91,11 @@ export function FieldForm({
                   Use default: <span className="font-mono">{String(input.default)}</span>
                 </span>
               </label>
+            )}
+            {input.default_error && (
+              <span className="text-xs" style={{ color: "var(--bad, #dc2626)" }}>
+                {input.default_error.message}
+              </span>
             )}
             <ParamInput
               name={input.name}

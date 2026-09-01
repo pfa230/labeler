@@ -301,9 +301,22 @@ export function TemplateDetail() {
                     </span>
                   </div>
                   {spec.default !== undefined && (
-                    <span className="text-xs" style={{ color: "var(--muted)" }}>
-                      default: <code className="font-mono">{String(spec.default)}</code>
-                    </span>
+                    <div className="flex flex-wrap items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+                      <span>
+                        default: <code className="font-mono">{String(spec.default)}</code>
+                      </span>
+                      {detail.param_defaults?.[name] && (
+                        "resolved" in detail.param_defaults[name] ? (
+                          <span>
+                            (resolved: <code className="font-mono">{String(detail.param_defaults[name].resolved)}</code>)
+                          </span>
+                        ) : (
+                          <span style={{ color: "var(--bad, #dc2626)" }}>
+                            ({detail.param_defaults[name].error.message})
+                          </span>
+                        )
+                      )}
+                    </div>
                   )}
                 </div>
                 {spec.description && (

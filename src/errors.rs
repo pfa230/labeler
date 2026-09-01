@@ -285,28 +285,28 @@ impl AppError {
         Self::template_invalid(Reason::TemplateGroupCaseConflict, message)
     }
 
-    pub fn param_default_unresolvable(
-        param: &str,
-        token: Option<&str>,
-        value: Option<&str>,
-    ) -> Self {
-        let msg = match (token, value) {
-            (Some(tok), Some(val)) => {
-                format!("Failed to resolve default for parameter '{param}': token '{tok}' resolved to invalid value '{val}'")
-            }
-            (Some(tok), None) => {
-                format!("Failed to resolve default for parameter '{param}': token '{tok}' could not be resolved")
-            }
-            (None, Some(val)) => {
-                format!(
-                    "Failed to resolve default for parameter '{param}': value '{val}' is invalid"
-                )
-            }
-            (None, None) => {
-                format!("Failed to resolve default for parameter '{param}'")
-            }
-        };
-        Self::template_invalid(Reason::ParamDefaultUnresolvable, msg)
+    pub fn param_default_unresolvable(failure: &crate::render::ParamDefaultFailure) -> Self {
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "param".to_string(),
+            serde_json::Value::String(failure.param.clone()),
+        );
+        if let Some(token) = &failure.token {
+            extra.insert(
+                "token".to_string(),
+                serde_json::Value::String(token.clone()),
+            );
+        }
+        if let Some(val) = &failure.value {
+            extra.insert("value".to_string(), serde_json::Value::String(val.clone()));
+        }
+        Self::reasoned(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            CODE_TEMPLATE_INVALID,
+            Reason::ParamDefaultUnresolvable,
+            &failure.message,
+            Some(extra),
+        )
     }
 
     pub fn template_group_mismatch(message: impl Into<String>) -> Self {

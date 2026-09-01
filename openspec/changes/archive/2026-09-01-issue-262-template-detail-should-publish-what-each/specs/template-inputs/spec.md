@@ -1,13 +1,4 @@
-# template-inputs Specification
-
-## Purpose
-
-Defines the input list: the set of controls an operator must be offered for one label, derived by the
-service from the template and the values the label already carries. It is the service's answer to
-"what does this label still need", so that no client has to walk a layout, evaluate a `when:`
-condition, or reproduce how a parameter value is coerced before it is compared.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: An input list describes the controls one label needs
 
@@ -1049,47 +1040,8 @@ it has received none, and SHALL surface the failure rather than silently blockin
 - **WHEN** the CSV import grid and the connector grid render a column whose entry publishes a `default`
 - **THEN** each cell is seeded with that default and submitted, and neither grid offers a checkbox
 
-### Requirement: The CSV Import screen offers the parameters the chosen template can read
 
-*This requirement supersedes the paragraph of `docs/SPEC.md` "CSV import" describing the web UI's CSV
-Import screen (the paragraph beginning "The web UI's CSV Import screen") and restates its complete
-post-change contract. The rest of that section, covering `POST /import/csv`, is unchanged and remains
-authoritative.*
-
-The web UI's CSV Import screen (`/import`, ADR-0014, ADR-0022, ADR-0055) is a client-side path
-separate from `POST /import/csv`: it parses and edits the CSV in the browser and posts resolved
-labels to `POST /api/batch`. It does not call `/api/import/csv`, which remains the self-contained
-automation endpoint.
-
-A CSV MAY be loaded before any template is chosen: data columns show, and parameter columns and
-validation activate once a template is selected. The loaded CSV SHALL survive switching templates,
-including values for columns the newly chosen template does not read.
-
-Every parameter the chosen template can read SHALL be available for mapping, with batch-default
-fallback controls seeded from each entry's `default`. A parameter is available for a row when the
-service reports it as an input for that row; a parameter the template declares but never reads, and
-one read only inside a branch the row's own values deactivate, SHALL NOT be offered for that row.
-
-#### Scenario: A CSV loads before a template is chosen
-
-- **WHEN** a CSV is loaded with no template selected
-- **THEN** its data columns show, and no parameter column or validation is active
-
-#### Scenario: Every parameter the template reads is offered
-
-- **WHEN** a template is chosen whose parameters are all read unconditionally
-- **THEN** every one of them is available for mapping, with its batch-default fallback control
-
-#### Scenario: A parameter the template never reads is not offered
-
-- **WHEN** a chosen template declares a parameter that no item, condition or attribute reads
-- **THEN** that parameter is not offered for mapping
-
-#### Scenario: A CSV value survives a template switch
-
-- **WHEN** a CSV carrying a column the newly chosen template does not read is loaded and the template
-  is switched
-- **THEN** the column's values are retained
+## ADDED Requirements
 
 ### Requirement: The template detail reports what each declared default resolves to
 

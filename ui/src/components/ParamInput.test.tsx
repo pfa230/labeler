@@ -260,4 +260,24 @@ describe("ParamInput", () => {
     const spin = screen.getByRole("spinbutton", { name: "Width" }) as HTMLInputElement;
     expect(spin).toBeInTheDocument();
   });
+
+  it("does not substitute a default for an unset checkbox when InputSpec carries one", () => {
+    const onChange = vi.fn();
+    const spec = { name: "flag", control: "checkbox", required: false, default: true } as unknown as ParamSpec;
+    render(<ParamInput name="flag" spec={spec} value={undefined} onChange={onChange} />);
+
+    const checkbox = screen.getByRole("checkbox", { name: "flag" }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(screen.getByText("Unset")).toBeInTheDocument();
+  });
+
+  it("does not substitute a default for an unset select when InputSpec carries one", () => {
+    const onChange = vi.fn();
+    const spec = { name: "choice", control: "select", values: ["a", "b"], required: false, default: "a" } as unknown as ParamSpec;
+    render(<ParamInput name="choice" spec={spec} value={undefined} onChange={onChange} />);
+
+    const select = screen.getByRole("combobox", { name: "choice" }) as HTMLSelectElement;
+    expect(select.value).toBe("");
+    expect(screen.getByText("Select...")).toBeInTheDocument();
+  });
 });

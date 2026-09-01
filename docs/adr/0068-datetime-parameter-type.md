@@ -4,7 +4,7 @@ Date: 2026-08-24
 
 ## Status
 
-Accepted (token list and formatting syntax superseded by [ADR-0079](0079-token-grammar.md)). Issue [#209](https://github.com/pfa230/labeler/issues/209).
+Accepted (token list and formatting syntax superseded by [ADR-0079](0079-token-grammar.md); cacheability superseded by [ADR-0093](0093-a-declared-default-is-published-as-it-resolves.md)). Issue [#209](https://github.com/pfa230/labeler/issues/209).
 
 ## Context
 

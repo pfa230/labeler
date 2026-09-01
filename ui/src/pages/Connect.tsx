@@ -175,11 +175,19 @@ function Composer({
         const dtErr = datetimeCellError(valStr);
         if (dtErr) {
           field[input.name] = dtErr;
-        } else if (input.required && valStr.trim().length === 0) {
+        } else if (valStr.trim().length === 0) {
+          if (input.default_error?.message) {
+            field[input.name] = input.default_error.message;
+          } else if (input.required) {
+            field[input.name] = "required";
+          }
+        }
+      } else if (valStr.length === 0) {
+        if (input.default_error?.message) {
+          field[input.name] = input.default_error.message;
+        } else if (input.required) {
           field[input.name] = "required";
         }
-      } else if (input.required) {
-        if (valStr.length === 0) field[input.name] = "required";
       }
     }
     return Object.keys(field).length ? { field } : {};

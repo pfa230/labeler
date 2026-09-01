@@ -632,4 +632,56 @@ describe("CSV Import screen: datetime parameters", () => {
     fireEvent.click(download);
     expect(countCalls("/api/batch")).toBe(0);
   });
+
+  it("surfaces default_error.message for an empty cell whose input carries a broken default", async () => {
+    // Override stub to return an input with default_error
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        return json({
+          inputs: [
+            [
+              {
+                name: "sku",
+                control: "text",
+                required: true,
+                default_error: {
+                  reason: "param_default_unresolvable",
+                  message: "vars.missing not found",
+                  token: "vars.missing",
+                },
+              },
+            ],
+          ],
+        });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return json({
+          ...detail,
+          inputs: {
+            all: [{ name: "sku", control: "text", required: true, default_error: { reason: "param_default_unresolvable", message: "vars.missing not found", token: "vars.missing" } }],
+            default: [{ name: "sku", control: "text", required: true, default_error: { reason: "param_default_unresolvable", message: "vars.missing not found", token: "vars.missing" } }],
+          },
+        });
+      }
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+    // Load a CSV where sku is empty, so the required + default_error path is exercised
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku,other\n,foo\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+    // The grid validation should contain the default_error message, not generic "required"
+    expect(await screen.findByText(/vars\.missing/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /download/i })).toBeDisabled();
+  });
 });
