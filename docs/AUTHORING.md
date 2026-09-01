@@ -498,7 +498,7 @@ Shapes in the template model (`container` and `line`) support paint attributes:
   render time to half the shorter side. Square corners are spelled by omitting the key; `rounded: 0`
   is refused.
 - **Colors**: Specified on `stroke.color`, `background`, and `text.color` alike using one unified
-  vocabulary: 3-, 4-, 6-, or 8-digit hex strings (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`), one of the 16
+  vocabulary (surrounding whitespace is ignored): 3-, 4-, 6-, or 8-digit hex strings (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`), one of the 16
   standard CSS Level 1 named colors (`black`, `silver`, `gray`, `white`, `maroon`, `red`, `purple`,
   `fuchsia`, `green`, `lime`, `olive`, `yellow`, `navy`, `blue`, `teal`, `aqua`) matched case-insensitively,
   or a parameter reference `"{param}"` to a `string` or `enum` parameter. `text` items accept `color` to
