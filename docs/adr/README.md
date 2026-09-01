@@ -1,11 +1,11 @@
 # Architecture Decision Records
 
-**Frozen at ADR-0091 (2026-08-31), by #285. Do not add rows. Do not write new ADRs.**
+**Frozen at ADR-0092 (2026-09-01), by #285. Do not add rows. Do not write new ADRs.**
 
 Authoritative for what it covers, and never extended, in the way `docs/SPEC.md` is frozen for the same
 reason: an artifact that was the right record for its era, superseded by a better one. The 57 records
 through ADR-0057, which is itself the one that adopted OpenSpec, are the only account of *why* for
-behavior that `docs/SPEC.md` states without rationale, so they stay readable and stay cited. The 30
+behavior that `docs/SPEC.md` states without rationale, so they stay readable and stay cited. The 31
 after it duplicate a change folder that `openspec/changes/archive/` keeps permanently.
 
 Rationale for a behavior change now lives in that change's `proposal.md` and `design.md`, and the
@@ -132,3 +132,4 @@ immutable once **Accepted**; the supersession chains below record where a decisi
 | [0089](0089-wrapping-and-the-overflow-policy.md) | Wrapping and the overflow policy | Accepted |
 | [0090](0090-a-declared-default-is-deferred-not-copied.md) | A declared default is deferred, not copied | Accepted |
 | [0091](0091-text-ink-is-a-full-colour.md) | Text ink is a full-colour RGBA value | Accepted |
+| [0092](0092-a-shape-carries-a-stroke-and-a-background.md) | A shape carries a stroke and a background | Accepted |

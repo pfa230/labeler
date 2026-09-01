@@ -2846,6 +2846,119 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn template_put_paint_refusals_report_correct_reasons() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let validation_cases = [
+            // 1. Non-positive stroke thickness
+            (
+                "stroke_zero",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0\n    items: []\n",
+            ),
+            // 2. Sub-0.0001 stroke thickness
+            (
+                "stroke_too_small",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.00001\n    items: []\n",
+            ),
+            // 3. Zero rounded
+            (
+                "rounded_zero",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0\n    items: []\n",
+            ),
+            // 4. Sub-0.0001 rounded
+            (
+                "rounded_too_small",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0.00001\n    items: []\n",
+            ),
+            // 5. Line non-positive stroke thickness
+            (
+                "line_stroke_zero",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: 0\n",
+            ),
+        ];
+
+        for (id, yaml) in validation_cases {
+            let response = app
+                .clone()
+                .oneshot(yaml_post(
+                    &format!("/api/templates/{id}"),
+                    "PUT",
+                    yaml.to_string(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "case: {id}"
+            );
+            let body = json_response(response).await;
+            assert_eq!(body["error"]["code"], "TemplateInvalid", "case: {id}");
+            assert_eq!(
+                body["error"]["details"]["reason"], "template_validation_failed",
+                "case: {id}, got: {:?}",
+                body["error"]["details"]
+            );
+        }
+
+        // parse_cases: reason mapping is #289's to settle; this table characterizes current behaviour and is expected to move with it.
+        let parse_cases = [
+            // Null stroke
+            (
+                "stroke_null",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n    items: []\n",
+            ),
+            // Null background
+            (
+                "bg_null",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    background:\n    items: []\n",
+            ),
+            // Line with background (unknown field)
+            (
+                "line_bg",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: 0.2\n    background: red\n",
+            ),
+            // Bad color name
+            (
+                "bad_color",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    background: chartreuse\n    items: []\n",
+            ),
+            // Legacy frame spelling
+            (
+                "legacy_frame",
+                "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 20 }\nlayout:\n  - type: container\n    at: [0,0]\n    frame:\n      thickness: 0.02\n    items: []\n",
+            ),
+        ];
+
+        for (id, yaml) in parse_cases {
+            let response = app
+                .clone()
+                .oneshot(yaml_post(
+                    &format!("/api/templates/{id}"),
+                    "PUT",
+                    yaml.to_string(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "case: {id}"
+            );
+            let body = json_response(response).await;
+            assert_eq!(body["error"]["code"], "TemplateInvalid", "case: {id}");
+            assert_eq!(
+                body["error"]["details"]["reason"], "template_parse_failed",
+                "case: {id}, got: {:?}",
+                body["error"]["details"]
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
     /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
     /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates
@@ -9660,5 +9773,118 @@ layout:
             }),
             "bilevel output with yellow ink must be pure B/W (thresholded)"
         );
+    }
+
+    #[tokio::test]
+    async fn shape_paint_filled_rounded_container_renders_png_and_pdf() {
+        let shape_yaml = r#"
+name: ShapePaint
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 30]
+    stroke:
+      thickness: 0.5
+      color: red
+    background: '#f0f0f0'
+    rounded: 2.0
+    items:
+      - type: text
+        value: "Inside Shape"
+        at: [5, 5]
+        size: [40, 20]
+        font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("shape_paint_test", shape_yaml)]);
+
+        // 1. HTTP POST /api/render/label?format=png
+        let req_png = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({ "template": "shape_paint_test", "data": {} }).to_string(),
+        );
+        let res_png = app.clone().oneshot(req_png).await.unwrap();
+        assert_eq!(res_png.status(), StatusCode::OK);
+        assert_eq!(res_png.headers().get("content-type").unwrap(), "image/png");
+        let png_bytes = body_bytes(res_png).await;
+        assert_eq!(&png_bytes[..8], b"\x89PNG\r\n\x1a\n");
+
+        // 2. HTTP POST /api/render/label?format=pdf
+        let req_pdf = req_post_json(
+            "/api/render/label?format=pdf",
+            &serde_json::json!({ "template": "shape_paint_test", "data": {} }).to_string(),
+        );
+        let res_pdf = app.clone().oneshot(req_pdf).await.unwrap();
+        assert_eq!(res_pdf.status(), StatusCode::OK);
+        assert_eq!(
+            res_pdf.headers().get("content-type").unwrap(),
+            "application/pdf"
+        );
+        let pdf_bytes = body_bytes(res_pdf).await;
+        assert!(pdf_bytes.starts_with(b"%PDF"));
+    }
+
+    #[tokio::test]
+    async fn template_get_reports_canonical_shape_colors() {
+        let yaml = r##"
+name: CanonicalColors
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 30]
+    stroke:
+      thickness: 0.2
+      color: "#F0F"
+    background: red
+    rounded: 1.0
+    items:
+      - type: line
+        at: [5, 5]
+        to: [45, 5]
+        stroke:
+          thickness: 0.5
+      - type: container
+        at: [5, 10]
+        size: [40, 15]
+        stroke:
+          thickness: 0.1
+          color: blue
+        items: []
+"##;
+        let (app, _state) = test_app_with_custom_templates(vec![("canonical_colors", yaml)]);
+        let req = Request::builder()
+            .uri("/api/templates/canonical_colors")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+        let items = detail["layout"].as_array().expect("layout items");
+
+        // Top-level container
+        assert_eq!(items[0]["background"], "#ff0000ff");
+        assert_eq!(items[0]["stroke"]["color"], "#ff00ffff");
+        assert_eq!(items[0]["stroke"]["thickness"], 0.2);
+        assert_eq!(items[0]["rounded"], 1.0);
+
+        // Child items inside container
+        let child_items = items[0]["items"].as_array().expect("child items");
+        // Line with defaulted color -> "#000000ff"
+        assert_eq!(child_items[0]["stroke"]["color"], "#000000ff");
+        assert_eq!(child_items[0]["stroke"]["thickness"], 0.5);
+
+        // Nested container with explicit blue -> "#0000ffff"
+        assert_eq!(child_items[1]["stroke"]["color"], "#0000ffff");
     }
 }

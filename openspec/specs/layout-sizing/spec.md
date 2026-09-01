@@ -619,7 +619,9 @@ bullet:
   compounding coordinate flips.
 - **The inner author canvas swaps for 90 and 270.** Children are authored in the container's natural
   reading orientation; the inner authoring box and child bounds swap to `[inner_h, inner_w]`. Padding
-  is author-space and rotates with the design. The physical `frame` outline is not rotated.
+  is author-space and rotates with the design. The container's own paint, its `stroke` and its
+  `background` (`shape-paint`), is not rotated: it is painted on the container's box in its parent's
+  frame at every rotation.
 
 The final bullet, "No `auto` under rotation", is **replaced**. Sizes SHALL compose through the swap:
 a rotated container SHALL compute its intrinsic size in **author space** by the ordinary container

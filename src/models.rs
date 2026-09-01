@@ -1013,7 +1013,8 @@ pub enum LayoutItem {
         #[serde(default)]
         at: Position,
         to: Position,
-        thickness: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stroke: Option<Stroke>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
     },
@@ -1022,8 +1023,12 @@ pub enum LayoutItem {
         placement: Placement,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        frame: Option<Frame>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stroke: Option<Stroke>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        background: Option<Color>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rounded: Option<f32>,
         #[serde(default)]
         padding: Padding,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1081,11 +1086,58 @@ impl Default for Padding {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
-pub struct Frame {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Color {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+    pub a: u8,
+}
+
+impl Color {
+    pub const BLACK: Color = Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 255,
+    };
+
+    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self { r, g, b, a }
+    }
+
+    pub fn hex(&self) -> String {
+        format!("#{:02x}{:02x}{:02x}{:02x}", self.r, self.g, self.b, self.a)
+    }
+}
+
+impl Serialize for Color {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.hex())
+    }
+}
+
+impl utoipa::PartialSchema for Color {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, Type};
+        ObjectBuilder::new()
+            .schema_type(Type::String)
+            .description(Some("RGBA colour formatted as canonical `#rrggbbaa`"))
+            .examples([serde_json::json!("#000000ff")])
+            .build()
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for Color {}
+
+#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
+pub struct Stroke {
     pub thickness: f32,
-    #[serde(default)]
-    pub rounded: bool,
+    pub color: Color,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
