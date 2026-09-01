@@ -3992,7 +3992,6 @@ params:
   weight:
     type: integer
     default: 400
-    enum: [400, 700]
   show_border:
     type: boolean
     default: false
@@ -5911,6 +5910,62 @@ layout:
 
             fs::remove_dir_all(&dir).ok();
         }
+    }
+
+    #[test]
+    fn enum_key_on_integer_param_is_quarantined_with_unknown_field_error() {
+        let dir = temp_dir("enum_integer_quarantine");
+        write_template(&dir, "valid.yaml", &sample_yaml("Valid Template"));
+        let bad_yaml = r#"
+name: Bad Enum
+unit: mm
+dpi: 180
+format:
+  type: single
+  width: 60
+  height: 20
+params:
+  weight:
+    type: integer
+    default: 400
+    enum: [100, 400, 700]
+layout: []
+"#;
+        write_template(&dir, "bad_enum.yaml", bad_yaml);
+
+        let registry =
+            TemplateRegistry::load_from_dir(&dir).expect("registry load should not crash");
+        assert_eq!(registry.len(), 1, "valid template must be served");
+        assert!(registry.get("valid").is_some());
+        assert!(registry.get("bad_enum").is_none());
+
+        let broken = registry.broken();
+        assert_eq!(
+            broken.len(),
+            1,
+            "template carrying enum: must be quarantined"
+        );
+        assert_eq!(
+            broken[0].path, "bad_enum.yaml",
+            "broken path must name the offending file"
+        );
+        assert!(
+            broken[0].error.contains("params.weight"),
+            "error must name the parameter path, got: {}",
+            broken[0].error
+        );
+        assert!(
+            broken[0].error.contains("enum"),
+            "error must name the unknown key `enum`, got: {}",
+            broken[0].error
+        );
+        assert!(
+            broken[0].error.contains("unknown field"),
+            "error must be the generic unknown-field message, got: {}",
+            broken[0].error
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
