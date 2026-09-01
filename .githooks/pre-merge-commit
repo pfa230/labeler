@@ -1,27 +1,53 @@
 #!/usr/bin/env bash
-# Refuse merges while ANY apply is running (#294). git does not run pre-commit for merge
-# commits, so this is the separate hook that covers them.
+# Refuse a merge while an apply owns one of the trees it touches (#294, #316). git does
+# not run pre-commit for merge commits, so this is the separate hook that covers them.
 #
-# The one check that stays repository-wide, and deliberately: a merge into main happens in
+# Two per-worktree checks, and nothing wider. The lock is keyed per worktree, so a merge
+# asks about the two trees it actually involves: the one it lands in, and the one holding
+# what is being landed. Both are asked of git's own registry - the worktree list, then
+# that worktree's git dir - rather than by globbing .worktrees/ in the checkout. That
+# convention is where this repo puts them, not where git requires them, and a hook that
+# only sees the convention stops protecting the tree that departs from it.
+#
+# It was repository-wide until #316, refusing on ANY held lock. That stopped a finished,
+# reviewed, CI-green change from merging because an unrelated agent was writing in another
+# tree, which is the defect #294 was filed on, left standing in the one path #294 exempted
+# from its own fix. The argument recorded for the exemption - a merge into main happens in
 # a different worktree from the one being written, so a per-worktree lock would never see
-# it. Integrating a branch while an agent writes anywhere is the case this exists for.
+# it - holds only against a lock read from the CURRENT tree, which is how pre-commit and
+# pre-push read it. MERGE_HEAD names the commits being merged, and git maps those to the
+# tree that holds them, so the case the exemption was for is reached without the "any".
 #
-# It reaches every tree through git's own registry - the common dir, then one entry per
-# linked worktree under worktrees/ - rather than by globbing .worktrees/ in the checkout.
-# That convention is where this repo puts them, not where git requires them, and a hook
-# that only sees the convention stops protecting the tree that departs from it. When the
-# glob matches nothing it stays a literal path and the test simply fails, so a repository
-# with no linked worktree needs no special case. Any held lock refuses, so which one the
-# message happens to name does not matter; it names the last for want of a reason to
-# prefer another.
+# It does not run at all for a fast-forward, which creates no commit to hook (#317).
 set -euo pipefail
-common=$(git rev-parse --path-format=absolute --git-common-dir)
-held=""
-for lock in "$common"/APPLY_IN_PROGRESS "$common"/worktrees/*/APPLY_IN_PROGRESS; do
-  if [ -f "$lock" ]; then held="$lock"; fi
-done
-[ -n "$held" ] || exit 0
-echo "apply-lock: an apply is in progress ($(cat "$held"))." >&2
-echo "apply-lock: merging is not part of the apply stage. Wait for it to finish, review the diff, then integrate deliberately." >&2
-echo "apply-lock: git has already staged this merge and left MERGE_HEAD behind. Run 'git merge --abort' now to clear it." >&2
-exit 1
+
+refuse() { # refuse <lock> <whose>
+  echo "apply-lock: an apply is in progress $2 ($(cat "$1"))." >&2
+  echo "apply-lock: merging is not part of the apply stage. Wait for it to finish, review the diff, then integrate deliberately." >&2
+  echo "apply-lock: git has already staged this merge and left MERGE_HEAD behind. Run 'git merge --abort' now to clear it." >&2
+  exit 1
+}
+
+mine=$(git rev-parse --path-format=absolute --git-dir)
+if [ -f "$mine/APPLY_IN_PROGRESS" ]; then
+  refuse "$mine/APPLY_IN_PROGRESS" "here"
+fi
+
+# Staged but uncommitted, which is where this hook runs, so MERGE_HEAD is the merge in
+# hand. It holds one line per commit being merged, so an octopus is read as written.
+merge_head=$(git rev-parse --path-format=absolute --git-path MERGE_HEAD)
+[ -f "$merge_head" ] || exit 0
+
+while read -r sha; do
+  [ -n "$sha" ] || continue
+  path=""
+  while IFS= read -r line; do
+    case $line in
+      "worktree "*) path=${line#worktree } ;;
+      "HEAD $sha")
+        held=$(git -C "$path" rev-parse --path-format=absolute --git-dir)/APPLY_IN_PROGRESS
+        [ -f "$held" ] && refuse "$held" "in $path, which holds what you are merging"
+        ;;
+    esac
+  done < <(git worktree list --porcelain)
+done < "$merge_head"

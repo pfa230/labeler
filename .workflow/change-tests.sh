@@ -411,43 +411,66 @@ if (cd "$repo/.worktrees/issue-41" && "$here/../.githooks/pre-commit" >/dev/null
    (cd "$repo/.worktrees/issue-41" && "$here/../.githooks/pre-push" >/dev/null 2>&1); then
   ok "an unlocked worktree may still commit and push"
 else bad "an unlocked worktree was refused by a lock held elsewhere"; fi
-# The merge hook is the deliberate exception: repository-wide, from any tree.
+# A merge involves two trees, and asks about those two only (#316). Repository-wide it
+# refused a finished change because an unrelated agent was writing elsewhere, which is the
+# defect #294 was filed on surviving in the path #294 exempted. Staged with --no-commit,
+# which leaves MERGE_HEAD exactly as the hook meets it and runs no hook of its own; both
+# sides need a commit the other lacks, or there is no merge to stage.
+git -C "$repo/.worktrees/issue-40" commit -q --no-verify --allow-empty -m locka
+git -C "$repo" commit -q --no-verify --allow-empty -m meanwhile
+git -C "$repo" merge --no-ff --no-commit -q issue-40-locka >/dev/null 2>&1 || true
+printf 'agy issue-40-locka started now (pid 1)\n' > "$repo/.git/worktrees/issue-40/APPLY_IN_PROGRESS"
 hm=$(cd "$repo" && "$here/../.githooks/pre-merge-commit" 2>&1); hmrc=$?
-if [ "$hmrc" = "1" ] && printf '%s' "$hm" | grep -q 'apply is in progress'; then
-  ok "pre-merge-commit refuses from the root while a worktree is locked"
-else bad "pre-merge-commit missed a locked worktree (exit $hmrc)"; fi
+if [ "$hmrc" = "1" ] && printf '%s' "$hm" | grep -q 'holds what you are merging'; then
+  ok "pre-merge-commit refuses while the tree holding the merged branch is locked"
+else bad "pre-merge-commit missed the lock on the tree it was merging from (exit $hmrc)"; fi
 find "$repo/.git/worktrees/issue-40/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
+# The regression #316 is about: a lock held by a tree this merge does not touch.
+printf 'agy issue-41-lockb started now (pid 2)\n' > "$repo/.git/worktrees/issue-41/APPLY_IN_PROGRESS"
+if (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
+  ok "and allows it while only an unrelated worktree is locked"
+else bad "an unrelated worktree's lock refused a merge (#316)"; fi
+find "$repo/.git/worktrees/issue-41/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
+# The tree being merged INTO, read the way pre-commit and pre-push read their own.
+printf 'someone\n' > "$repo/.git/APPLY_IN_PROGRESS"
+hm=$(cd "$repo" && "$here/../.githooks/pre-merge-commit" 2>&1); hmrc=$?
+if [ "$hmrc" = "1" ] && printf '%s' "$hm" | grep -q 'in progress here'; then
+  ok "and refuses when the tree being merged into is itself mid-apply"
+else bad "pre-merge-commit missed a lock held by the tree it lands in (exit $hmrc)"; fi
+find "$repo/.git/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
 if (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
   ok "and allows the merge once nothing holds a lock"
 else bad "pre-merge-commit refused a merge with no lock held"; fi
-# A worktree whose PATH contains a space. Git names its admin directory after the
-# basename and sanitises it, so the entry is `has-space` and the glob never meets a space
-# at all - which is a further reason to key on the git dir rather than to walk
-# .worktrees/ in the checkout, where the space is real. Spelt out rather than asked of
-# git, so that a future git which stopped sanitising would fail here rather than quietly
-# hand the hook a path it splits.
+# A worktree whose path contains a space, holding the branch being merged. Git names its
+# admin directory after the basename and sanitises it, so the entry is `has-space` while
+# the path git hands back is not; the hook takes that path from git's registry and must
+# carry it whole. Spelt out rather than asked of git, so that a future git which stopped
+# sanitising would fail here rather than quietly hand the hook a path it splits.
+git -C "$repo" merge --abort 2>/dev/null || true
 git -C "$repo" worktree add -q ".worktrees/has space" -b spacey 2>/dev/null
+git -C "$repo/.worktrees/has space" commit -q --no-verify --allow-empty -m spacey
+git -C "$repo" merge --no-ff --no-commit -q spacey >/dev/null 2>&1 || true
 printf 'someone\n' > "$repo/.git/worktrees/has-space/APPLY_IN_PROGRESS"
 if ! (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
   ok "pre-merge-commit reaches a worktree whose path has a space in it"
 else bad "a worktree path with a space hid its lock from pre-merge-commit"; fi
 find "$repo/.git/worktrees/has-space/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
-printf 'someone\n' > "$repo/.git/APPLY_IN_PROGRESS"
-if ! (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
-  ok "and the main checkout's own lock, which is the other arm of the glob"
-else bad "pre-merge-commit missed a lock held by the main checkout"; fi
-find "$repo/.git/APPLY_IN_PROGRESS" -mindepth 0 -delete 2>/dev/null
 find "$kbin" "$kbar" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
-# A repository with no linked worktree at all: the glob matches nothing and stays a
-# literal path, which the test then simply fails. Nothing special-cases it, so nothing
+# A branch that no worktree holds, merged in a repository with no linked worktree at all.
+# Nothing in the registry matches MERGE_HEAD, and nothing special-cases that, so nothing
 # reintroduces a special case that was never needed.
 setup
+git -C "$repo" checkout -q -b solo
+git -C "$repo" commit -q --no-verify --allow-empty -m solo
+git -C "$repo" checkout -q -
+git -C "$repo" commit -q --no-verify --allow-empty -m meanwhile
+git -C "$repo" merge --no-ff --no-commit -q solo >/dev/null 2>&1 || true
 if (cd "$repo" && "$here/../.githooks/pre-merge-commit" >/dev/null 2>&1); then
-  ok "pre-merge-commit passes in a repository with no worktrees"
-else bad "an unmatched worktree glob refused a merge"; fi
+  ok "pre-merge-commit passes for a branch no worktree holds"
+else bad "a branch held by no worktree refused a merge"; fi
 teardown
 
 # --- swapping the implementer mid-change (#292) -------------------------------------
