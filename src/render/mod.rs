@@ -12,9 +12,9 @@ use crate::templates::TemplateContent;
 use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, interpolate,
-    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_f32, resolve_dynamic_value_ink,
-    resolve_dynamic_value_u16, resolve_image_asset, to_page_coords, typst_alignment,
-    typst_font_options,
+    parse_image_data_uri, resolve_dimension, resolve_dynamic_value_color,
+    resolve_dynamic_value_f32, resolve_dynamic_value_u16, resolve_image_asset, to_page_coords,
+    typst_alignment, typst_font_options,
 };
 
 pub(crate) use helpers::value_to_string;
@@ -1242,7 +1242,7 @@ struct SingleItemRenderArgs<'a> {
 struct ContainerRenderArgs<'a> {
     pub placement: &'a Placement,
     pub stroke: &'a Option<crate::models::Stroke>,
-    pub background: &'a Option<crate::models::Color>,
+    pub background: &'a Option<crate::models::DynamicValue<crate::models::Color>>,
     pub rounded: &'a Option<f32>,
     pub padding: &'a crate::models::Padding,
     pub flow: &'a Option<crate::models::Flow>,
@@ -1256,7 +1256,7 @@ struct ContainerRenderArgs<'a> {
 struct TextRenderArgs<'a> {
     pub placement: &'a Placement,
     pub font_weight: Option<u16>,
-    pub ink: Option<&'a crate::models::Ink>,
+    pub color: Option<&'a crate::models::Color>,
     pub alignment: &'a crate::models::Alignment,
     pub pbox: PlacedBox,
     pub text_fit: &'a helpers::TextFit,
@@ -1904,7 +1904,7 @@ impl<'a> RenderContext<'a> {
             LayoutItem::Text {
                 placement,
                 font_weight,
-                ink,
+                color,
                 alignment,
                 ..
             } => {
@@ -1912,8 +1912,8 @@ impl<'a> RenderContext<'a> {
                     Some(dyn_val) => Some(resolve_dynamic_value_u16(dyn_val, self.data)?),
                     None => None,
                 };
-                let resolved_ink = match ink {
-                    Some(dyn_val) => Some(resolve_dynamic_value_ink(dyn_val, self.data)?),
+                let resolved_color = match color {
+                    Some(dyn_val) => Some(resolve_dynamic_value_color(dyn_val, self.data)?),
                     None => None,
                 };
                 self.render_text_item(
@@ -1921,7 +1921,7 @@ impl<'a> RenderContext<'a> {
                     TextRenderArgs {
                         placement,
                         font_weight: resolved_weight,
-                        ink: resolved_ink.as_ref(),
+                        color: resolved_color.as_ref(),
                         alignment,
                         pbox: args.pbox,
                         text_fit: args.measured_node.text.as_ref().unwrap(),
@@ -2011,11 +2011,8 @@ impl<'a> RenderContext<'a> {
         let weight = args.font_weight.unwrap_or(400);
 
         let fill_arg = args
-            .ink
-            .map(|i| {
-                let [r, g, b, a] = i.rgba();
-                format!(", fill: rgb({r}, {g}, {b}, {a})")
-            })
+            .color
+            .map(|c| format!(", fill: rgb(\"{}\")", c.hex()))
             .unwrap_or_default();
 
         let mut body = args
@@ -2181,7 +2178,8 @@ impl<'a> RenderContext<'a> {
         let dy = format_length(dy, self.unit)?;
         let zero = format_length(0.0, self.unit)?;
         let thickness = format_length(stroke.thickness, self.unit)?;
-        let color = format!("rgb(\"{}\")", stroke.color.hex());
+        let resolved_color = resolve_dynamic_value_color(&stroke.color, self.data)?;
+        let color = format!("rgb(\"{}\")", resolved_color.hex());
 
         let content = format!(
             "#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {thickness} + {color})"
@@ -2244,13 +2242,17 @@ impl<'a> RenderContext<'a> {
 
         if args.stroke.is_some() || args.background.is_some() {
             let fill = match args.background {
-                Some(bg) => format!("rgb(\"{}\")", bg.hex()),
+                Some(bg) => {
+                    let resolved_bg = resolve_dynamic_value_color(bg, self.data)?;
+                    format!("rgb(\"{}\")", resolved_bg.hex())
+                }
                 None => "none".to_string(),
             };
             let stroke = match args.stroke {
                 Some(st) => {
                     let thickness = format_length(st.thickness, self.unit)?;
-                    let color = format!("rgb(\"{}\")", st.color.hex());
+                    let resolved_st_color = resolve_dynamic_value_color(&st.color, self.data)?;
+                    let color = format!("rgb(\"{}\")", resolved_st_color.hex());
                     format!("{thickness} + {color}")
                 }
                 None => "none".to_string(),
@@ -2403,7 +2405,7 @@ mod tests {
             ),
             font_size,
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: crate::models::Alignment {
                 horizontal,
@@ -2437,7 +2439,7 @@ mod tests {
             ),
             font_size,
             font_weight: weight.map(Into::into),
-            ink: None,
+            color: None,
             wrap: false,
             alignment: crate::models::Alignment {
                 horizontal,
@@ -2582,7 +2584,7 @@ mod tests {
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
@@ -2613,7 +2615,7 @@ mod tests {
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
@@ -2728,7 +2730,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
@@ -2787,7 +2789,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: weight.map(Into::into),
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -2859,7 +2861,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -2943,7 +2945,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3088,7 +3090,7 @@ layout:
             },
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3188,7 +3190,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3262,7 +3264,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3296,7 +3298,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3329,7 +3331,7 @@ layout:
                     },
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
-                    ink: None,
+                    color: None,
                     wrap: false,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -3517,7 +3519,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3572,7 +3574,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3676,7 +3678,7 @@ layout:
             },
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -3749,7 +3751,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -3821,7 +3823,7 @@ layout:
                     max: 28.0,
                 },
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: true,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4073,7 +4075,7 @@ layout:
             when: None,
             stroke: Some(Stroke {
                 thickness: 0.3,
-                color: Color::BLACK,
+                color: DynamicValue::Literal(Color::black()),
             }),
             background: None,
             rounded: None,
@@ -4115,7 +4117,7 @@ layout:
                 when: None,
                 stroke: Some(Stroke {
                     thickness: 0.3,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 background: None,
                 rounded: None,
@@ -4139,7 +4141,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4279,7 +4281,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4297,7 +4299,7 @@ layout:
             when: None,
             stroke: Some(Stroke {
                 thickness: 0.3,
-                color: Color::BLACK,
+                color: DynamicValue::Literal(Color::black()),
             }),
             background: None,
             rounded: None,
@@ -4367,7 +4369,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
@@ -4647,7 +4649,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(font_pt),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4682,7 +4684,7 @@ layout:
                 super::TextRenderArgs {
                     placement,
                     font_weight: None,
-                    ink: None,
+                    color: None,
                     alignment: &Alignment::default(),
                     pbox,
                     text_fit: measured[0].text.as_ref().unwrap(),
@@ -4847,7 +4849,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -4944,7 +4946,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5001,7 +5003,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(10.0),
                     font_weight: None,
-                    ink: None,
+                    color: None,
                     wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -5021,7 +5023,7 @@ layout:
                     to: Position([30.0, 1.0]),
                     stroke: Some(Stroke {
                         thickness: 0.2,
-                        color: Color::BLACK,
+                        color: DynamicValue::Literal(Color::black()),
                     }),
                     when: None,
                 },
@@ -5033,7 +5035,7 @@ layout:
                     when: None,
                     stroke: Some(Stroke {
                         thickness: 0.2,
-                        color: Color::BLACK,
+                        color: DynamicValue::Literal(Color::black()),
                     }),
                     background: None,
                     rounded: Some(0.4),
@@ -5086,7 +5088,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5223,7 +5225,7 @@ layout:
                 to: Position([30.0, 6.0]),
                 stroke: Some(Stroke {
                     thickness: 0.2,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 when: None,
             }],
@@ -5330,7 +5332,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5439,7 +5441,7 @@ layout:
         .collect();
         assert_eq!(
             found, expected,
-            "catalog contents changed; update this gate and docs/adr/0047 deliberately"
+            "catalog contents changed; update this gate deliberately. ADR-0047 recorded the original set and is frozen, so it is not updated with it"
         );
     }
 
@@ -5495,7 +5497,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(8.0),
                     font_weight: None,
-                    ink: None,
+                    color: None,
                     wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -5546,7 +5548,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5627,7 +5629,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -5660,7 +5662,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
-                    ink: None,
+                    color: None,
                     wrap: false,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -5721,7 +5723,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -6052,7 +6054,7 @@ layout:
                         to: Position([20.0, 6.0]),
                         stroke: Some(Stroke {
                             thickness: 0.2,
-                            color: Color::BLACK,
+                            color: DynamicValue::Literal(Color::black()),
                         }),
                         when: None,
                     }],
@@ -6086,7 +6088,7 @@ layout:
             to: Position([-3.0, 6.0]),
             stroke: Some(Stroke {
                 thickness: 0.2,
-                color: Color::BLACK,
+                color: DynamicValue::Literal(Color::black()),
             }),
             when: None,
         };
@@ -6108,7 +6110,7 @@ layout:
             ),
             font_size: FontSize::Fixed(6.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -6128,7 +6130,7 @@ layout:
                 to: Position([-0.0, 6.0]),
                 stroke: Some(Stroke {
                     thickness: 0.2,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 when: None,
             }],
@@ -6166,7 +6168,7 @@ layout:
                     ),
                     font_size: FontSize::Fixed(6.0),
                     font_weight: None,
-                    ink: None,
+                    color: None,
                     wrap: false,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
@@ -6177,7 +6179,7 @@ layout:
                     to,
                     stroke: Some(Stroke {
                         thickness: 0.2,
-                        color: Color::BLACK,
+                        color: DynamicValue::Literal(Color::black()),
                     }),
                     when: None,
                 },
@@ -6217,7 +6219,7 @@ layout:
                 to: Position([30.0, 6.0]),
                 stroke: Some(Stroke {
                     thickness: 0.2,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 when: None,
             }],
@@ -6440,7 +6442,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -6542,7 +6544,7 @@ layout:
                 },
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -7513,7 +7515,7 @@ layout:
                 },
                 stroke: Some(Stroke {
                     thickness: 1.0,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 background: None,
                 rounded: None,
@@ -7542,7 +7544,7 @@ layout:
             when: None,
             stroke: Some(Stroke {
                 thickness: 0.5,
-                color: Color::rgba(255, 0, 0, 255),
+                color: DynamicValue::Literal(Color::from_rgba(255, 0, 0, 255)),
             }),
             background: None,
             rounded: None,
@@ -7564,7 +7566,7 @@ layout:
             ),
             when: None,
             stroke: None,
-            background: Some(Color::rgba(0, 0, 128, 255)),
+            background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 128, 255))),
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
@@ -7585,9 +7587,9 @@ layout:
             when: None,
             stroke: Some(Stroke {
                 thickness: 0.2,
-                color: Color::rgba(0, 255, 0, 255),
+                color: DynamicValue::Literal(Color::from_rgba(0, 255, 0, 255)),
             }),
-            background: Some(Color::rgba(255, 255, 0, 255)),
+            background: Some(DynamicValue::Literal(Color::from_rgba(255, 255, 0, 255))),
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
@@ -7609,7 +7611,7 @@ layout:
             when: None,
             stroke: Some(Stroke {
                 thickness: 0.2,
-                color: Color::BLACK,
+                color: DynamicValue::Literal(Color::black()),
             }),
             background: None,
             rounded: Some(8.0),
@@ -7632,7 +7634,7 @@ layout:
             ),
             when: None,
             stroke: None,
-            background: Some(Color::rgba(0, 0, 0, 255)),
+            background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 0, 255))),
             rounded: Some(1.5),
             padding: Padding::ZERO,
             flow: None,
@@ -7668,7 +7670,7 @@ layout:
             to: Position([10.0, 5.0]),
             stroke: Some(Stroke {
                 thickness: 0.4,
-                color: Color::rgba(0x80, 0, 0x80, 0xff),
+                color: DynamicValue::Literal(Color::from_rgba(0x80, 0, 0x80, 0xff)),
             }),
             when: None,
         };
@@ -7700,9 +7702,9 @@ layout:
             when: None,
             stroke: Some(Stroke {
                 thickness: 0.5,
-                color: Color::BLACK,
+                color: DynamicValue::Literal(Color::black()),
             }),
-            background: Some(Color::rgba(255, 0, 0, 255)),
+            background: Some(DynamicValue::Literal(Color::from_rgba(255, 0, 0, 255))),
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
@@ -7714,7 +7716,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
@@ -8428,7 +8430,7 @@ layout:
                 max: 32.0,
             },
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: true,
             alignment: crate::models::Alignment {
                 horizontal: HorizontalAlign::Center,
@@ -8792,9 +8794,9 @@ layout:
     }
 
     #[test]
-    fn emitted_typst_source_ink_fill_and_omission() {
+    fn emitted_typst_source_color_fill_and_omission() {
         use std::str::FromStr;
-        // 1. Named ink emits fill: rgb(...) with pinned components
+        // 1. Named color emits fill: rgb(...) with pinned components (CSS Level 1 red = 255, 0, 0, 255)
         let named_item = LayoutItem::Text {
             value: "Hello".to_string(),
             placement: Placement::sized(
@@ -8803,8 +8805,8 @@ layout:
             ),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: Some(DynamicValue::Literal(
-                crate::models::Ink::from_str("red").unwrap(),
+            color: Some(DynamicValue::Literal(
+                crate::models::Color::from_str("red").unwrap(),
             )),
             wrap: false,
             alignment: Alignment::default(),
@@ -8813,11 +8815,11 @@ layout:
         };
         let src_named = render_test_items(&[named_item], (50.0, 20.0)).expect("render named");
         assert!(
-            src_named.contains("fill: rgb(255, 65, 54, 255)"),
-            "red must emit rgb(255, 65, 54, 255), got: {src_named}"
+            src_named.contains("fill: rgb(\"#ff0000ff\")"),
+            "red must emit rgb(\"#ff0000ff\"), got: {src_named}"
         );
 
-        // 2. Hex ink emits fill: rgb(...) with exact same components
+        // 2. Hex color emits fill: rgb(...) with exact same components
         let hex_item = LayoutItem::Text {
             value: "Hello".to_string(),
             placement: Placement::sized(
@@ -8826,8 +8828,8 @@ layout:
             ),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: Some(DynamicValue::Literal(
-                crate::models::Ink::from_str("#ff4136").unwrap(),
+            color: Some(DynamicValue::Literal(
+                crate::models::Color::from_str("#ff4136").unwrap(),
             )),
             wrap: false,
             alignment: Alignment::default(),
@@ -8836,12 +8838,12 @@ layout:
         };
         let src_hex = render_test_items(&[hex_item], (50.0, 20.0)).expect("render hex");
         assert!(
-            src_hex.contains("fill: rgb(255, 65, 54, 255)"),
-            "#ff4136 must emit rgb(255, 65, 54, 255), got: {src_hex}"
+            src_hex.contains("fill: rgb(\"#ff4136ff\")"),
+            "#ff4136 must emit rgb(\"#ff4136ff\"), got: {src_hex}"
         );
 
-        // 3. No ink emits no fill: argument at all
-        let no_ink_item = LayoutItem::Text {
+        // 3. No color emits no fill: argument at all
+        let no_color_item = LayoutItem::Text {
             value: "Hello".to_string(),
             placement: Placement::sized(
                 Position([0.0, 0.0]),
@@ -8849,23 +8851,137 @@ layout:
             ),
             font_size: FontSize::Fixed(10.0),
             font_weight: None,
-            ink: None,
+            color: None,
             wrap: false,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
         };
-        let src_no_ink = render_test_items(&[no_ink_item], (50.0, 20.0)).expect("render no ink");
+        let src_no_color =
+            render_test_items(&[no_color_item], (50.0, 20.0)).expect("render no color");
         assert!(
-            !src_no_ink.contains("fill:"),
-            "item with no ink must emit no fill: argument, got: {src_no_ink}"
+            !src_no_color.contains("fill:"),
+            "item with no color must emit no fill: argument, got: {src_no_color}"
         );
     }
 
     #[test]
-    fn ink_changes_no_layout_metrics() {
+    fn text_color_null_and_absent_render_black_e2e() {
+        let yaml_null = r#"
+name: ColorNullText
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "BLACK"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 14
+    color: null
+"#;
+        let template_null = crate::parse::parse_template(yaml_null).unwrap();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let data = HashMap::new();
+        let compiled_null = super::compile_label_source(&template_null, &data, None, &env).unwrap();
+        assert!(
+            !compiled_null.source.contains("fill:"),
+            "explicit color: null must emit no fill: in Typst, got: {}",
+            compiled_null.source
+        );
+
+        let png_null =
+            super::render_single_label(&template_null, &data, None, &settings, &datetime)
+                .expect("render template with color: null");
+        let img_null = image::load_from_memory(&png_null)
+            .expect("decode png")
+            .to_rgba8();
+        let dark_pixels_null = img_null
+            .pixels()
+            .filter(|p| p[0] < 200 && p[0] == p[1] && p[1] == p[2])
+            .count();
+        assert!(
+            dark_pixels_null > 0,
+            "explicit color: null must render black text glyphs"
+        );
+
+        let yaml_absent = r#"
+name: ColorAbsentText
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "BLACK"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 14
+"#;
+        let template_absent = crate::parse::parse_template(yaml_absent).unwrap();
+        let compiled_absent =
+            super::compile_label_source(&template_absent, &data, None, &env).unwrap();
+        assert!(
+            !compiled_absent.source.contains("fill:"),
+            "absent color must emit no fill: in Typst, got: {}",
+            compiled_absent.source
+        );
+
+        let png_absent =
+            super::render_single_label(&template_absent, &data, None, &settings, &datetime)
+                .expect("render template with absent color");
+        let img_absent = image::load_from_memory(&png_absent)
+            .expect("decode png")
+            .to_rgba8();
+        let dark_pixels_absent = img_absent
+            .pixels()
+            .filter(|p| p[0] < 200 && p[0] == p[1] && p[1] == p[2])
+            .count();
+        assert!(
+            dark_pixels_absent > 0,
+            "absent color must render black text glyphs"
+        );
+    }
+
+    #[test]
+    fn color_param_with_whitespace_is_rejected_at_render_time() {
+        let yaml = r#"
+name: WhiteSpaceColorParam
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: "{brand}"
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let settings = no_settings();
+        let datetime = no_datetime();
+
+        for bad_val in [" red ", " #ff0000 "] {
+            let mut data = HashMap::new();
+            data.insert("brand".to_string(), serde_json::json!(bad_val));
+            let err = super::render_single_label(&template, &data, None, &settings, &datetime)
+                .unwrap_err();
+            assert_eq!(err.reason(), Some(Reason::ColorParamInvalid.as_slug()));
+        }
+    }
+
+    #[test]
+    fn color_changes_no_layout_metrics() {
         use std::str::FromStr;
-        let make_item = |ink: Option<&str>| LayoutItem::Text {
+        let make_item = |color: Option<&str>| LayoutItem::Text {
             value: "Some longer text that might wrap or size dynamically".to_string(),
             placement: Placement::sized(
                 Position([2.0, 3.0]),
@@ -8876,7 +8992,7 @@ layout:
                 max: 24.0,
             },
             font_weight: None,
-            ink: ink.map(|s| DynamicValue::Literal(crate::models::Ink::from_str(s).unwrap())),
+            color: color.map(|s| DynamicValue::Literal(crate::models::Color::from_str(s).unwrap())),
             wrap: true,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
@@ -8894,13 +9010,13 @@ layout:
         let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
         let geometry_values = HashMap::new();
 
-        let item_no_ink = make_item(None);
+        let item_no_color = make_item(None);
         let item_red = make_item(Some("red"));
         let item_hex = make_item(Some("#0074d9"));
 
         let (measured_none, _) = ctx
             .measure_items(
-                &[item_no_ink],
+                &[item_no_color],
                 (100.0, 50.0),
                 [true, true],
                 &geometry_values,
@@ -8944,9 +9060,237 @@ layout:
     }
 
     #[test]
-    fn sheet_multi_slot_ink_rendering() {
+    fn parameter_referenced_color_renders_on_background_and_stroke() {
         let yaml = r#"
-name: SheetInk
+name: ParamShapes
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+  line_color:
+    type: string
+  palette:
+    type: enum
+    values: [red, green, blue]
+format:
+  type: single
+  width: 60
+  height: 40
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 30]
+    background: "{brand}"
+    stroke:
+      thickness: 0.3
+      color: "{brand}"
+    items:
+      - type: text
+        value: "Inside"
+        at: [5, 5]
+        size: [40, 20]
+        font_size: 10
+        color: "{palette}"
+  - type: line
+    at: [0, 35]
+    to: [50, 35]
+    stroke:
+      thickness: 0.5
+      color: "{line_color}"
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+
+        // 1. Scenario: A referenced colour renders on a shape and on a stroke (#c0392b and navy)
+        let data = HashMap::from([
+            ("brand".to_string(), serde_json::json!("#c0392b")),
+            ("line_color".to_string(), serde_json::json!("navy")),
+            ("palette".to_string(), serde_json::json!("green")),
+        ]);
+        let resolved =
+            super::resolve_parameters(&template, &data, None, Some(&settings), Some(&datetime))
+                .unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(items, (60.0, 40.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        let src = ctx
+            .render_items(items, &meas, (60.0, 40.0), &HashMap::new(), None, "layout")
+            .unwrap();
+
+        // Container background is #c0392b (#c0392bff), stroke is #c0392b (#c0392bff)
+        assert!(
+            src.contains("fill: rgb(\"#c0392bff\")"),
+            "container fill must be #c0392b, got: {src}"
+        );
+        assert!(
+            src.contains("stroke: 0.3mm + rgb(\"#c0392bff\")"),
+            "container stroke must be #c0392b, got: {src}"
+        );
+        // Line stroke is navy (#000080ff)
+        assert!(
+            src.contains("stroke: 0.5mm + rgb(\"#000080ff\")"),
+            "line stroke must be navy, got: {src}"
+        );
+        // Child text is green (#008000ff)
+        assert!(
+            src.contains("fill: rgb(\"#008000ff\")"),
+            "text fill must be green, got: {src}"
+        );
+
+        // 2. Scenario: An enum parameter drives the colour on a container background (red, green, blue)
+        let enum_yaml = r#"
+name: EnumBg
+unit: mm
+dpi: 200
+params:
+  palette:
+    type: enum
+    values: [red, green, blue]
+format: { type: single, width: 50, height: 30 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 30]
+    background: "{palette}"
+    items: []
+"#;
+        let template_enum = crate::parse::parse_template(enum_yaml).unwrap();
+        let Layout::Items(items_enum) = &template_enum.layout;
+        for (enum_val, expected_hex) in [
+            ("red", "#ff0000ff"),
+            ("green", "#008000ff"),
+            ("blue", "#0000ffff"),
+        ] {
+            let data_enum = HashMap::from([("palette".to_string(), serde_json::json!(enum_val))]);
+            let resolved_enum = super::resolve_parameters(
+                &template_enum,
+                &data_enum,
+                None,
+                Some(&settings),
+                Some(&datetime),
+            )
+            .unwrap();
+            let images_enum = std::cell::RefCell::new(super::ImageCollector::default());
+            let ctx_enum =
+                super::RenderContext::new("mm", 200, &resolved_enum.data, None, &env, &images_enum);
+            let (meas_enum, _) = ctx_enum
+                .measure_items(
+                    items_enum,
+                    (50.0, 30.0),
+                    [true, true],
+                    &HashMap::new(),
+                    "layout",
+                )
+                .unwrap();
+            let src_enum = ctx_enum
+                .render_items(
+                    items_enum,
+                    &meas_enum,
+                    (50.0, 30.0),
+                    &HashMap::new(),
+                    None,
+                    "layout",
+                )
+                .unwrap();
+            assert!(
+                src_enum.contains(&format!("fill: rgb(\"{expected_hex}\")")),
+                "enum value '{enum_val}' on container background must render {expected_hex}, got: {src_enum}"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_field_paint_equality_emitted_typst() {
+        // 1. Text item with color: red inside container with background: red emits identical paint value
+        let nested_yaml = r#"
+name: NestedRed
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 30 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 30]
+    background: red
+    items:
+      - type: text
+        value: "Red On Red"
+        at: [0, 0]
+        size: [50, 30]
+        font_size: 10
+        color: red
+"#;
+        let template = crate::parse::parse_template(nested_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let data = HashMap::new();
+        let geometry = HashMap::new();
+        let ctx = super::RenderContext::new("mm", 200, &data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(items, (50.0, 30.0), [true, true], &geometry, "layout")
+            .unwrap();
+        let src = ctx
+            .render_items(items, &meas, (50.0, 30.0), &geometry, None, "layout")
+            .unwrap();
+
+        // Both container #rect and child #text emit exact same rgb("#ff0000ff")
+        assert!(
+            src.contains("#rect(width: 50mm, height: 30mm, fill: rgb(\"#ff0000ff\")"),
+            "container rect must carry rgb(\"#ff0000ff\"), got: {src}"
+        );
+        assert!(
+            src.contains("#text(size: 10pt, fill: rgb(\"#ff0000ff\"))"),
+            "text must carry rgb(\"#ff0000ff\"), got: {src}"
+        );
+
+        // 2. CSS Level 1 colors vs rendering engine constants: red, green, gray, yellow
+        for (name, expected_hex) in [
+            ("red", "#ff0000ff"),
+            ("green", "#008000ff"),
+            ("gray", "#808080ff"),
+            ("yellow", "#ffff00ff"),
+        ] {
+            let item = LayoutItem::Text {
+                value: "Test".to_string(),
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+                ),
+                font_size: FontSize::Fixed(10.0),
+                font_weight: None,
+                color: Some(DynamicValue::Literal(name.parse().unwrap())),
+                wrap: false,
+                alignment: Alignment::default(),
+                overflow: Overflow::Ellipsis,
+                when: None,
+            };
+            let src = render_test_items(&[item], (20.0, 10.0)).unwrap();
+            assert!(
+                src.contains(&format!("fill: rgb(\"{expected_hex}\")")),
+                "name '{name}' must emit CSS value '{expected_hex}', got: {src}"
+            );
+        }
+    }
+
+    #[test]
+    fn sheet_multi_slot_color_rendering() {
+        let yaml = r#"
+name: SheetColor
 unit: mm
 dpi: 200
 format:
@@ -8959,16 +9303,27 @@ format:
     - [0, 0]
     - [25, 0]
 params:
-  color:
+  bg:
     type: string
-    default: "blue"
+  stroke_col:
+    type: string
+  txt_col:
+    type: string
 layout:
-  - type: text
-    value: "Label"
+  - type: container
     at: [0, 0]
     size: [20, 20]
-    font_size: 8
-    ink: "{color}"
+    background: "{bg}"
+    stroke:
+      thickness: 0.5
+      color: "{stroke_col}"
+    items:
+      - type: text
+        value: "Label"
+        at: [0, 0]
+        size: [20, 20]
+        font_size: 8
+        color: "{txt_col}"
 "#;
         let template = crate::parse::parse_template(yaml).unwrap();
         let Layout::Items(items) = &template.layout;
@@ -8979,48 +9334,30 @@ layout:
             datetime: &datetime,
         };
 
-        // Render slot 0 with color: "red"
-        let data_red = HashMap::from([("color".to_string(), serde_json::json!("red"))]);
-        let resolved_red =
-            super::resolve_parameters(&template, &data_red, None, Some(&settings), Some(&datetime))
-                .unwrap();
-        let images_red = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx_red =
-            super::RenderContext::new("mm", 200, &resolved_red.data, None, &env, &images_red);
-        let (meas_red, _) = ctx_red
-            .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
-            .unwrap();
-        let src_red = ctx_red
-            .render_items(
-                items,
-                &meas_red,
-                (20.0, 20.0),
-                &HashMap::new(),
-                None,
-                "layout",
-            )
-            .unwrap();
-
-        // Render slot 1 with color: "navy"
-        let data_navy = HashMap::from([("color".to_string(), serde_json::json!("navy"))]);
-        let resolved_navy = super::resolve_parameters(
+        // Render slot 0 with bg: red, stroke: yellow, txt: white
+        let data_slot0 = HashMap::from([
+            ("bg".to_string(), serde_json::json!("red")),
+            ("stroke_col".to_string(), serde_json::json!("yellow")),
+            ("txt_col".to_string(), serde_json::json!("white")),
+        ]);
+        let resolved_slot0 = super::resolve_parameters(
             &template,
-            &data_navy,
+            &data_slot0,
             None,
             Some(&settings),
             Some(&datetime),
         )
         .unwrap();
-        let images_navy = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx_navy =
-            super::RenderContext::new("mm", 200, &resolved_navy.data, None, &env, &images_navy);
-        let (meas_navy, _) = ctx_navy
+        let images_slot0 = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx_slot0 =
+            super::RenderContext::new("mm", 200, &resolved_slot0.data, None, &env, &images_slot0);
+        let (meas_slot0, _) = ctx_slot0
             .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
             .unwrap();
-        let src_navy = ctx_navy
+        let src_slot0 = ctx_slot0
             .render_items(
                 items,
-                &meas_navy,
+                &meas_slot0,
                 (20.0, 20.0),
                 &HashMap::new(),
                 None,
@@ -9028,28 +9365,69 @@ layout:
             )
             .unwrap();
 
-        // Slot 0 carries red (255, 65, 54, 255) and not navy; slot 1 carries navy (0, 31, 63, 255) and not red
+        // Render slot 1 with bg: navy, stroke: teal, txt: lime
+        let data_slot1 = HashMap::from([
+            ("bg".to_string(), serde_json::json!("navy")),
+            ("stroke_col".to_string(), serde_json::json!("teal")),
+            ("txt_col".to_string(), serde_json::json!("lime")),
+        ]);
+        let resolved_slot1 = super::resolve_parameters(
+            &template,
+            &data_slot1,
+            None,
+            Some(&settings),
+            Some(&datetime),
+        )
+        .unwrap();
+        let images_slot1 = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx_slot1 =
+            super::RenderContext::new("mm", 200, &resolved_slot1.data, None, &env, &images_slot1);
+        let (meas_slot1, _) = ctx_slot1
+            .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        let src_slot1 = ctx_slot1
+            .render_items(
+                items,
+                &meas_slot1,
+                (20.0, 20.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+
+        // Slot 0 carries red bg (#ff0000ff), yellow stroke (#ffff00ff), and white text (#ffffffff)
         assert!(
-            src_red.contains("fill: rgb(255, 65, 54, 255)"),
-            "slot 0 must carry red fill, got: {src_red}"
+            src_slot0.contains("fill: rgb(\"#ff0000ff\")"),
+            "slot 0 must carry red bg, got: {src_slot0}"
         );
         assert!(
-            !src_red.contains("fill: rgb(0, 31, 63, 255)"),
-            "slot 0 must not carry navy fill"
+            src_slot0.contains("stroke: 0.5mm + rgb(\"#ffff00ff\")"),
+            "slot 0 must carry yellow stroke, got: {src_slot0}"
         );
         assert!(
-            src_navy.contains("fill: rgb(0, 31, 63, 255)"),
-            "slot 1 must carry navy fill, got: {src_navy}"
-        );
-        assert!(
-            !src_navy.contains("fill: rgb(255, 65, 54, 255)"),
-            "slot 1 must not carry red fill"
+            src_slot0.contains("fill: rgb(\"#ffffffff\")"),
+            "slot 0 must carry white text, got: {src_slot0}"
         );
 
-        // And render_sheet_pages compiles the multi-slot sheet to PDF
+        // Slot 1 carries navy bg (#000080ff), teal stroke (#008080ff), and lime text (#00ff00ff)
+        assert!(
+            src_slot1.contains("fill: rgb(\"#000080ff\")"),
+            "slot 1 must carry navy bg, got: {src_slot1}"
+        );
+        assert!(
+            src_slot1.contains("stroke: 0.5mm + rgb(\"#008080ff\")"),
+            "slot 1 must carry teal stroke, got: {src_slot1}"
+        );
+        assert!(
+            src_slot1.contains("fill: rgb(\"#00ff00ff\")"),
+            "slot 1 must carry lime text, got: {src_slot1}"
+        );
+
+        // And render_sheet_pages compiles the multi-slot sheet with painted containers and text to PDF
         let labels = vec![
-            crate::models::LabelInput { data: data_red },
-            crate::models::LabelInput { data: data_navy },
+            crate::models::LabelInput { data: data_slot0 },
+            crate::models::LabelInput { data: data_slot1 },
         ];
         let pdf = super::render_sheet_pages(&template, &labels, 0, &settings, &datetime).unwrap();
         assert!(pdf.starts_with(b"%PDF"));

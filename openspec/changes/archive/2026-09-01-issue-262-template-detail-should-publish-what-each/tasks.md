@@ -57,8 +57,15 @@
 
 ## 8. Decision record
 
-- [x] 8.1 Write ADR-0093, "A declared default is published as it resolves", superseding in part ADR-0068's consequence that resolving a default in `GET /templates/{id}` is rejected for cacheability, and recording that the response sets no `ETag` and no `Cache-Control` so the concrete cost is one store read. Confirm the number against `docs/adr/` on `main` before writing it.
-- [x] 8.2 Add its row to `docs/adr/README.md`.
+- [~] 8.1 Write ADR-0093, "A declared default is published as it resolves". **Done, then dropped on merge.**
+  `main` froze `docs/adr/` at ADR-0091 in `8100b4f` while this change was in flight, and `AGENTS.md`
+  now reads "Do not write ADRs and do not add rows". The ADR was written and reviewed under the rule
+  in force when this change was planned, and removed when the branch merged. Its rationale, which the
+  freeze names as the better record, is `proposal.md` and `design.md` in this folder: resolving a
+  default in `GET /templates/{id}` supersedes in part ADR-0068's rejection of it on cacheability
+  grounds, and the response sets no `ETag` and no `Cache-Control`, so the concrete cost is one store
+  read.
+- [~] 8.2 Add its row to `docs/adr/README.md`. **Done, then dropped on merge**, with 8.1.
 
 ## 9. Gates
 

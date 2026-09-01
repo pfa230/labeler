@@ -850,24 +850,27 @@ pub enum Overflow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ink {
+pub struct Color {
     spelling: String,
     rgba: [u8; 4],
 }
 
-impl utoipa::PartialSchema for Ink {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{ObjectBuilder, Type};
-        ObjectBuilder::new()
-            .schema_type(Type::String)
-            .description(Some("A named colour or '#'-prefixed hex colour string"))
-            .into()
+impl Color {
+    pub fn black() -> Self {
+        Self {
+            spelling: "black".to_string(),
+            rgba: [0, 0, 0, 255],
+        }
     }
-}
 
-impl utoipa::ToSchema for Ink {}
+    #[cfg(test)]
+    pub fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Self {
+            spelling: format!("#{:02x}{:02x}{:02x}{:02x}", r, g, b, a),
+            rgba: [r, g, b, a],
+        }
+    }
 
-impl Ink {
     pub fn spelling(&self) -> &str {
         &self.spelling
     }
@@ -875,102 +878,113 @@ impl Ink {
     pub fn rgba(&self) -> [u8; 4] {
         self.rgba
     }
+
+    pub fn hex(&self) -> String {
+        format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            self.rgba[0], self.rgba[1], self.rgba[2], self.rgba[3]
+        )
+    }
 }
 
-impl std::str::FromStr for Ink {
+impl std::str::FromStr for Color {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let rgba = match s {
-            "black" => Some([0, 0, 0, 255]),
-            "gray" => Some([170, 170, 170, 255]),
-            "silver" => Some([221, 221, 221, 255]),
-            "white" => Some([255, 255, 255, 255]),
-            "navy" => Some([0, 31, 63, 255]),
-            "blue" => Some([0, 116, 217, 255]),
-            "aqua" => Some([127, 219, 255, 255]),
-            "teal" => Some([57, 204, 204, 255]),
-            "eastern" => Some([35, 157, 173, 255]),
-            "purple" => Some([177, 13, 201, 255]),
-            "fuchsia" => Some([240, 18, 190, 255]),
-            "maroon" => Some([133, 20, 75, 255]),
-            "red" => Some([255, 65, 54, 255]),
-            "orange" => Some([255, 133, 27, 255]),
-            "yellow" => Some([255, 220, 0, 255]),
-            "olive" => Some([61, 153, 112, 255]),
-            "green" => Some([46, 204, 64, 255]),
-            "lime" => Some([1, 255, 112, 255]),
-            _ => None,
-        };
-
-        if let Some(rgba) = rgba {
-            return Ok(Ink {
-                spelling: s.to_string(),
-                rgba,
-            });
+        if s.is_empty() {
+            return Err("colour cannot be empty".to_string());
         }
-
-        if let Some(hex) = s.strip_prefix('#') {
-            if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-                return Err(format!(
-                    "invalid ink '{s}': expected a named colour or '#'-prefixed hex"
-                ));
-            }
-            let parse_hex_digit = |c: u8| -> u8 {
-                match c {
-                    b'0'..=b'9' => c - b'0',
-                    b'a'..=b'f' => c - b'a' + 10,
-                    b'A'..=b'F' => c - b'A' + 10,
-                    _ => unreachable!(),
+        if let Some(hex_part) = s.strip_prefix('#') {
+            let hex_bytes = hex_part.as_bytes();
+            for &b in hex_bytes {
+                if !b.is_ascii_hexdigit() {
+                    return Err(format!("invalid hex character in colour '{s}'"));
                 }
+            }
+            let double_hex = |b: u8| -> u8 {
+                let val = match b {
+                    b'0'..=b'9' => b - b'0',
+                    b'a'..=b'f' => b - b'a' + 10,
+                    b'A'..=b'F' => b - b'A' + 10,
+                    _ => unreachable!(),
+                };
+                (val << 4) | val
             };
-            let bytes = hex.as_bytes();
-            let rgba = match bytes.len() {
+            let parse_byte = |slice: &[u8]| -> u8 {
+                let s_str = std::str::from_utf8(slice).unwrap();
+                u8::from_str_radix(s_str, 16).unwrap()
+            };
+
+            let rgba = match hex_bytes.len() {
                 3 => {
-                    let r = parse_hex_digit(bytes[0]) * 17;
-                    let g = parse_hex_digit(bytes[1]) * 17;
-                    let b = parse_hex_digit(bytes[2]) * 17;
+                    let r = double_hex(hex_bytes[0]);
+                    let g = double_hex(hex_bytes[1]);
+                    let b = double_hex(hex_bytes[2]);
                     [r, g, b, 255]
                 }
                 4 => {
-                    let r = parse_hex_digit(bytes[0]) * 17;
-                    let g = parse_hex_digit(bytes[1]) * 17;
-                    let b = parse_hex_digit(bytes[2]) * 17;
-                    let a = parse_hex_digit(bytes[3]) * 17;
+                    let r = double_hex(hex_bytes[0]);
+                    let g = double_hex(hex_bytes[1]);
+                    let b = double_hex(hex_bytes[2]);
+                    let a = double_hex(hex_bytes[3]);
                     [r, g, b, a]
                 }
                 6 => {
-                    let r = (parse_hex_digit(bytes[0]) << 4) | parse_hex_digit(bytes[1]);
-                    let g = (parse_hex_digit(bytes[2]) << 4) | parse_hex_digit(bytes[3]);
-                    let b = (parse_hex_digit(bytes[4]) << 4) | parse_hex_digit(bytes[5]);
+                    let r = parse_byte(&hex_bytes[0..2]);
+                    let g = parse_byte(&hex_bytes[2..4]);
+                    let b = parse_byte(&hex_bytes[4..6]);
                     [r, g, b, 255]
                 }
                 8 => {
-                    let r = (parse_hex_digit(bytes[0]) << 4) | parse_hex_digit(bytes[1]);
-                    let g = (parse_hex_digit(bytes[2]) << 4) | parse_hex_digit(bytes[3]);
-                    let b = (parse_hex_digit(bytes[4]) << 4) | parse_hex_digit(bytes[5]);
-                    let a = (parse_hex_digit(bytes[6]) << 4) | parse_hex_digit(bytes[7]);
+                    let r = parse_byte(&hex_bytes[0..2]);
+                    let g = parse_byte(&hex_bytes[2..4]);
+                    let b = parse_byte(&hex_bytes[4..6]);
+                    let a = parse_byte(&hex_bytes[6..8]);
                     [r, g, b, a]
                 }
                 _ => {
                     return Err(format!(
-                        "invalid ink '{s}': expected 3, 4, 6, or 8 hex digits"
+                        "invalid hex colour '{s}': expected 3, 4, 6, or 8 hexadecimal digits"
                     ))
                 }
             };
-            return Ok(Ink {
+            Ok(Color {
                 spelling: s.to_string(),
                 rgba,
-            });
+            })
+        } else {
+            let rgba = match s.to_ascii_lowercase().as_str() {
+                "black" => Some([0x00, 0x00, 0x00, 0xff]),
+                "silver" => Some([0xc0, 0xc0, 0xc0, 0xff]),
+                "gray" => Some([0x80, 0x80, 0x80, 0xff]),
+                "white" => Some([0xff, 0xff, 0xff, 0xff]),
+                "maroon" => Some([0x80, 0x00, 0x00, 0xff]),
+                "red" => Some([0xff, 0x00, 0x00, 0xff]),
+                "purple" => Some([0x80, 0x00, 0x80, 0xff]),
+                "fuchsia" => Some([0xff, 0x00, 0xff, 0xff]),
+                "green" => Some([0x00, 0x80, 0x00, 0xff]),
+                "lime" => Some([0x00, 0xff, 0x00, 0xff]),
+                "olive" => Some([0x80, 0x80, 0x00, 0xff]),
+                "yellow" => Some([0xff, 0xff, 0x00, 0xff]),
+                "navy" => Some([0x00, 0x00, 0x80, 0xff]),
+                "blue" => Some([0x00, 0x00, 0xff, 0xff]),
+                "teal" => Some([0x00, 0x80, 0x80, 0xff]),
+                "aqua" => Some([0x00, 0xff, 0xff, 0xff]),
+                _ => None,
+            };
+            if let Some(rgba) = rgba {
+                Ok(Color {
+                    spelling: s.to_string(),
+                    rgba,
+                })
+            } else {
+                Err(format!("unknown colour '{s}'"))
+            }
         }
-
-        Err(format!(
-            "invalid ink '{s}': expected a named colour or '#'-prefixed hex"
-        ))
     }
 }
 
-impl Serialize for Ink {
+impl Serialize for Color {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -979,15 +993,47 @@ impl Serialize for Ink {
     }
 }
 
-impl<'de> Deserialize<'de> for Ink {
+impl<'de> Deserialize<'de> for Color {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.parse::<Ink>().map_err(serde::de::Error::custom)
+        struct ColorVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ColorVisitor {
+            type Value = Color;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str(
+                    "a hex colour string ('#rgb', '#rgba', '#rrggbb', '#rrggbbaa') or one of the sixteen CSS Level 1 colour names",
+                )
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                v.parse::<Color>().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(ColorVisitor)
     }
 }
+
+impl utoipa::PartialSchema for Color {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, Type};
+        ObjectBuilder::new()
+            .schema_type(Type::String)
+            .description(Some(
+                "A CSS Level 1 named colour or '#'-prefixed hex colour string ('#rgb', '#rgba', '#rrggbb', '#rrggbbaa')",
+            ))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for Color {}
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1000,7 +1046,7 @@ pub enum LayoutItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         font_weight: Option<DynamicValue<u16>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        ink: Option<DynamicValue<Ink>>,
+        color: Option<DynamicValue<Color>>,
         #[serde(default)]
         wrap: bool,
         #[serde(default)]
@@ -1048,7 +1094,7 @@ pub enum LayoutItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stroke: Option<Stroke>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        background: Option<Color>,
+        background: Option<DynamicValue<Color>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rounded: Option<f32>,
         #[serde(default)]
@@ -1108,58 +1154,10 @@ impl Default for Padding {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Color {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-    pub a: u8,
-}
-
-impl Color {
-    pub const BLACK: Color = Color {
-        r: 0,
-        g: 0,
-        b: 0,
-        a: 255,
-    };
-
-    pub const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
-    }
-
-    pub fn hex(&self) -> String {
-        format!("#{:02x}{:02x}{:02x}{:02x}", self.r, self.g, self.b, self.a)
-    }
-}
-
-impl Serialize for Color {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.hex())
-    }
-}
-
-impl utoipa::PartialSchema for Color {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{ObjectBuilder, Type};
-        ObjectBuilder::new()
-            .schema_type(Type::String)
-            .description(Some("RGBA colour formatted as canonical `#rrggbbaa`"))
-            .examples([serde_json::json!("#000000ff")])
-            .build()
-            .into()
-    }
-}
-
-impl utoipa::ToSchema for Color {}
-
 #[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
 pub struct Stroke {
     pub thickness: f32,
-    pub color: Color,
+    pub color: DynamicValue<Color>,
 }
 
 #[derive(Debug, Serialize, ToSchema, Clone)]
@@ -1364,92 +1362,120 @@ mod placement_tests {
 }
 
 #[cfg(test)]
-mod ink_tests {
-    use super::Ink;
+mod color_tests {
+    use super::Color;
 
     #[test]
-    fn all_18_names_resolve_to_pinned_rgba() {
+    fn all_16_css_names_resolve_to_stated_values() {
         let cases = [
-            ("black", [0, 0, 0, 255]),
-            ("gray", [170, 170, 170, 255]),
-            ("silver", [221, 221, 221, 255]),
-            ("white", [255, 255, 255, 255]),
-            ("navy", [0, 31, 63, 255]),
-            ("blue", [0, 116, 217, 255]),
-            ("aqua", [127, 219, 255, 255]),
-            ("teal", [57, 204, 204, 255]),
-            ("eastern", [35, 157, 173, 255]),
-            ("purple", [177, 13, 201, 255]),
-            ("fuchsia", [240, 18, 190, 255]),
-            ("maroon", [133, 20, 75, 255]),
-            ("red", [255, 65, 54, 255]),
-            ("orange", [255, 133, 27, 255]),
-            ("yellow", [255, 220, 0, 255]),
-            ("olive", [61, 153, 112, 255]),
-            ("green", [46, 204, 64, 255]),
-            ("lime", [1, 255, 112, 255]),
+            ("black", [0x00, 0x00, 0x00, 0xff], "#000000ff"),
+            ("silver", [0xc0, 0xc0, 0xc0, 0xff], "#c0c0c0ff"),
+            ("gray", [0x80, 0x80, 0x80, 0xff], "#808080ff"),
+            ("white", [0xff, 0xff, 0xff, 0xff], "#ffffffff"),
+            ("maroon", [0x80, 0x00, 0x00, 0xff], "#800000ff"),
+            ("red", [0xff, 0x00, 0x00, 0xff], "#ff0000ff"),
+            ("purple", [0x80, 0x00, 0x80, 0xff], "#800080ff"),
+            ("fuchsia", [0xff, 0x00, 0xff, 0xff], "#ff00ffff"),
+            ("green", [0x00, 0x80, 0x00, 0xff], "#008000ff"),
+            ("lime", [0x00, 0xff, 0x00, 0xff], "#00ff00ff"),
+            ("olive", [0x80, 0x80, 0x00, 0xff], "#808000ff"),
+            ("yellow", [0xff, 0xff, 0x00, 0xff], "#ffff00ff"),
+            ("navy", [0x00, 0x00, 0x80, 0xff], "#000080ff"),
+            ("blue", [0x00, 0x00, 0xff, 0xff], "#0000ffff"),
+            ("teal", [0x00, 0x80, 0x80, 0xff], "#008080ff"),
+            ("aqua", [0x00, 0xff, 0xff, 0xff], "#00ffffff"),
         ];
-        assert_eq!(cases.len(), 18);
-        for (name, expected_rgba) in cases {
-            let ink: Ink = name.parse().unwrap();
-            assert_eq!(ink.spelling(), name);
-            assert_eq!(ink.rgba(), expected_rgba, "failed for name '{name}'");
+        assert_eq!(cases.len(), 16);
+        for (name, expected_rgba, canonical_hex) in cases {
+            let color: Color = name.parse().unwrap();
+            assert_eq!(color.spelling(), name);
+            assert_eq!(color.rgba(), expected_rgba, "failed for name '{name}'");
+            assert_eq!(color.hex(), canonical_hex, "failed hex for '{name}'");
         }
     }
 
     #[test]
-    fn hex_forms_and_short_forms_resolve_equal() {
-        let f00: Ink = "#f00".parse().unwrap();
-        let ff0000: Ink = "#ff0000".parse().unwrap();
-        assert_eq!(f00.rgba(), [255, 0, 0, 255]);
-        assert_eq!(ff0000.rgba(), [255, 0, 0, 255]);
-        assert_eq!(f00.rgba(), ff0000.rgba());
-
-        let f008: Ink = "#f008".parse().unwrap();
-        let ff000088: Ink = "#ff000088".parse().unwrap();
-        assert_eq!(f008.rgba(), [255, 0, 0, 136]);
-        assert_eq!(ff000088.rgba(), [255, 0, 0, 136]);
-        assert_eq!(f008.rgba(), ff000088.rgba());
+    fn names_are_case_insensitive_and_preserve_spelling() {
+        for spelling in ["red", "Red", "RED", "rEd"] {
+            let color: Color = spelling.parse().unwrap();
+            assert_eq!(color.spelling(), spelling);
+            assert_eq!(color.rgba(), [0xff, 0x00, 0x00, 0xff]);
+            assert_eq!(color.hex(), "#ff0000ff");
+        }
     }
 
     #[test]
-    fn invalid_ink_strings_are_rejected() {
+    fn hex_forms_and_short_forms_parse_with_doubling_and_alpha() {
+        let f0f: Color = "#f0f".parse().unwrap();
+        assert_eq!(f0f.spelling(), "#f0f");
+        assert_eq!(f0f.rgba(), [0xff, 0x00, 0xff, 0xff]);
+        assert_eq!(f0f.hex(), "#ff00ffff");
+
+        let f0f8: Color = "#F0F8".parse().unwrap();
+        assert_eq!(f0f8.spelling(), "#F0F8");
+        assert_eq!(f0f8.rgba(), [0xff, 0x00, 0xff, 0x88]);
+        assert_eq!(f0f8.hex(), "#ff00ff88");
+
+        let ff00ff: Color = "#ff00ff".parse().unwrap();
+        assert_eq!(ff00ff.spelling(), "#ff00ff");
+        assert_eq!(ff00ff.rgba(), [0xff, 0x00, 0xff, 0xff]);
+        assert_eq!(ff00ff.hex(), "#ff00ffff");
+
+        let ff00ff80: Color = "#FF00FF80".parse().unwrap();
+        assert_eq!(ff00ff80.spelling(), "#FF00FF80");
+        assert_eq!(ff00ff80.rgba(), [0xff, 0x00, 0xff, 0x80]);
+        assert_eq!(ff00ff80.hex(), "#ff00ff80");
+    }
+
+    #[test]
+    fn invalid_colour_strings_are_rejected() {
         let invalid = [
             "chartreuse",
-            "ff0000",
-            "#ff000",   // 5 hex digits
-            "#ff",      // 2 hex digits
-            "#f",       // 1 hex digit
-            "#1234567", // 7 hex digits
-            "#ggg",     // non-hex characters
-            "",         // empty string
-            "Red",      // uppercase named color (exact lowercase required)
+            "eastern",
+            "orange",
+            "ff00ff",
+            "#ff00f",
+            "#gg0000",
+            "",
+            " red ",
+            " #ff0000 ",
+            "#1234567",
+            "#ff",
+            "#f",
         ];
         for s in invalid {
-            assert!(s.parse::<Ink>().is_err(), "expected '{s}' to be rejected");
+            assert!(s.parse::<Color>().is_err(), "expected '{s}' to be rejected");
         }
     }
 
     #[test]
-    fn parsed_ink_serializes_back_to_exact_authored_string() {
-        let spellings = ["red", "#ff4136", "#F00", "#00000080", "#f008", "navy"];
+    fn parsed_color_serializes_back_to_exact_authored_string() {
+        let spellings = [
+            "red",
+            "Red",
+            "#ff0000",
+            "#F0F",
+            "#00000080",
+            "#f0f8",
+            "navy",
+        ];
         for spelling in spellings {
-            let ink: Ink = spelling.parse().unwrap();
-            let json = serde_json::to_string(&ink).unwrap();
+            let color: Color = spelling.parse().unwrap();
+            let json = serde_json::to_string(&color).unwrap();
             assert_eq!(json, format!("\"{spelling}\""));
 
-            let de: Ink = serde_json::from_str(&json).unwrap();
+            let de: Color = serde_json::from_str(&json).unwrap();
             assert_eq!(de.spelling(), spelling);
-            assert_eq!(de.rgba(), ink.rgba());
+            assert_eq!(de.rgba(), color.rgba());
         }
     }
 
     #[test]
     fn non_string_is_rejected_in_deserialization() {
-        assert!(serde_json::from_str::<Ink>("16711680").is_err());
-        assert!(serde_json::from_str::<Ink>("true").is_err());
-        assert!(serde_json::from_str::<Ink>("[255, 0, 0]").is_err());
-        assert!(serde_json::from_str::<Ink>("{\"r\": 255}").is_err());
+        assert!(serde_json::from_str::<Color>("16711680").is_err());
+        assert!(serde_json::from_str::<Color>("true").is_err());
+        assert!(serde_json::from_str::<Color>("[255, 0, 0]").is_err());
+        assert!(serde_json::from_str::<Color>("{\"r\": 255}").is_err());
     }
 }
 
