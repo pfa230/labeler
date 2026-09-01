@@ -1,7 +1,9 @@
-//! `docs/adr/README.md` carries the ADR catalog, and its own "Adding an ADR" step 3 says to add a
-//! row for every new record. That step was silently skipped for twenty consecutive records (#160),
-//! which is what an unenforced convention does. Checked in both directions: an unlisted record makes
-//! the index incomplete, a listed one that does not exist makes it a liar.
+//! `docs/adr/README.md` carries the ADR catalog. Adding a row for each record was a convention, and
+//! it was silently skipped for twenty consecutive records (#160), which is what an unenforced
+//! convention does. The directory is frozen now (#285), so nothing new arrives, and this guards the
+//! archive instead: a file added without a row, or a row left behind by a deleted file. Checked in
+//! both directions: an unlisted record makes the index incomplete, a listed one that does not exist
+//! makes it a liar.
 
 use std::collections::HashSet;
 

@@ -167,8 +167,8 @@ openspec doctor                            # confirms the repo's OpenSpec root i
 
 ## The output
 
-A change lands as **one commit** carrying the code, an ADR recording the decision, the updated specs,
-and the archived planning record. It closes its issue on push.
+A change lands as **one commit** carrying the code, the updated specs, and the archived planning
+record, which is where the decision and its reasoning live. It closes its issue on push.
 
 The planning record is kept rather than discarded, so for any past change the proposal, the design,
 the reviewer's objections, and their resolution remain readable.
@@ -261,7 +261,8 @@ branch when you are asked, so what is left is a decision, not an inspection.
 | --- | --- |
 | Current behavior, frozen baseline | `docs/SPEC.md` |
 | Current behavior, everything since | `openspec/specs/` |
-| Decisions and their rationale | `docs/adr/` |
+| Why a change was made | its `proposal.md` and `design.md` under `openspec/changes/archive/` |
+| Decisions taken before OpenSpec | `docs/adr/`, frozen and never extended |
 | Planning records of past changes | `openspec/changes/archive/` |
 | Template authoring guide | `docs/AUTHORING.md` |
 | Rules the agent follows | `AGENTS.md` |

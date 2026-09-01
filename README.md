@@ -90,4 +90,5 @@ cargo test
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) has the contributor workflow. [`docs/AUTHORING.md`](docs/AUTHORING.md)
 is the guide to writing templates; the full API and template spec is in [`docs/SPEC.md`](docs/SPEC.md);
-design decisions are recorded as [ADRs](docs/adr/).
+decisions taken up to 2026-08-31 are recorded as [ADRs](docs/adr/), now frozen, and everything since
+is in the change that made it, under [`openspec/`](openspec/).

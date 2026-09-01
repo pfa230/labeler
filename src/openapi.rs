@@ -16,7 +16,7 @@ use crate::{
     models::{
         BatchRequest, BatchRowError, BatchSummary, Color, Dimension, ErrorBody, ErrorResponse,
         Extent, Fit, Flow, FlowDirection, FlowOverflow, FontSize, HealthResponse, HorizontalAlign,
-        Ink, InputControl, InputSpec, LabelInput, Layout, LayoutItem, Options, Overflow,
+        InputControl, InputSpec, LabelInput, Layout, LayoutItem, Options, Overflow,
         ParamDefaultError, ParamDefaultReport, ParamSpec, ParamType, ParamValue, Placement, Point,
         Position, PrintRequest, QrParams, ReloadResponse, RenameGroupRequest, RenameGroupResponse,
         RenderLabelRequest, SheetPosition, Size, SizeValue, Stroke, TemplateDetail, TemplateFormat,
@@ -133,7 +133,6 @@ use crate::{
             SizeValue,
             Overflow,
             FontSize,
-            Ink,
             Fit,
             QrParams,
             HorizontalAlign,

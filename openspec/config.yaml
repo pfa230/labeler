@@ -22,8 +22,9 @@ context: |
   existed on 2026-08-19. It is no longer edited. New and changed behavior is specified in
   `openspec/specs/<capability-path>/spec.md`. See `rules.specs` below for the precedence rule.
 
-  Decisions. `docs/adr/` holds append-only Nygard ADRs. Every behavior change adds or supersedes an
-  ADR in the same change, and adds its row to `docs/adr/README.md`. Supersede rather than edit.
+  Decisions. `docs/adr/` is FROZEN at ADR-0091 (2026-08-31), like `docs/SPEC.md` and for the same
+  reason. Never write one and never add a row. Why a change was made belongs in its `proposal.md`
+  and `design.md`, which are kept permanently under `openspec/changes/archive/` (#285).
 
   Tracker. GitHub issues and milestones are the sole live backlog. Every change corresponds to
   exactly one open issue.
@@ -69,18 +70,13 @@ rules:
 
   design:
     - >-
-      Name the ADR this change adds or supersedes under `docs/adr/`. Every behavior change needs one.
-    - >-
-      If the change is genuinely behavior-neutral (refactor, docs, tooling), say so explicitly and
-      state why no ADR is required.
+      State the decision and why it was taken over the alternatives. This is the record: `docs/adr/`
+      is frozen and takes no new entries, so nothing else will carry the rationale.
 
   tasks:
     - >-
       Tasks are execution steps for this change only. They are not a backlog, so never park future
       work as an unchecked task. Open a GitHub issue instead.
-    - >-
-      Include a task for the ADR and its `docs/adr/README.md` index row whenever `design.md` names
-      one.
     - >-
       Include a task for `cargo fmt`, `cargo clippy --all-targets --all-features`, and `cargo test`.
 
@@ -118,10 +114,6 @@ operations:
         change's delta under `openspec/specs/`, which the reason-completeness test in `src/errors.rs`
         already accepts as documentation.
       - >-
-        Use the ADR number `design.md` names, and confirm it is still free against `docs/adr/` on the
-        current `main` before writing the file. Other changes in flight claim numbers, so the next
-        free number when the plan was written may not be free now.
-      - >-
         Stay inside the change's diff. Widening a shared parser, loosening a type, or changing
         behavior for inputs the issue never mentions is out of scope even when it makes the new code
         simpler. Keep the existing behavior and pin it with a test.
@@ -131,9 +123,6 @@ operations:
       - >-
         Always sync every delta spec into `openspec/specs/`. Never take the "archive without
         syncing" option, and never archive with unchecked tasks or incomplete artifacts.
-      - >-
-        Verify the ADR named in `design.md` exists under `docs/adr/` and has its row in
-        `docs/adr/README.md`.
       - >-
         Archive rewrites the main specs by locating each requirement by name, so a drifted name
         rewrites the wrong one. `.workflow/archive-merge-check.sh` checks that resolution at commit
@@ -149,7 +138,7 @@ operations:
         --no-interactive`, `openspec validate --archived --no-interactive`, `cargo fmt`,
         `cargo clippy --all-targets --all-features`, `cargo test`.
       - >-
-        Then make one commit covering code, ADR, main specs and the archived change, with `Fixes #N`
+        Then make one commit covering code, main specs and the archived change, with `Fixes #N`
         so the issue closes on push. This repo does not use pull requests: from the repo root run
         `git merge issue-<N>-<slug> && git push`, then `git worktree remove .worktrees/issue-<N>` and
         `git branch -d issue-<N>-<slug>`. Never force-push and never rewrite pushed history.

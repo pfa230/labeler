@@ -260,10 +260,10 @@ impl AppError {
         )
     }
 
-    pub fn ink_param_invalid(param: &str, detail: impl std::fmt::Display) -> Self {
+    pub fn color_param_invalid(param: &str, detail: impl std::fmt::Display) -> Self {
         Self::invalid_request(
-            Reason::InkParamInvalid,
-            format!("Invalid value for ink parameter '{param}': {detail}"),
+            Reason::ColorParamInvalid,
+            format!("Invalid value for color parameter '{param}': {detail}"),
         )
     }
 

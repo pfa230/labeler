@@ -220,34 +220,33 @@ pub(super) fn resolve_dynamic_value_u16(
     }
 }
 
-pub(super) fn resolve_dynamic_value_ink(
-    dyn_val: &crate::models::DynamicValue<crate::models::Ink>,
+pub(super) fn resolve_dynamic_value_color(
+    dyn_val: &crate::models::DynamicValue<crate::models::Color>,
     data: &HashMap<String, JsonValue>,
-) -> Result<crate::models::Ink, AppError> {
+) -> Result<crate::models::Color, AppError> {
     match dyn_val {
-        crate::models::DynamicValue::Literal(ink) => Ok(ink.clone()),
+        crate::models::DynamicValue::Literal(color) => Ok(color.clone()),
         crate::models::DynamicValue::Ref(name) => {
             let val = data
                 .get(name)
-                .ok_or_else(|| AppError::ink_param_invalid(name, "parameter was not supplied"))?;
+                .ok_or_else(|| AppError::color_param_invalid(name, "parameter was not supplied"))?;
             let s = match val {
                 JsonValue::String(s) => s,
                 _ => {
-                    return Err(AppError::ink_param_invalid(
+                    return Err(AppError::color_param_invalid(
                         name,
                         "expected a colour string",
                     ))
                 }
             };
-            let trimmed = s.trim();
-            if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
-                return Err(AppError::ink_param_invalid(
+            if s.starts_with('{') && s.ends_with('}') && s.len() >= 2 {
+                return Err(AppError::color_param_invalid(
                     name,
                     "references cannot be chained",
                 ));
             }
-            trimmed.parse::<crate::models::Ink>().map_err(|_| {
-                AppError::ink_param_invalid(name, format!("unrecognised colour '{s}'"))
+            s.parse::<crate::models::Color>().map_err(|_| {
+                AppError::color_param_invalid(name, format!("unrecognised colour '{s}'"))
             })
         }
     }
