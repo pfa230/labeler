@@ -539,12 +539,6 @@ impl TryFrom<RawParamSpec> for ParamSpec {
                     msg: "values is not supported on datetime parameters".to_string(),
                 });
             }
-            if raw.choices.is_some() {
-                return Err(TemplateError::Validation {
-                    path: "enum".to_string(),
-                    msg: "enum is not supported on datetime parameters".to_string(),
-                });
-            }
 
             let time = match raw.time {
                 None => false,
@@ -577,8 +571,7 @@ impl TryFrom<RawParamSpec> for ParamSpec {
 
         // `.flatten()` collapses "absent" and "written empty" back into the one `None` the domain
         // model has always had. Presence mattered only to the datetime rules above; from here the
-        // behavior for every other type is what it was before `datetime` existed. In particular
-        // `enum:` (`choices`) is still parsed and still unused: only `values:` builds an enum.
+        // behavior for every other type is what it was before `datetime` existed.
         let multiline = raw.multiline.flatten().unwrap_or(false);
         let values = raw.values.flatten().unwrap_or_default();
         let min = raw.min.flatten();
@@ -771,7 +764,6 @@ mod tests {
         assert!(try_build_param("type: datetime\nmax: 100\n").is_err());
         assert!(try_build_param("type: datetime\nmultiline: true\n").is_err());
         assert!(try_build_param("type: datetime\nvalues: [a, b]\n").is_err());
-        assert!(try_build_param("type: datetime\nenum: [a, b]\n").is_err());
         assert!(try_build_param("type: datetime\ntime:\n").is_err());
         assert!(try_build_param("type: datetime\ntime: \"invalid\"\n").is_err());
     }
@@ -810,12 +802,9 @@ mod tests {
         assert_eq!(empty.min, None);
     }
 
-    /// `enum:` is parsed so `deny_unknown_fields` accepts it and so a `datetime` parameter can
-    /// refuse it, but only `values:` builds an enum's allowed values. That was true before the
-    /// `datetime` type existed and this pins it, since widening it would change which templates
-    /// validate.
     #[test]
-    fn enum_values_come_from_values_only() {
+    fn enum_key_is_refused_as_unknown_field() {
+        // `type: enum` with `values:` still builds an enum.
         let from_values = try_build_param("type: enum\nvalues: [a, b]\n").unwrap();
         assert_eq!(
             from_values.param_type,
@@ -824,19 +813,24 @@ mod tests {
             }
         );
 
-        let from_choices = try_build_param("type: enum\nenum: [a, b]\n").unwrap();
-        assert_eq!(
-            from_choices.param_type,
-            crate::models::ParamType::Enum { values: Vec::new() }
-        );
-
-        // The documented `integer` + `enum:` pairing still parses and still leaves the type alone.
-        let integer_choices =
-            try_build_param("type: integer\ndefault: 400\nenum: [100, 400, 700]\n").unwrap();
-        assert_eq!(
-            integer_choices.param_type,
-            crate::models::ParamType::Integer
-        );
+        for yaml in [
+            "type: enum\nenum: [a, b]\n",
+            "type: integer\ndefault: 400\nenum: [100, 400, 700]\n",
+            "type: datetime\nenum: [\"2026-01-01\"]\n",
+            "type: integer\nenum:\n",
+        ] {
+            let err = serde_yaml_ng::from_str::<crate::raw::RawParamSpec>(yaml)
+                .expect_err("enum: must be refused as unknown field");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("enum"),
+                "expected error to name `enum` for {yaml:?}, got: {msg}"
+            );
+            assert!(
+                msg.contains("unknown field"),
+                "expected unknown-field error for {yaml:?}, got: {msg}"
+            );
+        }
     }
 
     #[test]

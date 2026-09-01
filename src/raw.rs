@@ -84,12 +84,6 @@ pub struct RawParamSpec {
     pub multiline: Option<Option<bool>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub values: Option<Option<Vec<String>>>,
-    #[serde(
-        default,
-        rename = "enum",
-        deserialize_with = "deserialize_present_typed"
-    )]
-    pub choices: Option<Option<Vec<serde_yaml_ng::Value>>>,
     /// Untyped on purpose: `format` is rejected on every parameter type, so any value at all must
     /// reach the pointed error message rather than a serde type error.
     #[serde(default, deserialize_with = "deserialize_present")]
