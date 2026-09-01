@@ -64,6 +64,9 @@ Nothing else needs re-running by hand. The other stops want a person to look, no
 - **6** a loop hit its round cap. Surface the findings and stop; three rounds that will not converge
   want a person, not a fourth.
 - **9** the branch run was red or never appeared. Do not merge either way.
+- **10** the fix round left the tree byte-identical to the one the previous round judged, so no
+  second verdict on the same bytes was launched. Surface the round file it names and stop: either
+  every finding was answered in prose, which only a person can accept, or none was acted on.
 - **1** a stage failed. **2** bad arguments, or the worktree is on another issue's branch.
 - **3, 4, 5, 7** from `apply.sh`; see `.claude/commands/apply.md`.
 

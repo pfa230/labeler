@@ -34,6 +34,16 @@ permanently under `openspec/changes/archive/`, and the contract lives in `opensp
 
 Also in `docs/`: `WORKFLOW.md` (how changes get made, for humans), `AUTHORING.md` (template model by worked example), `VISION.md`, `DEPLOY.md`.
 
+## Breaking changes, until 1.0
+
+Until `1.0`, a change that alters behavior breaks what came before, and that is the finished job. No
+migration, no desugaring, no deprecation window, no second spelling, and no paragraph explaining the
+one being removed. A dropped spelling becomes a parse error naming the file and the key, which
+`deny_unknown_fields` gives once the field is gone; a field read and ignored is what this forbids.
+
+Stored user data is the only exception: `store.rs:154-168` migrates the SQLite schema across
+releases, because a user's printers and tokens have no author to fix them.
+
 ## Tracking work
 
 GitHub issues and milestones are the sole live tracker. No markdown TODOs, no roadmap docs. File with
@@ -175,9 +185,25 @@ The steps below are what those stages mean. Read them to understand the loop or 
    id included; 19 such files reached 47,190 lines, against 893 lines of actual planning record in
    the worst change, and they are gone (#244).
 
-   `apply.sh` records the outcome as `diff-review.md` in the change folder, carrying `AUTHOR:`,
-   `REVIEWER:` and `VERDICT:`, with each round kept alongside as `diff-review-<n>.md`. That file is
-   what the gate reads, so a verdict living only in a transcript is a verdict nothing can check.
+   `apply.sh` records the outcome as `diff-review.md` in the change folder, carrying `AUTHORS:`,
+   `REVIEWER:`, `VERDICT:`, `ROUNDS:`, `TREE_SHA256:` and `SPECS_SHA256:`, with each round kept
+   alongside as `diff-review-<n>.md` under its own `TREE_SHA256:`. That file is what the gate reads,
+   so a verdict living only in a transcript is a verdict nothing can check.
+
+   Two of those fields say *what* was judged and *who* wrote it, because a verdict answers neither on
+   its own (#299). `TREE_SHA256:` is the digest of the worktree the approving review was handed, minus
+   `openspec/changes`; `run-stage.sh` prints it as a `tree:` line and `apply.sh` records it. `AUTHORS:`
+   is every agent whose `implement` or `gate-fix` stage actually changed that worktree, comma-separated
+   and first-written-first, read from the `authors` ledger `run-stage.sh` keeps in the change folder.
+   It is not the implementer this invocation was given: during #291 that named the last stage to run,
+   attributing six rounds of another agent's work to an agent that wrote none of it.
+
+   **`apply.sh` exits 10 rather than review the same bytes twice.** Before each review after the first
+   it compares the tree it would hand the reviewer against the `TREE_SHA256:` of the previous round,
+   read back from the round file so a restart still sees it, and stops without launching anything when
+   they match. During #291 two rounds returned opposite verdicts on a byte-identical tree and the
+   second one shipped. An implementer that answered every finding in prose lands here too, which is
+   right: whether prose answered the findings is a person's call, and no round of review can make it.
 
    **Apply ends at implementation.** It does not commit, archive, sync deltas into
    `openspec/specs/`, or move the change folder. A checked box is a claim the next reader trusts
@@ -222,7 +248,16 @@ landed, would refuse what the hook allowed.
 **Landing**, meaning the commit that carries the change's folder into
 `openspec/changes/archive/`. Checked whatever the commit touches, because there is no later moment:
 the plan verdict must pass with `AUTHOR:` and `REVIEWER:` differing, `specs/` must still match the
-digest that verdict recorded, and `diff-review.md` must pass with its own two roles differing.
+digest that verdict recorded, and `diff-review.md` must pass with a non-empty `AUTHORS:` list that its
+`REVIEWER:` appears nowhere in, and a wellformed `TREE_SHA256:`.
+
+That last field is checked for **shape only**, never against the committed tree, and the difference is
+deliberate. Three stages write after the approving review: archive moves the folder and syncs
+`openspec/specs/`, a gate fix edits `src/` whenever a lint fails, and the commit message runs after
+both. The committed tree is therefore never the reviewed tree, so a match check would refuse every
+change; and making it match would void a code approval on every clippy nit, which contradicts the rule
+that one unattended round absorbs a lint. The value is compared where the failure it guards against
+actually happens: round to round, live, in `apply.sh`.
 
 **In flight**, meaning a live folder under `openspec/changes/`. The plan checks apply, but only when
 the commit touches `src/` or `ui/src/`, so the planning and review loop itself stays writable.
@@ -395,9 +430,6 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
 - **Layout model** (`models.rs`). `layout` is a tree of `LayoutItem`s: `Text`, `Qr`, `Image`, `Line`,
   `Container`. `Container` nests `items` recursively and may carry `frame` and `padding`. Any item may
   carry `when:`, the universal conditional-visibility predicate over `params` (ADR-0056, #162).
-  Write new templates with `params` + `when`, but note the legacy top-level `options:` map and
-  `container.option` still **parse**: they desugar into an enum `params` entry and into `when`
-  (`convert.rs:284`, `convert.rs:107`). Do not treat a template using them as invalid.
 - **Coordinates.** Bottom-left origin, y-up, in the template `unit` (`mm` or `in`). Typst is top-left,
   so the renderer flips with `frame_height_units - top`. A `Container` re-bases children into its
   padded inner box via a fresh `RenderContext`. *Watch this when touching placement math.*

@@ -182,10 +182,19 @@ intent:
   contradicting its own spec is catchable.
 - **The implementation is reviewed after it is written.**
 
-An artifact is never reviewed by whoever wrote it. Both reviews record `AUTHOR:` and `REVIEWER:`, and
-the gate refuses a change where they match, so the rule is checked rather than trusted. Both are
-recorded as files, `review.md` and `diff-review.md`, because a verdict that lives only in a transcript
-is a verdict nothing can check.
+An artifact is never reviewed by whoever wrote it. The plan review records one `AUTHOR:`; the code
+review records `AUTHORS:`, every agent that actually changed the worktree, because code can pass
+through more than one pair of hands. The gate refuses a change whose reviewer appears among its
+authors, and refuses a code review that claims no author at all, so the rule is checked rather than
+trusted. Both are recorded as files, `review.md` and `diff-review.md`, because a verdict that lives
+only in a transcript is a verdict nothing can check.
+
+The code review also records `TREE_SHA256:`, the tree it judged. Without it the folder can hold a
+stack of verdicts with no way to tell which of them, if any, describes the code that shipped, and it
+once did: two rounds of one change returned opposite verdicts on an identical tree. A review is never
+launched a second time on a tree an earlier round already judged; the run stops for a person instead,
+because whether an implementer answered the findings in prose or ignored them is a judgement no
+further round can make.
 
 The body of `review.md` is the reviewer's own final message, not a summary of it. Nothing transcribes
 a review, which keeps the interested party out of the record and avoids pulling a thousand-line
