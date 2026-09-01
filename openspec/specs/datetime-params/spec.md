@@ -258,10 +258,19 @@ A `datetime` parameter accepts exactly three other attributes:
   It SHALL NOT change how a value is parsed, stored, or printed.
 - `description`: string, as on every other parameter type.
 
-`format`, `min`, `max`, `multiline`, `values` and `enum` SHALL be rejected on a `datetime` parameter,
-with a validation message naming both the parameter and the offending attribute. `format` is rejected
-because the format belongs to the token. `default` is no longer among them: it was rejected while the
-default was *defined* to be the render instant, and that definition is gone.
+`format`, `min`, `max`, `multiline` and `values` SHALL be rejected on a `datetime` parameter, with a
+validation message naming both the parameter and the offending attribute. `format` is rejected because
+the format belongs to the token. `default` is no longer among them: it was rejected while the default
+was *defined* to be the render instant, and that definition is gone. `enum` is no longer among them
+either, for a different reason: it is not an attribute of any parameter type, so it is refused before
+this list is reached.
+
+`enum:` SHALL NOT be an attribute of a `params:` entry of any type. A `params:` entry carrying it SHALL
+be refused at load as an unknown key, with an error naming the file, the offending parameter and the key
+`enum`, and the file quarantined under the `template-registry` rules while the server still starts. That
+message SHALL be the service's generic unknown-key message and SHALL NOT be type-specific: the key is
+part of no type's schema, and a pointed message would imply it is valid somewhere else. The refusal
+SHALL turn on the key being written, whatever it carries, including an explicit YAML null.
 
 `time:` SHALL be rejected on a parameter of any other type, with a validation message naming the
 parameter.
@@ -289,7 +298,7 @@ The post-change set of parameter types is below. Every row's omission behavior i
 | --- | --- | --- | --- | --- |
 | `string` | `default`, `multiline` (bool), `description` | String scalar | If `default` set: uses `default`. If no `default`: `422 MissingField` when rendered in active layout. | Text input (`multiline: false`) or textarea (`multiline: true`) |
 | `length` | `default`, `min`, `max`, `description` | Number or dimension string (`80`, `"80mm"`) | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Number input with unit suffix, or slider (if `min`/`max` provided) |
-| `integer` | `default`, `min`, `max`, `enum` (list), `description` | Integer (`400`) | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Number input / stepper / dropdown (if `enum` provided) |
+| `integer` | `default`, `min`, `max`, `description` | Integer (`400`) | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Number input / stepper |
 | `number` | `default`, `min`, `max`, `description` | Float / number (`1.5`) | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Number input with step |
 | `boolean` | `default`, `description` | `true` / `false` | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Toggle switch / checkbox |
 | `enum` | `values` (required list), `default`, `description` | String matching `values` | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Dropdown / segmented button group |
@@ -332,6 +341,29 @@ colon, no two parameters can claim the same token.
 - **WHEN** a template declares `printed_on` as `type: datetime` with `values:` written and left
   empty, so it parses as an explicit null
 - **THEN** the template fails validation with a message naming `printed_on` and `values`
+
+#### Scenario: An enum key on an enum parameter is refused rather than emptied
+
+- **WHEN** a template declares `size: { type: enum, enum: [small, large] }`
+- **THEN** the file is quarantined with an error naming the file, `size` and the unknown key `enum`,
+  and not with "enum values must not be empty"
+
+#### Scenario: An enum key on an integer parameter is refused rather than ignored
+
+- **WHEN** a template declares `weight: { type: integer, default: 400, enum: [100, 400, 700] }`
+- **THEN** the file is quarantined with an error naming the file, `weight` and the unknown key `enum`,
+  rather than loading with the key discarded
+
+#### Scenario: An enum key on a datetime parameter gets the unknown-key message
+
+- **WHEN** a template declares `printed_on: { type: datetime, enum: ["2026-01-01"] }`
+- **THEN** the file is quarantined with the same unknown-key error naming `printed_on` and `enum`,
+  and not with a message saying `enum` is unsupported on datetime parameters
+
+#### Scenario: An explicitly null enum key is refused too
+
+- **WHEN** a template declares `weight` as `type: integer` with `enum:` written and left empty
+- **THEN** the file is quarantined with the unknown-key error naming `weight` and `enum`
 
 #### Scenario: An explicitly null default is an absent default
 
