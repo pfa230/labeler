@@ -488,15 +488,22 @@ in from the container's own bottom-left corner. Sizes and edge-relative coordina
 against that inner box too.
 
 Shapes in the template model (`container` and `line`) support paint attributes:
+- **`shape: rect | ellipse | circle`**: Accepted only on `container`, defaults to `rect`.
+  `ellipse` fills the container's resolved box; `circle` is the same ellipse refused unless that
+  box is square (within `1e-4`). `rounded` is refused on `ellipse` and `circle`.
 - **`stroke: { thickness, color }`**: Accepted on any shape (`container` outline or `line`).
   `thickness` is required and must be at least 0.0001. `color` is optional and defaults to
   `black`. `stroke` itself is optional; on a `line`, omitting it draws nothing and is not an error.
+  On a `rect` container the stroke's inner edge (half the thickness inside the box) clips children,
+  so child ink reaching the border is cut inside the stroke; on `ellipse`/`circle` children clip to
+  the rectangular box and may paint over the curve.
 - **`background: <color>`**: Fills the shape's interior. Accepted only on shapes that enclose an
   area (`container`).
-- **`rounded: <radius>`**: Rounds the corners of the container's stroke and background. Numeric
-  radius in template units (e.g. `1.5` or `0.05`), which must be at least 0.0001 and is clamped at
-  render time to half the shorter side. Square corners are spelled by omitting the key; `rounded: 0`
-  is refused.
+- **`rounded: <radius>`**: Rounds the corners of the `rect` container's stroke and background and
+  clips children to the rounded rectangle. Numeric radius in template units (e.g. `1.5` or `0.05`),
+  which must be at least 0.0001 and is clamped at render time to half the shorter side. Square
+  corners are spelled by omitting the key; `rounded: 0` is refused. `rounded` is refused on
+  `ellipse` and `circle`, which have no corners and clip children to the rectangular box.
 - **Colors**: Specified on `stroke.color`, `background`, and `text.color` alike using one unified
   vocabulary (surrounding whitespace is ignored): 3-, 4-, 6-, or 8-digit hex strings (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`), one of the 16
   standard CSS Level 1 named colors (`black`, `silver`, `gray`, `white`, `maroon`, `red`, `purple`,
@@ -636,7 +643,7 @@ What to know:
 - **Packed children carry no coordinates.** Direct children of a flow container are anchorless:
   - They **must not** specify `at` or `to` (rejected at load time).
   - A `line` item cannot be a packed child (rejected at load time).
-  - They can specify `size` (`content`, `fill`, or numeric constants), `max_w`, `max_h`, `when`, and container properties (`padding`, `stroke`, `background`, `rounded`, nested `flow`).
+  - They can specify `size` (`content`, `fill`, or numeric constants), `max_w`, `max_h`, `when`, and container properties (`padding`, `shape`, `stroke`, `background`, `rounded`, nested `flow`).
 - **Gaps appear only between occupying children.** Gaps are placed between active children with positive primary extent. Gated-off children (`when`) leave no hole. Active zero-extent children (e.g. empty strings) advance nothing and add no extra gap.
 - **The two `fill` outcomes on packed children:**
   - **Alone in a container:** An uncapped `size: [fill, ...]` child stretches to the container's padded inner extent.

@@ -1,0 +1,23 @@
+name: Container Rect Rounded Corner
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [2, 2]
+    shape: rect
+    size: [46, 26]
+    rounded: 6.0
+    stroke:
+      thickness: 0.5
+      color: black
+    background: '#f8f8f8'
+    items:
+      - type: text
+        value: "Corner text"
+        at: [0, 0]
+        size: [20, 10]
+        font_size: 8

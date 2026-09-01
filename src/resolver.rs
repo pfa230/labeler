@@ -60,6 +60,11 @@ pub struct AxisSpec {
     /// classifier so no later rule has to look at [`Extent`] again to know which spelling produced
     /// the extent it is judging.
     pub written_as_to: bool,
+    /// Whether the extent is fixed by the template: the number it resolves to is written in the
+    /// template, either as a literal number or as a `to` whose corners are both non-negative or
+    /// both sign-negative. Recorded by the classifier so no later rule has to read [`Extent`]
+    /// again, and named for the property rather than for a stage.
+    pub fixed_by_template: bool,
 }
 
 impl AxisSpec {
@@ -98,16 +103,16 @@ pub fn source_of(
     match &placement.extent {
         Extent::Size(size) => {
             let sv = &size.0[axis];
-            let source = match sv {
-                SizeValue::Content => ExtentSource::Content,
-                SizeValue::Fill => ExtentSource::Frame,
-                SizeValue::Dynamic(DynamicValue::Literal(v)) => ExtentSource::Author(*v),
+            let (source, fixed_by_template) = match sv {
+                SizeValue::Content => (ExtentSource::Content, false),
+                SizeValue::Fill => (ExtentSource::Frame, false),
+                SizeValue::Dynamic(DynamicValue::Literal(v)) => (ExtentSource::Author(*v), true),
                 SizeValue::Dynamic(DynamicValue::Ref(ref_name)) => {
                     let v = geometry_values
                         .get(ref_name)
                         .copied()
                         .expect("validated parameter must have a value in geometry_values");
-                    ExtentSource::Author(v)
+                    (ExtentSource::Author(v), false)
                 }
             };
             AxisSpec {
@@ -115,6 +120,7 @@ pub fn source_of(
                 anchor,
                 inset: 0.0,
                 written_as_to: false,
+                fixed_by_template,
             }
         }
         Extent::To(to_pos) => {
@@ -133,18 +139,21 @@ pub fn source_of(
             let b = if to_sign_neg { -to_raw } else { 0.0 };
             let inset = if to_sign_neg { b } else { 0.0 };
 
-            let source = match (at_sign_neg, to_sign_neg) {
+            let (source, fixed_by_template) = match (at_sign_neg, to_sign_neg) {
                 // Both corners non-negative (slope 0, constant authored extent)
-                (false, false) => ExtentSource::Author(to_raw - at_raw),
+                (false, false) => (ExtentSource::Author(to_raw - at_raw), true),
                 // Both corners sign-negative (slope 0, constant authored extent)
-                (true, true) => ExtentSource::Author(a - b),
+                (true, true) => (ExtentSource::Author(a - b), true),
                 // at non-negative, to sign-negative (slope +1, stretches with frame)
-                (false, true) => ExtentSource::Frame,
+                (false, true) => (ExtentSource::Frame, false),
                 // at sign-negative, to non-negative (slope -1, shrinks as frame grows)
-                (true, false) => ExtentSource::ShrinkingTo {
-                    to_val: to_raw,
-                    inset_a: a,
-                },
+                (true, false) => (
+                    ExtentSource::ShrinkingTo {
+                        to_val: to_raw,
+                        inset_a: a,
+                    },
+                    false,
+                ),
             };
 
             AxisSpec {
@@ -152,6 +161,7 @@ pub fn source_of(
                 anchor,
                 inset,
                 written_as_to: true,
+                fixed_by_template,
             }
         }
     }
@@ -822,6 +832,7 @@ mod tests {
         assert_eq!(spec.anchor, Anchor::Plain(10.0));
         assert_eq!(spec.inset, 0.0);
         assert!(spec.written_as_to);
+        assert!(spec.fixed_by_template);
         assert_eq!(
             resolve(&spec, frame, available(frame, &spec), None, None),
             30.0
@@ -832,6 +843,7 @@ mod tests {
         assert_eq!(spec.source, ExtentSource::Author(8.0));
         assert_eq!(spec.anchor, Anchor::EdgeRelative(10.0));
         assert_eq!(spec.inset, 2.0);
+        assert!(spec.fixed_by_template);
         assert_eq!(
             resolve(&spec, frame, available(frame, &spec), None, None),
             8.0
@@ -842,6 +854,7 @@ mod tests {
         let spec = source_of(&to_placement([10.0, 0.0], [-2.0, 10.0]), 0, &geo);
         assert_eq!(spec.source, ExtentSource::Frame);
         assert_eq!(spec.inset, 2.0);
+        assert!(!spec.fixed_by_template);
         assert_eq!(available(frame, &spec), 88.0);
         assert_eq!(
             resolve(&spec, frame, available(frame, &spec), None, None),
@@ -859,11 +872,89 @@ mod tests {
             }
         );
         assert!(spec.is_shrinking_to());
+        assert!(!spec.fixed_by_template);
         assert_eq!(
             resolve(&spec, 45.0, available(45.0, &spec), None, None),
             5.0
         );
         assert_eq!(requirement(&spec, 5.0), 40.0);
+    }
+
+    #[test]
+    fn fixed_by_template_matches_the_spelling_table() {
+        let mut geo = HashMap::new();
+        geo.insert("w".to_string(), 12.0);
+
+        // 1. Literal number: author source, fixed by template
+        let spec = source_of(
+            &Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(12.0), SizeValue::fixed(10.0)]),
+            ),
+            0,
+            &geo,
+        );
+        assert_eq!(spec.source, ExtentSource::Author(12.0));
+        assert!(spec.fixed_by_template);
+
+        // 2. Constant to with both corners non-negative: author source, fixed by template
+        let spec = source_of(&to_placement([10.0, 0.0], [40.0, 10.0]), 0, &geo);
+        assert_eq!(spec.source, ExtentSource::Author(30.0));
+        assert!(spec.fixed_by_template);
+
+        // 3. Constant to with both corners sign-negative: author source, fixed by template
+        let spec = source_of(&to_placement([-10.0, 0.0], [-2.0, 10.0]), 0, &geo);
+        assert_eq!(spec.source, ExtentSource::Author(8.0));
+        assert!(spec.fixed_by_template);
+
+        // 4. Parameter reference: author source, NOT fixed by template
+        let spec = source_of(
+            &Placement::sized(
+                Position([0.0, 0.0]),
+                Size([
+                    SizeValue::Dynamic(DynamicValue::Ref("w".to_string())),
+                    SizeValue::fixed(10.0),
+                ]),
+            ),
+            0,
+            &geo,
+        );
+        assert_eq!(spec.source, ExtentSource::Author(12.0));
+        assert!(!spec.fixed_by_template);
+
+        // 5. Shrinking to (sign-negative at, non-negative to): ShrinkingTo, NOT fixed by template
+        let spec = source_of(&to_placement([-10.0, 0.0], [40.0, 10.0]), 0, &geo);
+        assert!(spec.is_shrinking_to());
+        assert!(!spec.fixed_by_template);
+
+        // 6. Content extent: Content source, NOT fixed by template
+        let spec = source_of(
+            &Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::Content, SizeValue::fixed(10.0)]),
+            ),
+            0,
+            &geo,
+        );
+        assert_eq!(spec.source, ExtentSource::Content);
+        assert!(!spec.fixed_by_template);
+
+        // 7. Fill extent: Frame source, NOT fixed by template
+        let spec = source_of(
+            &Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::Fill, SizeValue::fixed(10.0)]),
+            ),
+            0,
+            &geo,
+        );
+        assert_eq!(spec.source, ExtentSource::Frame);
+        assert!(!spec.fixed_by_template);
+
+        // 8. Stretching to (non-negative at, sign-negative to): Frame source, NOT fixed by template
+        let spec = source_of(&to_placement([10.0, 0.0], [-2.0, 10.0]), 0, &geo);
+        assert_eq!(spec.source, ExtentSource::Frame);
+        assert!(!spec.fixed_by_template);
     }
 
     /// A cap binds a chosen extent and is inert on one the author wrote, whichever way it was

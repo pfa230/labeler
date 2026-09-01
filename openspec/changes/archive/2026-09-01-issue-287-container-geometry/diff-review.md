@@ -1,0 +1,31 @@
+# Diff review
+
+AUTHORS: opencode
+REVIEWER: claude
+VERDICT: APPROVE
+ROUNDS: 6
+TREE_SHA256: 74ca5d6c79aadbe9bda92fb3d213cd80b1e07dd979af8dd8b102610eebc351c7
+SPECS_SHA256: 87a5c970b2c7e2420012c44ec782ce5affc8ca85480b906279e60ef41e33ff4e
+
+I reviewed the full diff against `proposal.md`, `specs/shape-paint/spec.md`, `design.md`, `tasks.md`, `ANSWERS.md`, `review.md`, `diff-review-1..5.md` and `AGENTS.md`, and ran the gates myself.
+
+**Gates, run here** [verified]: `cargo fmt --check` clean; `cargo clippy --all-targets --all-features` emits no warning or error; `cargo test` green (751 lib, 2 + 1 integration, 0 failed, 2 ignored). `specs-digest.sh` recomputes `87a5c970…`, matching `review.md:33`; `AUTHOR: claude` / `REVIEWER: codex` differ and `CHANGES_APPLIED: yes`.
+
+**Both round-5 findings are fixed** [verified]:
+1. `tasks.md:80-82` no longer claims "no artifact is produced and no print job dispatched"; it now names exactly the three assertions made at `src/lib.rs:10440-10467` (`index`, `code`, `reason`).
+2. `src/lib.rs:10628` now calls `std::fs::remove_dir_all(&dir).ok()`, matching the convention at `src/lib.rs:1099` and throughout `src/templates.rs`.
+
+## Minor
+
+**1. A packed circle dropped by `overflow: trim` is resolved at render but never checked** [verified by reading, not by execution]. The delta says "every **active** `circle` that reaches measurement **or** rendering SHALL have its resolved box checked" (`specs/shape-paint/spec.md`, the render bullet). In the flow branch of `render_items`, every active child's box is resolved by `resolve_packed` (`src/render/mod.rs:1668-1681`), but `arrange_flow` stops pushing rects at the first overflow under `FlowOverflow::Trim` (`src/resolver.rs:657-661`), and the emission loop is driven by `flow_res.rects.into_iter().zip(...)` (`src/render/mod.rs:1694-1697`), so a trimmed child never reaches `render_container_item` and never reaches the check at `src/render/mod.rs:2070-2077`. Under `FlowOverflow::Fail` the request errors first, so the gap is confined to `trim`. The *behaviour* is defensible — a trimmed circle draws nothing, so no oval ships, which is the same reasoning the delta gives for a gated-off circle — but the contract sentence over-promises for an item that is measured and not drawn. Not blocking: no wrong drawing and no wrong error results, and closing it in the contract would edit `specs/` and void a verdict the digest gate is currently satisfied by.
+
+**2. `tasks.md:88-90` (task 6.6) claims a server-level assertion that is made one layer below it.** The task reads "an unknown `shape` value leaves the template quarantined while the server still serves the others", under the heading `## 6. HTTP-level tests`. The test builds a `TemplateRegistry` from a temp dir and asserts on it directly (`src/lib.rs:10621-10627`) — no `AppState`, no request, no status code. The first half of 6.6 *is* through the endpoint (the byte-identity render comparison at `src/lib.rs:10578-10600`), and the quarantine behaviour itself is genuinely asserted; only the word "server" outruns what was exercised. `test_app_with_custom_templates` cannot express this case (`src/lib.rs:7682` unwraps `parse_template`), so hand-rolling the registry is reasonable; an app built over that registry plus a `GET /api/templates` would have closed it in three lines. Same class as rounds 3-5's blockers, but weaker: the assertion exists rather than being absent, and unlike 6.2-6.5 this task does not say "through the endpoint".
+
+**3. `tasks.md:77-79` (task 6.2) says "the same template resolving square renders"; two different templates are used.** The square case renders the `container_circle_content` fixture (`src/lib.rs:10381-10394`); the non-square case renders an inline `bad_content_circle` (`src/lib.rs:10396-10425`). Both directions are asserted through the endpoint, so the substance is covered — a static `content`-sized circle cannot resolve both ways, so "the same template" was never achievable as written.
+
+## Verified as correct
+
+`fixed_by_template` is set in `source_of` alone (`src/resolver.rs:106-155`) and matches the delta's spelling table row for row, with a unit test per row (`src/resolver.rs:883-956`). `validate_circle_containers` walks `self.layout` rather than `instantiated.layout` (`src/templates.rs:1163`), which keeps `instantiate_item_defaults` from laundering a `"{param}"` reference into a literal (`src/templates.rs:1721-1725`); the `expect` inside `source_of` is unreachable from an undeclared reference because `validate_references` (`src/templates.rs:1095`, `1588-1599`) rejects one first, and `load_geometry_values` inserts an entry for every declared param whatever its type (`src/templates.rs:1609-1623`). `resolve` ignores `cap` for an `Author` extent (`src/resolver.rs:189`), so the load-time resolve at frame 0 answers identically to render.
+
+The render check sits at the top of `render_container_item` (`src/render/mod.rs:2070-2077`) and both the flow and non-flow paths reach it through `render_single_item` after `is_item_active` filtering (`src/render/mod.rs:1654-1658, 1708, 1740`). `circle_dynamic_width_frame_sourced_extent_checked_at_final_frame` is load-bearing and pins the round-2 blocker: `DynCircle` (`size: [fill, 20]`, final width 20) renders while `DynOval` (height 60) is refused, which only holds if the check runs at the final frame rather than the `max_w` probe. The rect collapse emits one `#box` carrying fill, stroke, radius, clip and children; no `#rect` or Typst `#circle` remains anywhere in `src/`. `avery5163_asset_tag.yaml:43-50` is still the only stroked container in the repository and declares `items: []`; every other `stroke:` is on a `line` and no template sets `rounded`, so "nothing renders differently" holds. `Shape` carries `skip_serializing_if = "Shape::is_default"` (`src/models.rs:1087-1088`), matching its neighbours, so `GET /api/templates/{id}` is unchanged and `proposal.md`'s Impact stays true. `circle_box_not_square` is documented in the active delta, which is what `spec_documents_every_reason_and_invents_none` accepts (`src/errors.rs:680-684`). `docs/SPEC.md` and `docs/adr/` are untouched; `ui/src` models no layout items, so no UI change was owed.
+

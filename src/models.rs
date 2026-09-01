@@ -849,6 +849,21 @@ pub enum Overflow {
     Fail,
 }
 
+#[derive(Debug, Serialize, ToSchema, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shape {
+    #[default]
+    Rect,
+    Ellipse,
+    Circle,
+}
+
+impl Shape {
+    pub fn is_default(&self) -> bool {
+        *self == Shape::Rect
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Color {
     spelling: String,
@@ -1087,6 +1102,8 @@ pub enum LayoutItem {
         placement: Placement,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
+        #[serde(default, skip_serializing_if = "Shape::is_default")]
+        shape: Shape,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stroke: Option<Stroke>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

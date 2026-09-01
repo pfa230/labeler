@@ -1,0 +1,22 @@
+name: Container Ellipse Square
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 40
+  height: 40
+layout:
+  - type: container
+    at: [5, 5]
+    shape: ellipse
+    size: [30, 30]
+    stroke:
+      thickness: 0.5
+      color: '#006600'
+    background: '#e0ffe0'
+    items:
+      - type: text
+        value: "Square Ellipse"
+        at: [2, 10]
+        size: [26, 10]
+        font_size: 7

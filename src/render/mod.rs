@@ -5,7 +5,7 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 use crate::errors::AppError;
 use crate::models::{
     resolve_coord, DynamicDimension, Fit, LabelInput, Layout, LayoutItem, ParamSpec, Placement,
-    Point, Position, Rotation, Stroke, TemplateFormat,
+    Point, Position, Rotation, Shape, Stroke, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::TemplateContent;
@@ -1241,6 +1241,7 @@ struct SingleItemRenderArgs<'a> {
 
 struct ContainerRenderArgs<'a> {
     pub placement: &'a Placement,
+    pub shape: Shape,
     pub stroke: &'a Option<crate::models::Stroke>,
     pub background: &'a Option<crate::models::DynamicValue<crate::models::Color>>,
     pub rounded: &'a Option<f32>,
@@ -1955,6 +1956,7 @@ impl<'a> RenderContext<'a> {
             }
             LayoutItem::Container {
                 placement,
+                shape,
                 stroke,
                 background,
                 rounded,
@@ -1967,6 +1969,7 @@ impl<'a> RenderContext<'a> {
                     out,
                     ContainerRenderArgs {
                         placement,
+                        shape: *shape,
                         stroke,
                         background,
                         rounded,
@@ -2203,6 +2206,14 @@ impl<'a> RenderContext<'a> {
         out: &mut String,
         args: ContainerRenderArgs<'_>,
     ) -> Result<(), AppError> {
+        if matches!(args.shape, Shape::Circle)
+            && (args.pbox.w - args.pbox.h).abs() > crate::resolver::BOUNDS_EPSILON
+        {
+            return Err(AppError::unsupported_layout_item(
+                Reason::CircleBoxNotSquare,
+                format!("circle container at '{}' is not square", args.path),
+            ));
+        }
         let rotation = crate::resolver::rotation_of(args.placement);
 
         let top = args.pbox.y + args.pbox.h;
@@ -2240,56 +2251,72 @@ impl<'a> RenderContext<'a> {
             self.wrap_rotation(inner, args.placement.rotate)
         };
 
-        if args.stroke.is_some() || args.background.is_some() {
-            let fill = match args.background {
-                Some(bg) => {
-                    let resolved_bg = resolve_dynamic_value_color(bg, self.data)?;
-                    format!("rgb(\"{}\")", resolved_bg.hex())
-                }
-                None => "none".to_string(),
-            };
-            let stroke = match args.stroke {
-                Some(st) => {
-                    let thickness = format_length(st.thickness, self.unit)?;
-                    let resolved_st_color = resolve_dynamic_value_color(&st.color, self.data)?;
-                    let color = format!("rgb(\"{}\")", resolved_st_color.hex());
-                    format!("{thickness} + {color}")
-                }
-                None => "none".to_string(),
-            };
-            let radius = match args.rounded {
-                Some(r) => {
-                    let max_radius = args.pbox.w.min(args.pbox.h) / 2.0;
-                    let clamped = r.min(max_radius);
-                    format_length(clamped, self.unit)?
-                }
-                None => format_length(0.0, self.unit)?,
-            };
-            let frame_content = format!(
-                "#rect(width: {box_width}, height: {box_height}, fill: {fill}, stroke: {stroke}, radius: {radius})"
-            );
-            writeln!(
-                out,
-                "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
-            )
-            .map_err(|err| {
-                AppError::render_failed(
-                    Reason::TypstSourceBuildFailed,
-                    format!("failed to build typst source: {err}"),
-                )
-            })?;
-        }
+        let fill = match args.background {
+            Some(bg) => {
+                let resolved_bg = resolve_dynamic_value_color(bg, self.data)?;
+                format!("rgb(\"{}\")", resolved_bg.hex())
+            }
+            None => "none".to_string(),
+        };
+        let stroke = match args.stroke {
+            Some(st) => {
+                let thickness = format_length(st.thickness, self.unit)?;
+                let resolved_st_color = resolve_dynamic_value_color(&st.color, self.data)?;
+                let color = format!("rgb(\"{}\")", resolved_st_color.hex());
+                format!("{thickness} + {color}")
+            }
+            None => "none".to_string(),
+        };
 
-        writeln!(
-            out,
-            "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{rotated}]]"
-        )
-        .map_err(|err| {
-            AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            )
-        })?;
+        match args.shape {
+            Shape::Rect => {
+                let radius = match args.rounded {
+                    Some(r) => {
+                        let max_radius = args.pbox.w.min(args.pbox.h) / 2.0;
+                        let clamped = r.min(max_radius);
+                        format_length(clamped, self.unit)?
+                    }
+                    None => format_length(0.0, self.unit)?,
+                };
+                writeln!(
+                    out,
+                    "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, fill: {fill}, stroke: {stroke}, radius: {radius}, clip: true)[{rotated}]]"
+                )
+                .map_err(|err| {
+                    AppError::render_failed(
+                        Reason::TypstSourceBuildFailed,
+                        format!("failed to build typst source: {err}"),
+                    )
+                })?;
+            }
+            Shape::Ellipse | Shape::Circle => {
+                if args.stroke.is_some() || args.background.is_some() {
+                    let frame_content = format!(
+                        "#ellipse(width: {box_width}, height: {box_height}, fill: {fill}, stroke: {stroke})"
+                    );
+                    writeln!(
+                        out,
+                        "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
+                    )
+                    .map_err(|err| {
+                        AppError::render_failed(
+                            Reason::TypstSourceBuildFailed,
+                            format!("failed to build typst source: {err}"),
+                        )
+                    })?;
+                }
+                writeln!(
+                    out,
+                    "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{rotated}]]"
+                )
+                .map_err(|err| {
+                    AppError::render_failed(
+                        Reason::TypstSourceBuildFailed,
+                        format!("failed to build typst source: {err}"),
+                    )
+                })?;
+            }
+        }
 
         Ok(())
     }
@@ -2339,7 +2366,8 @@ mod tests {
     use crate::models::{
         Alignment, Color, Dimension, DynamicDimension, DynamicValue, Extent, Fit, FontSize,
         HorizontalAlign, LabelInput, Layout, LayoutItem, Overflow, Padding, ParamSpec, ParamType,
-        Placement, Position, SheetPosition, Size, SizeValue, Stroke, TemplateFormat, VerticalAlign,
+        Placement, Position, Shape, SheetPosition, Size, SizeValue, Stroke, TemplateFormat,
+        VerticalAlign,
     };
     use crate::reason::Reason;
     use crate::templates::TemplateContent;
@@ -2633,6 +2661,7 @@ mod tests {
                 rotate: None,
             },
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -2876,6 +2905,7 @@ layout:
                 rotate,
             },
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -2957,6 +2987,7 @@ layout:
                 Size([SizeValue::fixed(30.0), SizeValue::content()]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -2975,6 +3006,7 @@ layout:
                 Size([SizeValue::fixed(50.0), SizeValue::content()]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -3062,6 +3094,7 @@ layout:
                 rotate: None,
             },
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -3119,6 +3152,7 @@ layout:
                     rotate: None,
                 },
                 when: None,
+                shape: Shape::Rect,
                 stroke: None,
                 background: None,
                 rounded: None,
@@ -3136,6 +3170,7 @@ layout:
                         rotate: None,
                     },
                     when: None,
+                    shape: Shape::Rect,
                     stroke: None,
                     background: None,
                     rounded: None,
@@ -3457,6 +3492,7 @@ layout:
                 rotate: None,
             },
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -3479,6 +3515,7 @@ layout:
                     rotate: None,
                 },
                 when: Some(BTreeMap::from([("show".to_string(), "yes".to_string())])),
+                shape: Shape::Rect,
                 stroke: None,
                 background: None,
                 rounded: None,
@@ -3854,6 +3891,7 @@ layout:
                 rotate: None,
             },
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -3989,6 +4027,7 @@ layout:
                     rotate: None,
                 },
                 when: None,
+                shape: Shape::Rect,
                 stroke: None,
                 background: None,
                 rounded: None,
@@ -4044,6 +4083,7 @@ layout:
                     rotate: None,
                 },
                 when: None,
+                shape: Shape::Rect,
                 stroke: None,
                 background: None,
                 rounded: None,
@@ -4073,6 +4113,7 @@ layout:
                 Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.3,
                 color: DynamicValue::Literal(Color::black()),
@@ -4115,6 +4156,7 @@ layout:
                     rotate: Some(rotate),
                 },
                 when: None,
+                shape: Shape::Rect,
                 stroke: Some(Stroke {
                     thickness: 0.3,
                     color: DynamicValue::Literal(Color::black()),
@@ -4268,6 +4310,7 @@ layout:
                 rotate: Some(90.0),
             },
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: None,
@@ -4297,6 +4340,7 @@ layout:
                 rotate: Some(90.0),
             },
             when: None,
+            shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.3,
                 color: DynamicValue::Literal(Color::black()),
@@ -5033,6 +5077,7 @@ layout:
                         Size([SizeValue::fixed(29.0), SizeValue::fixed(18.0)]),
                     ),
                     when: None,
+                    shape: Shape::Rect,
                     stroke: Some(Stroke {
                         thickness: 0.2,
                         color: DynamicValue::Literal(Color::black()),
@@ -5372,6 +5417,15 @@ layout:
             "brother_24mm_qr",
             "brother_24mm_weights",
             "brother_9mm",
+            "container_circle_content",
+            "container_circle_gated",
+            "container_circle_param",
+            "container_default_rect",
+            "container_ellipse_padded",
+            "container_ellipse_square",
+            "container_ellipse_stroked_cross",
+            "container_rect_rounded_corner",
+            "container_rect_stroked_edge",
             "homebox-qr",
         ]);
         assert_eq!(
@@ -6044,6 +6098,7 @@ layout:
                         Size([SizeValue::fill(), SizeValue::fixed(12.0)]),
                     ),
                     when: None,
+                    shape: Shape::Rect,
                     stroke: None,
                     background: None,
                     rounded: None,
@@ -7513,6 +7568,7 @@ layout:
                     max_h: None,
                     rotate: Some(90.0),
                 },
+                shape: Shape::Rect,
                 stroke: Some(Stroke {
                     thickness: 1.0,
                     color: DynamicValue::Literal(Color::black()),
@@ -7528,9 +7584,9 @@ layout:
         )
         .expect("render");
         assert!(source.contains(
-            "#rect(width: 30mm, height: 10mm, fill: none, stroke: 1mm + rgb(\"#000000ff\"), radius: 0mm)"
+            "#box(width: 30mm, height: 10mm, fill: none, stroke: 1mm + rgb(\"#000000ff\"), radius: 0mm, clip: true)"
         ));
-        assert!(!source.contains("#rotate(90deg, origin: center)[#rect(width: 30mm"));
+        assert!(!source.contains("#rotate(90deg, origin: center)[#box(width: 30mm"));
     }
 
     #[test]
@@ -7542,6 +7598,7 @@ layout:
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.5,
                 color: DynamicValue::Literal(Color::from_rgba(255, 0, 0, 255)),
@@ -7554,7 +7611,7 @@ layout:
         };
         let src = render_test_items(&[stroke_only], (20.0, 10.0)).expect("render stroke only");
         assert!(
-            src.contains("#rect(width: 20mm, height: 10mm, fill: none, stroke: 0.5mm + rgb(\"#ff0000ff\"), radius: 0mm)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: none, stroke: 0.5mm + rgb(\"#ff0000ff\"), radius: 0mm, clip: true)"),
             "got: {src}"
         );
 
@@ -7565,6 +7622,7 @@ layout:
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 128, 255))),
             rounded: None,
@@ -7574,7 +7632,7 @@ layout:
         };
         let src = render_test_items(&[bg_only], (20.0, 10.0)).expect("render bg only");
         assert!(
-            src.contains("#rect(width: 20mm, height: 10mm, fill: rgb(\"#000080ff\"), stroke: none, radius: 0mm)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#000080ff\"), stroke: none, radius: 0mm, clip: true)"),
             "got: {src}"
         );
 
@@ -7585,6 +7643,7 @@ layout:
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.2,
                 color: DynamicValue::Literal(Color::from_rgba(0, 255, 0, 255)),
@@ -7597,7 +7656,7 @@ layout:
         };
         let src = render_test_items(&[both], (20.0, 10.0)).expect("render both");
         assert!(
-            src.contains("#rect(width: 20mm, height: 10mm, fill: rgb(\"#ffff00ff\"), stroke: 0.2mm + rgb(\"#00ff00ff\"), radius: 0mm)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ffff00ff\"), stroke: 0.2mm + rgb(\"#00ff00ff\"), radius: 0mm, clip: true)"),
             "got: {src}"
         );
 
@@ -7609,6 +7668,7 @@ layout:
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.2,
                 color: DynamicValue::Literal(Color::black()),
@@ -7622,7 +7682,7 @@ layout:
         let src =
             render_test_items(&[rounded_clamped], (20.0, 10.0)).expect("render rounded clamped");
         assert!(
-            src.contains("#rect(width: 20mm, height: 10mm, fill: none, stroke: 0.2mm + rgb(\"#000000ff\"), radius: 5mm)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: none, stroke: 0.2mm + rgb(\"#000000ff\"), radius: 5mm, clip: true)"),
             "got: {src}"
         );
 
@@ -7633,6 +7693,7 @@ layout:
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 0, 255))),
             rounded: Some(1.5),
@@ -7643,17 +7704,18 @@ layout:
         let src = render_test_items(&[rounded_fill_no_stroke], (20.0, 10.0))
             .expect("render rounded fill no stroke");
         assert!(
-            src.contains("#rect(width: 20mm, height: 10mm, fill: rgb(\"#000000ff\"), stroke: none, radius: 1.5mm)"),
+            src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#000000ff\"), stroke: none, radius: 1.5mm, clip: true)"),
             "got: {src}"
         );
 
-        // Container with neither (no #rect emitted)
+        // Container with neither
         let neither = LayoutItem::Container {
             placement: Placement::sized(
                 Position([0.0, 0.0]),
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: None,
             background: None,
             rounded: Some(2.0),
@@ -7663,6 +7725,10 @@ layout:
         };
         let src = render_test_items(&[neither], (20.0, 10.0)).expect("render neither");
         assert!(!src.contains("#rect"), "got: {src}");
+        assert!(
+            src.contains("#box(width: 20mm, height: 10mm, fill: none, stroke: none, radius: 2mm, clip: true)"),
+            "got: {src}"
+        );
 
         // Line with custom colour
         let line = LayoutItem::Line {
@@ -7693,13 +7759,14 @@ layout:
             render_test_items(&[strokeless_line], (20.0, 10.0)).expect("render strokeless line");
         assert!(!src_strokeless.contains("#line"), "got: {src_strokeless}");
 
-        // Draw order: background rect precedes child items in emitted Typst source
+        // Container with child holds child in single box
         let container_with_child = LayoutItem::Container {
             placement: Placement::sized(
                 Position([0.0, 0.0]),
                 Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
             ),
             when: None,
+            shape: Shape::Rect,
             stroke: Some(Stroke {
                 thickness: 0.5,
                 color: DynamicValue::Literal(Color::black()),
@@ -7725,12 +7792,520 @@ layout:
         };
         let src = render_test_items(&[container_with_child], (20.0, 10.0))
             .expect("render container with child");
-        let rect_idx = src.find("#rect").expect("rect must be emitted");
-        let child_idx = src.find("child_text").expect("child must be emitted");
+        assert!(src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ff0000ff\"), stroke: 0.5mm + rgb(\"#000000ff\"), radius: 0mm, clip: true)["));
+        assert!(src.contains("child_text"));
+    }
+
+    #[test]
+    fn circle_render_time_squareness_check() {
+        // 1. Param-dependent circle that resolves non-square fails with circle_box_not_square
+        let yaml = r#"
+name: CircleParamTest
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  w:
+    type: length
+    default: 12
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: ["{w}", 12]
+    items: []
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        assert!(template.validate().is_ok());
+
+        // When w=12, square -> success
+        let mut data_ok = HashMap::new();
+        data_ok.insert("w".to_string(), serde_json::json!(12.0));
         assert!(
-            rect_idx < child_idx,
-            "paint (#rect at {rect_idx}) must precede children (child_text at {child_idx}) in draw order, got:\n{src}"
+            render_single_label(&template, &data_ok, None, &no_settings(), &no_datetime()).is_ok()
         );
+
+        // When w=14, not square -> 422 circle_box_not_square
+        let mut data_bad = HashMap::new();
+        data_bad.insert("w".to_string(), serde_json::json!(14.0));
+        let err = render_single_label(&template, &data_bad, None, &no_settings(), &no_datetime())
+            .unwrap_err();
+        assert_eq!(err.reason(), Some("circle_box_not_square"));
+        assert_eq!(err.status(), 422);
+        assert!(err.message_text().contains("layout[0]"));
+
+        // 2. Inactive non-square circle (when is false) succeeds
+        let yaml_when = r#"
+name: CircleWhenTest
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  w:
+    type: length
+    default: 14
+  show:
+    type: enum
+    values: [yes, no]
+    default: no
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: ["{w}", 12]
+    when: { show: yes }
+    items: []
+"#;
+        let template_when = crate::parse::parse_template(yaml_when).unwrap();
+        let mut data_inactive = HashMap::new();
+        data_inactive.insert("w".to_string(), serde_json::json!(14.0));
+        data_inactive.insert("show".to_string(), serde_json::json!("no"));
+        assert!(render_single_label(
+            &template_when,
+            &data_inactive,
+            None,
+            &no_settings(),
+            &no_datetime()
+        )
+        .is_ok());
+
+        // 3. Content-derived circle that resolves non-square fails with circle_box_not_square
+        let yaml_content = r#"
+name: CircleContentTest
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: [content, content]
+    items:
+      - type: text
+        value: "Long text item"
+        at: [0, 0]
+        size: [30, 10]
+        font_size: 10
+"#;
+        let template_content = crate::parse::parse_template(yaml_content).unwrap();
+        let err = render_single_label(
+            &template_content,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("circle_box_not_square"));
+        assert!(err.message_text().contains("layout[0]"));
+
+        // 4. Batch render reports circle_box_not_square in failures for failing row while rendering valid row
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let batch_env = crate::batch::BatchEnv {
+            settings: &settings,
+            datetime: &datetime,
+            render_opts: super::ImageRenderOptions::default(),
+        };
+        let template_def = crate::templates::TemplateDefinition {
+            id: "CircleParamTest".to_string(),
+            group: None,
+            content: template,
+        };
+        let labels = vec![
+            crate::models::LabelInput { data: data_ok },
+            crate::models::LabelInput { data: data_bad },
+        ];
+        let err = crate::batch::render_batch(
+            &template_def,
+            &labels,
+            crate::batch::BatchMode::Download,
+            None,
+            0,
+            &batch_env,
+            500,
+        )
+        .unwrap_err();
+        assert_eq!(err.status(), 422);
+        assert_eq!(err.code(), "BatchInvalid");
+        let failures = &err.details().as_ref().unwrap()["failures"];
+        assert_eq!(failures[0]["index"], 1);
+        assert_eq!(failures[0]["code"], "UnsupportedLayoutItem");
+        assert_eq!(failures[0]["reason"], "circle_box_not_square");
+        assert!(failures[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("layout[0]"));
+
+        // 5. Epsilon boundary: <= 0.0001 succeeds, > 0.0001 fails
+        let yaml_eps = r#"
+name: CircleEpsTest
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  w:
+    type: length
+    default: 10
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: ["{w}", 10]
+    items: []
+"#;
+        let template_eps = crate::parse::parse_template(yaml_eps).unwrap();
+
+        let mut data_eps_ok = HashMap::new();
+        data_eps_ok.insert("w".to_string(), serde_json::json!(10.00009));
+        assert!(render_single_label(
+            &template_eps,
+            &data_eps_ok,
+            None,
+            &no_settings(),
+            &no_datetime()
+        )
+        .is_ok());
+
+        let mut data_eps_bad = HashMap::new();
+        data_eps_bad.insert("w".to_string(), serde_json::json!(10.00011));
+        let err = render_single_label(
+            &template_eps,
+            &data_eps_bad,
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("circle_box_not_square"));
+        assert!(err.message_text().contains("layout[0]"));
+    }
+
+    #[test]
+    fn container_geometry_emission_and_nesting() {
+        // 1. shape: rect emits single #box with fill, stroke, radius, clip: true
+        let rect_item = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            shape: Shape::Rect,
+            stroke: Some(Stroke {
+                thickness: 0.5,
+                color: DynamicValue::Literal(Color::black()),
+            }),
+            background: Some(DynamicValue::Literal(Color::from_rgba(255, 0, 0, 255))),
+            rounded: Some(2.0),
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src = render_test_items(&[rect_item], (20.0, 10.0)).expect("render rect");
+        assert!(src.contains("#box(width: 20mm, height: 10mm, fill: rgb(\"#ff0000ff\"), stroke: 0.5mm + rgb(\"#000000ff\"), radius: 2mm, clip: true)[]"));
+        assert!(!src.contains("#rect"));
+
+        // 2. shape: ellipse emits #ellipse then #box with clip: true (unstroked and unrounded)
+        let ellipse_item = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(30.0), SizeValue::fixed(20.0)]),
+            ),
+            when: None,
+            shape: Shape::Ellipse,
+            stroke: Some(Stroke {
+                thickness: 0.5,
+                color: DynamicValue::Literal(Color::black()),
+            }),
+            background: Some(DynamicValue::Literal(Color::from_rgba(0, 255, 0, 255))),
+            rounded: None,
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src_ellipse = render_test_items(&[ellipse_item], (30.0, 20.0)).expect("render ellipse");
+        assert!(src_ellipse.contains("#ellipse(width: 30mm, height: 20mm, fill: rgb(\"#00ff00ff\"), stroke: 0.5mm + rgb(\"#000000ff\"))"));
+        assert!(src_ellipse.contains("#box(width: 30mm, height: 20mm, clip: true)[]"));
+        assert!(
+            src_ellipse.find("#ellipse").unwrap()
+                < src_ellipse
+                    .find("#box(width: 30mm, height: 20mm, clip: true)")
+                    .unwrap(),
+            "ellipse paint must precede child box"
+        );
+
+        // 3. shape: circle emits #ellipse on a square box
+        let circle_item = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
+            ),
+            when: None,
+            shape: Shape::Circle,
+            stroke: Some(Stroke {
+                thickness: 0.5,
+                color: DynamicValue::Literal(Color::black()),
+            }),
+            background: Some(DynamicValue::Literal(Color::from_rgba(0, 0, 255, 255))),
+            rounded: None,
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src_circle = render_test_items(&[circle_item], (20.0, 20.0)).expect("render circle");
+        assert!(src_circle.contains("#ellipse(width: 20mm, height: 20mm, fill: rgb(\"#0000ffff\"), stroke: 0.5mm + rgb(\"#000000ff\"))"));
+        assert!(src_circle.contains("#box(width: 20mm, height: 20mm, clip: true)[]"));
+        assert!(!src_circle.contains("#circle"));
+        assert!(
+            src_circle.find("#ellipse").unwrap()
+                < src_circle
+                    .find("#box(width: 20mm, height: 20mm, clip: true)")
+                    .unwrap(),
+            "circle ellipse paint must precede child box"
+        );
+
+        // 4. Strokeless and fill-less ellipse emits no #ellipse, just the clip box
+        let strokeless_ellipse = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(30.0), SizeValue::fixed(20.0)]),
+            ),
+            when: None,
+            shape: Shape::Ellipse,
+            stroke: None,
+            background: None,
+            rounded: None,
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src_strokeless_el = render_test_items(&[strokeless_ellipse], (30.0, 20.0))
+            .expect("render strokeless ellipse");
+        assert!(!src_strokeless_el.contains("#ellipse"));
+        assert!(src_strokeless_el.contains("#box(width: 30mm, height: 20mm, clip: true)[]"));
+
+        // 5. Nested containers of mixed shapes compile and render to PNG
+        let yaml_nested = r#"
+name: MixedNestedShapes
+unit: mm
+dpi: 200
+format: { type: single, width: 60, height: 60 }
+layout:
+  - type: container
+    at: [0, 0]
+    shape: rect
+    size: [60, 60]
+    stroke: { thickness: 0.5, color: black }
+    background: '#f0f0f0'
+    items:
+      - type: container
+        at: [5, 5]
+        shape: circle
+        size: [50, 50]
+        stroke: { thickness: 0.5, color: blue }
+        background: '#e0e0ff'
+        items:
+          - type: container
+            at: [5, 10]
+            shape: ellipse
+            size: [40, 30]
+            stroke: { thickness: 0.5, color: red }
+            background: '#ffe0e0'
+            items:
+              - type: text
+                value: "Nested"
+                at: [5, 5]
+                size: [30, 20]
+                font_size: 8
+"#;
+        let template_nested = crate::parse::parse_template(yaml_nested).unwrap();
+        let png = render_single_label_image(
+            &template_nested,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+            super::ImageRenderOptions::default(),
+        )
+        .expect("render nested shapes png");
+        assert!(!png.is_empty());
+        assert_eq!(&png[1..4], b"PNG");
+    }
+
+    #[test]
+    fn container_fixtures_emit_expected_typst_and_pdf() {
+        fn source_for_yaml(yaml: &str) -> String {
+            let template = crate::parse::parse_template(yaml).unwrap();
+            let data: HashMap<String, serde_json::Value> = HashMap::new();
+            let settings = no_settings();
+            let datetime = no_datetime();
+            let env = super::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            let compiled =
+                super::compile_label_source(&template, &data, None, &env).expect("compile");
+            compiled.source
+        }
+        fn assert_source_contains(yaml: &str, needle: &str) {
+            let src = source_for_yaml(yaml);
+            assert!(src.contains(needle), "expected {needle} in {src}");
+        }
+        // 1. Ellipse touching all four sides (46x26 in 50x30)
+        let yaml_padded =
+            std::fs::read_to_string("tests/fixtures/templates/container_ellipse_padded.yaml")
+                .unwrap();
+        assert_source_contains(&yaml_padded, "#ellipse(width: 46mm, height: 26mm");
+        // also check padded inner box present
+        let template_padded = crate::parse::parse_template(&yaml_padded).unwrap();
+        let png = render_single_label_image(
+            &template_padded,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+            super::ImageRenderOptions::default(),
+        )
+        .expect("png padded");
+        assert_eq!(&png[1..4], b"PNG");
+        let pdf = render_single_label_pdf(
+            &template_padded,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("pdf padded");
+        assert_eq!(&pdf[0..4], b"%PDF");
+
+        // 2. Square box makes ellipse a circle (30x30)
+        let yaml_square =
+            std::fs::read_to_string("tests/fixtures/templates/container_ellipse_square.yaml")
+                .unwrap();
+        assert_source_contains(&yaml_square, "#ellipse(width: 30mm, height: 30mm");
+        let template_square = crate::parse::parse_template(&yaml_square).unwrap();
+        let pdf2 = render_single_label_pdf(
+            &template_square,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("pdf square");
+        assert_eq!(&pdf2[0..4], b"%PDF");
+
+        // 3. Ellipse stroked cross – source has ellipse before box
+        let yaml_cross = std::fs::read_to_string(
+            "tests/fixtures/templates/container_ellipse_stroked_cross.yaml",
+        )
+        .unwrap();
+        let src_cross = source_for_yaml(&yaml_cross);
+        assert!(src_cross.contains("#ellipse(width: 46mm, height: 26mm"));
+        assert!(src_cross.contains("#box(width: 46mm, height: 26mm, clip: true)"));
+        assert!(
+            src_cross.find("#ellipse").unwrap()
+                < src_cross
+                    .find("#box(width: 46mm, height: 26mm, clip: true)")
+                    .unwrap()
+        );
+
+        // 4. Rect rounded corner – single box with radius and clip
+        let yaml_rounded =
+            std::fs::read_to_string("tests/fixtures/templates/container_rect_rounded_corner.yaml")
+                .unwrap();
+        assert_source_contains(&yaml_rounded, "radius: 6mm, clip: true");
+        assert_source_contains(&yaml_rounded, "#box(width: 46mm, height: 26mm");
+        assert!(!source_for_yaml(&yaml_rounded).contains("#ellipse"));
+
+        // 5. Rect stroked edge – single box with stroke, clip true
+        let yaml_edge =
+            std::fs::read_to_string("tests/fixtures/templates/container_rect_stroked_edge.yaml")
+                .unwrap();
+        assert_source_contains(&yaml_edge, "stroke: 1mm");
+        assert_source_contains(&yaml_edge, "clip: true");
+    }
+
+    #[test]
+    fn circle_dynamic_width_frame_sourced_extent_checked_at_final_frame() {
+        // Fill width under width: {min:10,max:60} – the frame follows label sizing, which is
+        // decided per render. Probing at max_w (60) would misclassify.
+        let yaml_oval = r#"
+name: DynOval
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: { min: 10, max: 60 }
+  height: 60
+layout:
+  - type: text
+    value: hi
+    at: [0, 0]
+    size: [20, 5]
+    font_size: 8
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: [fill, 60]
+    items: []
+"#;
+        let template_oval = crate::parse::parse_template(yaml_oval).unwrap();
+        // load succeeds – frame source defers to render
+        assert!(template_oval.validate().is_ok());
+        let err = render_single_label_image(
+            &template_oval,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+            super::ImageRenderOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err.reason(), Some("circle_box_not_square"));
+        assert!(err.message_text().contains("layout[1]"));
+
+        // Square counterpart – fill 20 in final 20-wide label is square and must render.
+        let yaml_circle = r#"
+name: DynCircle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: { min: 10, max: 60 }
+  height: 20
+layout:
+  - type: text
+    value: hi
+    at: [0, 0]
+    size: [20, 5]
+    font_size: 8
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: [fill, 20]
+    items: []
+"#;
+        let template_circle = crate::parse::parse_template(yaml_circle).unwrap();
+        assert!(template_circle.validate().is_ok());
+        let png = render_single_label_image(
+            &template_circle,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+            super::ImageRenderOptions::default(),
+        )
+        .expect("square circle must render");
+        assert_eq!(&png[1..4], b"PNG");
+        let pdf = render_single_label_pdf(
+            &template_circle,
+            &HashMap::new(),
+            None,
+            &no_settings(),
+            &no_datetime(),
+        )
+        .expect("square circle pdf");
+        assert_eq!(&pdf[0..4], b"%PDF");
     }
 
     #[test]
@@ -9378,10 +9953,10 @@ layout:
             .render_items(items, &meas, (50.0, 30.0), &geometry, None, "layout")
             .unwrap();
 
-        // Both container #rect and child #text emit exact same rgb("#ff0000ff")
+        // Both container #box and child #text emit exact same rgb("#ff0000ff")
         assert!(
-            src.contains("#rect(width: 50mm, height: 30mm, fill: rgb(\"#ff0000ff\")"),
-            "container rect must carry rgb(\"#ff0000ff\"), got: {src}"
+            src.contains("#box(width: 50mm, height: 30mm, fill: rgb(\"#ff0000ff\")"),
+            "container box must carry rgb(\"#ff0000ff\"), got: {src}"
         );
         assert!(
             src.contains("#text(size: 10pt, fill: rgb(\"#ff0000ff\"))"),

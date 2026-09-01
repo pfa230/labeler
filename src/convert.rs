@@ -1,8 +1,8 @@
 use crate::errors::TemplateError;
 use crate::models::{
     Color, DynamicDimension, DynamicValue, Extent, Flow, FlowDirection, FlowOverflow, Layout,
-    LayoutItem, Padding, ParamSpec, ParamType, ParamValue, Placement, Size, SizeValue, Stroke,
-    TemplateFormat,
+    LayoutItem, Padding, ParamSpec, ParamType, ParamValue, Placement, Shape, Size, SizeValue,
+    Stroke, TemplateFormat,
 };
 use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
@@ -251,6 +251,29 @@ impl ContainerRaw {
             None => None,
         };
 
+        let shape = match self.shape {
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "shape".to_string(),
+                    msg: "shape cannot be null".to_string(),
+                });
+            }
+            Some(Some(s)) => match s.as_str() {
+                "rect" => Shape::Rect,
+                "ellipse" => Shape::Ellipse,
+                "circle" => Shape::Circle,
+                _ => {
+                    return Err(TemplateError::Validation {
+                        path: "shape".to_string(),
+                        msg: format!(
+                            "unknown shape '{s}', accepted values are: rect, ellipse, circle"
+                        ),
+                    });
+                }
+            },
+            None => Shape::Rect,
+        };
+
         let background = match self.background {
             Some(None) => {
                 return Err(TemplateError::Validation {
@@ -287,6 +310,13 @@ impl ContainerRaw {
             None => None,
         };
 
+        if rounded.is_some() && matches!(shape, Shape::Ellipse | Shape::Circle) {
+            return Err(TemplateError::Validation {
+                path: "rounded".to_string(),
+                msg: "rounded is only supported on rect containers".to_string(),
+            });
+        }
+
         let is_flow = flow.is_some();
         let mut items = Vec::with_capacity(self.items.len());
         for (idx, item) in self.items.into_iter().enumerate() {
@@ -298,6 +328,7 @@ impl ContainerRaw {
         Ok(LayoutItem::Container {
             placement,
             when: self.when,
+            shape,
             stroke,
             background,
             rounded,
@@ -636,6 +667,7 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
 
 #[cfg(test)]
 mod tests {
+    use crate::models::Shape;
     use crate::raw::TemplateDefinitionRaw;
     use crate::templates::TemplateContent;
     use std::str::FromStr;
@@ -1098,5 +1130,114 @@ mod tests {
             }
             _ => panic!("expected container"),
         }
+    }
+
+    #[test]
+    fn container_shape_conversion_and_refusals() {
+        // 1. Default is rect when shape is omitted
+        let template = try_build("  - type: container\n    at: [0,0]\n    items: []\n").unwrap();
+        let crate::models::Layout::Items(items) = &template.layout;
+        if let crate::models::LayoutItem::Container { shape, .. } = &items[0] {
+            assert_eq!(*shape, Shape::Rect);
+        } else {
+            panic!("expected container");
+        }
+
+        // 2. Each accepted value parses
+        for (val, expected) in [
+            ("rect", Shape::Rect),
+            ("ellipse", Shape::Ellipse),
+            ("circle", Shape::Circle),
+        ] {
+            let yaml =
+                format!("  - type: container\n    at: [0,0]\n    shape: {val}\n    items: []\n");
+            let template = try_build(&yaml).unwrap();
+            let crate::models::Layout::Items(items) = &template.layout;
+            if let crate::models::LayoutItem::Container { shape, .. } = &items[0] {
+                assert_eq!(*shape, expected);
+            } else {
+                panic!("expected container");
+            }
+        }
+
+        // 3. polygon is refused naming value and set
+        let err =
+            try_build("  - type: container\n    at: [0,0]\n    shape: polygon\n    items: []\n")
+                .unwrap_err();
+        assert!(err.contains("layout[0].shape"), "expected path in {err}");
+        assert!(err.contains("polygon"), "expected value in {err}");
+        assert!(
+            err.contains("rect, ellipse, circle"),
+            "expected accepted set in {err}"
+        );
+
+        // 4. Rect (case-sensitive) is refused naming value and set
+        let err = try_build("  - type: container\n    at: [0,0]\n    shape: Rect\n    items: []\n")
+            .unwrap_err();
+        assert!(err.contains("layout[0].shape"), "expected path in {err}");
+        assert!(err.contains("Rect"), "expected value in {err}");
+        assert!(
+            err.contains("rect, ellipse, circle"),
+            "expected accepted set in {err}"
+        );
+
+        // 5. shape on text is refused
+        let err = try_build(
+            "  - type: text\n    value: hi\n    at: [0,0]\n    font_size: 8\n    shape: rect\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("unknown field `shape`"),
+            "expected unknown field shape in {err}"
+        );
+
+        // 6. shape on qr is refused
+        let err =
+            try_build("  - type: qr\n    value: hi\n    at: [0,0]\n    shape: rect\n").unwrap_err();
+        assert!(
+            err.contains("unknown field `shape`"),
+            "expected unknown field shape in {err}"
+        );
+
+        // 7. shape on image is refused
+        let err = try_build("  - type: image\n    name: logo\n    at: [0,0]\n    shape: rect\n")
+            .unwrap_err();
+        assert!(
+            err.contains("unknown field `shape`"),
+            "expected unknown field shape in {err}"
+        );
+
+        // 8. shape on line is refused
+        let err = try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n    shape: rect\n")
+            .unwrap_err();
+        assert!(
+            err.contains("unknown field `shape`"),
+            "expected unknown field shape in {err}"
+        );
+
+        // 9. rounded on ellipse is refused
+        let err = try_build("  - type: container\n    at: [0,0]\n    shape: ellipse\n    rounded: 1.0\n    items: []\n").unwrap_err();
+        assert!(err.contains("layout[0].rounded"), "expected path in {err}");
+        assert!(
+            err.contains("rounded is only supported on rect containers"),
+            "expected message in {err}"
+        );
+
+        // 10. rounded on circle is refused
+        let err = try_build("  - type: container\n    at: [0,0]\n    shape: circle\n    rounded: 1.0\n    items: []\n").unwrap_err();
+        assert!(err.contains("layout[0].rounded"), "expected path in {err}");
+        assert!(
+            err.contains("rounded is only supported on rect containers"),
+            "expected message in {err}"
+        );
+
+        // 11. shape null is refused
+        let err = try_build("  - type: container\n    at: [0,0]\n    shape:\n    items: []\n")
+            .unwrap_err();
+        assert!(err.contains("layout[0].shape"), "expected path in {err}");
+        assert!(
+            err.contains("shape cannot be null"),
+            "expected message in {err}"
+        );
     }
 }
