@@ -139,7 +139,18 @@ fi
 # rather not decide.
 lock=""
 if [ "$writes" = "1" ]; then
-  lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
+  # --git-DIR, not --git-common-dir. The common dir resolves to the same .git for every
+  # worktree, so one lock file served the whole repository and a writing stage anywhere
+  # blocked a writing stage everywhere - two changes on disjoint files, serialized, in a
+  # repo whose rule is one change per worktree precisely so they need not be (#294). The
+  # git dir is per worktree (.git/worktrees/<name>, and plain .git for the main checkout),
+  # so this is exactly "writing THIS tree", which is what must be exclusive.
+  #
+  # Not .agent-runs/: that directory is gitignored working state, created and deleted by
+  # this script and by whoever cleans up after a run, and a lock a passing broom can carry
+  # off protects nothing. Git's own storage is not swept, is not stageable, and exists
+  # before any stage runs.
+  lock="$(cd "$wt" && git rev-parse --path-format=absolute --git-dir)/APPLY_IN_PROGRESS"
   # noclobber makes the create atomic. Testing for the file and then writing it is two
   # steps, and two callers can both pass the test before either writes, which is exactly
   # the concurrency the lock exists to prevent. The suite provokes exactly that race, by

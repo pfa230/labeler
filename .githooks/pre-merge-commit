@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
-# Refuse merges while an apply is running (#agy-lock). git does not run pre-commit
-# for merge commits, so this is the separate hook that covers them.
+# Refuse merges while ANY apply is running (#294). git does not run pre-commit for merge
+# commits, so this is the separate hook that covers them.
+#
+# The one check that stays repository-wide, and deliberately: a merge into main happens in
+# a different worktree from the one being written, so a per-worktree lock would never see
+# it. Integrating a branch while an agent writes anywhere is the case this exists for.
+#
+# It reaches every tree through git's own registry - the common dir, then one entry per
+# linked worktree under worktrees/ - rather than by globbing .worktrees/ in the checkout.
+# That convention is where this repo puts them, not where git requires them, and a hook
+# that only sees the convention stops protecting the tree that departs from it. When the
+# glob matches nothing it stays a literal path and the test simply fails, so a repository
+# with no linked worktree needs no special case. Any held lock refuses, so which one the
+# message happens to name does not matter; it names the last for want of a reason to
+# prefer another.
 set -euo pipefail
-lock="$(git rev-parse --git-common-dir)/APPLY_IN_PROGRESS"
-[ -f "$lock" ] || exit 0
-echo "apply-lock: an agy apply is in progress ($(cat "$lock"))." >&2
+common=$(git rev-parse --path-format=absolute --git-common-dir)
+held=""
+for lock in "$common"/APPLY_IN_PROGRESS "$common"/worktrees/*/APPLY_IN_PROGRESS; do
+  if [ -f "$lock" ]; then held="$lock"; fi
+done
+[ -n "$held" ] || exit 0
+echo "apply-lock: an apply is in progress ($(cat "$held"))." >&2
 echo "apply-lock: merging is not part of the apply stage. Wait for it to finish, review the diff, then integrate deliberately." >&2
 echo "apply-lock: git has already staged this merge and left MERGE_HEAD behind. Run 'git merge --abort' now to clear it." >&2
 exit 1
