@@ -17,6 +17,11 @@
 #
 # Exit 8 = a stage wrote QUESTIONS.md and stopped rather than guess (#283). Answer them
 # in ANSWERS.md at the worktree root and re-run; every stage reads that file.
+#
+# Exit 10 = the fix round changed nothing, so the next review would judge bytes a previous
+# round already judged (#299). Nothing is launched. Either the implementer answered every
+# finding in prose, or it acted on none of them, and no round of review can tell those
+# apart; that is a person's call, which is why this stops for one.
 set -uo pipefail
 
 usage='usage: apply.sh <implementer> <reviewer> [change] [--rounds N] [--dry-run]'
@@ -99,6 +104,24 @@ fi
 stage="$here/run-stage.sh"
 . "$here/questions.sh"
 
+# run-stage.sh prints the digest of the tree it left behind, and that is the only place it
+# can be measured. Captured from stdout alone: stderr flows straight through, so nothing a
+# caller reads there moves.
+#
+# PIPESTATUS[0] rather than $?, though `set -o pipefail` above already makes the two agree
+# whenever the stage is what failed. They part when `tee` is: a full disk fails the write,
+# pipefail reports that as the pipeline's status, and apply.sh would stop saying the
+# implement failed when it did not. The stage's own status is the thing being asked for.
+run_stage() { # run_stage <run-stage.sh args...> -> run-stage.sh's own exit status
+  mkdir -p "$wt/.agent-runs"
+  "$stage" "$@" | tee "$wt/.agent-runs/apply-stage.out"
+  return "${PIPESTATUS[0]}"
+}
+tree_printed() { # tree_printed -> the digest the last stage printed, or empty
+  grep -E '^tree: [0-9a-f]{64}$' "$wt/.agent-runs/apply-stage.out" 2>/dev/null \
+    | tail -1 | sed 's/^tree:[[:space:]]*//'
+}
+
 # The first free index, so a re-run after a stop adds a round rather than overwriting
 # the record of an earlier one.
 next_round_file() { # next_round_file <dir> <prefix> -> basename
@@ -109,6 +132,21 @@ next_round_file() { # next_round_file <dir> <prefix> -> basename
 issue=$(printf '%s' "$change" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
 [ -n "$issue" ] || { echo "change name must start with issue-<N>-: $change" >&2; exit 2; }
 wt="$root/.worktrees/$issue"
+
+# The digest recorded for the newest round already on disk. Read back from the artifact
+# rather than held in a variable: a restarted apply.sh begins its round counter at 1 again,
+# and a variable would leave it with nothing to compare against (#299).
+last_round_tree() { # last_round_tree -> digest, or empty when no round has run
+  local dir="$wt/openspec/changes/$change" i=1 last=""
+  while [ -e "$dir/diff-review-$i.md" ]; do last="$dir/diff-review-$i.md"; i=$((i + 1)); done
+  [ -n "$last" ] || return 0
+  grep -E '^TREE_SHA256: [0-9a-f]{64}$' "$last" 2>/dev/null | head -1 | sed 's/^TREE_SHA256:[[:space:]]*//'
+}
+last_round_file() { # last_round_file -> basename of the newest round artifact, or empty
+  local dir="$wt/openspec/changes/$change" i=1 last=""
+  while [ -e "$dir/diff-review-$i.md" ]; do last="diff-review-$i.md"; i=$((i + 1)); done
+  printf '%s' "$last"
+}
 
 if [ "$dry_run" = "1" ]; then
   printf 'implementer: %s\nreviewer: %s\nchange: %s\nworktree: %s\nrounds: %s\n' \
@@ -136,12 +174,38 @@ ask_stop() { # ask_stop <label> <role>
 first="--resume"
 
 say "implement: $implementer"
-"$stage" implement "$implementer" "$change" $first; rc=$?
+run_stage implement "$implementer" "$change" $first; rc=$?
 ask_stop "implement ($implementer)" implement
 [ "$rc" -eq 0 ] || { echo "implement failed; stopping." >&2; exit 1; }
 
 round=1
 while :; do
+  # The tree about to be handed to the reviewer, as the stage that produced it measured it.
+  # Refusing rather than defaulting: an unreadable digest would silently disable both the
+  # repeated-tree stop below and the TREE_SHA256 the landing gate demands.
+  tree=$(tree_printed)
+  [ -n "$tree" ] || {
+    echo "the last stage printed no tree digest, so the review cannot be bound to a tree." >&2
+    echo "run-stage.sh prints one line reading 'tree: <64 hex>'; this run saw none." >&2
+    exit 1; }
+
+  # Bytes a previous round already judged are not worth a second review, and a second
+  # verdict on them is not worth trusting: during #291 two rounds returned opposite
+  # verdicts on an identical tree, and the second one shipped. run-stage.sh already warns
+  # that a handover fix round changed nothing; that warning is what this flapped past, so
+  # this stops instead, and stops BEFORE the launch, because the waste is the review.
+  prev=$(last_round_tree)
+  if [ -n "$prev" ] && [ "$prev" = "$tree" ]; then
+    prev_file=$(last_round_file)
+    next_file=$(next_round_file "$wt/openspec/changes/$change" diff-review)
+    say "the tree has not moved since $prev_file"
+    echo "$prev_file recorded TREE_SHA256: $tree, and that is still the tree." >&2
+    echo "So $next_file would be a second verdict on bytes already judged; not launching one." >&2
+    echo "Read $prev_file: either every finding was answered in prose, which a person must" >&2
+    echo "accept, or none was acted on, which is a fix round to re-run." >&2
+    exit 10
+  fi
+
   say "review $round: $reviewer"
   "$stage" review "$reviewer" "$change"
   rc=$?
@@ -175,17 +239,36 @@ while :; do
   # The canonical count is the artifact's index, not this invocation's loop counter: a
   # restart begins at 1 while the file it writes is diff-review-4.md.
   round_no=$(printf '%s' "$round_file" | sed 's/[^0-9]//g')
-  cp "$review_log" "$wt/openspec/changes/$change/$round_file" 2>/dev/null || true
+  # The tree this round judged, kept with the round that judged it. Without it the folder
+  # holds a stack of verdicts and no way to tell which of them, if any, describes the diff
+  # that shipped (#299).
+  { printf 'TREE_SHA256: %s\n\n' "$tree"
+    cat "$review_log" 2>/dev/null
+  } > "$wt/openspec/changes/$change/$round_file"
 
   case "$verdict" in
     APPROVE)
       dr="$wt/openspec/changes/$change/diff-review.md"
+      # Every agent that changed the tree, in the order they first wrote, read from the
+      # ledger run-stage.sh keeps. Not "$implementer": that names the last stage to run,
+      # which during #291 attributed six rounds of another agent's work to an agent that
+      # wrote none of it. An empty list is written as an empty list and refused by the
+      # landing gate; there is no default, because a default is the same silent pass.
+      authors=$(paste -sd, "$wt/openspec/changes/$change/authors" 2>/dev/null | sed 's/,/, /g')
+      [ -n "$authors" ] || {
+        echo "warning: no implement or gate-fix stage changed this worktree, so nothing" >&2
+        echo "claims authorship of the code. The landing gate refuses an empty AUTHORS:" >&2
+        echo "line; whoever finishes this change writes it by hand." >&2; }
       {
         printf '# Diff review\n\n'
-        printf 'AUTHOR: %s\n' "$implementer"
+        printf 'AUTHORS: %s\n' "$authors"
         printf 'REVIEWER: %s\n' "$reviewer"
         printf 'VERDICT: APPROVE\n'
         printf 'ROUNDS: %s\n' "$round_no"
+        # The tree this approval covers. Checked for shape at landing and never against the
+        # committed tree: archive, the gate fix and the commit message all write after this
+        # point, so the committed tree is never the reviewed one.
+        printf 'TREE_SHA256: %s\n' "$tree"
         # The contract this code was approved against. A later plan revision changes it,
         # and whoever reads this verdict then knows the approval no longer covers what
         # is in the folder: run-change.sh retires it on exactly that comparison.
@@ -216,7 +299,7 @@ while :; do
   # implementer started (#264). The round artifact is already on disk, inside the
   # worktree the implementer runs in.
   say "fix round $round: $implementer"
-  "$stage" implement "$implementer" "$change" --resume \
+  run_stage implement "$implementer" "$change" --resume \
     "Review findings on your implementation. They are in openspec/changes/$change/$round_file, relative to your worktree root. Read that file first; it is the whole review, and fixing every finding is the task."
   rc=$?
   ask_stop "fix round $round ($implementer)" implement

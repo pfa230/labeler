@@ -27,11 +27,17 @@ Exit codes worth naming when you report them:
 - **5** the reviewer edited files, which invalidates its verdict
 - **7** the reviewer returned no structured result, so its log is a transcript rather than a review
 - **6** still REVISE after the last round; the findings want a human, not another round
+- **10** the fix round left the tree byte-identical to the one the previous round judged, so the next
+  review would be a second verdict on bytes already judged. Nothing was launched. Read the round file
+  it names: either every finding was answered in prose, which a person accepts or rejects, or none was
+  acted on, which is a fix round to re-run.
 - **2** bad arguments, or the change could not be resolved; nothing was launched
 
 On success it has committed nothing. Archive, merge and push are separate, explicitly requested steps.
 It records the verdict as `openspec/changes/<change>/diff-review.md`, which the commit gate reads, and
-keeps each round beside it as `diff-review-<n>.md`.
+keeps each round beside it as `diff-review-<n>.md`. That record names `AUTHORS:`, every agent whose
+implement or gate-fix stage actually changed the worktree, and `TREE_SHA256:`, the tree the approving
+review was handed.
 
 If you find yourself reviewing the diff yourself, the pairing has collapsed into self-review. Say so
 instead.
