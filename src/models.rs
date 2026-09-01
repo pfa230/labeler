@@ -69,6 +69,25 @@ pub struct TemplateInputs {
     pub all: Vec<InputSpec>,
 }
 
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct ParamDefaultError {
+    pub reason: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum ParamDefaultReport {
+    Resolved { resolved: ParamValue },
+    Error { error: ParamDefaultError },
+}
+
+pub type ResolvedDefaults = BTreeMap<String, ParamDefaultReport>;
+
 #[derive(Serialize, ToSchema, Clone)]
 pub struct TemplateDetail {
     pub id: String,
@@ -85,6 +104,7 @@ pub struct TemplateDetail {
     pub version: Option<String>,
     pub inputs: TemplateInputs,
     pub variables: Vec<String>,
+    pub param_defaults: BTreeMap<String, ParamDefaultReport>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +129,8 @@ pub struct InputSpec {
     pub required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<ParamValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_error: Option<ParamDefaultError>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub values: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

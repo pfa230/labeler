@@ -776,6 +776,16 @@ pub async fn put_template(
     let registry = state.templates.load_full();
     let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
 
+    let variables = state.store().all_variables().await?;
+    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let now = chrono::Local::now();
+    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now,
+    };
+
     if let Some(existing) = registry.get(&id) {
         if create_only {
             return Err(AppError::precondition_failed(format!(
@@ -834,12 +844,14 @@ pub async fn put_template(
             .join(&resolved.target_path)
             .join(&target_filename);
         confirm_written_template(&new_registry, &id, &dest_path, &body)?;
-        let detail = new_registry.detail(&id).ok_or_else(|| {
-            AppError::render_failed(
-                Reason::TemplateMissingAfterWrite,
-                "template missing after write",
-            )
-        })?;
+        let detail = new_registry
+            .detail(&id, &variables, &dt_resolver)
+            .ok_or_else(|| {
+                AppError::render_failed(
+                    Reason::TemplateMissingAfterWrite,
+                    "template missing after write",
+                )
+            })?;
         Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
     } else {
         let group_req = query
@@ -864,12 +876,14 @@ pub async fn put_template(
                     .join(&resolved.target_path)
                     .join(&target_filename);
                 confirm_written_template(&new_registry, &id, &dest_path, &body)?;
-                let detail = new_registry.detail(&id).ok_or_else(|| {
-                    AppError::render_failed(
-                        Reason::TemplateMissingAfterWrite,
-                        "template missing after write",
-                    )
-                })?;
+                let detail = new_registry
+                    .detail(&id, &variables, &dt_resolver)
+                    .ok_or_else(|| {
+                        AppError::render_failed(
+                            Reason::TemplateMissingAfterWrite,
+                            "template missing after write",
+                        )
+                    })?;
                 Ok((axum::http::StatusCode::CREATED, Json(detail)).into_response())
             }
             Ok(PublishResult::AlreadyExists) => {
@@ -918,12 +932,14 @@ pub async fn put_template(
                     .join(&resolved.target_path)
                     .join(&target_filename);
                 confirm_written_template(&new_registry, &id, &dest_path, &body)?;
-                let detail = new_registry.detail(&id).ok_or_else(|| {
-                    AppError::render_failed(
-                        Reason::TemplateMissingAfterWrite,
-                        "template missing after write",
-                    )
-                })?;
+                let detail = new_registry
+                    .detail(&id, &variables, &dt_resolver)
+                    .ok_or_else(|| {
+                        AppError::render_failed(
+                            Reason::TemplateMissingAfterWrite,
+                            "template missing after write",
+                        )
+                    })?;
                 Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
             }
             Err(err) => {
@@ -985,6 +1001,16 @@ pub async fn update_template_group(
         .unwrap_or("")
         .to_string();
 
+    let variables = state.store().all_variables().await?;
+    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let now = chrono::Local::now();
+    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now,
+    };
+
     let target_group: Option<&str> = match group {
         None => None,
         Some(s) => {
@@ -1000,7 +1026,7 @@ pub async fn update_template_group(
         }
     };
     if existing.group.as_deref() == target_group {
-        let detail = registry.detail(&id).unwrap();
+        let detail = registry.detail(&id, &variables, &dt_resolver).unwrap();
         return Ok((axum::http::StatusCode::OK, Json(detail)).into_response());
     }
 
@@ -1053,12 +1079,14 @@ pub async fn update_template_group(
     let content_str = std::fs::read_to_string(&dest_full_path)
         .map_err(|e| AppError::render_failed(Reason::TemplateRegistryIo, e.to_string()))?;
     confirm_written_template(&new_registry, &id, &dest_full_path, &content_str)?;
-    let detail = new_registry.detail(&id).ok_or_else(|| {
-        AppError::render_failed(
-            Reason::TemplateMissingAfterWrite,
-            "template missing after move",
-        )
-    })?;
+    let detail = new_registry
+        .detail(&id, &variables, &dt_resolver)
+        .ok_or_else(|| {
+            AppError::render_failed(
+                Reason::TemplateMissingAfterWrite,
+                "template missing after move",
+            )
+        })?;
     Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
 }
 
@@ -1142,10 +1170,19 @@ pub async fn get_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<TemplateDetail>, AppError> {
+    let variables = state.store().all_variables().await?;
+    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
+    let now = chrono::Local::now();
+    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now,
+    };
     state
         .templates
         .load_full()
-        .detail(&id)
+        .detail(&id, &variables, &dt_resolver)
         .map(Json)
         .ok_or_else(|| AppError::template_not_found(id))
 }
@@ -1211,9 +1248,10 @@ pub async fn thumbnail(
         formats: &dt_formats,
         now,
     };
-    let data = template.placeholder_data(now);
-    let option = crate::render::default_option_selection(template);
     let variables = state.store().all_variables().await?;
+    let resolved_defaults = crate::render::resolve_declared_defaults(template, &variables, &dt);
+    let data = template.placeholder_data(&resolved_defaults, now);
+    let option = crate::render::default_option_selection(template);
     let png =
         crate::render::render_thumbnail_png(template, &data, option.as_ref(), &variables, &dt)?;
 
@@ -1274,10 +1312,26 @@ pub async fn template_inputs(
         .get(&id)
         .ok_or_else(|| AppError::template_not_found(id.clone()))?;
 
+    let variables = state.store().all_variables().await?;
+    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?;
     let now = chrono::Local::now();
+    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
+        formats: &dt_formats,
+        now,
+    };
+    let resolved_defaults =
+        crate::render::resolve_declared_defaults(template, &variables, &dt_resolver);
+
     let mut inputs = Vec::with_capacity(req.labels.len());
     for label in &req.labels {
-        inputs.push(template.derive_inputs_for_label(&label.data, now));
+        inputs.push(template.derive_inputs_for_label(
+            &resolved_defaults,
+            &label.data,
+            &variables,
+            &dt_resolver,
+        ));
     }
     Ok(Json(TemplateInputsResponse { inputs }))
 }

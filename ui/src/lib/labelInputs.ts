@@ -15,6 +15,17 @@ export function setOwnKey<T>(o: Record<string, T>, k: string, v: T): void {
   Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
 }
 
+export function seedDefaultValue(input: InputSpec): ParamValue {
+  if (
+    input.control === "datetime" &&
+    typeof input.default === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(input.default)
+  ) {
+    return `${input.default}T00:00`;
+  }
+  return input.default!;
+}
+
 const sortObj = (o?: Record<string, unknown>) =>
   o ? Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b))) : null;
 
