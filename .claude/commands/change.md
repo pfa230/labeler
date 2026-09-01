@@ -8,9 +8,14 @@ Scope the issue with the user, then hand it to `.workflow/run-change.sh` and rel
 
 ## 1. Scope it
 
-Read the issue: `gh issue view $1`. Ask the user about anything underspecified that would change the
-contract, the scope or the acceptance criteria. Small details you can decide, decide, and record them
-in the issue rather than asking.
+Read the issue: `gh issue view $1 --json title,body -q '"# " + .title + "\n\n" + .body'`. The
+`--json` is not optional. Bare `gh issue view` asks for the deprecated `projectCards` field and exits 1
+on the `gh` Ubuntu ships, printing no body at all, which stops the stage before it starts (#303). A
+`--json` view requests only the fields it names, so it never asks. This is also the line
+`run-change.sh:248` runs to cache the scope, so the command and the driver read the issue alike.
+
+Ask the user about anything underspecified that would change the contract, the scope or the acceptance
+criteria. Small details you can decide, decide, and record them in the issue rather than asking.
 
 Write the refined scope back with `gh issue edit $1 --body-file <file>`. That body is literally what
 the planner is given: the driver writes it to `.agent-runs/issue-$1.md` in the worktree and the propose
