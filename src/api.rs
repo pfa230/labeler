@@ -2552,8 +2552,7 @@ pub async fn print_label(
     let template = registry
         .get(&req.template)
         .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
-    let label_data = req.data.or(req.fields).unwrap_or_default();
-    let label = crate::models::LabelInput { data: label_data };
+    let label = crate::models::LabelInput { data: req.data };
     let labels = vec![label; req.copies as usize];
     run_batch(
         &state,

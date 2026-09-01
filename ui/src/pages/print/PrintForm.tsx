@@ -177,7 +177,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
         const summary = await printLabel({
           template: detail.id,
           printer,
-          fields: submittedData,
+          data: submittedData,
           copies: n,
         });
         showSummary(summary);

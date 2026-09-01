@@ -1228,13 +1228,11 @@ fn default_print_copies() -> u32 {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct PrintRequest {
     pub template: String,
     pub printer: String,
-    #[serde(default)]
-    pub data: Option<HashMap<String, serde_json::Value>>,
-    #[serde(default)]
-    pub fields: Option<HashMap<String, serde_json::Value>>,
+    pub data: HashMap<String, serde_json::Value>,
     #[serde(default = "default_print_copies")]
     pub copies: u32,
 }
