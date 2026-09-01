@@ -11,6 +11,7 @@ use crate::errors::AppError;
 use crate::reason::Reason;
 use crate::templates::validate_group_name;
 
+#[derive(Debug)]
 pub struct ResolvedGroup {
     pub target_fd: OwnedFd,
     pub target_path: PathBuf,
@@ -38,35 +39,27 @@ pub fn open_dir_handle(path: &Path) -> Result<OwnedFd, AppError> {
 
 /// List entry names in a directory handle.
 pub fn list_dir_entries(dir_fd: BorrowedFd<'_>) -> Result<Vec<String>, AppError> {
-    let fd_dup = rustix::fs::openat(
-        dir_fd,
-        ".",
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|err| {
+    let dir = rustix::fs::Dir::read_from(dir_fd).map_err(|err| {
         AppError::render_failed(
             Reason::TemplateRegistryIo,
-            format!("failed to re-open directory for listing: {err}"),
+            format!("failed to read directory entries: {err}"),
         )
     })?;
-
-    let proc_path = format!("/proc/self/fd/{}", rustix::fd::AsRawFd::as_raw_fd(&fd_dup));
     let mut names = Vec::new();
-    match std::fs::read_dir(&proc_path) {
-        Ok(read_dir) => {
-            for entry in read_dir.flatten() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    names.push(name);
-                }
-            }
-        }
-        Err(err) => {
-            return Err(AppError::render_failed(
+    for entry in dir {
+        let entry = entry.map_err(|err| {
+            AppError::render_failed(
                 Reason::TemplateRegistryIo,
                 format!("failed to read directory entries: {err}"),
-            ));
+            )
+        })?;
+        let Ok(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if name == "." || name == ".." {
+            continue;
         }
+        names.push(name.to_owned());
     }
     Ok(names)
 }
@@ -867,6 +860,24 @@ fn stage_file_in_dir(
     ))
 }
 
+/// Probe the volume containing `dir` for case sensitivity by attempting to
+/// create two directories differing only in case inside a dedicated probe
+/// subdirectory. Uses a subdirectory so a future caller probing a populated
+/// templates directory does not silently delete groups named `A` or `a`.
+/// One implementation, not three copies, because three copies drift (design Decision 8).
+#[cfg(test)]
+pub(crate) fn probe_is_case_sensitive(dir: &std::path::Path) -> bool {
+    let probe_root = dir.join(".probe_case_sensitive");
+    let _ = std::fs::remove_dir_all(&probe_root);
+    std::fs::create_dir_all(&probe_root).expect("probe mkdir");
+    let upper = probe_root.join("A");
+    let lower = probe_root.join("a");
+    std::fs::create_dir(&upper).expect("probe mkdir A");
+    let case_sensitive = std::fs::create_dir(&lower).is_ok();
+    let _ = std::fs::remove_dir_all(&probe_root);
+    case_sensitive
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -888,23 +899,45 @@ mod tests {
     #[test]
     fn exact_reuse_and_sibling_creation() {
         let dir = temp_dir();
+        let case_sensitive = probe_is_case_sensitive(&dir);
         fs::create_dir_all(dir.join("Warehouse")).unwrap();
         let root_fd = open_dir_handle(&dir).unwrap();
 
-        // Exact match finds Warehouse
+        // Exact match finds Warehouse on either volume
         assert!(check_sibling_name(root_fd.as_fd(), "Warehouse").unwrap());
-        // Exact match does not find warehouse on case-sensitive filesystem
+        // Exact byte match: list_dir_entries reports stored spelling, so
+        // "warehouse" is not an exact match even on a case-folding volume
         assert!(!check_sibling_name(root_fd.as_fd(), "warehouse").unwrap());
 
         // resolve_or_create_group reuses Warehouse
         let res = resolve_or_create_group(root_fd.as_fd(), Some("Warehouse"), false).unwrap();
         assert!(res.created_dirs.is_empty());
 
-        // resolve_or_create_group creates warehouse as distinct sibling
-        let res2 = resolve_or_create_group(root_fd.as_fd(), Some("warehouse"), true).unwrap();
-        assert_eq!(res2.created_dirs.len(), 1);
-        assert!(dir.join("Warehouse").is_dir());
-        assert!(dir.join("warehouse").is_dir());
+        if case_sensitive {
+            // Case-sensitive: warehouse is a distinct sibling
+            let res2 = resolve_or_create_group(root_fd.as_fd(), Some("warehouse"), true).unwrap();
+            assert_eq!(res2.created_dirs.len(), 1);
+            // Assert through list_dir_entries which reports stored spellings,
+            // not through Path::is_dir() which is true for both spellings on
+            // a case-folding volume and cannot tell the branches apart
+            let entries = list_dir_entries(root_fd.as_fd()).unwrap();
+            assert!(entries.contains(&"Warehouse".to_string()));
+            assert!(entries.contains(&"warehouse".to_string()));
+        } else {
+            // Case-folding: warehouse aliases Warehouse, so creation reports case conflict
+            let err =
+                resolve_or_create_group(root_fd.as_fd(), Some("warehouse"), true).unwrap_err();
+            assert_eq!(err.status(), axum::http::StatusCode::UNPROCESSABLE_ENTITY);
+            assert_eq!(err.reason(), Some("template_group_case_conflict"));
+            assert!(
+                err.message_text().contains("Warehouse"),
+                "case conflict must name stored spelling Warehouse, got {}",
+                err.message_text()
+            );
+            let entries = list_dir_entries(root_fd.as_fd()).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert!(entries.contains(&"Warehouse".to_string()));
+        }
 
         fs::remove_dir_all(&dir).ok();
     }
@@ -1021,6 +1054,27 @@ mod tests {
 
         assert_eq!(out, vec!["a", "a/b", "a/b/c"]);
 
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_dir_entries_filters_traversal_aliases() {
+        let dir = temp_dir();
+        fs::create_dir_all(dir.join("alpha")).unwrap();
+        fs::create_dir_all(dir.join("beta")).unwrap();
+        std::fs::write(dir.join("gamma.txt"), b"hi").unwrap();
+        let root_fd = open_dir_handle(&dir).unwrap();
+        let mut entries = list_dir_entries(root_fd.as_fd()).unwrap();
+        entries.sort();
+        assert_eq!(entries, vec!["alpha", "beta", "gamma.txt"]);
+        assert!(
+            !entries.contains(&".".to_string()),
+            "listing must not contain '.'"
+        );
+        assert!(
+            !entries.contains(&"..".to_string()),
+            "listing must not contain '..'"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 }
