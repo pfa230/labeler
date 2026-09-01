@@ -59,6 +59,14 @@ add_change() { # add_change <issue-slug>
 
 # A plan review the gate accepts. Every implement stage probes the gate before it
 # starts, so a change without one cannot reach the code roles at all.
+# Work on the tree, which is what a handover is about. Without it there is nothing to
+# inherit and handover_plan rightly says so.
+dirty_tree() { # dirty_tree <issue-slug>
+  local n
+  n=$(printf '%s' "$1" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
+  printf 'inherited work\n' >> "$repo/.worktrees/$n/inherited.txt"
+}
+
 add_passing_review() { # add_passing_review <issue-slug>
   local name="$1" n d
   n=$(printf '%s' "$name" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
@@ -326,6 +334,415 @@ fi
 if printf '%s\n' "$out" | grep -q 'which is it'; then ok "and prints the question itself"
 else bad "the question was not surfaced"; fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- swapping the implementer mid-change (#292) -------------------------------------
+# Legitimate, and it used to happen silently: the incoming agent got the "start
+# implementing" prompt while inheriting the previous one's uncommitted diff and its
+# checked boxes, which AGENTS.md makes a claim the next reader trusts.
+if [ "$pty_available" = "1" ]; then
+swap_prompt() { # swap_prompt <change> <previous-or-empty> -> the prompt the implementer got
+  local change="$1" previous="$2" n bin
+  n=$(printf '%s' "$change" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
+  bin=$(mktemp -d)
+  cat > "$bin/opencode" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s
+' "$*" > "$PROMPT_SINK"
+echo worked >> worked.txt
+echo '{"type":"result","sessionID":"s-1","parts":[{"type":"text","text":"done"}]}'
+FAKE
+  cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"t-swap"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+  chmod +x "$bin/opencode" "$bin/codex"
+  # What run-stage.sh records before each code-writing run: who is about to write here.
+  [ -n "$previous" ] && printf '%s\n' "$previous" > "$repo/.worktrees/$n/.agent-runs/implement.last"
+  # The predecessor's uncommitted work: a handover with nothing on the tree is a claim
+  # about nothing, and handover_plan now says so.
+  printf 'inherited work\n' >> "$repo/.worktrees/$n/inherited.txt"
+  ( cd "$repo" && PROMPT_SINK="$bin/prompt" PATH="$bin:$PATH" "$APPLY" opencode codex "$change" --rounds 1 ) >/dev/null 2>&1
+  cat "$bin/prompt" 2>/dev/null
+  find "$bin" -mindepth 0 -delete 2>/dev/null
+}
+
+setup
+add_change issue-20-swap
+add_passing_review issue-20-swap
+mkdir -p "$repo/.worktrees/issue-20/.agent-runs"
+got=$(swap_prompt issue-20-swap agy)
+if printf '%s' "$got" | grep -q 'A previous implementer, agy'; then
+  ok "a swapped implementer is told whose work it inherits"
+else bad "a swapped implementer got no handover"; fi
+if printf '%s' "$got" | grep -q "claim rather than as fact"; then
+  ok "and not to trust the checked boxes it did not tick"
+else bad "the handover does not warn about the checked boxes"; fi
+teardown
+
+# A returns after B took over. A has a session, so keying on the incoming agent's own
+# conversation missed this entirely and let A resume its stale pre-B context over B's
+# newer diff. The recorded implementer is what decides.
+setup
+add_change issue-22-return
+add_passing_review issue-22-return
+mkdir -p "$repo/.worktrees/issue-22/.agent-runs"
+# opencode has its own session here and could resume it. The RECORD says agy went last,
+# so that session predates agy's diff and resuming it is worse than starting fresh with a
+# handover. Conversation files do not decide this: they are written after the fact, and
+# not at all when extraction fails.
+printf 'a-session\n' > "$repo/.worktrees/issue-22/.agent-runs/implement-opencode.conversation"
+got=$(swap_prompt issue-22-return agy)
+if printf '%s' "$got" | grep -q 'A previous implementer, agy'; then
+  ok "an agent returning after another names the agent that actually went last"
+else bad "a returning agent was handed '$got'"; fi
+if ! printf '%s' "$got" | grep -q -- '-s a-session'; then
+  ok "and does not resume its own session, which predates that agent's diff"
+else bad "a returning agent resumed its stale pre-swap session"; fi
+teardown
+
+# The whole path, not run-stage.sh in isolation: a swapped implementer that finds the
+# inherited work already correct changes nothing, and the run must still succeed. apply.sh
+# forwards only --resume; whether this continues anything is decided inside run-stage.sh,
+# so what this proves is that the decision survives the trip through apply.sh.
+setup
+add_change issue-24-noopswap
+add_passing_review issue-24-noopswap
+mkdir -p "$repo/.worktrees/issue-24/.agent-runs"
+printf 'agy\n' > "$repo/.worktrees/issue-24/.agent-runs/implement.last"
+dirty_tree issue-24-noopswap
+sbin2=$(mktemp -d)
+cat > "$sbin2/opencode" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"result","sessionID":"s-1","parts":[{"type":"text","text":"the inherited work is already correct"}]}'
+FAKE
+cat > "$sbin2/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"t-n"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$sbin2/opencode" "$sbin2/codex"
+out=$(cd "$repo" && PATH="$sbin2:$PATH" "$APPLY" opencode codex issue-24-noopswap --rounds 1 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "a handover through apply.sh may verify and change nothing"
+else
+  bad "a verifying handover failed through apply.sh (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+find "$sbin2" -mindepth 0 -delete 2>/dev/null
+teardown
+
+setup
+add_change issue-21-noswap
+add_passing_review issue-21-noswap
+mkdir -p "$repo/.worktrees/issue-21/.agent-runs"
+got=$(swap_prompt issue-21-noswap "")
+if ! printf '%s' "$got" | grep -q 'A previous implementer'; then
+  ok "and a first implementer is told nothing about a predecessor it does not have"
+else bad "a handover was invented for a change nobody had implemented"; fi
+teardown
+fi
+
+# A handover that finds the inherited work already correct changes nothing, and that is a
+# real answer. The no-op guard exempted only RESUMED implements, so a swapped implementer
+# doing exactly what it was told was reported as a stage that did not run.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-23-noop
+add_passing_review issue-23-noop
+nbin=$(mktemp -d)
+cat > "$nbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"conversation_id":"c","status":"COMPLETED","response":"the inherited work is already correct"}'
+FAKE
+chmod +x "$nbin/agy"
+# A real handover, not an asserted one: the record says another agent holds this tree, so
+# run-stage.sh decides for itself that this run continues nothing and may find nothing to
+# do. The caller does not get to claim that.
+mkdir -p "$repo/.worktrees/issue-23/.agent-runs"
+printf 'opencode\n' > "$repo/.worktrees/issue-23/.agent-runs/implement.last"
+dirty_tree issue-23-noop
+out=$(cd "$repo" && PATH="$nbin:$PATH" "$STAGE" implement agy issue-23-noop 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "a handover that finds nothing left to do is not a failed run"
+else bad "a verification-only handover exited $rc"; fi
+# A genuinely first implement, on a change nothing has touched: no record, no session, so
+# nothing is being continued and changing nothing means it did not run.
+add_change issue-27-first
+add_passing_review issue-27-first
+out=$(cd "$repo" && PATH="$nbin:$PATH" "$STAGE" implement agy issue-27-first 2>&1); rc=$?
+if [ "$rc" = "3" ]; then ok "and a first implement that changes nothing still is"
+else bad "a no-op first implement exited $rc, wanted 3"; fi
+find "$nbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# The decision itself, exercised directly, because it is shared by apply.sh and
+# run-change.sh and a test through either one leaves the other's path unproven.
+setup
+add_change issue-25-plan
+wt25="$repo/.worktrees/issue-25"
+mkdir -p "$wt25/.agent-runs"
+handover_plan "$wt25" opencode
+if [ -z "$HANDOVER_RESUME" ] && [ -z "$HANDOVER_TEXT" ]; then
+  ok "plan: a clean tree gets no resume and no handover"
+else bad "plan: a clean tree produced resume='$HANDOVER_RESUME' text='${HANDOVER_TEXT:0:40}'"; fi
+
+# A clean tree that DOES carry a record and a session, which is what a run that changed
+# nothing leaves behind. There is still nothing to continue, so it must not resume: the
+# retry would otherwise be told to continue work that was never done.
+printf 'opencode\n' > "$wt25/.agent-runs/implement.last"
+printf 's\n' > "$wt25/.agent-runs/implement-opencode.conversation"
+handover_plan "$wt25" opencode
+if [ -z "$HANDOVER_RESUME" ] && [ -z "$HANDOVER_TEXT" ]; then
+  ok "plan: a clean tree does not resume even with a record and a session on it"
+else bad "plan: a clean tree with records gave resume='$HANDOVER_RESUME'"; fi
+
+dirty_tree issue-25-plan
+printf 'opencode\n' > "$wt25/.agent-runs/implement.last"
+printf 's\n' > "$wt25/.agent-runs/implement-opencode.conversation"
+handover_plan "$wt25" opencode
+if [ "$HANDOVER_RESUME" = "--resume" ] && [ -z "$HANDOVER_TEXT" ]; then
+  ok "plan: its own recorded tree resumes, with nothing to hand over"
+else bad "plan: own tree gave resume='$HANDOVER_RESUME'"; fi
+
+printf 'agy\n' > "$wt25/.agent-runs/implement.last"
+handover_plan "$wt25" opencode
+if [ -z "$HANDOVER_RESUME" ] && printf '%s' "$HANDOVER_TEXT" | grep -q 'A previous implementer, agy'; then
+  ok "plan: another agent's tree suppresses the resume and hands over"
+else bad "plan: a swap gave resume='$HANDOVER_RESUME' text='${HANDOVER_TEXT:0:40}'"; fi
+
+# Its own tree, but the last run's extraction failed so the id was never captured and the
+# older one is invalid: the tree moved under it.
+: > "$wt25/.agent-runs/implement-opencode.conversation"
+printf 'opencode\n' > "$wt25/.agent-runs/implement.last"
+handover_plan "$wt25" opencode
+if [ -z "$HANDOVER_RESUME" ] && printf '%s' "$HANDOVER_TEXT" | grep -q 'could not be recovered'; then
+  ok "plan: its own tree with no usable session hands over rather than resuming"
+else bad "plan: a lost session gave resume='$HANDOVER_RESUME' text='${HANDOVER_TEXT:0:40}'"; fi
+printf 's\n' > "$wt25/.agent-runs/implement-opencode.conversation"
+
+find "$wt25/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+handover_plan "$wt25" opencode
+if [ -z "$HANDOVER_RESUME" ] && printf '%s' "$HANDOVER_TEXT" | grep -q 'no record of who wrote it'; then
+  ok "plan: a session with no record behind it is not resumed on a guess"
+else bad "plan: an unrecorded tree gave resume='$HANDOVER_RESUME'"; fi
+teardown
+
+# The producer, not just the readers: run-stage.sh must record who is about to write, and
+# must do it only once everything that could refuse the run has passed.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-26-record
+add_passing_review issue-26-record
+rbin=$(mktemp -d)
+cat > "$rbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo touched >> touched.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$rbin/agy"
+(cd "$repo" && PATH="$rbin:$PATH" "$STAGE" implement agy issue-26-record >/dev/null 2>&1)
+if [ "$(cat "$repo/.worktrees/issue-26/.agent-runs/implement.last" 2>/dev/null | tr -d '[:space:]')" = "agy" ]; then
+  ok "run-stage records the implementer that is about to write"
+else bad "run-stage did not record the implementer"; fi
+# A run refused before launch must leave no record: recorded sooner, a launch that never
+# happened still named its agent, and the next run resumed that agent's stale session.
+# A change whose plan review does not pass is refused by the gate before anything is
+# launched, which is exactly the window in which an early recording named an agent that
+# never ran.
+add_change issue-28-refused
+(cd "$repo" && PATH="$rbin:$PATH" "$STAGE" implement agy issue-28-refused >/dev/null 2>&1)
+if [ ! -f "$repo/.worktrees/issue-28/.agent-runs/implement.last" ]; then
+  ok "and records nothing when the run is refused before it starts"
+else bad "a refused run recorded '$(cat "$repo/.worktrees/issue-28/.agent-runs/implement.last")'"; fi
+# A recording that cannot be made is fatal: the alternative is an agent editing a tree the
+# marker still attributes to somebody else.
+add_change issue-29-unwritable
+add_passing_review issue-29-unwritable
+# A directory where the marker belongs: the write fails while everything else about the
+# run stays possible, which is the failure this must not shrug off. Making the whole
+# .agent-runs unwritable breaks the log first and never reaches the check.
+mkdir -p "$repo/.worktrees/issue-29/.agent-runs/implement.last"
+out=$(cd "$repo" && PATH="$rbin:$PATH" "$STAGE" implement agy issue-29-unwritable 2>&1); rc=$?
+find "$repo/.worktrees/issue-29/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'cannot record the implementer'; then
+  ok "a run that cannot record who is writing does not run"
+else bad "an unrecordable run exited $rc"; fi
+find "$rbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# The caller's --resume is intent, not fact. apply.sh always passes it, so a FIRST run on
+# a clean tree arrives with the flag set: it must still be told to start work rather than
+# to continue it, and must still fail if it changes nothing.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-31-intent
+add_passing_review issue-31-intent
+ibin=$(mktemp -d)
+cat > "$ibin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s
+' "$*" > "$PROMPT_SINK"
+echo '{"conversation_id":"c","status":"COMPLETED","response":"did nothing"}'
+FAKE
+chmod +x "$ibin/agy"
+out=$(cd "$repo" && PROMPT_SINK="$ibin/p" PATH="$ibin:$PATH" "$STAGE" implement agy issue-31-intent --resume 2>&1); rc=$?
+if [ "$rc" = "3" ]; then ok "a first run given --resume still fails when it changes nothing"
+else bad "a first run with --resume that did nothing exited $rc, wanted 3"; fi
+if ! grep -q 'Continue your work' "$ibin/p" 2>/dev/null; then
+  ok "and is told to start work, not to continue it"
+else bad "a first run was told to continue work it had not done"; fi
+find "$ibin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# The truncation itself, not a hand-emptied file: a writing run whose extraction fails and
+# which captured no id must leave no resumable session behind, and one that DID capture an
+# id must keep it. codex and opencode record the id before requiring a final message,
+# precisely so an interrupted run can be resumed.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-30-extract
+add_passing_review issue-30-extract
+ebin=$(mktemp -d)
+printf 'stale-id\n' > /dev/null
+cat > "$ebin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo edited >> edited.txt
+echo "console noise and no envelope at all"
+FAKE
+chmod +x "$ebin/agy"
+mkdir -p "$repo/.worktrees/issue-30/.agent-runs"
+printf 'stale-id\n' > "$repo/.worktrees/issue-30/.agent-runs/implement-agy.conversation"
+dirty_tree issue-30-extract
+(cd "$repo" && PATH="$ebin:$PATH" "$STAGE" implement agy issue-30-extract >/dev/null 2>&1)
+if [ ! -s "$repo/.worktrees/issue-30/.agent-runs/implement-agy.conversation" ]; then
+  ok "a failed extraction discards a session id this run did not capture"
+else bad "a stale id survived a failed extraction: $(cat "$repo/.worktrees/issue-30/.agent-runs/implement-agy.conversation")"; fi
+
+# codex captures its thread id first and only then fails to produce an answer. That id is
+# this run's and does match the tree, so it must survive.
+cat > "$ebin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo edited >> edited2.txt
+echo '{"type":"thread.started","thread_id":"fresh-id"}'
+echo "and then nothing that parses as an answer"
+FAKE
+chmod +x "$ebin/codex"
+(cd "$repo" && PATH="$ebin:$PATH" "$STAGE" implement codex issue-30-extract >/dev/null 2>&1)
+if [ "$(tr -d '[:space:]' < "$repo/.worktrees/issue-30/.agent-runs/implement-codex.conversation" 2>/dev/null)" = "fresh-id" ]; then
+  ok "and keeps one it did capture, so an interrupted run stays resumable"
+else bad "a freshly captured id was discarded"; fi
+# A RESUMED run re-emits the id it was given, so the file reads what it read before. That
+# is this run's id describing this tree, not a leftover, and it must survive a failed
+# extraction of the answer.
+printf 'kept-id\n' > "$repo/.worktrees/issue-30/.agent-runs/implement-codex.conversation"
+cat > "$ebin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo edited >> edited3.txt
+echo '{"type":"thread.started","thread_id":"kept-id"}'
+echo "and then nothing that parses as an answer"
+FAKE
+chmod +x "$ebin/codex"
+(cd "$repo" && PATH="$ebin:$PATH" "$STAGE" implement codex issue-30-extract --resume >/dev/null 2>&1)
+if [ "$(tr -d '[:space:]' < "$repo/.worktrees/issue-30/.agent-runs/implement-codex.conversation" 2>/dev/null)" = "kept-id" ]; then
+  ok "and a resumed run's unchanged id is kept, not read as stale"
+else bad "a resumed run's own id was discarded as stale"; fi
+find "$ebin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# A run that writes nothing records its agent anyway, so on the retry that agent looks
+# like it is inheriting its own work. There is nothing to inherit on a clean tree, and a
+# no-op must still fail rather than being waved through as an implementation.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-34-twice
+add_passing_review issue-34-twice
+tbin=$(mktemp -d)
+cat > "$tbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"conversation_id":"c","status":"COMPLETED","response":"did nothing at all"}'
+FAKE
+chmod +x "$tbin/agy"
+(cd "$repo" && PATH="$tbin:$PATH" "$STAGE" implement agy issue-34-twice >/dev/null 2>&1); first=$?
+(cd "$repo" && PATH="$tbin:$PATH" "$STAGE" implement agy issue-34-twice >/dev/null 2>&1); second=$?
+if [ "$first" = "3" ] && [ "$second" = "3" ]; then
+  ok "a no-op does not become acceptable by being attempted twice"
+else bad "no-op runs exited $first then $second, wanted 3 then 3"; fi
+find "$tbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# Clearing the session it declined to resume is what keeps a stale id from being paired
+# with a fresh record, so a failure to clear must stop the run rather than proceed.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-33-unclearable
+add_passing_review issue-33-unclearable
+ubin=$(mktemp -d)
+cat > "$ubin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo ran >> ran.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$ubin/agy"
+mkdir -p "$repo/.worktrees/issue-33/.agent-runs"
+dirty_tree issue-33-unclearable
+printf 'opencode
+' > "$repo/.worktrees/issue-33/.agent-runs/implement.last"
+# A directory where the session file belongs: the clear fails and nothing else does.
+mkdir -p "$repo/.worktrees/issue-33/.agent-runs/implement-agy.conversation"
+out=$(cd "$repo" && PATH="$ubin:$PATH" "$STAGE" implement agy issue-33-unclearable 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'cannot clear the stale session'; then
+  ok "a handover that cannot clear the old session does not run"
+else bad "an unclearable session gave exit $rc"; fi
+if [ ! -f "$repo/.worktrees/issue-33/ran.txt" ]; then
+  ok "and the agent never launched"
+else bad "the agent ran despite an unclearable session"; fi
+find "$ubin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# The lock's atomicity, provoked rather than asserted. A barrier in the `date` call the
+# lock line makes holds two stages until both have arrived, so both reach the redirection
+# together: noclobber lets exactly one through, and the check-then-write form it replaced
+# let both. Without the barrier this is a race nobody can schedule on purpose.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-32-lock
+add_passing_review issue-32-lock
+lbin=$(mktemp -d)
+barrier=$(mktemp -d)
+cat > "$lbin/date" <<FAKE
+#!/usr/bin/env bash
+touch "$barrier/\$\$"
+for _ in \$(seq 1 100); do
+  [ "\$(find "$barrier" -type f -name '[0-9]*' | wc -l)" -ge 2 ] && break
+  sleep 0.1
+done
+exec /bin/date "\$@"
+FAKE
+cat > "$lbin/agy" <<FAKE
+#!/usr/bin/env bash
+echo launched >> "$barrier/launches"
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$lbin/date" "$lbin/agy"
+( cd "$repo" && PATH="$lbin:$PATH" "$STAGE" implement agy issue-32-lock >"$barrier/out1" 2>&1 ) &
+( cd "$repo" && PATH="$lbin:$PATH" "$STAGE" implement agy issue-32-lock >"$barrier/out2" 2>&1 ) &
+wait
+# Both must actually have reached the barrier, or this proves nothing: one stage failing
+# early leaves the other to time out, launch alone, and satisfy a bare count of one.
+arrived=$(find "$barrier" -type f -name '[0-9]*' | wc -l | tr -d ' ')
+launches=$(grep -c '' "$barrier/launches" 2>/dev/null || true)
+refused=$(grep -l 'already in progress' "$barrier/out1" "$barrier/out2" 2>/dev/null | wc -l | tr -d ' ')
+if [ "$arrived" = "2" ] && [ "${launches:-0}" = "1" ] && [ "$refused" = "1" ]; then
+  ok "two stages racing for the lock launch exactly one agent"
+else bad "race: $arrived arrived, ${launches:-0} launched, $refused refused; wanted 2/1/1"; fi
+find "$lbin" "$barrier" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
