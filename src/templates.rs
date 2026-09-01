@@ -2790,6 +2790,133 @@ layout:
     }
 
     #[test]
+    fn superseded_options_spelling_is_quarantined_at_registry_load() {
+        let dir = temp_dir("superseded_options_spelling");
+
+        let valid_yaml = r#"
+name: Valid Label
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    stroke:
+      thickness: 0.2
+    items: []
+"#;
+        write_template(&dir, "valid_label.yaml", valid_yaml);
+
+        let options_yaml = r#"
+name: Has Options
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+options:
+  orientation: [vertical, horizontal]
+layout:
+  - type: text
+    value: "hello"
+    at: [0, 0]
+    size: [10, 5]
+    font_size: 8
+"#;
+        write_template(&dir, "has_options.yaml", options_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+
+        assert_eq!(registry.len(), 1, "valid template must be served");
+        assert!(registry.get("valid_label").is_some());
+
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 1, "options template must be quarantined");
+        let broken_entry = broken
+            .iter()
+            .find(|b| b.path == "has_options.yaml")
+            .expect("missing broken template has_options.yaml");
+        assert!(
+            broken_entry.error.contains("unknown field `options`"),
+            "expected 'unknown field `options`' in error: {}",
+            broken_entry.error
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn superseded_container_option_spelling_is_quarantined_at_registry_load() {
+        let dir = temp_dir("superseded_container_option_spelling");
+
+        let valid_yaml = r#"
+name: Valid Label
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    stroke:
+      thickness: 0.2
+    items: []
+"#;
+        write_template(&dir, "valid_label.yaml", valid_yaml);
+
+        let option_yaml = r#"
+name: Has Container Option
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [vertical, horizontal]
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    option:
+      orientation: vertical
+    items: []
+"#;
+        write_template(&dir, "has_container_option.yaml", option_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+
+        assert_eq!(registry.len(), 1, "valid template must be served");
+        assert!(registry.get("valid_label").is_some());
+
+        let broken = registry.broken();
+        assert_eq!(
+            broken.len(),
+            1,
+            "container option template must be quarantined"
+        );
+        let broken_entry = broken
+            .iter()
+            .find(|b| b.path == "has_container_option.yaml")
+            .expect("missing broken template has_container_option.yaml");
+        assert!(
+            broken_entry.error.contains("layout[0]")
+                && broken_entry.error.contains("unknown field `option`"),
+            "expected layout[0] and 'unknown field `option`' in error: {}",
+            broken_entry.error
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     /// The ban on a rotated container sizing itself from its content is gone: rotation composes
     /// through the resolver, so the outer axes classify and resolve like any other container's.
     fn rotated_container_accepts_a_content_outer_size() {
