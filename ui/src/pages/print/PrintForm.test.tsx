@@ -158,7 +158,8 @@ describe("PrintForm copies", () => {
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     expect(body.copies).toBe(3);
     expect(body.printer).toBe("p1");
-    expect(body.fields).toEqual({ message: "hello" });
+    expect(body.data).toEqual({ message: "hello" });
+    expect(body.fields).toBeUndefined();
     expect(countCalls("/api/batch")).toBe(0);
   });
 
@@ -324,7 +325,8 @@ describe("PrintForm gating and submission pruning", () => {
     await waitFor(() => expect(countCalls("/api/print")).toBe(1));
     const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
     // count is empty non-text; pro_code has value but is deactivated
-    expect(body.fields).toEqual({ message: "hello", tier: "standard" });
+    expect(body.data).toEqual({ message: "hello", tier: "standard" });
+    expect(body.fields).toBeUndefined();
   });
 
   it("leaves undefaulted datetime, boolean, and enum empty on mount and seeds literal defaults", async () => {
@@ -446,7 +448,9 @@ describe("PrintForm deferring to a declared default", () => {
     const before = countCalls("/api/print");
     fireEvent.click(print);
     await waitFor(() => expect(countCalls("/api/print")).toBe(before + 1));
-    return JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string).fields as Record<string, unknown>;
+    const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
+    expect(body.fields).toBeUndefined();
+    return body.data as Record<string, unknown>;
   };
 
   const withInputs = (list: unknown[]): TemplateDetail => ({
@@ -754,5 +758,69 @@ describe("PrintForm deferring to a declared default", () => {
 
     const input = (await screen.findByLabelText("event_time")) as HTMLInputElement;
     expect(input.value).toBe("2026-03-24T00:00");
+  });
+});
+
+describe("PrintForm empty template", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("posts data: {} for a single template reporting no inputs", async () => {
+    const detail: TemplateDetail = {
+      id: "no_inputs_tpl",
+      name: "No Inputs",
+      description: "",
+      unit: "mm",
+      dpi: 300,
+      format: { type: "single", width: 80, height: 24 },
+      inputs: { all: [], default: [] },
+      variables: [],
+    };
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/printers")) {
+        return new Response(JSON.stringify(printers), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
+        return new Response(JSON.stringify({ inputs: [[]] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/print")) {
+        return new Response(JSON.stringify(summary), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/render/label")) {
+        return new Response(new Blob(["img"]), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderForm(detail);
+    await screen.findByText("Label Printer");
+    fireEvent.change(await screen.findByLabelText("printer"), { target: { value: "p1" } });
+    const print = screen.getByRole("button", { name: /^print$/i });
+    await waitFor(() => expect(print).not.toBeDisabled());
+    fireEvent.click(print);
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
+    expect(body.data).toEqual({});
+    expect(Object.prototype.hasOwnProperty.call(body, "data")).toBe(true);
+    expect(body.fields).toBeUndefined();
   });
 });
