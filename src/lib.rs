@@ -2740,11 +2740,92 @@ layout:
     }
 
     #[tokio::test]
-    async fn template_put_rejects_invalid_ink_literal() {
+    async fn template_put_rejects_invalid_color_literal_and_ink() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
-        let yaml = r#"
-name: BadInk
+
+        // 1. Shape background unreadable colour is refused naming layout path and field, no file written
+        let shape_bg_yaml = r#"
+name: BadShapeBg
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: chartreuse
+    items: []
+"#;
+        let res1 = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/bad_shape_bg",
+                "PUT",
+                shape_bg_yaml.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res1.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body1 = json_response(res1).await;
+        assert_eq!(body1["error"]["code"], "TemplateInvalid");
+        let msg1 = body1["error"]["message"].as_str().unwrap();
+        assert!(
+            msg1.contains("layout[0]")
+                && msg1.contains("background")
+                && msg1.contains("chartreuse"),
+            "expected error naming layout path, background field and invalid color, got: {msg1}"
+        );
+        assert!(
+            !dir.join("bad_shape_bg.yaml").exists(),
+            "no file should be written on rejection of bad shape background"
+        );
+
+        // 2. Shape stroke unreadable colour is refused naming layout path and field, no file written
+        let shape_stroke_yaml = r#"
+name: BadShapeStroke
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: line
+    at: [0, 0]
+    to: [50, 20]
+    stroke:
+      thickness: 0.5
+      color: chartreuse
+"#;
+        let res2 = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/bad_shape_stroke",
+                "PUT",
+                shape_stroke_yaml.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body2 = json_response(res2).await;
+        assert_eq!(body2["error"]["code"], "TemplateInvalid");
+        let msg2 = body2["error"]["message"].as_str().unwrap();
+        assert!(
+            msg2.contains("layout[0]") && msg2.contains("stroke") && msg2.contains("chartreuse"),
+            "expected error naming layout path, stroke field and invalid color, got: {msg2}"
+        );
+        assert!(
+            !dir.join("bad_shape_stroke.yaml").exists(),
+            "no file should be written on rejection of bad stroke color"
+        );
+
+        // 3. Text unreadable colour is refused naming layout path and field, no file written
+        let text_yaml = r#"
+name: BadTextColor
 unit: mm
 dpi: 200
 format:
@@ -2757,29 +2838,74 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: chartreuse
+    color: chartreuse
 "#;
-        let res = app
-            .oneshot(yaml_post("/api/templates/bad_ink", "PUT", yaml.to_string()))
+        let res3 = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/bad_text_color",
+                "PUT",
+                text_yaml.to_string(),
+            ))
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "TemplateInvalid");
-        let msg = body["error"]["message"].as_str().unwrap();
+        assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body3 = json_response(res3).await;
+        assert_eq!(body3["error"]["code"], "TemplateInvalid");
+        let msg3 = body3["error"]["message"].as_str().unwrap();
         assert!(
-            msg.contains("layout[0]") && msg.contains("invalid ink 'chartreuse'"),
-            "expected error naming layout path and invalid ink, got: {msg}"
+            msg3.contains("layout[0]") && msg3.contains("color") && msg3.contains("chartreuse"),
+            "expected error naming layout path, color field and invalid color, got: {msg3}"
         );
         assert!(
-            !dir.join("bad_ink.yaml").exists(),
-            "no file should be written on rejection"
+            !dir.join("bad_text_color.yaml").exists(),
+            "no file should be written on rejection of bad text color"
         );
+
+        // 4. Task 2.2: ink: on text item is refused with unknown field error naming ink and layout path, no file written
+        let ink_yaml = r#"
+name: InkText
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    ink: red
+"#;
+        let res4 = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/unmigrated_ink",
+                "PUT",
+                ink_yaml.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res4.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body4 = json_response(res4).await;
+        assert_eq!(body4["error"]["code"], "TemplateInvalid");
+        let msg4 = body4["error"]["message"].as_str().unwrap();
+        assert!(
+            msg4.contains("layout[0]") && msg4.contains("unknown field `ink`"),
+            "expected error naming layout path and unknown field ink, got: {msg4}"
+        );
+        assert!(
+            !dir.join("unmigrated_ink.yaml").exists(),
+            "no file should be written on rejection of unmigrated ink field"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[tokio::test]
-    async fn startup_with_bad_ink_template_quarantines_it_and_serves_valid_sibling() {
+    async fn startup_quarantines_unreadable_shape_and_text_colors_and_serves_valid_sibling() {
         let dir = temp_templates_dir();
         let valid_yaml = r#"
 name: ValidSibling
@@ -2790,15 +2916,35 @@ format:
   width: 50
   height: 20
 layout:
-  - type: text
-    value: "Good"
+  - type: container
     at: [0, 0]
     size: [50, 20]
-    font_size: 10
-    ink: blue
+    background: red
+    items:
+      - type: text
+        value: "Good"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+        color: blue
 "#;
-        let bad_yaml = r#"
-name: BadSibling
+        let bad_shape_yaml = r#"
+name: BadShapeSibling
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: chartreuse
+    items: []
+"#;
+        let unmigrated_ink_yaml = r#"
+name: UnmigratedInkSibling
 unit: mm
 dpi: 200
 format:
@@ -2807,14 +2953,15 @@ format:
   height: 20
 layout:
   - type: text
-    value: "Bad"
+    value: "Unmigrated"
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: invalid_colour_here
+    ink: red
 "#;
         std::fs::write(dir.join("valid.yaml"), valid_yaml).unwrap();
-        std::fs::write(dir.join("bad.yaml"), bad_yaml).unwrap();
+        std::fs::write(dir.join("bad_shape.yaml"), bad_shape_yaml).unwrap();
+        std::fs::write(dir.join("unmigrated_ink.yaml"), unmigrated_ink_yaml).unwrap();
 
         let app = build_app_in(&dir);
         let res = app
@@ -2832,17 +2979,72 @@ layout:
         let templates = body["templates"].as_array().unwrap();
         let broken = body["broken"].as_array().unwrap();
 
+        // Valid template is served
         assert_eq!(templates.len(), 1);
         assert_eq!(templates[0]["id"], "valid");
 
-        assert_eq!(broken.len(), 1);
-        assert_eq!(broken[0]["path"], "bad.yaml");
-        let broken_err = broken[0]["error"].as_str().unwrap();
+        // Both broken templates are quarantined
+        assert_eq!(broken.len(), 2);
+
+        let shape_broken = broken
+            .iter()
+            .find(|b| b["path"] == "bad_shape.yaml")
+            .expect("bad_shape.yaml in broken");
+        let shape_err = shape_broken["error"].as_str().unwrap();
         assert!(
-            broken_err.contains("layout[0]")
-                && broken_err.contains("invalid ink 'invalid_colour_here'"),
-            "expected broken template error naming layout path and invalid ink, got: {broken_err}"
+            shape_err.contains("layout[0]")
+                && shape_err.contains("background")
+                && shape_err.contains("chartreuse"),
+            "expected broken shape error naming layout path, background field and chartreuse, got: {shape_err}"
         );
+
+        let ink_broken = broken
+            .iter()
+            .find(|b| b["path"] == "unmigrated_ink.yaml")
+            .expect("unmigrated_ink.yaml in broken");
+        let ink_err = ink_broken["error"].as_str().unwrap();
+        assert!(
+            ink_err.contains("layout[0]") && ink_err.contains("unknown field `ink`"),
+            "expected broken ink error naming layout path and unknown field ink, got: {ink_err}"
+        );
+
+        // GET /api/templates/valid serves 200, broken templates are 404
+        let res_valid = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/valid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_valid.status(), StatusCode::OK);
+
+        let res_bad_shape = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/bad_shape")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_bad_shape.status(), StatusCode::NOT_FOUND);
+
+        let res_bad_ink = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/unmigrated_ink")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_bad_ink.status(), StatusCode::NOT_FOUND);
+
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -6332,21 +6534,29 @@ layout:
             "ParamValue missing in openapi schemas"
         );
         assert!(
-            schemas.contains_key("Ink"),
-            "Ink missing in openapi schemas"
+            schemas.contains_key("Color"),
+            "Color missing in openapi schemas"
         );
         assert!(
-            schemas.contains_key("DynamicValue_Ink"),
-            "DynamicValue_Ink missing in openapi schemas"
+            schemas.contains_key("DynamicValue_Color"),
+            "DynamicValue_Color missing in openapi schemas"
+        );
+        assert!(
+            !schemas.contains_key("Ink"),
+            "Ink must not be a schema component"
+        );
+        assert!(
+            !schemas.contains_key("DynamicValue_Ink"),
+            "DynamicValue_Ink must not be a schema component"
         );
         assert!(
             !schemas.contains_key("String"),
             "String must not be a schema component"
         );
-        let ink_schema = serde_json::to_value(&schemas["Ink"]).unwrap();
+        let color_schema = serde_json::to_value(&schemas["Color"]).unwrap();
         assert_eq!(
-            ink_schema["type"], "string",
-            "Ink schema must have type: string, got: {ink_schema}"
+            color_schema["type"], "string",
+            "Color schema must have type: string, got: {color_schema}"
         );
     }
 
@@ -9429,9 +9639,9 @@ layout:
     }
 
     #[tokio::test]
-    async fn render_label_and_batch_invalid_ink_parameter_refusals() {
-        let yaml = r#"
-name: DynamicInk
+    async fn render_label_and_batch_invalid_color_parameter_refusals() {
+        let text_yaml = r#"
+name: DynamicColor
 unit: mm
 dpi: 200
 params:
@@ -9447,15 +9657,44 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: "{brand}"
+    color: "{brand}"
 "#;
-        let (app, _state) = test_app_with_custom_templates(vec![("dyn_ink", yaml)]);
+        let shape_yaml = r#"
+name: DynamicShapeColor
+unit: mm
+dpi: 200
+params:
+  bg_color:
+    type: string
+  stroke_color:
+    type: string
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: "{bg_color}"
+    items: []
+  - type: line
+    at: [0, 0]
+    to: [50, 20]
+    stroke:
+      thickness: 0.5
+      color: "{stroke_color}"
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("dyn_color", text_yaml),
+            ("dyn_shape_color", shape_yaml),
+        ]);
 
-        // 1. Task 5.1: POST /api/render/label supplying non-colour returns 400 InvalidRequest / ink_param_invalid naming parameter
+        // 1. POST /api/render/label supplying non-colour for text returns 400 InvalidRequest / color_param_invalid naming parameter
         let req1 = req_post_json(
             "/api/render/label",
             &serde_json::json!({
-                "template": "dyn_ink",
+                "template": "dyn_color",
                 "data": { "brand": "octarine" }
             })
             .to_string(),
@@ -9464,41 +9703,64 @@ layout:
         assert_eq!(res1.status(), StatusCode::BAD_REQUEST);
         let body1 = body_json(res1).await;
         assert_eq!(body1["error"]["code"], "InvalidRequest");
-        assert_eq!(body1["error"]["details"]["reason"], "ink_param_invalid");
+        assert_eq!(body1["error"]["details"]["reason"], "color_param_invalid");
         let msg1 = body1["error"]["message"].as_str().unwrap();
         assert!(
             msg1.contains("brand"),
             "error message '{msg1}' must name the failing parameter 'brand'"
         );
 
-        // 2. Task 5.3: POST /api/render/label supplying "{other}" chained reference returns 400 InvalidRequest / ink_param_invalid
-        let req2 = req_post_json(
+        // 2. POST /api/render/label supplying non-colour for container background returns 400 InvalidRequest / color_param_invalid naming bg_color
+        let req_bg = req_post_json(
             "/api/render/label",
             &serde_json::json!({
-                "template": "dyn_ink",
-                "data": { "brand": "{other}" }
+                "template": "dyn_shape_color",
+                "data": { "bg_color": "octarine", "stroke_color": "black" }
             })
             .to_string(),
         );
-        let res2 = app.clone().oneshot(req2).await.unwrap();
-        assert_eq!(res2.status(), StatusCode::BAD_REQUEST);
-        let body2 = body_json(res2).await;
-        assert_eq!(body2["error"]["code"], "InvalidRequest");
-        assert_eq!(body2["error"]["details"]["reason"], "ink_param_invalid");
-        let msg2 = body2["error"]["message"].as_str().unwrap();
+        let res_bg = app.clone().oneshot(req_bg).await.unwrap();
+        assert_eq!(res_bg.status(), StatusCode::BAD_REQUEST);
+        let body_bg = body_json(res_bg).await;
+        assert_eq!(body_bg["error"]["code"], "InvalidRequest");
+        assert_eq!(body_bg["error"]["details"]["reason"], "color_param_invalid");
+        let msg_bg = body_bg["error"]["message"].as_str().unwrap();
         assert!(
-            msg2.contains("brand"),
-            "error message '{msg2}' must name the failing parameter 'brand'"
+            msg_bg.contains("bg_color"),
+            "error message '{msg_bg}' must name the failing parameter 'bg_color'"
         );
 
-        // 3. Task 5.2: POST /api/batch with 2 labels (second bad ink) returns 422 BatchInvalid with failure at index 1
+        // 3. POST /api/render/label supplying "{other}" chained reference for stroke returns 400 InvalidRequest / color_param_invalid naming stroke_color
+        let req_stroke = req_post_json(
+            "/api/render/label",
+            &serde_json::json!({
+                "template": "dyn_shape_color",
+                "data": { "bg_color": "blue", "stroke_color": "{other}" }
+            })
+            .to_string(),
+        );
+        let res_stroke = app.clone().oneshot(req_stroke).await.unwrap();
+        assert_eq!(res_stroke.status(), StatusCode::BAD_REQUEST);
+        let body_stroke = body_json(res_stroke).await;
+        assert_eq!(body_stroke["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body_stroke["error"]["details"]["reason"],
+            "color_param_invalid"
+        );
+        let msg_stroke = body_stroke["error"]["message"].as_str().unwrap();
+        assert!(
+            msg_stroke.contains("stroke_color"),
+            "error message '{msg_stroke}' must name the failing parameter 'stroke_color'"
+        );
+
+        // 4. POST /api/batch with 2 labels (second bad background color) returns 422 BatchInvalid with failure at index 1
         let req3 = req_post_json(
             "/api/batch",
             &serde_json::json!({
-                "template": "dyn_ink",
+                "template": "dyn_shape_color",
                 "labels": [
-                    { "data": { "brand": "red" } },
-                    { "data": { "brand": "octarine" } }
+                    { "data": { "bg_color": "red", "stroke_color": "black" } },
+                    { "data": { "bg_color": "octarine", "stroke_color": "black" } }
                 ],
                 "mode": "download"
             })
@@ -9512,18 +9774,18 @@ layout:
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0]["index"], 1);
         assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "ink_param_invalid");
+        assert_eq!(failures[0]["reason"], "color_param_invalid");
         let msg3 = failures[0]["message"].as_str().unwrap();
         assert!(
-            msg3.contains("brand"),
-            "failure message '{msg3}' must name the failing parameter 'brand'"
+            msg3.contains("bg_color"),
+            "failure message '{msg3}' must name the failing parameter 'bg_color'"
         );
     }
 
     #[tokio::test]
-    async fn white_ink_template_loads_and_renders_successfully() {
+    async fn white_color_template_loads_and_renders_successfully() {
         let yaml = r#"
-name: WhiteInk
+name: WhiteColor
 unit: mm
 dpi: 200
 format:
@@ -9536,14 +9798,14 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: white
+    color: white
 "#;
-        let (app, _state) = test_app_with_custom_templates(vec![("white_ink", yaml)]);
+        let (app, _state) = test_app_with_custom_templates(vec![("white_color", yaml)]);
 
         // 1. Render PNG
         let req_png = req_post_json(
             "/api/render/label?format=png",
-            &serde_json::json!({ "template": "white_ink", "data": {} }).to_string(),
+            &serde_json::json!({ "template": "white_color", "data": {} }).to_string(),
         );
         let res_png = app.clone().oneshot(req_png).await.unwrap();
         assert_eq!(res_png.status(), StatusCode::OK);
@@ -9553,7 +9815,7 @@ layout:
         // 2. Render PDF
         let req_pdf = req_post_json(
             "/api/render/label?format=pdf",
-            &serde_json::json!({ "template": "white_ink", "data": {} }).to_string(),
+            &serde_json::json!({ "template": "white_color", "data": {} }).to_string(),
         );
         let res_pdf = app.clone().oneshot(req_pdf).await.unwrap();
         assert_eq!(res_pdf.status(), StatusCode::OK);
@@ -9562,9 +9824,9 @@ layout:
     }
 
     #[tokio::test]
-    async fn colored_ink_and_alpha_composite_png_rendering() {
+    async fn colored_text_and_alpha_composite_png_rendering() {
         let red_yaml = r#"
-name: RedInk
+name: RedColor
 unit: mm
 dpi: 200
 format:
@@ -9577,10 +9839,10 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: red
+    color: red
 "#;
         let alpha_yaml = r#"
-name: AlphaInk
+name: AlphaColor
 unit: mm
 dpi: 200
 format:
@@ -9593,15 +9855,17 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: '#00000080'
+    color: '#00000080'
 "#;
-        let (app, _state) =
-            test_app_with_custom_templates(vec![("red_ink", red_yaml), ("alpha_ink", alpha_yaml)]);
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("red_color", red_yaml),
+            ("alpha_color", alpha_yaml),
+        ]);
 
-        // 1. Red ink PNG produces (255, 65, 54) glyph pixels
+        // 1. Red text PNG produces CSS Level 1 red (255, 0, 0) glyph pixels
         let req_red = req_post_json(
             "/api/render/label?format=png",
-            &serde_json::json!({ "template": "red_ink", "data": {} }).to_string(),
+            &serde_json::json!({ "template": "red_color", "data": {} }).to_string(),
         );
         let res_red = app.clone().oneshot(req_red).await.unwrap();
         assert_eq!(res_red.status(), StatusCode::OK);
@@ -9609,19 +9873,28 @@ layout:
         let img_red = image::load_from_memory(&png_red)
             .expect("decode red png")
             .to_rgba8();
+        // CSS Level 1 red (#ff0000) over white composites to (255, G, G) where G < 255
         let red_count = img_red
             .pixels()
-            .filter(|p| (p[0], p[1], p[2]) == (255, 65, 54))
+            .filter(|p| p[0] == 255 && p[1] < 220 && p[1] == p[2])
             .count();
         assert!(
             red_count > 0,
-            "rendered PNG must contain red (255, 65, 54) glyph pixels, found {red_count}"
+            "rendered PNG must contain pure red (255, G, G) glyph pixels, found {red_count}"
+        );
+        let typst_legacy_red = img_red
+            .pixels()
+            .filter(|p| (p[0], p[1], p[2]) == (255, 65, 54))
+            .count();
+        assert_eq!(
+            typst_legacy_red, 0,
+            "Typst's legacy red (255, 65, 54) must not appear anywhere"
         );
 
-        // 2. Alpha ink (#00000080 over white background) composites to (128, 128, 128)
+        // 2. Alpha color (#00000080 over white background) composites to (128, 128, 128)
         let req_alpha = req_post_json(
             "/api/render/label?format=png",
-            &serde_json::json!({ "template": "alpha_ink", "data": {} }).to_string(),
+            &serde_json::json!({ "template": "alpha_color", "data": {} }).to_string(),
         );
         let res_alpha = app.clone().oneshot(req_alpha).await.unwrap();
         assert_eq!(res_alpha.status(), StatusCode::OK);
@@ -9640,9 +9913,9 @@ layout:
     }
 
     #[tokio::test]
-    async fn template_get_reports_declared_ink_and_omits_when_absent() {
+    async fn template_get_reports_declared_color_and_omits_when_absent() {
         let yaml = r#"
-name: TemplateWithAndWithoutInk
+name: TemplateWithAndWithoutColor
 unit: mm
 dpi: 200
 format:
@@ -9651,20 +9924,20 @@ format:
   height: 20
 layout:
   - type: text
-    value: "Declared Ink"
+    value: "Declared Color"
     at: [0, 0]
     size: [50, 10]
     font_size: 10
-    ink: red
+    color: red
   - type: text
-    value: "Default Ink"
+    value: "Default Color"
     at: [0, 10]
     size: [50, 10]
     font_size: 10
 "#;
-        let (app, _state) = test_app_with_custom_templates(vec![("ink_readback", yaml)]);
+        let (app, _state) = test_app_with_custom_templates(vec![("color_readback", yaml)]);
         let req = Request::builder()
-            .uri("/api/templates/ink_readback")
+            .uri("/api/templates/color_readback")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -9673,20 +9946,20 @@ layout:
         let items = detail["layout"].as_array().expect("layout items");
         assert_eq!(items.len(), 2);
         assert_eq!(
-            items[0]["ink"], "red",
-            "item 0 must report declared ink 'red'"
+            items[0]["color"], "red",
+            "item 0 must report declared color 'red'"
         );
         assert!(
-            items[1].get("ink").is_none(),
-            "item 1 must omit 'ink' key when no ink was declared, got: {:?}",
-            items[1].get("ink")
+            items[1].get("color").is_none(),
+            "item 1 must omit 'color' key when no color was declared, got: {:?}",
+            items[1].get("color")
         );
     }
 
     #[tokio::test]
-    async fn ink_multi_slot_sheet_and_bilevel_rendering() {
+    async fn color_multi_slot_sheet_and_bilevel_rendering() {
         let sheet_yaml = r#"
-name: SheetInk
+name: SheetColor
 unit: mm
 dpi: 200
 format:
@@ -9699,28 +9972,34 @@ format:
     - [0, 0]
     - [25, 0]
 params:
-  color:
+  bg:
     type: string
-    default: "blue"
+  txt_col:
+    type: string
 layout:
-  - type: text
-    value: "Label"
+  - type: container
     at: [0, 0]
     size: [20, 20]
-    font_size: 8
-    ink: "{color}"
+    background: "{bg}"
+    items:
+      - type: text
+        value: "Label"
+        at: [0, 0]
+        size: [20, 20]
+        font_size: 8
+        color: "{txt_col}"
 "#;
-        let (app, _state) = test_app_with_custom_templates(vec![("sheet_ink", sheet_yaml)]);
+        let (app, _state) = test_app_with_custom_templates(vec![("sheet_color", sheet_yaml)]);
 
-        // 1. Multi-slot sheet PDF rendering with ink
+        // 1. Multi-slot sheet PDF rendering with painted container and text in every slot
         let req_sheet = req_post_json(
             "/api/batch",
             &serde_json::json!({
-                "template": "sheet_ink",
+                "template": "sheet_color",
                 "mode": "download",
                 "labels": [
-                    { "data": { "color": "red" } },
-                    { "data": { "color": "navy" } }
+                    { "data": { "bg": "red", "txt_col": "yellow" } },
+                    { "data": { "bg": "navy", "txt_col": "white" } }
                 ]
             })
             .to_string(),
@@ -9730,11 +10009,9 @@ layout:
         let pdf = body_bytes(res_sheet).await;
         assert!(pdf.starts_with(b"%PDF"));
 
-        // 2. Bilevel thresholding with light ink
-        // A single label with a light yellow ink rendered with color_mode=bilevel produces pure B/W pixels
-        // and 0 black pixels because yellow thresholds to white.
-        let light_yaml = r#"
-name: LightInk
+        // 2. Bilevel thresholding with light glyphs (yellow) inside dark background (navy)
+        let dark_bg_light_text_yaml = r#"
+name: DarkBgLightText
 unit: mm
 dpi: 200
 format:
@@ -9742,37 +10019,155 @@ format:
   width: 30
   height: 15
 layout:
-  - type: text
-    value: "Light"
+  - type: container
     at: [0, 0]
     size: [30, 15]
-    font_size: 10
-    ink: yellow
+    background: navy
+    items:
+      - type: text
+        value: "LIGHT"
+        at: [2, 2]
+        size: [26, 11]
+        font_size: 10
+        color: yellow
 "#;
-        let (app2, _state2) = test_app_with_custom_templates(vec![("light_ink", light_yaml)]);
+        let (app2, _state2) =
+            test_app_with_custom_templates(vec![("bilevel_test", dark_bg_light_text_yaml)]);
         let req_bilevel = req_post_json(
             "/api/render/label?format=png&color_mode=bilevel",
-            &serde_json::json!({ "template": "light_ink", "data": {} }).to_string(),
+            &serde_json::json!({ "template": "bilevel_test", "data": {} }).to_string(),
         );
         let res_bilevel = app2.clone().oneshot(req_bilevel).await.unwrap();
         assert_eq!(res_bilevel.status(), StatusCode::OK);
         let png = body_bytes(res_bilevel).await;
         let img = image::load_from_memory(&png).expect("decode").to_rgba8();
+
+        // Dark ground (navy, luminance <= 128) becomes black (0, 0, 0)
         let black_count = img
             .pixels()
             .filter(|p| (p[0], p[1], p[2]) == (0, 0, 0))
             .count();
-        assert_eq!(
-            black_count, 0,
-            "yellow ink must threshold to white, yielding 0 black pixels in bilevel mode"
+        assert!(
+            black_count > 0,
+            "navy background must threshold to black in bilevel mode, found {black_count}"
         );
+
+        // Light glyphs (yellow, luminance > 128) become white (255, 255, 255)
+        let white_count = img
+            .pixels()
+            .filter(|p| (p[0], p[1], p[2]) == (255, 255, 255))
+            .count();
+        assert!(
+            white_count > 0,
+            "yellow glyphs must threshold to white in bilevel mode, found {white_count}"
+        );
+
+        // All pixels must be pure 1-bit thresholded black or white
         assert!(
             img.pixels().all(|p| {
                 let (r, g, b) = (p[0], p[1], p[2]);
                 (r, g, b) == (0, 0, 0) || (r, g, b) == (255, 255, 255)
             }),
-            "bilevel output with yellow ink must be pure B/W (thresholded)"
+            "bilevel output must be pure B/W thresholded"
         );
+    }
+
+    #[tokio::test]
+    async fn shape_and_text_parameter_referenced_color_rendering() {
+        let yaml = r#"
+name: ShapeParamColors
+unit: mm
+dpi: 200
+params:
+  bg_color:
+    type: string
+  stroke_color:
+    type: string
+  text_color:
+    type: string
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 30]
+    background: "{bg_color}"
+    stroke:
+      thickness: 1.0
+      color: "{stroke_color}"
+    items:
+      - type: text
+        value: "PARAM"
+        at: [5, 5]
+        size: [40, 20]
+        font_size: 14
+        color: "{text_color}"
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("shape_param_colors", yaml)]);
+
+        // 1. PNG render resolves container background, stroke, and text color parameters
+        let req_png = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "shape_param_colors",
+                "data": {
+                    "bg_color": "#000080",
+                    "stroke_color": "#ff0000",
+                    "text_color": "#ffff00"
+                }
+            })
+            .to_string(),
+        );
+        let res_png = app.clone().oneshot(req_png).await.unwrap();
+        assert_eq!(res_png.status(), StatusCode::OK);
+        let png = body_bytes(res_png).await;
+        let img = image::load_from_memory(&png)
+            .expect("decode png")
+            .to_rgba8();
+
+        // Navy background pixels (0, 0, 128)
+        let navy_count = img
+            .pixels()
+            .filter(|p| (p[0], p[1], p[2]) == (0, 0, 128))
+            .count();
+        assert!(
+            navy_count > 0,
+            "must contain navy (0, 0, 128) background pixels"
+        );
+
+        // Red stroke pixels (255, 0, 0)
+        let red_count = img
+            .pixels()
+            .filter(|p| (p[0], p[1], p[2]) == (255, 0, 0))
+            .count();
+        assert!(red_count > 0, "must contain red (255, 0, 0) stroke pixels");
+
+        // Yellow text glyph pixels over navy background
+        let yellow_count = img
+            .pixels()
+            .filter(|p| p[0] > 180 && p[1] > 180 && p[2] < 100)
+            .count();
+        assert!(yellow_count > 0, "must contain yellow glyph pixels");
+
+        // 2. PDF render resolves all three parameters
+        let req_pdf = req_post_json(
+            "/api/render/label?format=pdf",
+            &serde_json::json!({
+                "template": "shape_param_colors",
+                "data": {
+                    "bg_color": "#000080",
+                    "stroke_color": "#ff0000",
+                    "text_color": "#ffff00"
+                }
+            })
+            .to_string(),
+        );
+        let res_pdf = app.clone().oneshot(req_pdf).await.unwrap();
+        assert_eq!(res_pdf.status(), StatusCode::OK);
+        let pdf = body_bytes(res_pdf).await;
+        assert!(pdf.starts_with(b"%PDF"));
     }
 
     #[tokio::test]
@@ -9830,11 +10225,14 @@ layout:
     }
 
     #[tokio::test]
-    async fn template_get_reports_canonical_shape_colors() {
+    async fn template_get_reports_authored_shape_and_text_colors() {
         let yaml = r##"
-name: CanonicalColors
+name: AuthoredColors
 unit: mm
 dpi: 200
+params:
+  brand:
+    type: string
 format:
   type: single
   width: 50
@@ -9859,12 +10257,24 @@ layout:
         size: [40, 15]
         stroke:
           thickness: 0.1
-          color: blue
+          color: "{brand}"
+        background: "{brand}"
         items: []
+      - type: text
+        value: "Dynamic Color"
+        at: [5, 20]
+        size: [40, 5]
+        font_size: 6
+        color: "{brand}"
+      - type: text
+        value: "Default Color"
+        at: [5, 25]
+        size: [40, 5]
+        font_size: 6
 "##;
-        let (app, _state) = test_app_with_custom_templates(vec![("canonical_colors", yaml)]);
+        let (app, _state) = test_app_with_custom_templates(vec![("authored_colors", yaml)]);
         let req = Request::builder()
-            .uri("/api/templates/canonical_colors")
+            .uri("/api/templates/authored_colors")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -9872,19 +10282,94 @@ layout:
         let detail = body_json(res).await;
         let items = detail["layout"].as_array().expect("layout items");
 
-        // Top-level container
-        assert_eq!(items[0]["background"], "#ff0000ff");
-        assert_eq!(items[0]["stroke"]["color"], "#ff00ffff");
+        // Top-level container: authored spelling preserved
+        assert_eq!(items[0]["background"], "red");
+        assert_eq!(items[0]["stroke"]["color"], "#F0F");
         assert_eq!(items[0]["stroke"]["thickness"], 0.2);
         assert_eq!(items[0]["rounded"], 1.0);
 
         // Child items inside container
         let child_items = items[0]["items"].as_array().expect("child items");
-        // Line with defaulted color -> "#000000ff"
-        assert_eq!(child_items[0]["stroke"]["color"], "#000000ff");
+        // Line with defaulted color -> "black"
+        assert_eq!(child_items[0]["stroke"]["color"], "black");
         assert_eq!(child_items[0]["stroke"]["thickness"], 0.5);
 
-        // Nested container with explicit blue -> "#0000ffff"
-        assert_eq!(child_items[1]["stroke"]["color"], "#0000ffff");
+        // Nested container with stroke: { color: "{brand}" } and background: "{brand}"
+        assert_eq!(child_items[1]["stroke"]["color"], "{brand}");
+        assert_eq!(child_items[1]["background"], "{brand}");
+
+        // Text item with color reference -> "{brand}"
+        assert_eq!(child_items[2]["color"], "{brand}");
+
+        // Uncoloured text item omits color key
+        assert!(child_items[3].get("color").is_none());
+    }
+
+    #[tokio::test]
+    async fn cross_field_paint_equality_between_text_and_container() {
+        // Container with background: red and side-by-side text with color: red
+        let yaml = r#"
+name: CrossFieldPaint
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+layout:
+  - type: container
+    at: [0, 0]
+    size: [20, 20]
+    background: red
+    items: []
+  - type: text
+    value: "RED"
+    at: [25, 0]
+    size: [25, 20]
+    font_size: 14
+    color: red
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("cross_field", yaml)]);
+        let req = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({ "template": "cross_field", "data": {} }).to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let png = body_bytes(res).await;
+        let img = image::load_from_memory(&png)
+            .expect("decode cross field png")
+            .to_rgba8();
+
+        let width = img.width();
+        // Container background pixels in left region use solid CSS Level 1 red (255, 0, 0)
+        let container_red_pixels = img
+            .enumerate_pixels()
+            .filter(|(x, _y, p)| *x < width / 2 && (p[0], p[1], p[2]) == (255, 0, 0))
+            .count();
+        assert!(
+            container_red_pixels > 0,
+            "container background must paint standard red (255, 0, 0), found {container_red_pixels}"
+        );
+
+        // Text glyph pixels in right region use standard CSS Level 1 red (R=255, G=B < 200 on white background)
+        let text_red_pixels = img
+            .enumerate_pixels()
+            .filter(|(x, _y, p)| *x >= width / 2 && p[0] == 255 && p[1] == p[2] && p[1] < 200)
+            .count();
+        assert!(
+            text_red_pixels > 0,
+            "text glyphs must paint standard red (R=255, G=B), found {text_red_pixels}"
+        );
+
+        // Ensure Typst's legacy red (255, 65, 54) or any non-CSS red with G != B is NOT present anywhere in text region
+        let non_css_red_pixels = img
+            .enumerate_pixels()
+            .filter(|(x, _y, p)| *x >= width / 2 && p[0] == 255 && p[1] != p[2])
+            .count();
+        assert_eq!(
+            non_css_red_pixels, 0,
+            "Typst's legacy red with unequal green/blue channels must not appear anywhere"
+        );
     }
 }
