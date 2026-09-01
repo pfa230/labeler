@@ -98,6 +98,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0089](0089-wrapping-and-the-overflow-policy.md) | Wrapping and the overflow policy | Accepted |
 | [0090](0090-a-declared-default-is-deferred-not-copied.md) | A declared default is deferred, not copied | Accepted |
 | [0091](0091-text-ink-is-a-full-colour.md) | Text ink is a full-colour RGBA value | Accepted |
+| [0092](0092-a-shape-carries-a-stroke-and-a-background.md) | A shape carries a stroke and a background | Accepted |
 
 ## Adding an ADR
 

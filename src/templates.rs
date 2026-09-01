@@ -1750,25 +1750,29 @@ fn instantiate_item_defaults(
         LayoutItem::Line {
             at,
             to,
-            thickness,
+            stroke,
             when,
         } => LayoutItem::Line {
             at: at.clone(),
             to: to.clone(),
-            thickness: *thickness,
+            stroke: stroke.clone(),
             when: when.clone(),
         },
         LayoutItem::Container {
             placement,
             when,
-            frame,
+            stroke,
+            background,
+            rounded,
             padding,
             flow,
             items,
         } => LayoutItem::Container {
             placement: inst_placement(placement),
             when: when.clone(),
-            frame: frame.clone(),
+            stroke: stroke.clone(),
+            background: *background,
+            rounded: *rounded,
             padding: *padding,
             flow: flow.clone(),
             items: items
@@ -1869,13 +1873,15 @@ fn validate_layout_item(
         LayoutItem::Line {
             at,
             to,
-            thickness,
+            stroke,
             when,
         } => {
             validate_when(when.as_ref())?;
             const LINE_EPSILON: f32 = 1.0e-4;
-            if *thickness <= 0.0 {
-                return Err("line thickness must be greater than 0".to_string());
+            if let Some(stroke) = stroke {
+                if !stroke.thickness.is_finite() || stroke.thickness < 0.0001 {
+                    return Err("stroke thickness must be finite and >= 0.0001".to_string());
+                }
             }
             let (start, end) = match frame {
                 Some((fw, fh)) => (
@@ -1967,15 +1973,22 @@ fn validate_layout_item(
         LayoutItem::Container {
             placement,
             when,
-            frame: cont_frame,
+            stroke,
+            background: _,
+            rounded,
             padding,
             flow,
             items,
         } => {
             validate_when(when.as_ref())?;
-            if let Some(cf) = cont_frame {
-                if cf.thickness <= 0.0 {
-                    return Err("container frame thickness must be greater than 0".to_string());
+            if let Some(s) = stroke {
+                if !s.thickness.is_finite() || s.thickness < 0.0001 {
+                    return Err("stroke thickness must be finite and >= 0.0001".to_string());
+                }
+            }
+            if let Some(r) = rounded {
+                if !r.is_finite() || *r < 0.0001 {
+                    return Err("rounded radius must be finite and >= 0.0001".to_string());
                 }
             }
             if let Some(fl) = flow {
@@ -2270,9 +2283,9 @@ mod tests {
         validate_group_segment, validate_template_id_stem, TemplateContent, TemplateRegistry,
     };
     use crate::models::{
-        Alignment, Dimension, DynamicDimension, DynamicValue, Extent, FontSize, InputControl,
-        Layout, LayoutItem, ParamSpec, ParamType, ParamValue, Position, Size, SizeValue,
-        TemplateFormat,
+        Alignment, Color, Dimension, DynamicDimension, DynamicValue, Extent, FontSize,
+        InputControl, Layout, LayoutItem, ParamSpec, ParamType, ParamValue, Position, Size,
+        SizeValue, Stroke, TemplateFormat,
     };
     use crate::reason::Reason;
     use serde_json::json;
@@ -2311,6 +2324,349 @@ mod tests {
     fn rotation_zero_rejected_on_non_container() {
         let yaml = "name: A\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 80\n  height: 40\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [40,10]\n    rotate: 0\n    font_size: 6\n";
         assert!(parse_and_validate(yaml).is_err());
+    }
+
+    #[test]
+    fn shape_paint_validation_boundaries() {
+        // Line thickness 0.0001 accepted
+        let yaml_ok = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: 0.0001\n";
+        assert!(parse_and_validate(yaml_ok).is_ok());
+
+        // Line thickness 0.00001 rejected
+        let yaml_err = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: 0.00001\n";
+        assert!(parse_and_validate(yaml_err).is_err());
+
+        // Line thickness 0 rejected
+        let yaml_zero = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: 0\n";
+        assert!(parse_and_validate(yaml_zero).is_err());
+
+        // Line thickness negative rejected
+        let yaml_neg = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: -1\n";
+        assert!(parse_and_validate(yaml_neg).is_err());
+
+        // Line thickness nan rejected
+        let yaml_line_nan = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: .nan\n";
+        assert!(parse_and_validate(yaml_line_nan).is_err());
+
+        // Line thickness inf rejected
+        let yaml_line_inf = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: .inf\n";
+        assert!(parse_and_validate(yaml_line_inf).is_err());
+
+        // Line background rejected
+        let yaml_line_bg = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: 0.2\n    background: red\n";
+        assert!(parse_and_validate(yaml_line_bg).is_err());
+
+        // Line rounded rejected
+        let yaml_line_rnd = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: line\n    at: [0,0]\n    to: [10,10]\n    stroke:\n      thickness: 0.2\n    rounded: 1.0\n";
+        assert!(parse_and_validate(yaml_line_rnd).is_err());
+
+        // Container stroke thickness 0.0001 accepted
+        let yaml_cont_ok = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.0001\n    items: []\n";
+        assert!(parse_and_validate(yaml_cont_ok).is_ok());
+
+        // Container stroke thickness 0.00001 rejected
+        let yaml_cont_err = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.00001\n    items: []\n";
+        assert!(parse_and_validate(yaml_cont_err).is_err());
+
+        // Container stroke thickness nan rejected
+        let yaml_cont_nan = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: .nan\n    items: []\n";
+        assert!(parse_and_validate(yaml_cont_nan).is_err());
+
+        // Container stroke thickness inf rejected
+        let yaml_cont_inf = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: .inf\n    items: []\n";
+        assert!(parse_and_validate(yaml_cont_inf).is_err());
+
+        // Container rounded 0.0001 accepted
+        let yaml_rnd_ok = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0.0001\n    items: []\n";
+        assert!(parse_and_validate(yaml_rnd_ok).is_ok());
+
+        // Container rounded 0.00001 rejected
+        let yaml_rnd_err = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: 0.00001\n    items: []\n";
+        assert!(parse_and_validate(yaml_rnd_err).is_err());
+
+        // Container rounded nan rejected
+        let yaml_rnd_nan = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: .nan\n    items: []\n";
+        assert!(parse_and_validate(yaml_rnd_nan).is_err());
+
+        // Container rounded inf rejected
+        let yaml_rnd_inf = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    rounded: .inf\n    items: []\n";
+        assert!(parse_and_validate(yaml_rnd_inf).is_err());
+
+        // Unknown keys inside stroke rejected
+        let yaml_stroke_unknown = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 1.0\n      width: 2.0\n    items: []\n";
+        assert!(parse_and_validate(yaml_stroke_unknown).is_err());
+
+        // Shape attributes rejected on text
+        let yaml_text_stroke = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n    stroke:\n      thickness: 1.0\n";
+        assert!(parse_and_validate(yaml_text_stroke).is_err());
+
+        let yaml_text_bg = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n    background: red\n";
+        assert!(parse_and_validate(yaml_text_bg).is_err());
+
+        let yaml_text_rnd = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: text\n    value: hi\n    at: [0,0]\n    size: [10,5]\n    font_size: 8\n    rounded: 1.0\n";
+        assert!(parse_and_validate(yaml_text_rnd).is_err());
+
+        // Shape attributes rejected on qr
+        let yaml_qr_stroke = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: qr\n    value: hi\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 1.0\n";
+        assert!(parse_and_validate(yaml_qr_stroke).is_err());
+
+        let yaml_qr_bg = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: qr\n    value: hi\n    at: [0,0]\n    size: [10,10]\n    background: red\n";
+        assert!(parse_and_validate(yaml_qr_bg).is_err());
+
+        let yaml_qr_rnd = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: qr\n    value: hi\n    at: [0,0]\n    size: [10,10]\n    rounded: 1.0\n";
+        assert!(parse_and_validate(yaml_qr_rnd).is_err());
+
+        // Shape attributes rejected on image
+        let yaml_img_stroke = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 1.0\n";
+        assert!(parse_and_validate(yaml_img_stroke).is_err());
+
+        let yaml_img_bg = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    background: red\n";
+        assert!(parse_and_validate(yaml_img_bg).is_err());
+
+        let yaml_img_rnd = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    rounded: 1.0\n";
+        assert!(parse_and_validate(yaml_img_rnd).is_err());
+    }
+
+    #[test]
+    fn shape_paint_direct_model_validation_boundaries() {
+        let base_template = |layout: Vec<LayoutItem>| TemplateContent {
+            name: "T".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(50.0).into(),
+                height: Dimension::Fixed(30.0).into(),
+                media_width: None,
+            },
+            params: BTreeMap::new(),
+            layout: Layout::Items(layout),
+            version: None,
+        };
+
+        // 1. Line stroke validation on model directly
+        let line_with_stroke = |thickness: f32| {
+            base_template(vec![LayoutItem::Line {
+                at: Position([0.0, 0.0]),
+                to: Position([10.0, 10.0]),
+                stroke: Some(Stroke {
+                    thickness,
+                    color: Color::BLACK,
+                }),
+                when: None,
+            }])
+        };
+
+        assert!(line_with_stroke(0.0001).validate().is_ok());
+        assert!(line_with_stroke(0.00001).validate().is_err());
+        assert!(line_with_stroke(0.0).validate().is_err());
+        assert!(line_with_stroke(-1.0).validate().is_err());
+        assert!(line_with_stroke(f32::NAN).validate().is_err());
+        assert!(line_with_stroke(f32::INFINITY).validate().is_err());
+
+        // Line with no stroke is valid
+        let line_no_stroke = base_template(vec![LayoutItem::Line {
+            at: Position([0.0, 0.0]),
+            to: Position([10.0, 10.0]),
+            stroke: None,
+            when: None,
+        }]);
+        assert!(line_no_stroke.validate().is_ok());
+
+        // 2. Container stroke validation on model directly
+        let container_with_stroke = |thickness: f32| {
+            base_template(vec![LayoutItem::Container {
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
+                ),
+                when: None,
+                stroke: Some(Stroke {
+                    thickness,
+                    color: Color::BLACK,
+                }),
+                background: None,
+                rounded: None,
+                padding: crate::models::Padding::ZERO,
+                flow: None,
+                items: vec![],
+            }])
+        };
+
+        assert!(container_with_stroke(0.0001).validate().is_ok());
+        assert!(container_with_stroke(0.00001).validate().is_err());
+        assert!(container_with_stroke(0.0).validate().is_err());
+        assert!(container_with_stroke(-1.0).validate().is_err());
+        assert!(container_with_stroke(f32::NAN).validate().is_err());
+        assert!(container_with_stroke(f32::INFINITY).validate().is_err());
+
+        // 3. Container rounded validation on model directly
+        let container_with_rounded = |radius: f32| {
+            base_template(vec![LayoutItem::Container {
+                placement: crate::models::Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
+                ),
+                when: None,
+                stroke: None,
+                background: None,
+                rounded: Some(radius),
+                padding: crate::models::Padding::ZERO,
+                flow: None,
+                items: vec![],
+            }])
+        };
+
+        assert!(container_with_rounded(0.0001).validate().is_ok());
+        assert!(container_with_rounded(0.00001).validate().is_err());
+        assert!(container_with_rounded(0.0).validate().is_err());
+        assert!(container_with_rounded(-1.0).validate().is_err());
+        assert!(container_with_rounded(f32::NAN).validate().is_err());
+        assert!(container_with_rounded(f32::INFINITY).validate().is_err());
+    }
+
+    #[test]
+    fn superseded_shape_spellings_are_quarantined_at_registry_load() {
+        let dir = temp_dir("superseded_shape_spellings");
+
+        // 1. Valid template that must be loaded and served
+        let valid_yaml = r#"
+name: Valid Label
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    stroke:
+      thickness: 0.2
+    items: []
+"#;
+        write_template(&dir, "valid_label.yaml", valid_yaml);
+
+        // 2. Container with legacy frame block
+        let frame_yaml = r#"
+name: Legacy Frame
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    frame:
+      thickness: 0.02
+      rounded: false
+    items: []
+"#;
+        write_template(&dir, "legacy_frame.yaml", frame_yaml);
+
+        // 3. Line with bare thickness
+        let line_thickness_yaml = r#"
+name: Bare Line Thickness
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: line
+    at: [0, 0]
+    to: [10, 10]
+    thickness: 0.2
+"#;
+        write_template(&dir, "bare_line_thickness.yaml", line_thickness_yaml);
+
+        // 4. Container with boolean rounded: true
+        let rounded_true_yaml = r#"
+name: Boolean Rounded True
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    rounded: true
+    items: []
+"#;
+        write_template(&dir, "rounded_true.yaml", rounded_true_yaml);
+
+        // 5. Container with boolean rounded: false
+        let rounded_false_yaml = r#"
+name: Boolean Rounded False
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    rounded: false
+    items: []
+"#;
+        write_template(&dir, "rounded_false.yaml", rounded_false_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+
+        // The valid template must be served
+        assert_eq!(registry.len(), 1, "valid template must be served");
+        assert!(registry.get("valid_label").is_some());
+
+        // The four broken templates must be quarantined
+        let broken = registry.broken();
+        assert_eq!(
+            broken.len(),
+            4,
+            "four superseded templates must be quarantined"
+        );
+
+        let find_broken = |filename: &str| {
+            broken
+                .iter()
+                .find(|b| b.path == filename)
+                .unwrap_or_else(|| panic!("missing broken template {filename}"))
+        };
+
+        let frame_broken = find_broken("legacy_frame.yaml");
+        assert!(
+            frame_broken.error.contains("frame"),
+            "expected 'frame' in error: {}",
+            frame_broken.error
+        );
+
+        let line_broken = find_broken("bare_line_thickness.yaml");
+        assert!(
+            line_broken.error.contains("thickness"),
+            "expected 'thickness' in error: {}",
+            line_broken.error
+        );
+
+        let rnd_true_broken = find_broken("rounded_true.yaml");
+        assert!(
+            rnd_true_broken.error.contains("rounded"),
+            "expected 'rounded' in error: {}",
+            rnd_true_broken.error
+        );
+
+        let rnd_false_broken = find_broken("rounded_false.yaml");
+        assert!(
+            rnd_false_broken.error.contains("rounded"),
+            "expected 'rounded' in error: {}",
+            rnd_false_broken.error
+        );
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -2471,7 +2827,7 @@ mod tests {
     /// load rather than deferred to a render that is guaranteed to fail.
     #[test]
     fn validate_rejects_a_plain_line_endpoint_past_the_max_width() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 30 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [40.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 30 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [40.0, 6.0]\n    stroke:\n      thickness: 0.2\n";
         assert_eq!(
             parse_and_validate(yaml),
             Err("line must fit within layout bounds".to_string())
@@ -2483,7 +2839,7 @@ mod tests {
     /// rejected as if the label's final width were unknown to both.
     #[test]
     fn validate_accepts_an_edge_relative_line_on_a_dynamic_width_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [-30.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [-30.0, 6.0]\n    to: [-0.0, 6.0]\n    stroke:\n      thickness: 0.2\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
@@ -3070,7 +3426,10 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Line {
                 at: Position([1.0, 1.0]),
                 to: Position([1.0, 1.0]),
-                thickness: 0.2,
+                stroke: Some(Stroke {
+                    thickness: 0.2,
+                    color: Color::BLACK,
+                }),
                 when: None,
             }]),
             version: None,
@@ -3094,7 +3453,10 @@ layout:
             layout: Layout::Items(vec![LayoutItem::Line {
                 at,
                 to,
-                thickness: 0.2,
+                stroke: Some(Stroke {
+                    thickness: 0.2,
+                    color: Color::BLACK,
+                }),
                 when: None,
             }]),
             version: None,
@@ -3118,21 +3480,21 @@ layout:
     /// as a zero-length line. The check has to run on resolved coordinates.
     #[test]
     fn validate_accepts_a_full_width_divider_on_a_dynamic_label() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-0.0, 6.0]\n    stroke:\n      thickness: 0.2\n";
         assert_eq!(parse_and_validate(yaml), Ok(()));
     }
 
     /// Still degenerate after resolution: both endpoints land on the right edge.
     #[test]
     fn validate_rejects_a_line_degenerate_after_resolution() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: line\n    at: [-0.0, 6.0]\n    to: [-0.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: 40\n  height: 12\nlayout:\n  - type: line\n    at: [-0.0, 6.0]\n    to: [-0.0, 6.0]\n    stroke:\n      thickness: 0.2\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
     /// An inset larger than the widest the label can ever be never resolves to a valid coordinate.
     #[test]
     fn validate_rejects_a_line_inset_larger_than_the_max_width() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-140.0, 6.0]\n    thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: line\n    at: [0.0, 6.0]\n    to: [-140.0, 6.0]\n    stroke:\n      thickness: 0.2\n";
         assert!(parse_and_validate(yaml).is_err());
     }
 
@@ -3198,7 +3560,9 @@ layout:
                     Size([SizeValue::fill(), SizeValue::fixed(12.0)]),
                 ),
                 when: None,
-                frame: None,
+                stroke: None,
+                background: None,
+                rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 items: vec![],
@@ -4086,7 +4450,8 @@ layout:
       - type: line
         at: [10, 10]
         to: [20, -10]
-        thickness: 0.5
+        stroke:
+          thickness: 0.5
       - type: text
         value: "Hello"
         at: [0, 0]
@@ -4313,7 +4678,8 @@ layout:
   - type: line
     at: [0, 0]
     to: [10, 0]
-    thickness: 0.5
+    stroke:
+      thickness: 0.5
   - type: container
     when:
       branch: alpha
@@ -5058,7 +5424,8 @@ layout:
       - type: line
         at: [0, 0]
         to: [10, 0]
-        thickness: 0.2
+        stroke:
+          thickness: 0.2
 "#,
                 "layout[0].items[0]",
             ),
@@ -5594,7 +5961,8 @@ layout:
   - type: line
     at: [0, 0]
     to: [50, 20]
-    thickness: 1
+    stroke:
+      thickness: 1
     ink: red
 "#;
         let err = parse_and_validate(line_yaml).unwrap_err();
