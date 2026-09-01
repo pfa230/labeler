@@ -3161,6 +3161,109 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[tokio::test]
+    async fn template_put_with_top_level_options_is_rejected_before_write() {
+        let dir = temp_templates_dir();
+        let original = template_yaml("keep_me");
+        std::fs::write(dir.join("keep_me.yaml"), &original).unwrap();
+        let app = build_app_in(&dir);
+
+        let body = r#"
+name: Has Options
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+options:
+  orientation: [vertical, horizontal]
+layout:
+  - type: text
+    value: "hello"
+    at: [0, 0]
+    size: [10, 5]
+    font_size: 8
+"#;
+        let response = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/keep_me", "PUT", body.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = json_response(response).await;
+        assert_eq!(json["error"]["code"], "TemplateInvalid");
+        assert_eq!(json["error"]["details"]["reason"], "template_parse_failed");
+        let msg = json["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("unknown field `options`"),
+            "expected 'unknown field `options`' in error message, got: {msg}"
+        );
+
+        let stored = std::fs::read_to_string(dir.join("keep_me.yaml")).expect("read stored");
+        assert_eq!(
+            stored, original,
+            "stored file must remain byte-for-byte unchanged"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_put_with_container_option_is_rejected_before_write() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let body = r#"
+name: Has Container Option
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [vertical, horizontal]
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    option:
+      orientation: vertical
+    items: []
+"#;
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/templates/new_tpl")
+                    .header("content-type", "text/yaml")
+                    .header("if-none-match", "*")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = json_response(response).await;
+        assert_eq!(json["error"]["code"], "TemplateInvalid");
+        assert_eq!(json["error"]["details"]["reason"], "template_parse_failed");
+        let msg = json["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("layout[0]") && msg.contains("unknown field `option`"),
+            "expected layout[0] and 'unknown field `option`' in error message, got: {msg}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "create-only write must leave no file"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
     /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
     /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates

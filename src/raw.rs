@@ -192,16 +192,10 @@ pub struct TemplateDefinitionRaw {
     pub format: RawTemplateFormat,
     #[serde(default)]
     pub params: Option<BTreeMap<String, RawParamSpec>>,
-    #[serde(default)]
-    pub options: Option<RawOptions>,
     pub layout: Vec<LayoutItemRaw>,
     #[serde(default)]
     pub version: Option<String>,
 }
-
-#[derive(Debug, Deserialize)]
-#[serde(transparent)]
-pub struct RawOptions(pub BTreeMap<String, Vec<String>>);
 
 pub type RawTemplate = TemplateDefinitionRaw;
 
@@ -299,8 +293,6 @@ pub struct ContainerRaw {
     pub placement: PlacementRaw,
     #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, String>>,
-    #[serde(default, deserialize_with = "deserialize_when_map")]
-    pub option: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub stroke: Option<Option<StrokeRaw>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]

@@ -421,7 +421,6 @@ The post-change set of top-level template fields is:
 | `dpi` | integer > 0 | Raster resolution for PNG output. |
 | `format` | object | See `docs/SPEC.md` §3.1. |
 | `params` | map | Optional. Map of parameter name → `ParamSpec`. See `docs/SPEC.md` §3.0. |
-| `options` | map | Optional, legacy. Map of option name → allowed values, desugared into an enum `params` entry. Still accepted; not for new templates (ADR-0055, ADR-0056). |
 | `layout` | list | Tree of layout items. See `docs/SPEC.md` §4. |
 | `version` | string | Optional, free-form. |
 
@@ -429,8 +428,47 @@ The post-change set of top-level template fields is:
 and both SHALL be rejected as unknown top-level keys, per the `template-registry` capability. Parsing
 still rejects unknown fields.
 
+`options` is absent for a different reason: the field is deleted, and the table is exhaustive against
+it. `params` is the only way to declare a typed input, including an `enum`. A template carrying a
+top-level `options:` key SHALL be refused at load as an unknown top-level key, in an error naming
+`options`, and SHALL NOT be desugared into a `params` entry, accepted with a warning, or accepted at
+all. The refusal is the ordinary template-content fault: the file is quarantined and reported through
+the paths the `template-registry` capability specifies, and the server still starts and still serves
+every other template. There is no alias and no deprecation window.
+
+The same refusal SHALL apply to a template submitted over HTTP, because the body of a write is parsed
+on the same terms a file on disk is. A `PUT /api/templates/{id}` whose YAML body carries a top-level
+`options:` key SHALL be rejected with `422`, `error.code` `TemplateInvalid` and
+`error.details.reason` `template_parse_failed`, in a message naming `options`. The rejection SHALL be
+decided before anything is written, as the `template-registry` capability's requirement that a `422`
+from a template write means nothing was written already demands: replacing an existing template
+leaves its stored file byte-for-byte unchanged, and a create-only write (`If-None-Match: *`) creates
+no file.
+
 This requirement supersedes the `docs/SPEC.md` §3 top-level field table, and only that table. Every
 other rule in §3, and the frozen §3.0 and §3.1 subsections, stay authoritative.
+
+#### Scenario: A top-level `options:` key is refused
+
+- **WHEN** a template file declares a top-level `options:` map alongside `name`, `unit`, `dpi`,
+  `format` and `layout`
+- **THEN** the template fails to load and is reported as broken with an error naming `options`
+- **AND** no `enum` parameter is created from it, and the server still starts and still serves every
+  other template
+
+#### Scenario: A `PUT` body carrying `options:` is rejected before the write
+
+- **WHEN** `PUT /api/templates/{id}` receives a YAML body declaring a top-level `options:` map
+- **THEN** the response is `422` with `error.code` `TemplateInvalid`, `error.details.reason`
+  `template_parse_failed`, and a message naming `options`
+- **AND** an existing template at that id is left byte-for-byte unchanged, and no file is created
+  when the write was create-only
+
+#### Scenario: The same choices declared as a parameter load
+
+- **WHEN** the same template instead declares `params: { orientation: { type: enum, values: [...] } }`
+- **THEN** the template loads, and `orientation` is a declared `enum` parameter on every path that
+  reports one
 
 #### Scenario: A directory is the group
 

@@ -297,7 +297,7 @@ impl ContainerRaw {
 
         Ok(LayoutItem::Container {
             placement,
-            when: self.when.or(self.option),
+            when: self.when,
             stroke,
             background,
             rounded,
@@ -623,17 +623,6 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
                 let spec = ParamSpec::try_from(spec_raw)
                     .map_err(|err| err.with_prefix(&format!("params.{key}")))?;
                 params.insert(key, spec);
-            }
-        }
-        if let Some(raw_options) = raw.options {
-            for (key, values) in raw_options.0 {
-                params.entry(key).or_insert(ParamSpec {
-                    param_type: ParamType::Enum { values },
-                    default: None,
-                    min: None,
-                    max: None,
-                    description: None,
-                });
             }
         }
 
