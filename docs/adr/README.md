@@ -1,11 +1,45 @@
 # Architecture Decision Records
 
-This directory records the significant architectural decisions for Labeler, using
-[Michael Nygard's ADR format](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions).
+**Frozen at ADR-0091 (2026-08-31), by #285. Do not add rows. Do not write new ADRs.**
+
+Authoritative for what it covers, and never extended, in the way `docs/SPEC.md` is frozen for the same
+reason: an artifact that was the right record for its era, superseded by a better one. The 57 records
+through ADR-0057, which is itself the one that adopted OpenSpec, are the only account of *why* for
+behavior that `docs/SPEC.md` states without rationale, so they stay readable and stay cited. The 30
+after it duplicate a change folder that `openspec/changes/archive/` keeps permanently.
+
+Rationale for a behavior change now lives in that change's `proposal.md` and `design.md`, and the
+contract it establishes lives in `openspec/specs/`. Neither needs a second narrative, and no mechanical
+gate ever required this one. Plan reviews did read ADRs, and some checked an ADR's scope and content;
+what no script checked was that a change produced one at all. Other process rules go unenforced too,
+and AGENTS.md and docs/WORKFLOW.md both say which. What singles this one out is that it was also
+absent from the lookup path AGENTS.md gives for finding a rule, so nothing consulted the output when
+answering a question about behaviour either.
+
+Existing `ADR-NNNN` references in source comments and in `docs/` remain valid: they are stable
+permalinks into this archive.
+
+**ADR-0057 is superseded in part by #285**, and its index row below says so. It established the rule
+this freeze retires, and the record itself is left unedited because ADRs are immutable and the rest of
+it still holds: the frozen `docs/SPEC.md`, the precedence rule, and the OpenSpec loop. Only its
+provision that every behavior change writes an ADR is retired. Reading 0057 alone would otherwise
+leave you following a rule nothing else in the repository states any more.
+
+`docs/SPEC.md` still says decisions are recorded as ADRs, in three places. It is not corrected,
+because it is frozen too and correcting it would be the one thing its freeze forbids. Both documents
+describe the era they were frozen in, and AGENTS.md is where a live rule is stated: read a process
+claim in either frozen file as history, exactly as you already read their behaviour claims that
+`openspec/specs/` has since superseded.
+
+`tests/adr_index.rs` still runs, and still checks that the set of record numbers here and the
+set in the index below are the same. It exists because the index step was silently skipped for twenty
+consecutive records (#160). Freezing does not retire it: it now guards the archive against a record
+added without a row, or a row left behind by a deleted record. It compares NUMBERS, so a second file
+reusing a number already indexed would pass; the 87 here are uniquely numbered and agree with the 87
+rows.
 
 An ADR captures a single decision: its context, the choice made, and the consequences. ADRs are
-immutable once **Accepted**: to change a decision, add a new ADR that supersedes the old one (mark the
-old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
+immutable once **Accepted**; the supersession chains below record where a decision was later replaced.
 
 ## Index
 
@@ -67,7 +101,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0054](0054-auto-fallback-position.md) | An `auto` size falls back to the space remaining from its anchor | Superseded by [0080](0080-unify-size-resolution.md) |
 | [0055](0055-standardize-on-value-interpolation.md) | Standardize on value interpolation for text and QR items | Accepted |
 | [0056](0056-parameterized-templates.md) | Parameterized templates and dynamic layout constraints | Accepted (implicit defaults superseded in part by [0088](0088-explicit-parameter-defaults.md)) |
-| [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted |
+| [0057](0057-openspec-adoption.md) | Adopt OpenSpec and freeze the living specification | Accepted; its ADR-per-change rule retired by #285 |
 | [0058](0058-duplicate-template-id-refuses-the-file.md) | A duplicate template id refuses the file, not the server | Accepted |
 | [0059](0059-auto-length-text-box-is-the-alignment-slot.md) | Auto-length text box is the alignment slot | Superseded by [0080](0080-unify-size-resolution.md) |
 | [0060](0060-connection-scoped-field-transforms.md) | Connection-scoped field transforms | Accepted |
@@ -98,12 +132,3 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0089](0089-wrapping-and-the-overflow-policy.md) | Wrapping and the overflow policy | Accepted |
 | [0090](0090-a-declared-default-is-deferred-not-copied.md) | A declared default is deferred, not copied | Accepted |
 | [0091](0091-text-ink-is-a-full-colour.md) | Text ink is a full-colour RGBA value | Accepted |
-
-## Adding an ADR
-
-1. Copy the structure of an existing record. Use the next zero-padded number.
-2. Set `Status: Proposed`, fill in Context / Decision / Consequences.
-3. Add a row to the index above.
-4. On acceptance, set `Status: Accepted` and specify the new behavior as an OpenSpec delta under
-   `openspec/changes/<change>/specs/`, which folds into `openspec/specs/` on archive.
-   [`../SPEC.md`](../SPEC.md) is frozen (ADR-0057) and is no longer updated.

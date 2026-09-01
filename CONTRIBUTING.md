@@ -31,4 +31,6 @@ stale bundle. The server warns at startup when `ui/dist` is missing or older tha
 
 Open an issue to discuss a bug or feature, then submit a pull request that references it. The API and
 template schema are specified in [`docs/SPEC.md`](docs/SPEC.md); design decisions are recorded as
-[Architecture Decision Records](docs/adr/); the project vision is in [`docs/VISION.md`](docs/VISION.md).
+[Architecture Decision Records](docs/adr/), which are frozen and cover decisions up to 2026-08-31;
+newer ones live in the change that made them, under [`openspec/`](openspec/). The project vision is in
+[`docs/VISION.md`](docs/VISION.md).

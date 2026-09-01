@@ -754,7 +754,8 @@ string uses it. This is inherent to baseline alignment and is what every other r
 ## Where to go next
 
 - [`SPEC.md`](SPEC.md) — the normative reference for every field, rule, and error code.
-- [`adr/`](adr/) — why each decision is the way it is.
+- [`adr/`](adr/) — why each decision up to 2026-08-31 is the way it is; frozen, with newer reasoning
+  in the change that made it.
 - `catalog/` — the shipped starter templates, the best base to copy from.
 - `tests/fixtures/templates/` — templates that exist to demonstrate engine features (QR layouts,
   text wrapping, sheet options, rotation, edge-relative placement, interpolation).

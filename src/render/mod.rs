@@ -5187,7 +5187,7 @@ layout:
         .collect();
         assert_eq!(
             found, expected,
-            "catalog contents changed; update this gate and docs/adr/0047 deliberately"
+            "catalog contents changed; update this gate deliberately. ADR-0047 recorded the original set and is frozen, so it is not updated with it"
         );
     }
 
