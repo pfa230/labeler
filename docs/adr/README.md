@@ -77,7 +77,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0064](0064-svar-grid-for-the-connector-browser.md) | The connector browse table uses SVAR DataGrid; the ordering rules stay ours | Accepted |
 | [0065](0065-template-writes-verify-the-id-they-wrote.md) | A template write verifies the id it wrote, and a contested id refuses the delete | Accepted |
 | [0066](0066-format-badge-carries-icon-colour-and-count.md) | The format badge carries an icon, its own colour and a position count, and is delineated by a border | Accepted (the --accent-deep token decision superseded by [0071]) |
-| [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted (token list and formatting syntax superseded by [0079](0079-token-grammar.md); render-instant default superseded by [0088](0088-explicit-parameter-defaults.md)) |
+| [0068](0068-datetime-parameter-type.md) | Template parameter type for datetime with dynamic rendering and override support | Accepted (token list and formatting syntax superseded by [0079](0079-token-grammar.md); render-instant default superseded by [0088](0088-explicit-parameter-defaults.md); cacheability superseded by [0093](0093-a-declared-default-is-published-as-it-resolves.md)) |
 | [0069](0069-connect-opens-on-a-default-connection.md) | Connect opens on a default connection named by an instance-wide setting | Accepted |
 | [0070](0070-service-derives-the-input-list.md) | Service derives the input list | Accepted (amended by [0088](0088-explicit-parameter-defaults.md)) |
 | [0071](0071-one-accent-colour-with-a-defined-ink.md) | One accent colour, dark enough to carry text, with a defined ink on its fill | Accepted |
@@ -99,6 +99,7 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0090](0090-a-declared-default-is-deferred-not-copied.md) | A declared default is deferred, not copied | Accepted |
 | [0091](0091-text-ink-is-a-full-colour.md) | Text ink is a full-colour RGBA value | Accepted |
 | [0092](0092-a-shape-carries-a-stroke-and-a-background.md) | A shape carries a stroke and a background | Accepted |
+| [0093](0093-a-declared-default-is-published-as-it-resolves.md) | A declared default is published as it resolves | Accepted |
 
 ## Adding an ADR
 

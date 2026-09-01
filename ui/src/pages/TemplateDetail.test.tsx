@@ -476,4 +476,61 @@ describe("Template detail", () => {
     expect(screen.queryByText("Labels list")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
+
+  it("displays declared default alongside resolved value from param_defaults", async () => {
+    const detailWithDefaults = {
+      ...detail,
+      params: {
+        site: { type: "string", default: "{vars.site}" },
+        broken: { type: "string", default: "{vars.missing}" },
+        nodef: { type: "string" },
+      },
+      param_defaults: {
+        site: { resolved: "prod_site" },
+        broken: {
+          error: {
+            reason: "param_default_unresolvable",
+            message: "variable 'missing' not found",
+            token: "vars.missing",
+          },
+        },
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/api/templates/brother_24mm_qr")) {
+          return new Response(JSON.stringify(detailWithDefaults), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        if (url.endsWith("/api/templates/brother_24mm_qr/source")) {
+          return new Response("source", { status: 200, headers: { "content-type": "text/yaml" } });
+        }
+        return new Response(new Blob(["x"]), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
+      }),
+    );
+    renderPage();
+
+    // Declared default for site and its resolved value
+    expect(await screen.findByText("{vars.site}")).toBeInTheDocument();
+    expect(screen.getByText("prod_site")).toBeInTheDocument();
+
+    // Declared default for broken and its error message
+    expect(screen.getByText("{vars.missing}")).toBeInTheDocument();
+    expect(screen.getByText(/variable 'missing' not found/)).toBeInTheDocument();
+
+    // nodef has no default shown: scope to the card (the key={name} rounded-md div)
+    const nodefCard = screen.getByText("nodef").closest("div.rounded-md");
+    expect(nodefCard).not.toBeNull();
+    expect(nodefCard!.textContent).not.toMatch(/default:/i);
+    // positive control: cards that did declare a default do show it
+    expect(screen.getByText("site").closest("div.rounded-md")!.textContent).toMatch(/default:/i);
+    expect(screen.getByText("broken").closest("div.rounded-md")!.textContent).toMatch(/default:/i);
+  });
 });

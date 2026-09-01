@@ -253,4 +253,24 @@ describe("FieldForm", () => {
     expect(await screen.findByRole("checkbox", { name: "Use default for title" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Use default for subtitle" })).toBeInTheDocument();
   });
+
+  it("renders no Use default checkbox and surfaces error message for an entry carrying default_error", async () => {
+    const inputs: InputSpec[] = [
+      {
+        name: "site",
+        control: "text",
+        required: true,
+        default_error: {
+          reason: "param_default_unresolvable",
+          message: "variable 'site' not found",
+          token: "vars.site",
+        },
+      },
+    ];
+    renderForm(single, singleValue, inputs);
+
+    expect(await screen.findByText("variable 'site' not found")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /use default/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "site" })).toBeEnabled();
+  });
 });

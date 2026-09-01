@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { FieldForm, type FormValue } from "./FieldForm";
 import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
-import { useLabelInputs, pruneDataForSubmit, getOwnKey, hasOwnKey, setOwnKey } from "../../lib/labelInputs";
+import { useLabelInputs, pruneDataForSubmit, getOwnKey, hasOwnKey, setOwnKey, seedDefaultValue } from "../../lib/labelInputs";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
 import { usePrinters } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
@@ -26,7 +26,7 @@ function initialFieldState(inputs: InputSpec[]): Pick<FormValue, "data" | "defer
   const deferred: Record<string, boolean> = {};
   for (const input of inputs) {
     if (input.default !== undefined && input.default !== null) {
-      setOwnKey(data, input.name, input.default);
+      setOwnKey(data, input.name, seedDefaultValue(input));
       setOwnKey(deferred, input.name, true);
     }
   }
@@ -46,7 +46,7 @@ function withArrivals(value: FormValue, inputs: InputSpec[]): FormValue {
     setOwnKey(deferred, input.name, true);
     if (hasOwnKey(data, input.name)) continue;
     if (data === value.data) data = { ...data };
-    setOwnKey(data, input.name, input.default);
+    setOwnKey(data, input.name, seedDefaultValue(input));
   }
   return deferred === value.deferred ? value : { ...value, data, deferred };
 }

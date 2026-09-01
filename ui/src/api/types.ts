@@ -6,6 +6,17 @@ export type TemplateFormat =
 
 export type ParamValue = string | number | boolean;
 
+export interface ParamDefaultError {
+  reason: string;
+  message: string;
+  token?: string;
+  value?: string;
+}
+
+export type ParamDefaultReport =
+  | { resolved: ParamValue }
+  | { error: ParamDefaultError };
+
 export interface ParamSpec {
   type: "string" | "number" | "integer" | "boolean" | "enum" | "length" | "datetime";
   default?: ParamValue;
@@ -34,6 +45,7 @@ export interface InputSpec {
   slider?: boolean;
   required?: boolean;
   default?: ParamValue;
+  default_error?: ParamDefaultError;
   values?: string[];
   min?: number;
   max?: number;
@@ -79,6 +91,7 @@ export interface TemplateDetail {
   dpi: number;
   format: TemplateFormat;
   params?: Record<string, ParamSpec>;
+  param_defaults?: Record<string, ParamDefaultReport>;
   inputs: TemplateInputs;
   variables: string[];
   version?: string;

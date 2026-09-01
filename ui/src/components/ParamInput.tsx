@@ -126,7 +126,7 @@ export function ParamInput({
       const currentVal =
         value !== undefined && value !== ""
           ? Number(value)
-          : Number(spec.default);
+          : Number((spec.default as number | undefined) ?? spec.min ?? 0);
 
       return (
         <div className="flex items-center gap-3">
@@ -182,13 +182,7 @@ export function ParamInput({
   }
 
   if (control === "checkbox" || paramSpec.type === "boolean") {
-    const rawVal =
-      value !== undefined
-        ? value
-        : spec.default !== undefined && spec.default !== null
-          ? spec.default
-          : undefined;
-    const isChecked = rawVal !== undefined ? Boolean(rawVal) : undefined;
+    const isChecked = value !== undefined ? Boolean(value) : undefined;
     return (
       <label className="inline-flex cursor-pointer items-center gap-2">
         <input
@@ -210,13 +204,7 @@ export function ParamInput({
   }
 
   if (control === "select" || paramSpec.type === "enum") {
-    const rawVal =
-      value !== undefined
-        ? value
-        : spec.default !== undefined && spec.default !== null
-          ? spec.default
-          : "";
-    const currentVal = String(rawVal);
+    const currentVal = value !== undefined ? String(value) : "";
     const hasMatch = (spec.values ?? []).includes(currentVal);
     return (
       <select

@@ -9181,14 +9181,28 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let body = body_json(res).await;
+        assert_eq!(
+            body["param_defaults"]["val"]["error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(
+            body["param_defaults"]["val"]["error"]["token"],
+            "vars.missing_var"
+        );
+
         let input_val = body["inputs"]["default"]
             .as_array()
             .unwrap()
             .iter()
             .find(|i| i["name"] == "val")
             .unwrap();
-        assert_eq!(input_val["required"], false);
+        assert_eq!(input_val["required"], true);
         assert!(input_val.get("default").is_none() || input_val["default"].is_null());
+        assert_eq!(
+            input_val["default_error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(input_val["default_error"]["token"], "vars.missing_var");
 
         // POST /api/templates/{id}/inputs
         let req = req_post_json(
@@ -9207,8 +9221,13 @@ layout:
             .iter()
             .find(|i| i["name"] == "val")
             .unwrap();
-        assert_eq!(input_val["required"], false);
+        assert_eq!(input_val["required"], true);
         assert!(input_val.get("default").is_none() || input_val["default"].is_null());
+        assert_eq!(
+            input_val["default_error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(input_val["default_error"]["token"], "vars.missing_var");
     }
 
     #[tokio::test]
@@ -9886,5 +9905,836 @@ layout:
 
         // Nested container with explicit blue -> "#0000ffff"
         assert_eq!(child_items[1]["stroke"]["color"], "#0000ffff");
+    }
+
+    #[tokio::test]
+    async fn issue_262_get_template_publishes_param_defaults_and_coerced_inputs() {
+        let yaml = r#"
+name: Issue 262 Defaults
+unit: mm
+dpi: 200
+params:
+  s:
+    type: string
+    default: hello
+  l:
+    type: length
+    default: "80mm"
+  i:
+    type: integer
+    default: 42
+  b:
+    type: boolean
+    default: true
+  e:
+    type: enum
+    values: [opt1, opt2]
+    default: opt1
+  d:
+    type: datetime
+    default: "{sys.now}"
+  req:
+    type: string
+format: { type: single, width: 100, height: 50 }
+layout:
+  - type: text
+    value: "{s} {l} {i} {b} {e} {d} {req}"
+    at: [0, 0]
+    size: [100, 50]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_defaults", yaml)]);
+        let req = Request::builder()
+            .uri("/api/templates/i262_defaults")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+
+        // Verify param_defaults
+        let pd = &detail["param_defaults"];
+        assert_eq!(pd["s"]["resolved"], "hello");
+        assert_eq!(pd["l"]["resolved"], 80.0);
+        assert_eq!(pd["i"]["resolved"], 42);
+        assert_eq!(pd["b"]["resolved"], true);
+        assert_eq!(pd["e"]["resolved"], "opt1");
+        assert!(pd["d"]["resolved"].is_string());
+        assert!(pd.get("req").is_none());
+
+        // Verify inputs.default and inputs.all
+        let get_input = |arr: &serde_json::Value, name: &str| {
+            arr.as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["name"] == name)
+                .cloned()
+                .unwrap()
+        };
+        for input_list_name in ["default", "all"] {
+            let list = &detail["inputs"][input_list_name];
+            let inp_s = get_input(list, "s");
+            assert_eq!(inp_s["required"], false);
+            assert_eq!(inp_s["default"], "hello");
+            assert!(inp_s["default_error"].is_null());
+
+            let inp_l = get_input(list, "l");
+            assert_eq!(inp_l["required"], false);
+            assert_eq!(inp_l["default"], 80.0);
+
+            let inp_i = get_input(list, "i");
+            assert_eq!(inp_i["required"], false);
+            assert_eq!(inp_i["default"], 42);
+
+            let inp_b = get_input(list, "b");
+            assert_eq!(inp_b["required"], false);
+            assert_eq!(inp_b["default"], true);
+
+            let inp_e = get_input(list, "e");
+            assert_eq!(inp_e["required"], false);
+            assert_eq!(inp_e["default"], "opt1");
+
+            let inp_d = get_input(list, "d");
+            assert_eq!(inp_d["required"], false);
+            assert!(inp_d["default"].is_string());
+
+            let inp_req = get_input(list, "req");
+            assert_eq!(inp_req["required"], true);
+            assert!(inp_req["default"].is_null());
+            assert!(inp_req["default_error"].is_null());
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_262_broken_default_reports_error_and_marks_input_required() {
+        let yaml = r#"
+name: Broken Default Test
+unit: mm
+dpi: 200
+params:
+  broken_var:
+    type: string
+    default: "{vars.missing_key}"
+  broken_len:
+    type: length
+    default: "not_a_length"
+  good:
+    type: string
+    default: ok
+format: { type: single, width: 100, height: 50 }
+layout:
+  - type: text
+    value: "{broken_var} {broken_len} {good}"
+    at: [0, 0]
+    size: [100, 50]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_broken", yaml)]);
+        let req = Request::builder()
+            .uri("/api/templates/i262_broken")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+
+        let pd = &detail["param_defaults"];
+        assert_eq!(
+            pd["broken_var"]["error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(pd["broken_var"]["error"]["token"], "vars.missing_key");
+
+        assert_eq!(
+            pd["broken_len"]["error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(pd["broken_len"]["error"]["value"], "not_a_length");
+
+        assert_eq!(pd["good"]["resolved"], "ok");
+
+        let get_input = |arr: &serde_json::Value, name: &str| {
+            arr.as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["name"] == name)
+                .cloned()
+                .unwrap()
+        };
+        let inp_var = get_input(&detail["inputs"]["default"], "broken_var");
+        assert_eq!(inp_var["required"], true);
+        assert!(inp_var["default"].is_null());
+        assert_eq!(
+            inp_var["default_error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(inp_var["default_error"]["token"], "vars.missing_key");
+
+        let inp_len = get_input(&detail["inputs"]["default"], "broken_len");
+        assert_eq!(inp_len["required"], true);
+        assert!(inp_len["default"].is_null());
+        assert_eq!(
+            inp_len["default_error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(inp_len["default_error"]["value"], "not_a_length");
+
+        let inp_good = get_input(&detail["inputs"]["default"], "good");
+        assert_eq!(inp_good["required"], false);
+        assert_eq!(inp_good["default"], "ok");
+        assert!(inp_good["default_error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn issue_262_get_templates_summaries_have_no_param_defaults() {
+        let (app, _state) = test_app_with_custom_templates(vec![]);
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let list = body_json(res).await;
+        for summary in list["templates"].as_array().unwrap() {
+            assert!(
+                summary.get("param_defaults").is_none(),
+                "TemplateSummary must not contain param_defaults"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_262_post_template_inputs_multi_label_batch() {
+        let yaml = r#"
+name: Batch Inputs Test
+unit: mm
+dpi: 200
+params:
+  site_param:
+    type: string
+    default: "{vars.site}"
+  mode:
+    type: enum
+    values: [a, b]
+    default: a
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      mode: a
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Branch A: {site_param} {field_a}"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 8
+  - type: container
+    when:
+      mode: b
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Branch B: {field_b}"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 8
+"#;
+        let (app, state) = test_app_with_custom_templates(vec![("i262_batch", yaml)]);
+        // Set site variable
+        state
+            .store()
+            .set_variable("site", "production")
+            .await
+            .unwrap();
+
+        let req = req_post_json(
+            "/api/templates/i262_batch/inputs",
+            &serde_json::json!({
+                "labels": [
+                    { "data": {} }, // mode defaults to a -> field_a active
+                    { "data": { "mode": "b" } } // mode is b -> field_b active
+                ]
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        let labels = body["inputs"].as_array().unwrap();
+        assert_eq!(labels.len(), 2);
+
+        // Label 1
+        let l1_names: Vec<&str> = labels[0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap())
+            .collect();
+        assert!(l1_names.contains(&"site_param"));
+        assert!(l1_names.contains(&"field_a"));
+        assert!(!l1_names.contains(&"field_b"));
+        let site_inp = labels[0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "site_param")
+            .unwrap();
+        assert_eq!(site_inp["required"], false);
+        assert_eq!(site_inp["default"], "production");
+
+        // Label 2
+        let l2_names: Vec<&str> = labels[1]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap())
+            .collect();
+        assert!(l2_names.contains(&"field_b"));
+        assert!(!l2_names.contains(&"field_a"));
+    }
+
+    #[tokio::test]
+    async fn issue_262_strict_render_fails_with_structured_details_for_broken_default() {
+        let yaml = r#"
+name: Strict Render Broken Default
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "{vars.missing_key}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_strict", yaml)]);
+        let req = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "i262_strict",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = body_json(res).await;
+        assert_eq!(err["error"]["code"], "TemplateInvalid");
+        let details = &err["error"]["details"];
+        assert_eq!(details["reason"], "param_default_unresolvable");
+        assert_eq!(details["param"], "val");
+        assert_eq!(details["token"], "vars.missing_key");
+        assert!(details.get("message").is_none());
+    }
+
+    #[tokio::test]
+    async fn issue_262_thumbnail_renders_with_placeholder_when_default_broken() {
+        let yaml = r#"
+name: Thumbnail Broken Default
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "{vars.missing_key}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_thumb_broken", yaml)]);
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/i262_thumb_broken/thumbnail"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
+        let png = body_bytes(res).await;
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[tokio::test]
+    async fn issue_262_when_gate_with_tokened_default() {
+        let yaml = r#"
+name: When Gate Token
+unit: mm
+dpi: 200
+params:
+  site_param:
+    type: string
+    default: "{vars.site}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      site_param: production
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Production only: {prod_secret}"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+"#;
+        let (app, state) = test_app_with_custom_templates(vec![("i262_when_gate", yaml)]);
+
+        // 1. Without variable, site_param is unresolvable -> container inactive
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/i262_when_gate"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+        assert!(!detail["inputs"]["default"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "prod_secret"));
+
+        // 2. With variable site=production -> container active
+        state
+            .store()
+            .set_variable("site", "production")
+            .await
+            .unwrap();
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/i262_when_gate"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+        assert!(detail["inputs"]["default"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "prod_secret"));
+    }
+
+    #[tokio::test]
+    async fn issue_262_sys_now_format_resolves_against_settings() {
+        let yaml = r#"
+name: Custom Format Date
+unit: mm
+dpi: 200
+params:
+  d:
+    type: string
+    default: "{sys.now:custom_fmt}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{d}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, state) = test_app_with_custom_templates(vec![("i262_date_fmt", yaml)]);
+        // Set custom format
+        state
+            .store()
+            .set_setting("datetime_formats", r#"{"custom_fmt":"%Y/%m/%d"}"#)
+            .await
+            .unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/i262_date_fmt"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+        let resolved_d = detail["param_defaults"]["d"]["resolved"].as_str().unwrap();
+        assert!(
+            resolved_d.contains('/'),
+            "expected formatted date with slashes, got: {resolved_d}"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_262_unreferenced_param_with_broken_default_in_param_defaults_and_fails_render() {
+        let yaml = r#"
+name: Unreferenced Broken Default
+unit: mm
+dpi: 200
+params:
+  unreferenced_broken:
+    type: string
+    default: "{vars.missing_var}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Fixed Text"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_unref_broken", yaml)]);
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/i262_unref_broken"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+
+        // Present in param_defaults with error
+        assert_eq!(
+            detail["param_defaults"]["unreferenced_broken"]["error"]["reason"],
+            "param_default_unresolvable"
+        );
+        // Absent from inputs
+        assert!(!detail["inputs"]["default"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "unreferenced_broken"));
+        assert!(!detail["inputs"]["all"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "unreferenced_broken"));
+
+        // Render still fails with 422 param_default_unresolvable
+        let req = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "i262_unref_broken",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err = body_json(res).await;
+        assert_eq!(err["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            err["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(err["error"]["details"]["param"], "unreferenced_broken");
+    }
+
+    #[tokio::test]
+    async fn issue_262_boolean_default_yes_error_and_length_coerced() {
+        let yaml = r#"
+name: Coercion Test
+unit: mm
+dpi: 200
+params:
+  b_bad:
+    type: boolean
+    default: "yes"
+  l_ok:
+    type: length
+    default: "80mm"
+format: { type: single, width: 100, height: 50 }
+layout:
+  - type: text
+    value: "{l_ok}"
+    at: [0, 0]
+    size: [100, 50]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_coercion", yaml)]);
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/i262_coercion"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+
+        assert_eq!(
+            detail["param_defaults"]["b_bad"]["error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(detail["param_defaults"]["b_bad"]["error"]["value"], "yes");
+
+        assert_eq!(
+            detail["param_defaults"]["l_ok"]["resolved"],
+            serde_json::json!(80.0)
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_262_put_template_returns_param_defaults() {
+        let yaml = r#"
+name: Put Defaults
+unit: mm
+dpi: 200
+params:
+  greeting:
+    type: string
+    default: "{vars.hello}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{greeting}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![]);
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/api/templates/put_def")
+            .header("content-type", "text/yaml")
+            .body(Body::from(yaml.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["param_defaults"]["greeting"]["error"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert_eq!(
+            body["param_defaults"]["greeting"]["error"]["token"],
+            "vars.hello"
+        );
+        assert!(body["inputs"]["default"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["name"] == "greeting" && i["required"] == true));
+    }
+
+    #[tokio::test]
+    async fn issue_262_store_failure_returns_500_and_leaves_no_file() {
+        let (app, state) = test_app_with_custom_templates(vec![]);
+        // Corrupt datetime_formats so resolve_datetime_formats fails -> 500
+        state
+            .store()
+            .set_setting("datetime_formats", "{")
+            .await
+            .unwrap();
+        let yaml = r#"
+name: Should Not Be Written
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "hi"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let req = Request::builder()
+            .method("PUT")
+            .uri("/api/templates/should_not_exist")
+            .header("content-type", "text/yaml")
+            .body(Body::from(yaml.to_string()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        // No file should have been written. GET would also 500 while setting is corrupt,
+        // so clear the corrupt setting first, then verify the template was never created.
+        state
+            .store()
+            .delete_setting("datetime_formats")
+            .await
+            .unwrap();
+        let get = app
+            .clone()
+            .oneshot(req_get("/api/templates/should_not_exist"))
+            .await
+            .unwrap();
+        assert_eq!(get.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn issue_262_inputs_every_label_carries_same_default() {
+        let yaml = r#"
+name: Multi Default
+unit: mm
+dpi: 200
+params:
+  msg:
+    type: string
+    default: hello
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{msg}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_multi_same", yaml)]);
+        let req = req_post_json(
+            "/api/templates/i262_multi_same/inputs",
+            &serde_json::json!({
+                "labels": [{ "data": {} }, { "data": {} }]
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        let inputs = body["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 2);
+        let d0 = inputs[0]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "msg")
+            .unwrap();
+        let d1 = inputs[1]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "msg")
+            .unwrap();
+        assert_eq!(d0["default"], "hello");
+        assert_eq!(d1["default"], "hello");
+        assert_eq!(d0["default"], d1["default"]);
+    }
+
+    #[tokio::test]
+    async fn issue_262_catalog_empty_vars_lists_broken_default_as_field() {
+        use crate::models::{
+            FontSize, Layout, ParamSpec, ParamType, ParamValue, Placement, Position, Size,
+            SizeValue, TemplateFormat,
+        };
+        use crate::templates::TemplateContent;
+        use std::collections::BTreeMap;
+        let template = TemplateContent {
+            name: "Catalog Test".to_string(),
+            description: "".to_string(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: TemplateFormat::Single {
+                width: crate::models::Dimension::Fixed(50.0).into(),
+                height: crate::models::Dimension::Fixed(20.0).into(),
+                media_width: None,
+            },
+            params: BTreeMap::from([
+                (
+                    "needs_var".to_string(),
+                    ParamSpec {
+                        param_type: ParamType::String { multiline: false },
+                        default: Some(ParamValue::String("{vars.missing}".to_string())),
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                ),
+                (
+                    "needs_sys".to_string(),
+                    ParamSpec {
+                        param_type: ParamType::String { multiline: false },
+                        default: Some(ParamValue::String("{sys.now}".to_string())),
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                ),
+            ]),
+            layout: Layout::Items(vec![crate::models::LayoutItem::Text {
+                value: "{needs_var} {needs_sys}".to_string(),
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
+                ),
+                font_size: FontSize::Fixed(10.0),
+                font_weight: None,
+                ink: None,
+                wrap: false,
+                alignment: crate::models::Alignment::default(),
+                overflow: crate::models::Overflow::Ellipsis,
+                when: None,
+            }]),
+            version: None,
+        };
+        let variables = BTreeMap::new();
+        let dt_formats = crate::settings::resolve_datetime_formats_from(None).unwrap_or_default();
+        let now = chrono::Local::now();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now,
+        };
+        let resolved = crate::render::resolve_declared_defaults(&template, &variables, &dt);
+        let fields: Vec<String> = template
+            .inputs_all(&resolved)
+            .into_iter()
+            .filter(|i| i.required)
+            .map(|i| i.name)
+            .collect();
+        assert!(
+            fields.contains(&"needs_var".to_string()),
+            "vars default with empty store should be listed as field"
+        );
+        assert!(
+            !fields.contains(&"needs_sys".to_string()),
+            "sys.now default should resolve and not be listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_262_readonly_report_matches_render_details() {
+        let yaml = r#"
+name: Report Match
+unit: mm
+dpi: 200
+params:
+  val:
+    type: string
+    default: "{vars.missing_key}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{val}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let (app, _state) = test_app_with_custom_templates(vec![("i262_match", yaml)]);
+        let res = app
+            .clone()
+            .oneshot(req_get("/api/templates/i262_match"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let detail = body_json(res).await;
+        let err = &detail["param_defaults"]["val"]["error"];
+        assert_eq!(err["reason"], "param_default_unresolvable");
+        assert!(
+            err.get("param").is_none(),
+            "read-only report must not carry param"
+        );
+        let reason = err["reason"].as_str().unwrap().to_string();
+        let message = err["message"].as_str().unwrap().to_string();
+        let token = err["token"].as_str().unwrap().to_string();
+        let req = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({ "template": "i262_match", "data": {} }).to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let err_body = body_json(res).await;
+        let details = &err_body["error"]["details"];
+        assert_eq!(details["reason"], reason);
+        assert_eq!(details["param"], "val");
+        assert_eq!(details["token"], token);
+        assert_eq!(err_body["error"]["message"], message);
+        assert!(
+            details.get("message").is_none(),
+            "message must not be duplicated in details"
+        );
     }
 }

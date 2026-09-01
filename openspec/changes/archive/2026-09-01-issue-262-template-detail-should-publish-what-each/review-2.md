@@ -1,0 +1,25 @@
+1. **The plan contradicts itself about resolving defaults once per request.** `proposal.md:38-41` and `design.md:77-83` promise one resolution reused by every projection, even claiming fifty labels resolve each default once. But `design.md:87-94` explicitly runs the lenient resolver again for every label, while `specs/template-inputs/spec.md:296-300` attributes cross-label consistency to resolving once. The architecture may safely perform one publication resolution plus deterministic per-label gate evaluation, but the current contract falsely promises a single invocation.
+
+2. **The delta incorrectly equates lenient gate behavior with rendering when a default is broken.** `specs/template-inputs/spec.md:699-707` says the returned branch is the branch rendering takes and that a failed default is absent to a gate “exactly as it will be at render time.” Yet the same delta says the read-only path absorbs the failure and returns `200` (`specs/template-inputs/spec.md:221-224`), while rendering returns `422` (`specs/param-resolution/spec.md:180-186`). `design.md:144-153` confirms strict rendering resolves every declared parameter before evaluating `when:`. `proposal.md:30-32` also contains the contrary statement that an unused broken default “still fails no render.”
+
+3. **The write-success scenario promises more than this change can guarantee.** The requirement is correctly scoped to ensuring the new report does not introduce a post-mutation failure (`specs/template-inputs/spec.md:1055-1063`), but its scenario broadens that to any successful `PUT` never returning `500` (`specs/template-inputs/spec.md:1112-1116`). Existing post-write operations remain fallible: replacement is followed by `state.reload()` and `confirm_written_template(...)` before the response is built (`src/api.rs:828-842`). This change does not make writes generally transactional.
+
+4. **The normative error-envelope shape is internally unclear.** The proposal and design say `message` remains the envelope message while `details` gains `param`, `token`, and `value` (`proposal.md:75-80`, `design.md:96-107`). The delta instead says the payload differs only in how the parameter is named and describes `details` as carrying `message` “through the envelope’s own message” (`specs/param-resolution/spec.md:158-175`). In the actual envelope, `message` and `details` are sibling fields (`src/models.rs:11-16`), and `reasoned` puts only `reason` plus extras inside `details` (`src/errors.rs:80-99`). The published wire contract must distinguish those locations unambiguously.
+
+5. **Verification does not cover several behaviors the plan adds.** `proposal.md:126-141` covers resolved reports and endpoint agreement, while `proposal.md:174-176` limits HTTP work to that list and UI work to `PrintForm`, `FieldForm`, and `ParamInput`. It omits the newly specified structured render error, pre-mutation store-failure ordering, broken-default thumbnail behavior, catalog’s empty-install context, and the Template Detail/Import/Connect changes described at `proposal.md:69-105`.
+
+## Required changes
+
+The author applies all changes below, and no further review follows:
+
+1. Define the resolution-count contract as follows: one `ResolvedDefaults` publication map is computed once per request and reused for every published `param_defaults`, `default`, `default_error`, and `required` field. Separately, the lenient per-label walk may invoke the same resolver against the same captured context to determine active entries. Remove the fifty-label performance claim from `design.md:82-83` and change `specs/template-inputs/spec.md:296-300` to attribute equality to the shared publication map, not to there being only one resolver invocation overall.
+
+2. Qualify branch parity to defaults that resolve. State that an unresolvable default is absorbed as absent only by the read-only lenient input-list path; strict rendering fails during parameter resolution before evaluating gates unless the caller supplies that parameter. Correct `proposal.md:30-32` to say an unused broken default still fails every render that omits it.
+
+3. Narrow `specs/template-inputs/spec.md:1112-1116` to guarantee only that capturing the new resolution context and constructing `param_defaults` cannot introduce a failure after mutation. Do not promise that unrelated existing reload, confirmation, filesystem, or registry failures cannot follow a successful write.
+
+4. Specify the error wire shapes exactly: rendering returns `error.message` plus `error.details.reason`, `param`, and optional `token` or `value`; read-only projections contain `{reason, message, token?, value?}` and omit `param`. State that their shared values are identical, while both the parameter and message occupy different structural locations.
+
+5. Extend verification to require coverage for the structured `422` fields, store-read failure before mutation, successful write response construction, thumbnail behavior with a broken default, catalog derivation without an install, Template Detail’s declared/resolved display, and `default_error`/requiredness behavior in Print, Import, and Connect.
+
+VERDICT: APPROVE_WITH_CHANGES
