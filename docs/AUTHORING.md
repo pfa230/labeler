@@ -490,18 +490,20 @@ against that inner box too.
 Shapes in the template model (`container` and `line`) support paint attributes:
 - **`stroke: { thickness, color }`**: Accepted on any shape (`container` outline or `line`).
   `thickness` is required and must be at least 0.0001. `color` is optional and defaults to
-  `#000000ff` (black). `stroke` itself is optional; on a `line`, omitting it draws nothing and is not an error.
+  `black`. `stroke` itself is optional; on a `line`, omitting it draws nothing and is not an error.
 - **`background: <color>`**: Fills the shape's interior. Accepted only on shapes that enclose an
   area (`container`).
 - **`rounded: <radius>`**: Rounds the corners of the container's stroke and background. Numeric
   radius in template units (e.g. `1.5` or `0.05`), which must be at least 0.0001 and is clamped at
   render time to half the shorter side. Square corners are spelled by omitting the key; `rounded: 0`
   is refused.
-- **Colors**: Specified as 3-, 4-, 6-, or 8-digit hex strings (`#rgb`, `#rgba`, `#rrggbb`,
-  `#rrggbbaa`) or one of the 16 standard CSS Level 1 named colors (`black`, `silver`, `gray`,
-  `white`, `maroon`, `red`, `purple`, `fuchsia`, `green`, `lime`, `olive`, `yellow`, `navy`,
-  `blue`, `teal`, `aqua`), matched case-insensitively. Note that shape paint uses standard CSS
-  color definitions, whereas text `ink` uses Typst's typography color palette.
+- **Colors**: Specified on `stroke.color`, `background`, and `text.color` alike using one unified
+  vocabulary: 3-, 4-, 6-, or 8-digit hex strings (`#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`), one of the 16
+  standard CSS Level 1 named colors (`black`, `silver`, `gray`, `white`, `maroon`, `red`, `purple`,
+  `fuchsia`, `green`, `lime`, `olive`, `yellow`, `navy`, `blue`, `teal`, `aqua`) matched case-insensitively,
+  or a parameter reference `"{param}"` to a `string` or `enum` parameter. `text` items accept `color` to
+  paint glyphs (omitted or `null` defaults to black); the legacy `ink` field is removed, and any template
+  declaring `ink` is quarantined as broken at startup.
 
 ```yaml
 - type: container
