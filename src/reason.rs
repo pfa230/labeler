@@ -57,6 +57,7 @@ reasons! {
     AssetsDirUnavailable => "assets_dir_unavailable",
     QrErrorCorrectionInvalid => "qr_error_correction_invalid",
     DimensionExceedsLimit => "dimension_exceeds_limit",
+    CircleBoxNotSquare => "circle_box_not_square",
 
     // InvalidRequest
     JsonMalformed => "json_malformed",

@@ -1,83 +1,4 @@
-## Purpose
-
-Defines how a shape declares what it is drawn with: the outline that traces it, the colour that
-fills it, and the corner radius both follow. One vocabulary serves every shape in the layout, so a
-shape added later inherits the spelling rather than inventing one.
-
-## Requirements
-
-### Requirement: A shape is stroked; a shape with an interior is also filled
-
-A **shape** is a layout item with a drawable boundary. `container` and `line` are the shapes.
-
-A shape with an **interior** is a shape enclosing an area. `container` is the only one; a `line` has
-no interior, and no future item becomes one by being a shape.
-
-The paint keys are accepted by category, not uniformly:
-
-| Key | Type | Accepted on | Meaning |
-| --- | --- | --- | --- |
-| `stroke` | block, see below | every shape | The outline tracing the shape. Omitted: no outline. |
-| `background` | colour, per `colour-vocabulary` | a shape with an interior | The colour filling that interior. Omitted: nothing is filled, and whatever lies behind the shape shows through. |
-| `rounded` | number | a shape with an interior whose geometry has corners | The corner radius. Omitted: square corners. |
-| `shape` | geometry | `container` | The geometry the paint takes within the resolved box. Omitted: `rect`. |
-
-A **colour** is what the `colour-vocabulary` capability defines, and this capability states no
-vocabulary of its own: `background` accepts one of the sixteen names, a hex string, or a `"{param}"`
-reference resolved per render, and the same name denotes the same colour here as on a `text` item's
-`color`.
-
-Where two keys are both accepted, neither SHALL imply the other. On a `container`, all four
-combinations of `stroke` and `background` SHALL be accepted and SHALL render as declared: outline
-only, fill only, both, and neither. A container with neither draws no boundary of its own and
-remains a positioning and grouping construct, exactly as one with no paint does today, at every
-geometry.
-
-`background` or `rounded` on a `line` SHALL be refused at load rather than ignored, because a line has
-no interior to fill and no corners to round.
-
-The requirements of this capability, together, supersede the `container` and `line` bullets of frozen
-`docs/SPEC.md` §4.1 for everything those bullets say about `frame`, `thickness` and `rounded`. Every
-other clause of those bullets (placement, `when`, `padding`, `items`, endpoint resolution and bounds
-checking) stays authoritative.
-
-#### Scenario: A fill with no outline
-
-- **WHEN** a container declares `background: "#000000"` and no `stroke`
-- **THEN** it renders as a solid black block with no outline drawn
-- **AND** this holds in PNG output and in PDF output alike
-
-#### Scenario: An outline with no fill
-
-- **WHEN** a container declares `stroke: { thickness: 0.02 }` and no `background`
-- **THEN** it renders as an outline only, and what lies behind it shows through the interior
-
-#### Scenario: Both, on one container
-
-- **WHEN** a container declares `stroke: { thickness: 0.3, color: red }` and `background: "#eee"`
-- **THEN** the interior is filled `#eeeeee` and the outline is drawn `#ff0000` at 0.3 units
-
-#### Scenario: Neither
-
-- **WHEN** a container declares no `stroke` and no `background`
-- **THEN** it draws nothing of itself, and only its children appear
-
-#### Scenario: A line is stroked and nothing else
-
-- **WHEN** a `line` declares `stroke: { thickness: 0.2, color: navy }`
-- **THEN** it renders navy at 0.2 units
-
-#### Scenario: A fill may be a parameter reference
-
-- **WHEN** a container declares `background: "{brand}"` against a declared `string` parameter, and a
-  render request supplies a colour for it
-- **THEN** the interior is filled with that colour, under the `colour-vocabulary` capability
-
-#### Scenario: A line has no interior to fill
-
-- **WHEN** a `line` declares `background: black`, or `rounded: 1.0`
-- **THEN** the template fails validation and is quarantined, naming the offending key on the line
-
+## ADDED Requirements
 
 ### Requirement: A container's box is painted with a geometry
 
@@ -303,77 +224,79 @@ already is.
 - **WHEN** a `text`, `qr`, `image` or `line` item declares `shape`
 - **THEN** the template fails validation and is quarantined, naming the field and the item
 
+## MODIFIED Requirements
 
-### Requirement: A stroke is a thickness and a colour, and its thickness is finite and positive
+### Requirement: A shape is stroked; a shape with an interior is also filled
 
-`stroke` SHALL be a block with two fields:
+A **shape** is a layout item with a drawable boundary. `container` and `line` are the shapes.
 
-| Field | Type | Required | Default |
+A shape with an **interior** is a shape enclosing an area. `container` is the only one; a `line` has
+no interior, and no future item becomes one by being a shape.
+
+The paint keys are accepted by category, not uniformly:
+
+| Key | Type | Accepted on | Meaning |
 | --- | --- | --- | --- |
-| `thickness` | number | yes | none |
-| `color` | colour, per `colour-vocabulary` | no | `black` |
+| `stroke` | block, see below | every shape | The outline tracing the shape. Omitted: no outline. |
+| `background` | colour, per `colour-vocabulary` | a shape with an interior | The colour filling that interior. Omitted: nothing is filled, and whatever lies behind the shape shows through. |
+| `rounded` | number | a shape with an interior whose geometry has corners | The corner radius. Omitted: square corners. |
+| `shape` | geometry | `container` | The geometry the paint takes within the resolved box. Omitted: `rect`. |
 
-`color` accepts everything a colour accepts, including a `"{param}"` reference resolved per render.
+A **colour** is what the `colour-vocabulary` capability defines, and this capability states no
+vocabulary of its own: `background` accepts one of the sixteen names, a hex string, or a `"{param}"`
+reference resolved per render, and the same name denotes the same colour here as on a `text` item's
+`color`.
 
-`thickness` is in the template `unit` and SHALL be **finite and at least 0.0001**. A `stroke` block
-without `thickness`, or whose `thickness` is negative, zero, NaN, infinite, or positive but below
-0.0001, SHALL be refused at load. "No outline" is spelled by omitting `stroke`, so it has exactly one
-spelling.
+Where two keys are both accepted, neither SHALL imply the other. On a `container`, all four
+combinations of `stroke` and `background` SHALL be accepted and SHALL render as declared: outline
+only, fill only, both, and neither. A container with neither draws no boundary of its own and
+remains a positioning and grouping construct, exactly as one with no paint does today, at every
+geometry.
 
-The lower bound is not decorative, and it is the emitter's quantum rather than a round number.
-Lengths reach the rendering engine formatted to four decimal places, so the only lengths that can be
-emitted at all are multiples of 0.0001. A positive value below that quantum is therefore never drawn
-as declared: it is emitted as zero, drawing nothing, or rounded up to the quantum, drawing something
-the author did not write. Both outcomes are the template validating and then rendering something
-other than its contract, which is what the single-spelling rule exists to prevent. Requiring at least
-one quantum makes every accepted value a value that renders at the thickness it declares, to the
-precision the emitter has. At 0.0001 mm, and at 0.0001 in, one quantum lies far below the resolution
-of any target device, so the bound refuses nothing an author could print.
+`background` or `rounded` on a `line` SHALL be refused at load rather than ignored, because a line has
+no interior to fill and no corners to round.
 
-Omitting `color` SHALL draw the outline black, which is what a thickness alone draws today.
+The requirements of this capability, together, supersede the `container` and `line` bullets of frozen
+`docs/SPEC.md` §4.1 for everything those bullets say about `frame`, `thickness` and `rounded`. Every
+other clause of those bullets (placement, `when`, `padding`, `items`, endpoint resolution and bounds
+checking) stays authoritative.
 
-A `stroke` block SHALL accept no field other than these two. An unrecognised field SHALL be refused
-at load rather than ignored.
+#### Scenario: A fill with no outline
 
-#### Scenario: A thickness alone draws black
+- **WHEN** a container declares `background: "#000000"` and no `stroke`
+- **THEN** it renders as a solid black block with no outline drawn
+- **AND** this holds in PNG output and in PDF output alike
 
-- **WHEN** a container declares `stroke: { thickness: 0.02 }`
-- **THEN** the outline renders `#000000` at 0.02 units
+#### Scenario: An outline with no fill
 
-#### Scenario: A stroke colour may be a parameter reference
+- **WHEN** a container declares `stroke: { thickness: 0.02 }` and no `background`
+- **THEN** it renders as an outline only, and what lies behind it shows through the interior
 
-- **WHEN** a container declares `stroke: { thickness: 0.3, color: "{brand}" }` against a declared
-  `string` parameter, and a render request supplies a colour for it
-- **THEN** the outline renders in that colour, under the `colour-vocabulary` capability
+#### Scenario: Both, on one container
 
-#### Scenario: A zero or negative thickness is refused
+- **WHEN** a container declares `stroke: { thickness: 0.3, color: red }` and `background: "#eee"`
+- **THEN** the interior is filled `#eeeeee` and the outline is drawn `#ff0000` at 0.3 units
 
-- **WHEN** a shape declares `stroke: { thickness: 0 }` or `stroke: { thickness: -0.5 }`
-- **THEN** the template fails validation and is quarantined
+#### Scenario: Neither
 
-#### Scenario: A positive thickness too small to render is refused
+- **WHEN** a container declares no `stroke` and no `background`
+- **THEN** it draws nothing of itself, and only its children appear
 
-- **WHEN** a shape declares `stroke: { thickness: 0.00001 }`
-- **THEN** the template fails validation and is quarantined, rather than validating and rendering no
-  outline
-- **AND** a shape declaring `stroke: { thickness: 0.0001 }` is accepted and renders a visible outline
+#### Scenario: A line is stroked and nothing else
 
-#### Scenario: A non-finite thickness is refused
+- **WHEN** a `line` declares `stroke: { thickness: 0.2, color: navy }`
+- **THEN** it renders navy at 0.2 units
 
-- **WHEN** a shape declares `stroke: { thickness: .nan }` or `stroke: { thickness: .inf }`
-- **THEN** the template fails validation and is quarantined, and no Typst source is generated from
-  the value
+#### Scenario: A fill may be a parameter reference
 
-#### Scenario: A stroke block without a thickness is refused
+- **WHEN** a container declares `background: "{brand}"` against a declared `string` parameter, and a
+  render request supplies a colour for it
+- **THEN** the interior is filled with that colour, under the `colour-vocabulary` capability
 
-- **WHEN** a shape declares `stroke: { color: red }`
-- **THEN** the template fails validation and is quarantined, naming the missing `thickness`
+#### Scenario: A line has no interior to fill
 
-#### Scenario: An unknown key inside a stroke is refused
-
-- **WHEN** a shape declares `stroke: { thickness: 0.2, dash: dotted }`
-- **THEN** the template fails validation and is quarantined, naming `dash`
-
+- **WHEN** a `line` declares `background: black`, or `rounded: 1.0`
+- **THEN** the template fails validation and is quarantined, naming the offending key on the line
 
 ### Requirement: The corner radius is authored, not derived from the stroke
 
@@ -448,7 +371,6 @@ make the rule depend on where the extent came from.
 - **WHEN** a container declares `shape: ellipse` and `rounded: 1.0`, or `shape: circle` and
   `rounded: 1.0`
 - **THEN** the template fails validation and is quarantined, naming `rounded` on that container
-
 
 ### Requirement: A container's paint covers its whole box, unrotated, behind its children
 
@@ -531,96 +453,3 @@ A shape that does not render, because a `when` gate excludes it, SHALL paint not
 - **WHEN** a container declares `shape: ellipse` and `background: black` over a non-black ground
 - **THEN** the four corner regions of its box, outside the painted curve, show that ground rather
   than black
-
-
-### Requirement: Paint belongs to shapes alone and is never inherited
-
-`stroke`, `background` and `rounded` SHALL be accepted only where the first requirement of this
-capability places them, and nowhere else.
-
-A `text`, `qr` or `image` item declaring any of the three SHALL be refused at load, as any other
-field those items do not accept already is.
-
-Paint SHALL NOT be inherited. A container's `background` sets what lies behind its children and
-SHALL NOT set a colour that any child draws with, at any depth.
-
-#### Scenario: Paint on a non-shape is refused
-
-- **WHEN** a `text`, `qr` or `image` item declares `stroke`, `background` or `rounded`
-- **THEN** the template fails validation and is quarantined, naming the field and the item
-
-#### Scenario: A background is not inherited as a child's colour
-
-- **WHEN** a container declares `background: black` and contains a `text` child and a nested
-  container of its own
-- **THEN** the text renders in the colour it would render in with no background declared, and the
-  nested container renders with no background of its own
-
-
-### Requirement: An explicit null is not a spelling of absence
-
-`stroke`, `background`, `rounded` and `stroke.color` each carry a rule that an omitted key means
-something definite: no outline, no fill, square corners, black. An explicit YAML `null` SHALL NOT be
-accepted as a second way to say any of those. Writing `stroke: null`, `background: null`,
-`rounded: null` or `color: null` SHALL be refused at load, naming the field.
-
-`stroke.thickness` is required rather than optional, and an explicit null on it SHALL be refused
-naming `thickness` as a null, not reported as a missing field. The distinction matters for the same
-reason as above: "you wrote nothing here" and "you wrote a key with no value" are different mistakes,
-and collapsing them tells the author to add a field they can see they already wrote.
-
-Absence and null are therefore distinguishable, and only absence carries meaning. This is what keeps
-"exactly one spelling" true in practice rather than only on paper: a key present with no value is an
-authoring mistake, and reporting it is more useful than quietly treating it as though the author had
-deleted the line.
-
-#### Scenario: A null paint key is refused
-
-- **WHEN** a container declares `stroke: null`, `background: null` or `rounded: null`
-- **THEN** the template fails validation and is quarantined, naming the field
-- **AND** the same template with the key omitted entirely is accepted
-
-#### Scenario: A null thickness is refused as a null, not as an absence
-
-- **WHEN** a shape declares `stroke: { thickness: null }`
-- **THEN** the template fails validation and is quarantined, reporting `thickness` as null
-- **AND** the message is distinguishable from the one a `stroke` block with no `thickness` key produces
-
-#### Scenario: A null colour inside a stroke is refused
-
-- **WHEN** a shape declares `stroke: { thickness: 0.2, color: null }`
-- **THEN** the template fails validation and is quarantined, naming `color`
-- **AND** it is not treated as an omitted `color` defaulting to black
-
-
-### Requirement: The superseded spellings no longer parse
-
-The spellings this capability replaces SHALL be refused at load, so that no template can silently
-keep the old meaning:
-
-| Removed spelling | Replacement |
-| --- | --- |
-| `container.frame: { thickness, rounded }` | `stroke: { thickness }` and `rounded: <number>` on the container |
-| `line.thickness: <number>` | `stroke: { thickness: <number> }` on the line |
-| `rounded: true` | `rounded: <number>`, an explicit radius |
-| `rounded: false` | omit `rounded` |
-
-A template using any of them SHALL fail validation with an error naming the offending field, and
-SHALL be quarantined at load. A quarantined template SHALL NOT prevent the server from starting or
-from serving any other template.
-
-#### Scenario: A frame block is refused
-
-- **WHEN** a container declares `frame: { thickness: 0.02, rounded: false }`
-- **THEN** the template fails validation and is quarantined, naming `frame`
-- **AND** the server still starts and still serves every other template
-
-#### Scenario: A bare line thickness is refused
-
-- **WHEN** a `line` declares `thickness: 0.2` outside a `stroke` block
-- **THEN** the template fails validation and is quarantined, naming `thickness`
-
-#### Scenario: A boolean radius is refused
-
-- **WHEN** a container declares `rounded: true` or `rounded: false`
-- **THEN** the template fails validation and is quarantined, naming `rounded`
