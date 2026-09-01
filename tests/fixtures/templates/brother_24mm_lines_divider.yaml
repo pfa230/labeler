@@ -36,7 +36,8 @@ layout:
       - type: line
         at: [0.0, 8.05]
         to: [-0.0, 8.05]
-        thickness: 0.2
+        stroke:
+          thickness: 0.2
       - type: text
         value: "{line2}"
         at: [0.0, 0.0]

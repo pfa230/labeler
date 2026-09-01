@@ -196,7 +196,8 @@ the arrangement needs in order to compute that box.
 
 A packed child MAY carry every other key its item type allows: `size` with a number, a parameter
 reference, `content` or `fill`; `max_w`; `max_h`; `when`; and on a `container` child `rotate`,
-`frame`, `padding`, its own `items` and its own `flow` block.
+`stroke`, `background`, `rounded` (`shape-paint`), `padding`, its own `items` and its own `flow`
+block.
 
 A packed `container` that gives neither `size` nor `to` SHALL default to `size: [fill, fill]`,
 exactly as any other container does (`layout-sizing`). No separate default is invented for a packed
@@ -256,8 +257,8 @@ item that is not a packed child, both rows remain authoritative exactly as writt
 
 #### Scenario: A packed container with no size fills, and two of them collide
 
-- **WHEN** a `row` flow container holds two `container` children that each carry `frame` and `padding`
-  and neither `size` nor `to`
+- **WHEN** a `row` flow container holds two `container` children that each carry a `stroke` and
+  `padding` and neither `size` nor `to`
 - **THEN** each resolves to `size: [fill, fill]`, so each is the whole padded inner box
 - **AND** the render fails with `UnsupportedLayoutItem` and `details.reason` of `item_out_of_frame`,
   naming the second container
@@ -359,8 +360,8 @@ sized and evaluated like any other child, so its own errors still surface. This 
 resolved extent and never on whether a value was empty: an empty interpolated value, a parameter
 resolving to zero and a `content` container with no active children all reach it the same way. It is
 also `layout-sizing`'s standing promise that "a content or frame extent of exactly zero renders an
-empty box", kept rather than excepted: the only ink such a box can put on a label is a container
-`frame` stroke, and that stroke is still drawn.
+empty box", kept rather than excepted: the only ink such a box can put on a label is the container's
+own `stroke` (`shape-paint`), and that stroke is still drawn.
 
 #### Scenario: A gated-off child leaves no hole
 
@@ -379,9 +380,9 @@ empty box", kept rather than excepted: the only ink such a box can put on a labe
 
 #### Scenario: A zero-extent child still draws its frame and still raises its errors
 
-- **WHEN** a `row` flow container holds a `content`-width `container` child carrying a `frame`, an
+- **WHEN** a `row` flow container holds a `content`-width `container` child carrying a `stroke`, an
   authored height of 6 and no active children of its own
-- **THEN** that child is drawn at the current leading edge as a zero-width box, so its frame stroke
+- **THEN** that child is drawn at the current leading edge as a zero-width box, so its stroke
   appears, and the line is at least 6 tall
 - **AND** a `text` child whose value interpolates a field the request does not supply still fails with
   `MissingField` whether its extent resolved to zero or not

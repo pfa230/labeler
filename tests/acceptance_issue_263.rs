@@ -564,7 +564,7 @@ layout:
     items:
       - type: container
         size: [content, 10]
-        frame: { thickness: 0.5, rounded: false }
+        stroke: { thickness: 0.5 }
         items: []
       - type: text
         value: "Next"

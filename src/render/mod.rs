@@ -5,7 +5,7 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 use crate::errors::AppError;
 use crate::models::{
     resolve_coord, DynamicDimension, Fit, LabelInput, Layout, LayoutItem, ParamSpec, Placement,
-    Point, Position, Rotation, TemplateFormat,
+    Point, Position, Rotation, Stroke, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::TemplateContent;
@@ -1102,7 +1102,9 @@ struct SingleItemRenderArgs<'a> {
 
 struct ContainerRenderArgs<'a> {
     pub placement: &'a Placement,
-    pub cont_frame: &'a Option<crate::models::Frame>,
+    pub stroke: &'a Option<crate::models::Stroke>,
+    pub background: &'a Option<crate::models::Color>,
+    pub rounded: &'a Option<f32>,
     pub padding: &'a crate::models::Padding,
     pub flow: &'a Option<crate::models::Flow>,
     pub items: &'a [LayoutItem],
@@ -1757,10 +1759,8 @@ impl<'a> RenderContext<'a> {
         args: SingleItemRenderArgs<'_>,
     ) -> Result<(), AppError> {
         match args.item {
-            LayoutItem::Line {
-                at, to, thickness, ..
-            } => {
-                self.render_line_item(out, at, to, *thickness, args.frame, args.path)?;
+            LayoutItem::Line { at, to, stroke, .. } => {
+                self.render_line_item(out, at, to, stroke.as_ref(), args.frame, args.path)?;
             }
             LayoutItem::Text {
                 placement,
@@ -1816,7 +1816,9 @@ impl<'a> RenderContext<'a> {
             }
             LayoutItem::Container {
                 placement,
-                frame: cont_frame,
+                stroke,
+                background,
+                rounded,
                 padding,
                 flow: child_flow,
                 items: child_items,
@@ -1826,7 +1828,9 @@ impl<'a> RenderContext<'a> {
                     out,
                     ContainerRenderArgs {
                         placement,
-                        cont_frame,
+                        stroke,
+                        background,
+                        rounded,
                         padding,
                         flow: child_flow,
                         items: child_items,
@@ -2018,13 +2022,16 @@ impl<'a> RenderContext<'a> {
         out: &mut String,
         at: &Position,
         to: &Position,
-        thickness: f32,
+        stroke: Option<&Stroke>,
         frame: (f32, f32),
         path: &str,
     ) -> Result<(), AppError> {
         let start_point = self.resolve_point(at, frame, path)?;
         let end_point = self.resolve_point(to, frame, path)?;
         self.check_line(&start_point, &end_point, frame, path)?;
+        let Some(stroke) = stroke else {
+            return Ok(());
+        };
         let (start_x, start_y) = to_page_coords(&start_point, frame.1);
         let (end_x, end_y) = to_page_coords(&end_point, frame.1);
         let dx = end_x - start_x;
@@ -2034,10 +2041,12 @@ impl<'a> RenderContext<'a> {
         let dx = format_length(dx, self.unit)?;
         let dy = format_length(dy, self.unit)?;
         let zero = format_length(0.0, self.unit)?;
-        let stroke = format_length(thickness, self.unit)?;
+        let thickness = format_length(stroke.thickness, self.unit)?;
+        let color = format!("rgb(\"{}\")", stroke.color.hex());
 
-        let content =
-            format!("#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {stroke})");
+        let content = format!(
+            "#line(start: ({zero}, {zero}), end: ({dx}, {dy}), stroke: {thickness} + {color})"
+        );
         writeln!(
             out,
             "#place(top + left, dx: {start_x}, dy: {start_y})[{content}]"
@@ -2094,15 +2103,29 @@ impl<'a> RenderContext<'a> {
             self.wrap_rotation(inner, args.placement.rotate)
         };
 
-        if let Some(cf) = args.cont_frame {
-            let stroke = format_length(cf.thickness, self.unit)?;
-            let radius = if cf.rounded {
-                format_length(cf.thickness * 2.0, self.unit)?
-            } else {
-                format_length(0.0, self.unit)?
+        if args.stroke.is_some() || args.background.is_some() {
+            let fill = match args.background {
+                Some(bg) => format!("rgb(\"{}\")", bg.hex()),
+                None => "none".to_string(),
+            };
+            let stroke = match args.stroke {
+                Some(st) => {
+                    let thickness = format_length(st.thickness, self.unit)?;
+                    let color = format!("rgb(\"{}\")", st.color.hex());
+                    format!("{thickness} + {color}")
+                }
+                None => "none".to_string(),
+            };
+            let radius = match args.rounded {
+                Some(r) => {
+                    let max_radius = args.pbox.w.min(args.pbox.h) / 2.0;
+                    let clamped = r.min(max_radius);
+                    format_length(clamped, self.unit)?
+                }
+                None => format_length(0.0, self.unit)?,
             };
             let frame_content = format!(
-                "#rect(width: {box_width}, height: {box_height}, stroke: {stroke}, radius: {radius})"
+                "#rect(width: {box_width}, height: {box_height}, fill: {fill}, stroke: {stroke}, radius: {radius})"
             );
             writeln!(
                 out,
@@ -2168,13 +2191,14 @@ pub fn default_option_selection(template: &TemplateContent) -> Option<BTreeMap<S
 mod tests {
     use super::{
         count_pdf_pages, default_option_selection, render_sheet_pages, render_single_label,
-        render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
+        render_single_label_image, render_single_label_pdf, render_thumbnail_png,
+        SAMPLE_PNG_DATA_URI,
     };
     use crate::errors::AppError;
     use crate::models::{
-        Alignment, Dimension, DynamicDimension, DynamicValue, Extent, Fit, FontSize, Frame,
+        Alignment, Color, Dimension, DynamicDimension, DynamicValue, Extent, Fit, FontSize,
         HorizontalAlign, LabelInput, Layout, LayoutItem, Overflow, Padding, ParamSpec, ParamType,
-        Placement, Position, SheetPosition, Size, SizeValue, TemplateFormat, VerticalAlign,
+        Placement, Position, SheetPosition, Size, SizeValue, Stroke, TemplateFormat, VerticalAlign,
     };
     use crate::reason::Reason;
     use crate::templates::TemplateContent;
@@ -2468,7 +2492,9 @@ mod tests {
                 rotate: None,
             },
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: Padding {
                 top: 0.0,
                 right: 5.0,
@@ -2709,7 +2735,9 @@ layout:
                 rotate,
             },
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: Padding::ZERO,
             flow: None,
             items: vec![auto_text.clone()],
@@ -2788,7 +2816,9 @@ layout:
                 Size([SizeValue::fixed(30.0), SizeValue::content()]),
             ),
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: Padding {
                 top: 1.0,
                 right: 0.0,
@@ -2804,7 +2834,9 @@ layout:
                 Size([SizeValue::fixed(50.0), SizeValue::content()]),
             ),
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: Padding::ZERO,
             flow: None,
             items: vec![inner],
@@ -2889,7 +2921,9 @@ layout:
                 rotate: None,
             },
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: crate::models::Padding::ZERO,
             flow: None,
             items,
@@ -2944,7 +2978,9 @@ layout:
                     rotate: None,
                 },
                 when: None,
-                frame: None,
+                stroke: None,
+                background: None,
+                rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 items: vec![LayoutItem::Container {
@@ -2959,7 +2995,9 @@ layout:
                         rotate: None,
                     },
                     when: None,
-                    frame: None,
+                    stroke: None,
+                    background: None,
+                    rounded: None,
                     padding: crate::models::Padding::ZERO,
                     flow: None,
                     items: vec![],
@@ -3036,7 +3074,7 @@ layout:
     /// what makes a child line reaching x=50 genuinely not fit.
     #[test]
     fn the_152_repro_is_rejected_and_the_rejection_is_correct() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 3.0]\n        to: [50.0, 3.0]\n        thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [0.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 3.0]\n        to: [50.0, 3.0]\n        stroke:\n          thickness: 0.2\n";
         let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
         let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
         assert!(
@@ -3219,7 +3257,7 @@ layout:
     /// template fails: the standard explained error, not a panic and not a corrupt page.
     #[test]
     fn a_container_with_no_room_left_fails_cleanly_at_render() {
-        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n        thickness: 0.2\n";
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n        stroke:\n          thickness: 0.2\n";
         let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
         let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
         assert_eq!(
@@ -3234,6 +3272,29 @@ layout:
             err.reason(),
             Some("line_degenerate"),
             "expected line_degenerate, got: {}",
+            err.message_text()
+        );
+    }
+
+    #[test]
+    fn a_strokeless_line_still_fails_its_render_checks() {
+        // Same template as a_container_with_no_room_left_fails_cleanly_at_render but with stroke removed.
+        // A strokeless line draws nothing yet still runs endpoint resolution and bounds checks.
+        let yaml = "name: T\nunit: mm\ndpi: 180\nformat:\n  type: single\n  width: { min: 10, max: 100 }\n  height: 12\nlayout:\n  - type: container\n    at: [90.0, 0.0]\n    size: [fill, 12.0]\n    max_w: 30.0\n    items:\n      - type: line\n        at: [0.0, 6.0]\n        to: [-0.0, 6.0]\n";
+        let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml).expect("parses");
+        let template = crate::templates::TemplateContent::try_from(raw).expect("converts");
+        assert_eq!(
+            template.validate(),
+            Ok(()),
+            "strokeless variant also admitted at load"
+        );
+        let data: HashMap<String, super::JsonValue> = HashMap::new();
+        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+            .expect_err("a strokeless degenerate line in a zero-width container must still fail");
+        assert_eq!(
+            err.reason(),
+            Some("line_degenerate"),
+            "expected line_degenerate for strokeless line, got: {}",
             err.message_text()
         );
     }
@@ -3255,7 +3316,9 @@ layout:
                 rotate: None,
             },
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: crate::models::Padding {
                 top: 3.0,
                 right: 3.0,
@@ -3275,7 +3338,9 @@ layout:
                     rotate: None,
                 },
                 when: Some(BTreeMap::from([("show".to_string(), "yes".to_string())])),
-                frame: None,
+                stroke: None,
+                background: None,
+                rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 items: vec![],
@@ -3621,7 +3686,9 @@ layout:
                 rotate: None,
             },
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: crate::models::Padding {
                 top: 0.0,
                 right: 1.0,
@@ -3754,7 +3821,9 @@ layout:
                     rotate: None,
                 },
                 when: None,
-                frame: None,
+                stroke: None,
+                background: None,
+                rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
@@ -3807,7 +3876,9 @@ layout:
                     rotate: None,
                 },
                 when: None,
-                frame: None,
+                stroke: None,
+                background: None,
+                rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 items: vec![],
@@ -3834,10 +3905,12 @@ layout:
                 Size([SizeValue::fixed(80.0), SizeValue::fixed(40.0)]),
             ),
             when: None,
-            frame: Some(Frame {
+            stroke: Some(Stroke {
                 thickness: 0.3,
-                rounded: false,
+                color: Color::BLACK,
             }),
+            background: None,
+            rounded: None,
             padding: Padding::ZERO,
             flow: None,
             items: vec![],
@@ -3874,10 +3947,12 @@ layout:
                     rotate: Some(rotate),
                 },
                 when: None,
-                frame: Some(Frame {
+                stroke: Some(Stroke {
                     thickness: 0.3,
-                    rounded: false,
+                    color: Color::BLACK,
                 }),
+                background: None,
+                rounded: None,
                 padding: Padding::ZERO,
                 flow: None,
                 items,
@@ -4025,7 +4100,9 @@ layout:
                 rotate: Some(90.0),
             },
             when: None,
-            frame: None,
+            stroke: None,
+            background: None,
+            rounded: None,
             padding: Padding::ZERO,
             flow: None,
             items: vec![LayoutItem::Text {
@@ -4052,10 +4129,12 @@ layout:
                 rotate: Some(90.0),
             },
             when: None,
-            frame: Some(Frame {
+            stroke: Some(Stroke {
                 thickness: 0.3,
-                rounded: false,
+                color: Color::BLACK,
             }),
+            background: None,
+            rounded: None,
             padding: Padding {
                 top: 2.0,
                 right: 4.0,
@@ -4775,7 +4854,10 @@ layout:
                 LayoutItem::Line {
                     at: Position([0.0, 1.0]),
                     to: Position([30.0, 1.0]),
-                    thickness: 0.2,
+                    stroke: Some(Stroke {
+                        thickness: 0.2,
+                        color: Color::BLACK,
+                    }),
                     when: None,
                 },
                 LayoutItem::Container {
@@ -4784,10 +4866,12 @@ layout:
                         Size([SizeValue::fixed(29.0), SizeValue::fixed(18.0)]),
                     ),
                     when: None,
-                    frame: Some(Frame {
+                    stroke: Some(Stroke {
                         thickness: 0.2,
-                        rounded: true,
+                        color: Color::BLACK,
                     }),
+                    background: None,
+                    rounded: Some(0.4),
                     padding: Padding::ZERO,
                     flow: None,
                     items: Vec::new(),
@@ -4972,7 +5056,10 @@ layout:
             &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
-                thickness: 0.2,
+                stroke: Some(Stroke {
+                    thickness: 0.2,
+                    color: Color::BLACK,
+                }),
                 when: None,
             }],
             (10.0, 12.0),
@@ -5799,13 +5886,18 @@ layout:
                         Size([SizeValue::fill(), SizeValue::fixed(12.0)]),
                     ),
                     when: None,
-                    frame: None,
+                    stroke: None,
+                    background: None,
+                    rounded: None,
                     padding: crate::models::Padding::ZERO,
                     flow: None,
                     items: vec![LayoutItem::Line {
                         at: Position([0.0, 6.0]),
                         to: Position([20.0, 6.0]),
-                        thickness: 0.2,
+                        stroke: Some(Stroke {
+                            thickness: 0.2,
+                            color: Color::BLACK,
+                        }),
                         when: None,
                     }],
                 }],
@@ -5836,7 +5928,10 @@ layout:
         let item = LayoutItem::Line {
             at: Position([-5.0, 6.0]),
             to: Position([-3.0, 6.0]),
-            thickness: 0.2,
+            stroke: Some(Stroke {
+                thickness: 0.2,
+                color: Color::BLACK,
+            }),
             when: None,
         };
         let (extent, text_count) = measured_extent_of(item, 80.0);
@@ -5875,7 +5970,10 @@ layout:
             &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([-0.0, 6.0]),
-                thickness: 0.2,
+                stroke: Some(Stroke {
+                    thickness: 0.2,
+                    color: Color::BLACK,
+                }),
                 when: None,
             }],
             (40.0, 12.0),
@@ -5921,7 +6019,10 @@ layout:
                 LayoutItem::Line {
                     at,
                     to,
-                    thickness: 0.2,
+                    stroke: Some(Stroke {
+                        thickness: 0.2,
+                        color: Color::BLACK,
+                    }),
                     when: None,
                 },
             ]),
@@ -5958,7 +6059,10 @@ layout:
             &[LayoutItem::Line {
                 at: Position([0.0, 6.0]),
                 to: Position([30.0, 6.0]),
-                thickness: 0.2,
+                stroke: Some(Stroke {
+                    thickness: 0.2,
+                    color: Color::BLACK,
+                }),
                 when: None,
             }],
             (10.0, 12.0),
@@ -7253,10 +7357,12 @@ layout:
                     max_h: None,
                     rotate: Some(90.0),
                 },
-                frame: Some(crate::models::Frame {
+                stroke: Some(Stroke {
                     thickness: 1.0,
-                    rounded: false,
+                    color: Color::BLACK,
                 }),
+                background: None,
+                rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
                 items: vec![],
@@ -7265,8 +7371,265 @@ layout:
             (100.0, 100.0),
         )
         .expect("render");
-        assert!(source.contains("#rect(width: 30mm, height: 10mm, stroke: 1mm, radius: 0mm)"));
+        assert!(source.contains(
+            "#rect(width: 30mm, height: 10mm, fill: none, stroke: 1mm + rgb(\"#000000ff\"), radius: 0mm)"
+        ));
         assert!(!source.contains("#rotate(90deg, origin: center)[#rect(width: 30mm"));
+    }
+
+    #[test]
+    fn shape_paint_source_emission() {
+        // Container with stroke only (emits fill: none)
+        let stroke_only = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            stroke: Some(Stroke {
+                thickness: 0.5,
+                color: Color::rgba(255, 0, 0, 255),
+            }),
+            background: None,
+            rounded: None,
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src = render_test_items(&[stroke_only], (20.0, 10.0)).expect("render stroke only");
+        assert!(
+            src.contains("#rect(width: 20mm, height: 10mm, fill: none, stroke: 0.5mm + rgb(\"#ff0000ff\"), radius: 0mm)"),
+            "got: {src}"
+        );
+
+        // Container with background only (emits stroke: none)
+        let bg_only = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            stroke: None,
+            background: Some(Color::rgba(0, 0, 128, 255)),
+            rounded: None,
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src = render_test_items(&[bg_only], (20.0, 10.0)).expect("render bg only");
+        assert!(
+            src.contains("#rect(width: 20mm, height: 10mm, fill: rgb(\"#000080ff\"), stroke: none, radius: 0mm)"),
+            "got: {src}"
+        );
+
+        // Container with both
+        let both = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            stroke: Some(Stroke {
+                thickness: 0.2,
+                color: Color::rgba(0, 255, 0, 255),
+            }),
+            background: Some(Color::rgba(255, 255, 0, 255)),
+            rounded: None,
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src = render_test_items(&[both], (20.0, 10.0)).expect("render both");
+        assert!(
+            src.contains("#rect(width: 20mm, height: 10mm, fill: rgb(\"#ffff00ff\"), stroke: 0.2mm + rgb(\"#00ff00ff\"), radius: 0mm)"),
+            "got: {src}"
+        );
+
+        // Container with rounded clamped to min(w, h)/2
+        // w=20, h=10 -> max radius is 5.0. Requested radius is 8.0 -> clamped to 5.0
+        let rounded_clamped = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            stroke: Some(Stroke {
+                thickness: 0.2,
+                color: Color::BLACK,
+            }),
+            background: None,
+            rounded: Some(8.0),
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src =
+            render_test_items(&[rounded_clamped], (20.0, 10.0)).expect("render rounded clamped");
+        assert!(
+            src.contains("#rect(width: 20mm, height: 10mm, fill: none, stroke: 0.2mm + rgb(\"#000000ff\"), radius: 5mm)"),
+            "got: {src}"
+        );
+
+        // Container with rounded fill and no stroke (stroke: none, radius: 1.5mm)
+        let rounded_fill_no_stroke = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            stroke: None,
+            background: Some(Color::rgba(0, 0, 0, 255)),
+            rounded: Some(1.5),
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src = render_test_items(&[rounded_fill_no_stroke], (20.0, 10.0))
+            .expect("render rounded fill no stroke");
+        assert!(
+            src.contains("#rect(width: 20mm, height: 10mm, fill: rgb(\"#000000ff\"), stroke: none, radius: 1.5mm)"),
+            "got: {src}"
+        );
+
+        // Container with neither (no #rect emitted)
+        let neither = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            stroke: None,
+            background: None,
+            rounded: Some(2.0),
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![],
+        };
+        let src = render_test_items(&[neither], (20.0, 10.0)).expect("render neither");
+        assert!(!src.contains("#rect"), "got: {src}");
+
+        // Line with custom colour
+        let line = LayoutItem::Line {
+            at: Position([0.0, 0.0]),
+            to: Position([10.0, 5.0]),
+            stroke: Some(Stroke {
+                thickness: 0.4,
+                color: Color::rgba(0x80, 0, 0x80, 0xff),
+            }),
+            when: None,
+        };
+        let src = render_test_items(&[line], (20.0, 10.0)).expect("render line");
+        assert!(
+            src.contains(
+                "#line(start: (0mm, 0mm), end: (10mm, -5mm), stroke: 0.4mm + rgb(\"#800080ff\"))"
+            ),
+            "got: {src}"
+        );
+
+        // Line with omitted stroke emits no #line
+        let strokeless_line = LayoutItem::Line {
+            at: Position([0.0, 0.0]),
+            to: Position([10.0, 5.0]),
+            stroke: None,
+            when: None,
+        };
+        let src_strokeless =
+            render_test_items(&[strokeless_line], (20.0, 10.0)).expect("render strokeless line");
+        assert!(!src_strokeless.contains("#line"), "got: {src_strokeless}");
+
+        // Draw order: background rect precedes child items in emitted Typst source
+        let container_with_child = LayoutItem::Container {
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(20.0), SizeValue::fixed(10.0)]),
+            ),
+            when: None,
+            stroke: Some(Stroke {
+                thickness: 0.5,
+                color: Color::BLACK,
+            }),
+            background: Some(Color::rgba(255, 0, 0, 255)),
+            rounded: None,
+            padding: Padding::ZERO,
+            flow: None,
+            items: vec![LayoutItem::Text {
+                value: "child_text".to_string(),
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
+                ),
+                font_size: FontSize::Fixed(6.0),
+                font_weight: None,
+                ink: None,
+                wrap: false,
+                alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
+                when: None,
+            }],
+        };
+        let src = render_test_items(&[container_with_child], (20.0, 10.0))
+            .expect("render container with child");
+        let rect_idx = src.find("#rect").expect("rect must be emitted");
+        let child_idx = src.find("child_text").expect("child must be emitted");
+        assert!(
+            rect_idx < child_idx,
+            "paint (#rect at {rect_idx}) must precede children (child_text at {child_idx}) in draw order, got:\n{src}"
+        );
+    }
+
+    #[test]
+    fn shape_paint_renders_png_and_pdf() {
+        let yaml = r#"
+name: Shape Paint Test
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 40
+  height: 30
+layout:
+  - type: container
+    at: [2, 2]
+    size: [36, 26]
+    stroke:
+      thickness: 0.5
+      color: '#ff0000'
+    background: '#00ff0080'
+    rounded: 3.0
+    items:
+      - type: line
+        at: [1, 1]
+        to: [30, 20]
+        stroke:
+          thickness: 0.3
+          color: blue
+      - type: text
+        value: "Test"
+        at: [2, 2]
+        size: [20, 10]
+        font_size: 8
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let data = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+
+        let png = render_single_label_image(
+            &template,
+            &data,
+            None,
+            &settings,
+            &datetime,
+            super::ImageRenderOptions::default(),
+        )
+        .expect("render png");
+        assert!(!png.is_empty());
+        assert_eq!(&png[1..4], b"PNG");
+
+        let pdf = render_single_label_pdf(&template, &data, None, &settings, &datetime)
+            .expect("render pdf");
+        assert!(!pdf.is_empty());
+        assert_eq!(&pdf[0..4], b"%PDF");
     }
 
     #[test]

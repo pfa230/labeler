@@ -225,7 +225,8 @@ mod tests {
 - type: line
   at: [0.0, 0.0]
   to: [10.0, 0.0]
-  thickness: 0.2
+  stroke:
+    thickness: 0.2
 "#;
         let items = parse_nodes(src).expect("parse nodes");
         assert!(matches!(items[0], LayoutItem::Line { .. }));
@@ -237,7 +238,8 @@ mod tests {
 - type: line
   at: [0.0, 0.0]
   size: [10.0, 0.0]
-  thickness: 0.2
+  stroke:
+    thickness: 0.2
 "#;
         // `size` is no longer a line field (deny_unknown_fields); `to` is required.
         assert!(parse_nodes(src).is_err());
