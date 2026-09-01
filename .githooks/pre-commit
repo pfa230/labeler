@@ -6,12 +6,17 @@
 # Skippable with `git commit --no-verify`; CI runs the same script on what lands.
 set -euo pipefail
 
-# Refuse commits while an agy apply is running. The apply stage implements; it does
-# not commit, merge or archive. Prompting an agent not to do something is a request,
-# so this makes git refuse instead.
-lock="$(git rev-parse --path-format=absolute --git-common-dir)/APPLY_IN_PROGRESS"
+# Refuse commits while an apply is running IN THIS WORKTREE. The apply stage
+# implements; it does not commit, merge or archive. Prompting an agent not to do
+# something is a request, so this makes git refuse instead.
+#
+# This worktree's lock, not the repository's: keyed on the shared git dir it refused a
+# commit in every tree while any one of them was being written, which is two changes
+# serialized on disjoint files (#294). The lock names who holds it, so say that rather
+# than naming an agent this hook cannot know.
+lock="$(git rev-parse --path-format=absolute --git-dir)/APPLY_IN_PROGRESS"
 if [ -f "$lock" ]; then
-  echo "apply-lock: an agy apply is in progress ($(cat "$lock"))." >&2
+  echo "apply-lock: an apply is in progress here ($(cat "$lock"))." >&2
   echo "apply-lock: the apply stage does not commit. The change is committed once, after review and archive." >&2
   exit 1
 fi
