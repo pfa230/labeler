@@ -46,7 +46,7 @@ url = "2"
 hmac = "0.12"
 urlencoding = "2.1"
 regex = "1"
-rustix = { version = "1", features = ["fs"] }
+rustix = { version = "1", features = ["fs", "alloc"] }
 
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 
