@@ -2905,6 +2905,77 @@ layout:
     }
 
     #[tokio::test]
+    async fn template_detail_readback_preserves_padded_literal_and_canonical_reference() {
+        let dir = temp_templates_dir();
+        let yaml = r#"
+name: ColorReadback
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+    color: " red "
+  - type: container
+    at: [0, 10]
+    size: [50, 10]
+    background: " {brand} "
+    items:
+      - type: text
+        value: "Escaped"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 10
+        color: "\u0062lue"
+"#;
+        let tpl_path = dir.join("color_readback.yaml");
+        std::fs::write(&tpl_path, yaml).unwrap();
+
+        let app = build_app_in(&dir);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/color_readback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+
+        assert_eq!(body["layout"][0]["color"], " red ");
+        assert_eq!(body["layout"][1]["background"], "{brand}");
+        assert_eq!(body["layout"][1]["items"][0]["color"], "blue");
+
+        let source_res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/color_readback/source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(source_res.status(), StatusCode::OK);
+        let source_body = axum::body::to_bytes(source_res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let source_str = String::from_utf8(source_body.to_vec()).unwrap();
+        assert!(source_str.contains(r#""\u0062lue""#) || source_str.contains(r#"\u0062lue"#));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn startup_quarantines_unreadable_shape_and_text_colors_and_serves_valid_sibling() {
         let dir = temp_templates_dir();
         let valid_yaml = r#"
