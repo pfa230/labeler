@@ -4671,7 +4671,20 @@ layout:
         let dir = temp_dir("non_utf8");
         let non_utf8_filename = std::ffi::OsStr::from_bytes(b"non_utf8_\xff.yaml");
         let path = dir.join(non_utf8_filename);
-        std::fs::write(&path, sample_yaml("Non UTF8")).unwrap();
+        if let Err(err) = std::fs::write(&path, sample_yaml("Non UTF8")) {
+            // APFS refuses the name with EILSEQ on every volume it offers, case-sensitive
+            // included, so the state under test cannot be constructed and there is no
+            // macOS behaviour to assert.
+            if err.raw_os_error() == Some(rustix::io::Errno::ILSEQ.raw_os_error()) {
+                eprintln!(
+                    "skipping load_from_dir_handles_non_utf8_paths: filesystem does not support non-UTF-8 filename (capability: non_utf8_paths, errno: {} EILSEQ)",
+                    err.raw_os_error().unwrap()
+                );
+                fs::remove_dir_all(&dir).ok();
+                return;
+            }
+            panic!("unexpected error creating non-UTF-8 file: {err}");
+        }
 
         let registry = TemplateRegistry::load_from_dir(&dir).expect("load templates");
         assert_eq!(registry.len(), 0);
