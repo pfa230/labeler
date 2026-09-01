@@ -18,8 +18,13 @@ The paint keys are accepted by category, not uniformly:
 | Key | Type | Accepted on | Meaning |
 | --- | --- | --- | --- |
 | `stroke` | block, see below | every shape | The outline tracing the shape. Omitted: no outline. |
-| `background` | colour | a shape with an interior | The colour filling that interior. Omitted: nothing is filled, and whatever lies behind the shape shows through. |
+| `background` | colour, per `colour-vocabulary` | a shape with an interior | The colour filling that interior. Omitted: nothing is filled, and whatever lies behind the shape shows through. |
 | `rounded` | number | a shape with an interior | The corner radius. Omitted: square corners. |
+
+A **colour** is what the `colour-vocabulary` capability defines, and this capability states no
+vocabulary of its own: `background` accepts one of the sixteen names, a hex string, or a `"{param}"`
+reference resolved per render, and the same name denotes the same colour here as on a `text` item's
+`color`.
 
 Where two keys are both accepted, neither SHALL imply the other. On a `container`, all four
 combinations SHALL be accepted and SHALL render as declared: outline only, fill only, both, and
@@ -60,75 +65,17 @@ checking) stays authoritative.
 - **WHEN** a `line` declares `stroke: { thickness: 0.2, color: navy }`
 - **THEN** it renders navy at 0.2 units
 
+#### Scenario: A fill may be a parameter reference
+
+- **WHEN** a container declares `background: "{brand}"` against a declared `string` parameter, and a
+  render request supplies a colour for it
+- **THEN** the interior is filled with that colour, under the `colour-vocabulary` capability
 
 #### Scenario: A line has no interior to fill
 
 - **WHEN** a `line` declares `background: black`, or `rounded: 1.0`
 - **THEN** the template fails validation and is quarantined, naming the offending key on the line
 
-### Requirement: A colour is a hex string or one of the named colours
-
-A **colour** SHALL be one of:
-
-- A hex string with a leading `#`, followed by 3, 4, 6 or 8 hexadecimal digits, case-insensitive:
-  `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`. The 3- and 4-digit forms expand by digit doubling
-  (`#f0c` is `#ff00cc`). The 4- and 8-digit forms carry an alpha channel, and a partially transparent
-  colour SHALL composite over what lies behind it in both PNG and PDF output.
-- One of these sixteen names, matched **case-insensitively**, each denoting exactly the value given.
-  `red`, `Red` and `RED` are one name, as CSS treats them and as this capability already treats the
-  hex digits:
-
-  | Name | Value | Name | Value |
-  | --- | --- | --- | --- |
-  | `black` | `#000000` | `silver` | `#c0c0c0` |
-  | `white` | `#ffffff` | `gray` | `#808080` |
-  | `red` | `#ff0000` | `maroon` | `#800000` |
-  | `yellow` | `#ffff00` | `olive` | `#808000` |
-  | `lime` | `#00ff00` | `green` | `#008000` |
-  | `aqua` | `#00ffff` | `teal` | `#008080` |
-  | `blue` | `#0000ff` | `navy` | `#000080` |
-  | `fuchsia` | `#ff00ff` | `purple` | `#800080` |
-
-  These are the CSS Level 1 names and their CSS values. The table above is the contract: a name
-  SHALL denote the value stated here and SHALL NOT be resolved by asking the rendering engine, whose
-  own constants of the same names carry different values.
-
-A hex string without the leading `#`, with any other digit count, or containing a non-hex character
-SHALL be refused. A name outside the sixteen SHALL be refused. Neither SHALL be silently substituted,
-defaulted, or dropped.
-
-The colour vocabulary is not constrained to monochrome. A colour that a monochrome device cannot
-reproduce SHALL be accepted and rendered; converting it for such a device belongs to the print path
-(ADR-0033), not to the template schema.
-
-#### Scenario: Each accepted hex form
-
-- **WHEN** a template declares `background: "#f0f"`, `"#F0F8"`, `"#ff00ff"` or `"#FF00FF80"`
-- **THEN** each parses and renders as the colour it names, the 3-digit form expanding to `#ff00ff`
-  and the 4- and 8-digit forms carrying alpha
-
-#### Scenario: A named colour carries its stated value
-
-- **WHEN** a container declares `background: red`
-- **THEN** it renders `#ff0000`, and not any other colour of that name
-
-#### Scenario: A name matches regardless of case
-
-- **WHEN** a container declares `background: Red`, `background: RED` or `background: rEd`
-- **THEN** each is accepted and renders `#ff0000`
-
-#### Scenario: A malformed hex string is refused
-
-- **WHEN** a template declares `background: "#ff00f"` (five digits), `background: "ff00ff"` (no `#`),
-  or `background: "#gg0000"` (not hexadecimal)
-- **THEN** the template fails validation and is quarantined, naming the offending value
-
-#### Scenario: An unknown colour name is refused
-
-- **WHEN** a container declares `stroke: { thickness: 0.2, color: chartreuse }`, or
-  `background: chartreuse`
-- **THEN** the template fails validation and is quarantined, naming the unknown colour, and the
-  failure is colour validation rather than an unrecognised field
 
 ### Requirement: A stroke is a thickness and a colour, and its thickness is finite and positive
 
@@ -137,7 +84,9 @@ reproduce SHALL be accepted and rendered; converting it for such a device belong
 | Field | Type | Required | Default |
 | --- | --- | --- | --- |
 | `thickness` | number | yes | none |
-| `color` | colour | no | `black` |
+| `color` | colour, per `colour-vocabulary` | no | `black` |
+
+`color` accepts everything a colour accepts, including a `"{param}"` reference resolved per render.
 
 `thickness` is in the template `unit` and SHALL be **finite and at least 0.0001**. A `stroke` block
 without `thickness`, or whose `thickness` is negative, zero, NaN, infinite, or positive but below
@@ -163,6 +112,12 @@ at load rather than ignored.
 
 - **WHEN** a container declares `stroke: { thickness: 0.02 }`
 - **THEN** the outline renders `#000000` at 0.02 units
+
+#### Scenario: A stroke colour may be a parameter reference
+
+- **WHEN** a container declares `stroke: { thickness: 0.3, color: "{brand}" }` against a declared
+  `string` parameter, and a render request supplies a colour for it
+- **THEN** the outline renders in that colour, under the `colour-vocabulary` capability
 
 #### Scenario: A zero or negative thickness is refused
 
@@ -191,6 +146,7 @@ at load rather than ignored.
 
 - **WHEN** a shape declares `stroke: { thickness: 0.2, dash: dotted }`
 - **THEN** the template fails validation and is quarantined, naming `dash`
+
 
 ### Requirement: The corner radius is authored, not derived from the stroke
 
@@ -240,6 +196,7 @@ make the rule depend on where the extent came from.
 
 - **WHEN** a container whose box resolves to 4.0 by 2.0 units declares `rounded: 5.0`
 - **THEN** the corner radius renders as 1.0, half the shorter side, on both the fill and the outline
+
 
 ### Requirement: A container's paint covers its whole box, unrotated, behind its children
 
@@ -299,6 +256,7 @@ A shape that does not render, because a `when` gate excludes it, SHALL paint not
   request resolves `outline` to any other value
 - **THEN** neither an outline nor a fill is drawn
 
+
 ### Requirement: Paint belongs to shapes alone and is never inherited
 
 `stroke`, `background` and `rounded` SHALL be accepted only where the first requirement of this
@@ -321,6 +279,7 @@ SHALL NOT set a colour that any child draws with, at any depth.
   container of its own
 - **THEN** the text renders in the colour it would render in with no background declared, and the
   nested container renders with no background of its own
+
 
 ### Requirement: An explicit null is not a spelling of absence
 
@@ -357,31 +316,6 @@ deleted the line.
 - **THEN** the template fails validation and is quarantined, naming `color`
 - **AND** it is not treated as an omitted `color` defaulting to black
 
-### Requirement: A colour is reported canonically wherever a template is read back
-
-A template's layout is exposed through the API (`GET /templates/{id}`). Every colour in that response
-SHALL be reported as an 8-digit hex string in the exact form `#rrggbbaa`, with a leading `#` and
-**lower-case** digits, whatever spelling the template author used. An upper-case rendering of the same
-value SHALL NOT be emitted: one colour has one API representation, so a client may compare the strings.
-
-`background: red` is therefore reported as `"#ff0000ff"`, and `background: "#F0F"` as `"#ff00ffff"`.
-This is a normalization and not a loss: the reported value denotes exactly the colour that renders.
-
-#### Scenario: A named colour is reported as hex
-
-- **WHEN** a template declaring `background: red` is read back through the API
-- **THEN** the response reports `"#ff0000ff"`
-
-#### Scenario: A short hex form is reported expanded
-
-- **WHEN** a template declaring `stroke: { thickness: 0.2, color: "#F0F" }` is read back
-- **THEN** the response reports the stroke colour as `"#ff00ffff"`
-
-#### Scenario: A defaulted stroke colour is reported, not omitted
-
-- **WHEN** a template declaring `stroke: { thickness: 0.2 }`, with no `color`, is read back
-- **THEN** the response reports the stroke colour as `"#000000ff"`
-- **AND** it is not absent from the response, so one authored template has one API representation
 
 ### Requirement: The superseded spellings no longer parse
 
