@@ -891,14 +891,16 @@ impl std::str::FromStr for Color {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
+        let spelling = s.to_owned();
+        let value = s.trim();
+        if value.is_empty() {
             return Err("colour cannot be empty".to_string());
         }
-        if let Some(hex_part) = s.strip_prefix('#') {
+        if let Some(hex_part) = value.strip_prefix('#') {
             let hex_bytes = hex_part.as_bytes();
             for &b in hex_bytes {
                 if !b.is_ascii_hexdigit() {
-                    return Err(format!("invalid hex character in colour '{s}'"));
+                    return Err(format!("invalid hex character in colour '{value}'"));
                 }
             }
             let double_hex = |b: u8| -> u8 {
@@ -944,16 +946,13 @@ impl std::str::FromStr for Color {
                 }
                 _ => {
                     return Err(format!(
-                        "invalid hex colour '{s}': expected 3, 4, 6, or 8 hexadecimal digits"
+                        "invalid hex colour '{value}': expected 3, 4, 6, or 8 hexadecimal digits"
                     ))
                 }
             };
-            Ok(Color {
-                spelling: s.to_string(),
-                rgba,
-            })
+            Ok(Color { spelling, rgba })
         } else {
-            let rgba = match s.to_ascii_lowercase().as_str() {
+            let rgba = match value.to_ascii_lowercase().as_str() {
                 "black" => Some([0x00, 0x00, 0x00, 0xff]),
                 "silver" => Some([0xc0, 0xc0, 0xc0, 0xff]),
                 "gray" => Some([0x80, 0x80, 0x80, 0xff]),
@@ -973,12 +972,9 @@ impl std::str::FromStr for Color {
                 _ => None,
             };
             if let Some(rgba) = rgba {
-                Ok(Color {
-                    spelling: s.to_string(),
-                    rgba,
-                })
+                Ok(Color { spelling, rgba })
             } else {
-                Err(format!("unknown colour '{s}'"))
+                Err(format!("unknown colour '{value}'"))
             }
         }
     }
@@ -1435,8 +1431,9 @@ mod color_tests {
             "#ff00f",
             "#gg0000",
             "",
-            " red ",
-            " #ff0000 ",
+            "   ",
+            "re d",
+            "# f0f",
             "#1234567",
             "#ff",
             "#f",

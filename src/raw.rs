@@ -34,8 +34,7 @@ impl<'de> Deserialize<'de> for RawColor {
 /// `RawColor` deliberately fails `FromStr` unconditionally so that `DynamicValueVisitor::visit_str`
 /// bypasses its `trimmed.parse::<T>()` fast-path and falls through to `RawColor::deserialize`,
 /// preserving exact untrimmed string literal values (e.g. `" red "`, `" #ff0000 "`)
-/// so that `convert.rs` and `Color::from_str` can strictly reject whitespace at load time,
-/// matching render-time parameter resolution.
+/// so that the declared string reaches the model and the read-back keeps its padding.
 impl std::str::FromStr for RawColor {
     type Err = &'static str;
 
