@@ -4,7 +4,7 @@ Date: 2026-08-31
 
 ## Status
 
-Accepted. Issue [#280](https://github.com/pfa230/labeler/issues/280). Supersedes nothing.
+Accepted (§5-6 superseded by [ADR-0093](0093-one-colour-type-and-vocabulary.md)). Issue [#280](https://github.com/pfa230/labeler/issues/280). Supersedes nothing.
 
 ## Context
 

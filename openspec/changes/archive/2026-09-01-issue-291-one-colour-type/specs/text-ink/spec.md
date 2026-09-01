@@ -1,11 +1,4 @@
-## Purpose
-
-Defines the `color` field on a `text` layout item: accepting an optional foreground colour, defaulting
-to black when omitted or explicitly null, refusing `color` on non-text items and `ink` on all items,
-and preserving layout metrics. Colour vocabulary, parameter references, validation, and rendering rules
-are governed by the `colour-vocabulary` capability.
-
-## Requirements
+## ADDED Requirements
 
 ### Requirement: A text item's foreground colour is named `color`
 
@@ -78,3 +71,54 @@ by the `text-wrap-flag` capability.
 
 - **WHEN** a template declares `color` on a `qr`, `image`, `line` or `container` item
 - **THEN** the template is refused with an unknown-field error naming that item's layout path
+
+## REMOVED Requirements
+
+### Requirement: A text item's foreground colour is named `ink`
+
+**Reason**: The field is renamed to `color` (#291), so that one word names the concept on every field
+that takes one. The replacement requirement above carries the whole contract for the renamed field.
+
+**Migration**: Rewrite `ink:` as `color:` on every `text` item. A template still writing `ink:` is
+quarantined at load with an unknown-field error naming its layout path, and the server still starts.
+
+### Requirement: An ink is a named colour, a hex colour, or a parameter reference
+
+**Reason**: The vocabulary is now stated once, in the `colour-vocabulary` capability, for `text.color`,
+`stroke.color` and `background` alike. Keeping a second statement here is what let `red` mean two
+colours.
+
+**Migration**: The accepted forms are unchanged in shape, but the name table is now the sixteen CSS
+Level 1 names at their CSS values. A text item's `red` becomes `#ff0000` rather than `#ff4136`, and
+every name except `black` and `white` likewise changes value; `eastern` and `orange` are refused.
+A template wanting the previous value writes it as hex.
+
+### Requirement: A bad ink quarantines its template and is refused at the write endpoint
+
+**Reason**: Stated once in `colour-vocabulary`, for every field that takes a colour rather than for
+this one.
+
+**Migration**: None. The behaviour is unchanged: the template is quarantined, the server starts, and
+the write endpoint refuses without writing a file.
+
+### Requirement: A parameter-referenced ink is checked at load and resolved per render
+
+**Reason**: Stated once in `colour-vocabulary`, which extends it to `stroke.color` and `background`.
+
+**Migration**: The load-time check and the render-time resolution are unchanged. The failure reason
+on the render endpoint is `color_param_invalid` rather than `ink_param_invalid`; a client matching on
+that string must be updated.
+
+### Requirement: A parameter-referenced ink is reported as an input
+
+**Reason**: Stated once in `colour-vocabulary`, which extends it to the shape paint fields.
+
+**Migration**: None for text. A parameter referenced by a shape's `background` or `stroke.color` now
+appears in the input list as well.
+
+### Requirement: An ink renders on every output path
+
+**Reason**: Stated once in `colour-vocabulary`, which covers glyphs, outlines and fills under one
+rule, including the bilevel threshold.
+
+**Migration**: None. The behaviour is unchanged.
