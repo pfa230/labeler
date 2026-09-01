@@ -1,13 +1,48 @@
 use crate::errors::TemplateError;
 use crate::models::{
-    DynamicDimension, Extent, Flow, FlowDirection, FlowOverflow, Layout, LayoutItem, Padding,
-    ParamSpec, ParamType, ParamValue, Placement, Size, SizeValue, TemplateFormat,
+    Color, DynamicDimension, Extent, Flow, FlowDirection, FlowOverflow, Layout, LayoutItem,
+    Padding, ParamSpec, ParamType, ParamValue, Placement, Size, SizeValue, Stroke, TemplateFormat,
 };
 use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
-    RawSizeValue, RawTemplateFormat, TemplateDefinitionRaw,
+    RawSizeValue, RawTemplateFormat, StrokeRaw, TemplateDefinitionRaw,
 };
 use crate::templates::TemplateContent;
+
+impl TryFrom<StrokeRaw> for Stroke {
+    type Error = TemplateError;
+
+    fn try_from(raw: StrokeRaw) -> Result<Self, Self::Error> {
+        let thickness = match raw.thickness {
+            None => {
+                return Err(TemplateError::Validation {
+                    path: "thickness".to_string(),
+                    msg: "stroke thickness is required".to_string(),
+                });
+            }
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "thickness".to_string(),
+                    msg: "stroke thickness cannot be null".to_string(),
+                });
+            }
+            Some(Some(t)) => t,
+        };
+
+        let color = match raw.color {
+            None => Color::BLACK,
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "color".to_string(),
+                    msg: "stroke color cannot be null".to_string(),
+                });
+            }
+            Some(Some(c)) => c.0,
+        };
+
+        Ok(Stroke { thickness, color })
+    }
+}
 
 impl PlacementRaw {
     /// `size` xor `to`. `kind` is the item type (`text`, `qr`, `image`, `container`) and becomes the
@@ -188,6 +223,43 @@ impl ContainerRaw {
             Some(padding) => Padding::try_from(padding)?,
         };
 
+        let stroke = match self.stroke {
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "stroke".to_string(),
+                    msg: "stroke cannot be null".to_string(),
+                });
+            }
+            Some(Some(raw_stroke)) => {
+                let stroke =
+                    Stroke::try_from(raw_stroke).map_err(|err| err.with_prefix("stroke"))?;
+                Some(stroke)
+            }
+            None => None,
+        };
+
+        let background = match self.background {
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "background".to_string(),
+                    msg: "background cannot be null".to_string(),
+                });
+            }
+            Some(Some(raw_color)) => Some(raw_color.0),
+            None => None,
+        };
+
+        let rounded = match self.rounded {
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "rounded".to_string(),
+                    msg: "rounded cannot be null".to_string(),
+                });
+            }
+            Some(Some(r)) => Some(r),
+            None => None,
+        };
+
         let is_flow = flow.is_some();
         let mut items = Vec::with_capacity(self.items.len());
         for (idx, item) in self.items.into_iter().enumerate() {
@@ -199,7 +271,9 @@ impl ContainerRaw {
         Ok(LayoutItem::Container {
             placement,
             when: self.when.or(self.option),
-            frame: self.frame,
+            stroke,
+            background,
+            rounded,
             padding,
             flow,
             items,
@@ -279,10 +353,22 @@ impl LayoutItem {
                         msg: "line cannot be a packed child".to_string(),
                     });
                 }
+                let stroke = match raw.stroke {
+                    None => None,
+                    Some(None) => {
+                        return Err(TemplateError::Validation {
+                            path: "stroke".to_string(),
+                            msg: "stroke cannot be null".to_string(),
+                        });
+                    }
+                    Some(Some(raw_stroke)) => Some(
+                        Stroke::try_from(raw_stroke).map_err(|err| err.with_prefix("stroke"))?,
+                    ),
+                };
                 Ok(LayoutItem::Line {
                     at: raw.at,
                     to: raw.to,
-                    thickness: raw.thickness,
+                    stroke,
                     when: raw.when,
                 })
             }
@@ -716,5 +802,212 @@ mod tests {
             integer_choices.param_type,
             crate::models::ParamType::Integer
         );
+    }
+
+    #[test]
+    fn shape_paint_container_refusals_and_defaults() {
+        // stroke: null
+        let err = try_build("  - type: container\n    at: [0,0]\n    stroke:\n    items: []\n")
+            .unwrap_err();
+        assert!(
+            err.contains("layout[0].stroke"),
+            "expected layout[0].stroke in {err}"
+        );
+        assert!(
+            err.contains("stroke cannot be null"),
+            "expected message in {err}"
+        );
+
+        // background: null
+        let err = try_build("  - type: container\n    at: [0,0]\n    background:\n    items: []\n")
+            .unwrap_err();
+        assert!(
+            err.contains("layout[0].background"),
+            "expected layout[0].background in {err}"
+        );
+        assert!(
+            err.contains("background cannot be null"),
+            "expected message in {err}"
+        );
+
+        // rounded: null
+        let err = try_build("  - type: container\n    at: [0,0]\n    rounded:\n    items: []\n")
+            .unwrap_err();
+        assert!(
+            err.contains("layout[0].rounded"),
+            "expected layout[0].rounded in {err}"
+        );
+        assert!(
+            err.contains("rounded cannot be null"),
+            "expected message in {err}"
+        );
+
+        // stroke thickness null
+        let err = try_build(
+            "  - type: container\n    at: [0,0]\n    stroke:\n      thickness:\n    items: []\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("layout[0].stroke.thickness"),
+            "expected path in {err}"
+        );
+        assert!(
+            err.contains("stroke thickness cannot be null"),
+            "expected message in {err}"
+        );
+
+        // stroke color null
+        let err = try_build("  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 1.0\n      color:\n    items: []\n").unwrap_err();
+        assert!(
+            err.contains("layout[0].stroke.color"),
+            "expected path in {err}"
+        );
+        assert!(
+            err.contains("stroke color cannot be null"),
+            "expected message in {err}"
+        );
+
+        // stroke missing thickness
+        let err = try_build(
+            "  - type: container\n    at: [0,0]\n    stroke:\n      color: red\n    items: []\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("layout[0].stroke.thickness"),
+            "expected path in {err}"
+        );
+        assert!(
+            err.contains("stroke thickness is required"),
+            "expected message in {err}"
+        );
+
+        // valid stroke defaults color to black
+        let template = try_build(
+            "  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.5\n    items: []\n",
+        )
+        .unwrap();
+        let crate::models::Layout::Items(items) = &template.layout;
+        if let crate::models::LayoutItem::Container {
+            stroke,
+            background,
+            rounded,
+            ..
+        } = &items[0]
+        {
+            let stroke = stroke.as_ref().expect("stroke should be present");
+            assert_eq!(stroke.thickness, 0.5);
+            assert_eq!(stroke.color, crate::models::Color::BLACK);
+            assert_eq!(stroke.color.hex(), "#000000ff");
+            assert!(background.is_none());
+            assert!(rounded.is_none());
+        } else {
+            panic!("expected container");
+        }
+
+        // valid stroke with custom color, background, and rounded
+        let template = try_build("  - type: container\n    at: [0,0]\n    stroke:\n      thickness: 0.0001\n      color: '#f0c'\n    background: navy\n    rounded: 0.0001\n    items: []\n").unwrap();
+        let crate::models::Layout::Items(items) = &template.layout;
+        if let crate::models::LayoutItem::Container {
+            stroke,
+            background,
+            rounded,
+            ..
+        } = &items[0]
+        {
+            let stroke = stroke.as_ref().unwrap();
+            assert_eq!(stroke.thickness, 0.0001);
+            assert_eq!(
+                stroke.color,
+                crate::models::Color::rgba(0xff, 0x00, 0xcc, 0xff)
+            );
+            assert_eq!(
+                background.unwrap(),
+                crate::models::Color::rgba(0x00, 0x00, 0x80, 0xff)
+            );
+            assert_eq!(rounded.unwrap(), 0.0001);
+        } else {
+            panic!("expected container");
+        }
+    }
+
+    #[test]
+    fn shape_paint_line_refusals() {
+        // line stroke required
+        // line without stroke is accepted with stroke: None (omitted = no outline)
+        let template = try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n").unwrap();
+        let crate::models::Layout::Items(items) = &template.layout;
+        if let crate::models::LayoutItem::Line { stroke, .. } = &items[0] {
+            assert!(stroke.is_none());
+        } else {
+            panic!("expected line");
+        }
+
+        // line stroke null
+        let err =
+            try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n").unwrap_err();
+        assert!(err.contains("layout[0].stroke"), "expected path in {err}");
+        assert!(
+            err.contains("stroke cannot be null"),
+            "expected message in {err}"
+        );
+
+        // line stroke thickness null
+        let err = try_build(
+            "  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n      thickness:\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("layout[0].stroke.thickness"),
+            "expected path in {err}"
+        );
+        assert!(
+            err.contains("stroke thickness cannot be null"),
+            "expected message in {err}"
+        );
+
+        // line stroke color null
+        let err = try_build("  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n      thickness: 1.0\n      color:\n").unwrap_err();
+        assert!(
+            err.contains("layout[0].stroke.color"),
+            "expected path in {err}"
+        );
+        assert!(
+            err.contains("stroke color cannot be null"),
+            "expected message in {err}"
+        );
+
+        // line background rejected
+        let err = try_build(
+            "  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n      thickness: 0.5\n    background: red\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("unknown field `background`"),
+            "expected unknown field background in {err}"
+        );
+
+        // line rounded rejected
+        let err = try_build(
+            "  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n      thickness: 0.5\n    rounded: 1.0\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("unknown field `rounded`"),
+            "expected unknown field rounded in {err}"
+        );
+
+        // valid line with stroke defaults color to black
+        let template = try_build(
+            "  - type: line\n    at: [0,0]\n    to: [5,5]\n    stroke:\n      thickness: 0.5\n",
+        )
+        .unwrap();
+        let crate::models::Layout::Items(items) = &template.layout;
+        if let crate::models::LayoutItem::Line { stroke, .. } = &items[0] {
+            let stroke = stroke.as_ref().unwrap();
+            assert_eq!(stroke.thickness, 0.5);
+            assert_eq!(stroke.color, crate::models::Color::BLACK);
+        } else {
+            panic!("expected line");
+        }
     }
 }

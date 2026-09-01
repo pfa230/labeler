@@ -28,7 +28,7 @@ are labelled where they appear.
 6. [`max_w` and `max_h` are caps](#6-max_w-and-max_h-are-caps)
 7. [Text overflow: `ellipsis` and `fail`](#7-text-overflow-ellipsis-and-fail)
 8. [Edge-relative coordinates and `to:`](#8-edge-relative-coordinates-and-to)
-9. [Containers: nesting, padding, frames, options, rotation](#9-containers-nesting-padding-frames-options-rotation)
+9. [Containers and shape paint: nesting, padding, strokes, backgrounds, options, rotation](#9-containers-and-shape-paint-nesting-padding-strokes-backgrounds-options-rotation)
 10. [Why some mistakes are caught at startup and others at print time](#10-why-some-mistakes-are-caught-at-startup-and-others-at-print-time)
 11. [Troubleshooting](#11-troubleshooting)
 
@@ -94,7 +94,7 @@ An invalid template is quarantined on load while other templates continue to ser
 
 An unknown field at the top level, or on a layout item, is rejected — so a misspelled `paddding` on a
 container fails loudly. That guard does **not** reach inside the nested objects: a typo within
-`format`, `alignment`, `params` or `frame` is dropped rather than reported. You still hear about it if
+`format`, `alignment` or `params` is dropped rather than reported. You still hear about it if
 the field it was meant to set is required — a misspelled `format.height` fails as a *missing* field —
 but a misspelled optional one (`alignment.vertcal`, `params.quiet_zne`) silently leaves the default in
 place. If a setting appears to have no effect, check its spelling first.
@@ -442,7 +442,8 @@ layout:
       - type: line
         at: [0.0, 8.05]
         to: [-0.0, 8.05]        # full-width rule
-        thickness: 0.2
+        stroke:
+          thickness: 0.2
       - type: text
         value: "{line2}"
         at: [0.0, 0.0]
@@ -479,21 +480,39 @@ Rules:
 - `line` uses `at` and `to` as its two endpoints, not as a box; it has no `size`, `fit`, or rotation.
   The endpoints must differ after resolution.
 
-## 9. Containers: nesting, padding, frames, conditional visibility, rotation
+## 9. Containers and shape paint: nesting, padding, strokes, backgrounds, options, rotation
 
 A `container` groups items and establishes a new coordinate frame. Its children are positioned
 relative to its **padded inner box**, so `at: [0, 0]` inside a container with `padding: 1.0` is 1 unit
 in from the container's own bottom-left corner. Sizes and edge-relative coordinates inside resolve
 against that inner box too.
 
+Shapes in the template model (`container` and `line`) support paint attributes:
+- **`stroke: { thickness, color }`**: Accepted on any shape (`container` outline or `line`).
+  `thickness` is required and must be at least 0.0001. `color` is optional and defaults to
+  `#000000ff` (black). `stroke` itself is optional; on a `line`, omitting it draws nothing and is not an error.
+- **`background: <color>`**: Fills the shape's interior. Accepted only on shapes that enclose an
+  area (`container`).
+- **`rounded: <radius>`**: Rounds the corners of the container's stroke and background. Numeric
+  radius in template units (e.g. `1.5` or `0.05`), which must be at least 0.0001 and is clamped at
+  render time to half the shorter side. Square corners are spelled by omitting the key; `rounded: 0`
+  is refused.
+- **Colors**: Specified as 3-, 4-, 6-, or 8-digit hex strings (`#rgb`, `#rgba`, `#rrggbb`,
+  `#rrggbbaa`) or one of the 16 standard CSS Level 1 named colors (`black`, `silver`, `gray`,
+  `white`, `maroon`, `red`, `purple`, `fuchsia`, `green`, `lime`, `olive`, `yellow`, `navy`,
+  `blue`, `teal`, `aqua`), matched case-insensitively. Note that shape paint uses standard CSS
+  color definitions, whereas text `ink` uses Typst's typography color palette.
+
 ```yaml
 - type: container
   at: [0.0, 0.0]
   size: [4.0, 2.0]
   padding: 0.15              # uniform; or [top, right, bottom, left]
-  frame:                     # optional drawn outline
+  stroke:                    # optional outline
     thickness: 0.02
-    rounded: false
+    color: '#000000'         # optional hex or named color (defaults to black)
+  background: '#f0f0f0'      # optional fill color
+  rounded: 0.1               # optional corner radius in template units
   items: [ ... ]
 ```
 
@@ -524,7 +543,8 @@ layout:
       outline: yes
     at: [0.0, 0.0]
     size: [4.0, 2.0]
-    frame: { thickness: 0.02, rounded: false }
+    stroke:
+      thickness: 0.02
     items: []
   - type: container
     when:
@@ -540,7 +560,8 @@ layout:
       - type: line
         at: [1.5, 0.0]
         to: [1.5, 2.0]
-        thickness: 0.01
+        stroke:
+          thickness: 0.01
       # ... id under the QR, name/tags/description in the right column
 ```
 
@@ -613,7 +634,7 @@ What to know:
 - **Packed children carry no coordinates.** Direct children of a flow container are anchorless:
   - They **must not** specify `at` or `to` (rejected at load time).
   - A `line` item cannot be a packed child (rejected at load time).
-  - They can specify `size` (`content`, `fill`, or numeric constants), `max_w`, `max_h`, `when`, and container properties (`padding`, `frame`, nested `flow`).
+  - They can specify `size` (`content`, `fill`, or numeric constants), `max_w`, `max_h`, `when`, and container properties (`padding`, `stroke`, `background`, `rounded`, nested `flow`).
 - **Gaps appear only between occupying children.** Gaps are placed between active children with positive primary extent. Gated-off children (`when`) leave no hole. Active zero-extent children (e.g. empty strings) advance nothing and add no extra gap.
 - **The two `fill` outcomes on packed children:**
   - **Alone in a container:** An uncapped `size: [fill, ...]` child stretches to the container's padded inner extent.
@@ -678,7 +699,7 @@ What to know:
 - **The footprint stays in parent coordinates.** `at` and the extent describe the container's box in
   its parent exactly as if it were not rotated. Rotation is purely an inner transform.
 - **The inner canvas swaps for 90 and 270.** Author children against `[inner_h, inner_w]`. Padding is
-  author-space and rotates with the design; the drawn `frame` outline does not rotate.
+  author-space and rotates with the design; the drawn `stroke` and `background` do not rotate.
 - **Sizing under rotation.** Rotated containers and their descendants support `content` and `fill` as
   long as required parent axes are resolved. When axes swap (90° and 270°), child width resolves against
   inner container height and child height against inner container width. Flow containers beneath rotation

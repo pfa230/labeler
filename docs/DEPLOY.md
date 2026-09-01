@@ -201,7 +201,14 @@ ownership lines up automatically.
 
 ## Upgrades and downgrades
 
-- **Upgrade:** Newer versions automatically discover templates in subdirectories and derive template IDs from filename stems.
+- **Upgrade (Shape Paint Model):** `container.frame` (`frame: { thickness, rounded }`), bare
+  `line.thickness`, and boolean `rounded:` (`rounded: true|false`) have been removed in favor of
+  `stroke: { thickness, color }`, `background: <color>`, and numeric `rounded: <radius>` on `container`
+  and `stroke: { thickness, color }` on `line`. Existing operator templates in `/config/templates/` using
+  removed keys will be quarantined on startup until migrated to the new schema. Note that `stroke`
+  is optional on a `line`; a migrated line with no `stroke` block will load and render without error but draw nothing.
+- **Upgrade:** Newer versions automatically discover templates in subdirectories and derive template IDs
+  from filename stems.
 - **Downgrade:** Downgrading back to a version where `id:` was read from YAML file contents will fail to load templates authored or saved without `id:`, quarantining them on load as missing the required `id` field. In addition, older versions will not discover templates placed in nested subdirectories.
 
 ## Debugging
