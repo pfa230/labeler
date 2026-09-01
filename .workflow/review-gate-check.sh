@@ -51,20 +51,59 @@ field() { # field <file> <name> -> value, or the literal "__AMBIGUOUS__"/"__MISS
   grep "^${name}:" "$file" | sed "s/^${name}:[[:space:]]*//" | tr -d '[:space:]'
 }
 
-# Both reviews carry the same canonical fields, so they are judged by the same code.
-# Role flexibility is only safe if the reviewer is not the author: any agent may
-# propose or apply, and nobody reviews their own work.
-check_roles() { # check_roles <file> <label>
-  local file="$1" label="$2" reviewer author
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# Both reviews carry the same canonical fields, so they are judged by the same code. Only
+# the author field's name differs, and it is passed in: a plan has one author, so review.md
+# names AUTHOR, while code can have several, so diff-review.md names AUTHORS and carries a
+# comma-separated list (#299).
+#
+# Role flexibility is only safe if the reviewer is not an author: any agent may propose or
+# apply, and nobody reviews their own work. With a list that reads "the reviewer appears
+# nowhere in it", which is the same rule counted properly rather than a weaker one.
+check_roles() { # check_roles <file> <label> <author-field>
+  local file="$1" label="$2" afield="$3" reviewer author rest one
   reviewer=$(field "$file" REVIEWER)
-  author=$(field "$file" AUTHOR)
+  author=$(field "$file" "$afield")
   case "$reviewer" in __MISSING__|__AMBIGUOUS__) fail "$label needs exactly one 'REVIEWER:' line naming the model or CLI that wrote it."; return ;; esac
-  case "$author"   in __MISSING__|__AMBIGUOUS__) fail "$label needs exactly one 'AUTHOR:' line naming who wrote what is under review."; return ;; esac
+  case "$author"   in __MISSING__|__AMBIGUOUS__) fail "$label needs exactly one '$afield:' line naming who wrote what is under review."; return ;; esac
   [ -n "$reviewer" ] && [ "$reviewer" != "<VALUE>" ] || { fail "$label: 'REVIEWER:' is unfilled."; return; }
-  [ -n "$author" ]   && [ "$author"   != "<VALUE>" ] || { fail "$label: 'AUTHOR:' is unfilled."; return; }
-  if [ "$(printf '%s' "$reviewer" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$author" | tr '[:upper:]' '[:lower:]')" ]; then
-    fail "$label: reviewer and author are both '${reviewer}'. Nobody reviews their own work; use a different agent or a fresh-context subagent."
-  fi
+  # An empty author list on a change that lands code claims nobody wrote it. It is
+  # reachable in one place: a change whose every implement stage no-opped, which
+  # run-stage.sh permits for a handover. There is no default and no grace period, because a
+  # default here is the same silent pass the empty list already is.
+  [ -n "$author" ] && [ "$author" != "<VALUE>" ] || { fail "$label: '$afield:' is unfilled. Code that lands was written by somebody; name them."; return; }
+  case "$author" in
+    ,*|*,) fail "$label: '$afield:' begins or ends with a comma, so one entry is empty."; return ;;
+  esac
+  # Split on commas so one path serves a single name and a list. field() has already
+  # stripped the whitespace, so an entry is empty only if the list really carries one.
+  rest="$author"
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *,*) one="${rest%%,*}"; rest="${rest#*,}" ;;
+      *)   one="$rest"; rest="" ;;
+    esac
+    [ -n "$one" ] || { fail "$label: '$afield:' has an empty entry between commas."; return; }
+    if [ "$(lower "$one")" = "$(lower "$reviewer")" ]; then
+      fail "$label: '${reviewer}' is both the reviewer and named in '$afield'. Nobody reviews their own work; use a different agent or a fresh-context subagent."
+      return
+    fi
+  done
+}
+
+# 64 lowercase hex, exactly once. Shape only, and deliberately: see check_diff_review.
+check_digest() { # check_digest <file> <name> <field> <what>
+  local file="$1" name="$2" fname="$3" what="$4" v
+  v=$(field "$file" "$fname")
+  case "$v" in
+    __MISSING__)   fail "change '$name': $(basename "$file") needs exactly one '$fname:' line, naming $what."; return ;;
+    __AMBIGUOUS__) fail "change '$name': $(basename "$file") carries more than one '$fname:' line, so which one is the record is a guess."; return ;;
+  esac
+  case "$v" in
+    ''|*[!0-9a-f]*) fail "change '$name': '$fname:' is not a digest: '${v}'. Expected 64 lowercase hex characters."; return ;;
+  esac
+  [ "${#v}" -eq 64 ] || fail "change '$name': '$fname:' is ${#v} characters, not 64."
 }
 
 check_plan_review() { # check_plan_review <change-dir> <name>
@@ -86,7 +125,7 @@ check_plan_review() { # check_plan_review <change-dir> <name>
       fail "change '$name': unreadable verdict '${verdict}'. Expected APPROVE, APPROVE_WITH_CHANGES or REVISE."; return ;;
   esac
 
-  check_roles "$review" "change '$name': review.md"
+  check_roles "$review" "change '$name': review.md" AUTHOR
 
   # A verdict covers the contract it read. specs/ is the contract; proposal.md and
   # design.md are context, and correcting a wrong sentence in them is free on purpose.
@@ -111,7 +150,16 @@ check_diff_review() { # check_diff_review <change-dir> <name>
     __MISSING__|__AMBIGUOUS__) fail "change '$name': diff-review.md needs exactly one line starting 'VERDICT:'."; return ;;
     *) fail "change '$name': diff review verdict is '$verdict', not APPROVE."; return ;;
   esac
-  check_roles "$dr" "change '$name': diff-review.md"
+  check_roles "$dr" "change '$name': diff-review.md" AUTHORS
+  # The tree the approving review was given. Checked for shape and never against the
+  # committed tree, which is a check that cannot hold: archive moves the folder and syncs
+  # openspec/specs/, a gate fix edits src/ whenever a lint fails, and the commit-message
+  # stage runs after both, so the committed tree is never the reviewed tree and a match
+  # check would refuse every change. Making it match would also void a code approval on
+  # every clippy nit, which contradicts the decision that one unattended round absorbs a
+  # lint. The value is compared where the failure actually happens: round to round, live,
+  # in apply.sh (#299).
+  check_digest "$dr" "$name" TREE_SHA256 "the tree the review judged"
 }
 
 # Changes landing in this commit: an archived folder that did not exist at the base

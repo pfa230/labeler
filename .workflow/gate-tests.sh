@@ -30,6 +30,9 @@ expect() { # expect <want-exit> <label> <script> <args...>
 
 CHANGE=2026-01-01-issue-1-thing
 CDIR="openspec/changes/archive/$CHANGE"
+# A wellformed tree digest. It matches no tree anywhere, which is the point: the gate checks
+# this field's shape and never compares it to the committed tree (#299).
+TREE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 # A repo whose HEAD carries a published spec with two requirements, and a working
 # tree where a change is landing: one requirement modified, one added, the untouched
@@ -97,7 +100,7 @@ The third thing SHALL happen.
 EOF
   printf 'AUTHOR: claude\nREVIEWER: codex\nVERDICT: APPROVE\n' > "$CDIR/review.md"
   "$here/specs-digest.sh" "$CDIR" --write > /dev/null
-  printf 'AUTHOR: agy\nREVIEWER: codex\nVERDICT: APPROVE\n' > "$CDIR/diff-review.md"
+  printf 'AUTHORS: agy, opencode\nREVIEWER: codex\nVERDICT: APPROVE\nTREE_SHA256: %s\n' "$TREE" > "$CDIR/diff-review.md"
   FILES=(openspec/specs/thing/spec.md "$CDIR/proposal.md" "$CDIR/specs/thing/spec.md" src/main.rs)
 }
 
@@ -254,10 +257,65 @@ printf '\nAnd more.\n' >> "$CDIR/specs/thing/spec.md"
 expect 1 "gate: --plan-only still checks the plan, or it exempts everything" "$GATE" --plan-only "$repo" "${FILES[@]}"
 teardown; setup
 
-printf 'AUTHOR: codex\nREVIEWER: codex\nVERDICT: APPROVE\n' > "$CDIR/diff-review.md"
+dr() { printf 'AUTHORS: %s\nREVIEWER: %s\nVERDICT: %s\nTREE_SHA256: %s\n' "$1" "$2" "$3" "$4" > "$CDIR/diff-review.md"; }
+
+dr codex codex APPROVE "$TREE"
 expect 1 "gate: the diff's author is its reviewer" "$GATE" "$repo" "${FILES[@]}"
-printf 'AUTHOR: agy\nREVIEWER: codex\nVERDICT: REVISE\n' > "$CDIR/diff-review.md"
+dr agy codex REVISE "$TREE"
 expect 1 "gate: the diff review did not pass" "$GATE" "$repo" "${FILES[@]}"
+teardown; setup
+
+# --- who wrote it: AUTHORS is a list, and every name in it counts (#299) -----------
+# The pairing rule read against a list. Compared as whole strings, "agy, codex" differs from
+# "codex" and a reviewer that wrote half the code approves its own work.
+dr "agy, codex" codex APPROVE "$TREE"
+expect 1 "gate: the reviewer is the second name in AUTHORS" "$GATE" "$repo" "${FILES[@]}"
+dr "codex, agy" codex APPROVE "$TREE"
+expect 1 "gate: the reviewer is the first name in AUTHORS" "$GATE" "$repo" "${FILES[@]}"
+dr "agy, Codex" codex APPROVE "$TREE"
+expect 1 "gate: and case does not launder it" "$GATE" "$repo" "${FILES[@]}"
+dr "agy, opencode" codex APPROVE "$TREE"
+expect 0 "gate: a reviewer that wrote none of it is fine" "$GATE" "$repo" "${FILES[@]}"
+
+# An empty list on a change that lands code claims nobody wrote it. Reachable exactly once:
+# a change whose every implement stage no-opped, which is #291's own run.
+dr "" codex APPROVE "$TREE"
+expect 1 "gate: AUTHORS names nobody" "$GATE" "$repo" "${FILES[@]}"
+dr "<VALUE>" codex APPROVE "$TREE"
+expect 1 "gate: AUTHORS is still the template placeholder" "$GATE" "$repo" "${FILES[@]}"
+dr "agy,,opencode" codex APPROVE "$TREE"
+expect 1 "gate: AUTHORS has an empty entry between commas" "$GATE" "$repo" "${FILES[@]}"
+dr "agy," codex APPROVE "$TREE"
+expect 1 "gate: AUTHORS ends with a comma" "$GATE" "$repo" "${FILES[@]}"
+printf 'REVIEWER: codex\nVERDICT: APPROVE\nTREE_SHA256: %s\n' "$TREE" > "$CDIR/diff-review.md"
+expect 1 "gate: no AUTHORS line at all" "$GATE" "$repo" "${FILES[@]}"
+printf 'AUTHORS: agy\nAUTHORS: opencode\nREVIEWER: codex\nVERDICT: APPROVE\nTREE_SHA256: %s\n' "$TREE" > "$CDIR/diff-review.md"
+expect 1 "gate: two AUTHORS lines, so which one is the record is a guess" "$GATE" "$repo" "${FILES[@]}"
+teardown; setup
+
+# The fields did not swap: review.md still names one AUTHOR, and the two files are judged by
+# the same code with different field names rather than by two code paths.
+sed -i.bak 's/^AUTHOR: claude/AUTHORS: claude/' "$CDIR/review.md"
+expect 1 "gate: review.md renamed its author field" "$GATE" "$repo" "${FILES[@]}"
+teardown; setup
+
+# --- what was judged: TREE_SHA256 is checked for shape, never for a match (#299) ---
+# It cannot be compared to the committed tree, because archive, the gate fix and the commit
+# message all write after the approving review. A match check would refuse every change.
+dr "agy" codex APPROVE 1111111111111111111111111111111111111111111111111111111111111111
+expect 0 "gate: a digest matching no tree in this repo still passes" "$GATE" "$repo" "${FILES[@]}"
+printf 'AUTHORS: agy\nREVIEWER: codex\nVERDICT: APPROVE\n' > "$CDIR/diff-review.md"
+expect 1 "gate: no TREE_SHA256, so nothing says what was judged" "$GATE" "$repo" "${FILES[@]}"
+dr "agy" codex APPROVE "<VALUE>"
+expect 1 "gate: TREE_SHA256 is still the template placeholder" "$GATE" "$repo" "${FILES[@]}"
+dr "agy" codex APPROVE "${TREE%?}"
+expect 1 "gate: TREE_SHA256 is 63 characters" "$GATE" "$repo" "${FILES[@]}"
+dr "agy" codex APPROVE "${TREE}0"
+expect 1 "gate: TREE_SHA256 is 65 characters" "$GATE" "$repo" "${FILES[@]}"
+dr "agy" codex APPROVE "$(printf '%s' "$TREE" | tr 'a-f' 'A-F')"
+expect 1 "gate: TREE_SHA256 is uppercase, so it is not what sha256sum writes" "$GATE" "$repo" "${FILES[@]}"
+printf 'AUTHORS: agy\nREVIEWER: codex\nVERDICT: APPROVE\nTREE_SHA256: %s\nTREE_SHA256: %s\n' "$TREE" "$TREE" > "$CDIR/diff-review.md"
+expect 1 "gate: two TREE_SHA256 lines" "$GATE" "$repo" "${FILES[@]}"
 teardown; setup
 
 expect 0 "gate: a commit touching neither code nor a landing change is not its business" "$GATE" "$repo" docs/WORKFLOW.md

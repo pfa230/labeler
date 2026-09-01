@@ -28,7 +28,9 @@
 #   8  a stage wrote QUESTIONS.md and stopped rather than guess. Answer them in
 #      ANSWERS.md at the worktree root and re-run; every stage reads that file
 #   9  the branch CI run was red, or never appeared
-#   3, 4, 5, 7  passed through from apply.sh; see its header
+#   3, 4, 5, 7, 10  passed through from apply.sh; see its header. 10 is the one worth
+#      knowing here: the fix round left the tree byte-identical to what the previous
+#      round judged, so no second verdict on the same bytes was launched (#299)
 set -uo pipefail
 
 usage='usage: run-change.sh <issue#> <planner> <plan-reviewer> <implementer> <code-reviewer> [--rounds N] [--dry-run]'
