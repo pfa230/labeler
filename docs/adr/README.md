@@ -97,8 +97,9 @@ old one `Superseded by ADR-NNNN` and the new one `Supersedes ADR-NNNN`).
 | [0088](0088-explicit-parameter-defaults.md) | A parameter is required unless its template declares a default | Accepted |
 | [0089](0089-wrapping-and-the-overflow-policy.md) | Wrapping and the overflow policy | Accepted |
 | [0090](0090-a-declared-default-is-deferred-not-copied.md) | A declared default is deferred, not copied | Accepted |
-| [0091](0091-text-ink-is-a-full-colour.md) | Text ink is a full-colour RGBA value | Accepted |
-| [0092](0092-a-shape-carries-a-stroke-and-a-background.md) | A shape carries a stroke and a background | Accepted |
+| [0091](0091-text-ink-is-a-full-colour.md) | Text ink is a full-colour RGBA value | Accepted (vocabulary and naming superseded by [0093](0093-one-colour-type-and-vocabulary.md)) |
+| [0092](0092-a-shape-carries-a-stroke-and-a-background.md) | A shape carries a stroke and a background | Accepted (colour model §5-6 superseded by [0093](0093-one-colour-type-and-vocabulary.md)) |
+| [0093](0093-one-colour-type-and-vocabulary.md) | One colour type and vocabulary across text and shapes | Accepted |
 
 ## Adding an ADR
 

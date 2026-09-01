@@ -2,114 +2,45 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::models::{
-    Alignment, Color, DynamicValue, Fit, FlowOverflow, FontSize, Ink, Overflow, Position, QrParams,
+    Alignment, DynamicValue, Fit, FlowOverflow, FontSize, Overflow, Position, QrParams,
     SheetPosition,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ColorRaw(pub Color);
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawColor(pub String);
 
-impl<'de> Deserialize<'de> for ColorRaw {
+impl<'de> Deserialize<'de> for RawColor {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        struct ColorVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for ColorVisitor {
-            type Value = ColorRaw;
-
+        struct RawColorVisitor;
+        impl<'de> serde::de::Visitor<'de> for RawColorVisitor {
+            type Value = RawColor;
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str(
-                    "a hex colour string ('#rgb', '#rgba', '#rrggbb', '#rrggbbaa') or one of the sixteen CSS Level 1 colour names",
-                )
+                formatter.write_str("a colour string")
             }
-
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                parse_color(v).map(ColorRaw).map_err(E::custom)
+                Ok(RawColor(v.to_string()))
             }
         }
-
-        deserializer.deserialize_str(ColorVisitor)
+        deserializer.deserialize_str(RawColorVisitor)
     }
 }
 
-pub fn parse_color(s: &str) -> Result<Color, String> {
-    if let Some(hex_part) = s.strip_prefix('#') {
-        let hex_bytes = hex_part.as_bytes();
-        for &b in hex_bytes {
-            if !b.is_ascii_hexdigit() {
-                return Err(format!("invalid hex character in colour '{s}'"));
-            }
-        }
-        let double_hex = |b: u8| -> u8 {
-            let val = match b {
-                b'0'..=b'9' => b - b'0',
-                b'a'..=b'f' => b - b'a' + 10,
-                b'A'..=b'F' => b - b'A' + 10,
-                _ => unreachable!(),
-            };
-            (val << 4) | val
-        };
-        let parse_byte = |slice: &[u8]| -> u8 {
-            let s_str = std::str::from_utf8(slice).unwrap();
-            u8::from_str_radix(s_str, 16).unwrap()
-        };
+/// `RawColor` deliberately fails `FromStr` unconditionally so that `DynamicValueVisitor::visit_str`
+/// bypasses its `trimmed.parse::<T>()` fast-path and falls through to `RawColor::deserialize`,
+/// preserving exact untrimmed string literal values (e.g. `" red "`, `" #ff0000 "`)
+/// so that `convert.rs` and `Color::from_str` can strictly reject whitespace at load time,
+/// matching render-time parameter resolution.
+impl std::str::FromStr for RawColor {
+    type Err = &'static str;
 
-        match hex_bytes.len() {
-            3 => {
-                let r = double_hex(hex_bytes[0]);
-                let g = double_hex(hex_bytes[1]);
-                let b = double_hex(hex_bytes[2]);
-                Ok(Color::rgba(r, g, b, 255))
-            }
-            4 => {
-                let r = double_hex(hex_bytes[0]);
-                let g = double_hex(hex_bytes[1]);
-                let b = double_hex(hex_bytes[2]);
-                let a = double_hex(hex_bytes[3]);
-                Ok(Color::rgba(r, g, b, a))
-            }
-            6 => {
-                let r = parse_byte(&hex_bytes[0..2]);
-                let g = parse_byte(&hex_bytes[2..4]);
-                let b = parse_byte(&hex_bytes[4..6]);
-                Ok(Color::rgba(r, g, b, 255))
-            }
-            8 => {
-                let r = parse_byte(&hex_bytes[0..2]);
-                let g = parse_byte(&hex_bytes[2..4]);
-                let b = parse_byte(&hex_bytes[4..6]);
-                let a = parse_byte(&hex_bytes[6..8]);
-                Ok(Color::rgba(r, g, b, a))
-            }
-            _ => Err(format!(
-                "invalid hex colour '{s}': expected 3, 4, 6, or 8 hexadecimal digits"
-            )),
-        }
-    } else {
-        match s.to_ascii_lowercase().as_str() {
-            "black" => Ok(Color::rgba(0x00, 0x00, 0x00, 0xff)),
-            "silver" => Ok(Color::rgba(0xc0, 0xc0, 0xc0, 0xff)),
-            "gray" => Ok(Color::rgba(0x80, 0x80, 0x80, 0xff)),
-            "white" => Ok(Color::rgba(0xff, 0xff, 0xff, 0xff)),
-            "maroon" => Ok(Color::rgba(0x80, 0x00, 0x00, 0xff)),
-            "red" => Ok(Color::rgba(0xff, 0x00, 0x00, 0xff)),
-            "purple" => Ok(Color::rgba(0x80, 0x00, 0x80, 0xff)),
-            "fuchsia" => Ok(Color::rgba(0xff, 0x00, 0xff, 0xff)),
-            "green" => Ok(Color::rgba(0x00, 0x80, 0x00, 0xff)),
-            "lime" => Ok(Color::rgba(0x00, 0xff, 0x00, 0xff)),
-            "olive" => Ok(Color::rgba(0x80, 0x80, 0x00, 0xff)),
-            "yellow" => Ok(Color::rgba(0xff, 0xff, 0x00, 0xff)),
-            "navy" => Ok(Color::rgba(0x00, 0x00, 0x80, 0xff)),
-            "blue" => Ok(Color::rgba(0x00, 0x00, 0xff, 0xff)),
-            "teal" => Ok(Color::rgba(0x00, 0x80, 0x80, 0xff)),
-            "aqua" => Ok(Color::rgba(0x00, 0xff, 0xff, 0xff)),
-            _ => Err(format!("unknown colour '{s}'")),
-        }
+    fn from_str(_s: &str) -> Result<Self, Self::Err> {
+        Err("raw colour strings are parsed via deserialization to preserve exact spelling")
     }
 }
 
@@ -119,7 +50,7 @@ pub struct StrokeRaw {
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub thickness: Option<Option<f32>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub color: Option<Option<ColorRaw>>,
+    pub color: Option<Option<DynamicValue<RawColor>>>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -220,59 +151,6 @@ where
     Ok(map.map(|m| m.into_iter().map(|(k, v)| (k, v.to_string())).collect()))
 }
 
-pub(crate) fn deserialize_dynamic_ink<'de, D>(
-    deserializer: D,
-) -> Result<Option<Dynamic<Ink>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct DynamicInkVisitor;
-
-    impl<'de> serde::de::Visitor<'de> for DynamicInkVisitor {
-        type Value = Option<Dynamic<Ink>>;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a named colour, '#'-prefixed hex, or a '{param_name}' reference")
-        }
-
-        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            let trimmed = v.trim();
-            if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() >= 2 {
-                let inner = trimmed[1..trimmed.len() - 1].trim();
-                return Ok(Some(DynamicValue::Ref(inner.to_string())));
-            }
-            let ink: Ink = trimmed.parse().map_err(serde::de::Error::custom)?;
-            Ok(Some(DynamicValue::Literal(ink)))
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: serde::Deserializer<'de>,
-        {
-            deserializer.deserialize_any(DynamicInkVisitor)
-        }
-    }
-
-    deserializer.deserialize_any(DynamicInkVisitor)
-}
-
 #[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum RawDimension {
@@ -346,8 +224,8 @@ pub struct TextRaw {
     pub font_size: FontSize,
     #[serde(default)]
     pub font_weight: Option<Dynamic<u16>>,
-    #[serde(default, deserialize_with = "deserialize_dynamic_ink")]
-    pub ink: Option<Dynamic<Ink>>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub color: Option<Option<DynamicValue<RawColor>>>,
     #[serde(default)]
     pub wrap: bool,
     #[serde(default, deserialize_with = "deserialize_present")]
@@ -426,7 +304,7 @@ pub struct ContainerRaw {
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub stroke: Option<Option<StrokeRaw>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
-    pub background: Option<Option<ColorRaw>>,
+    pub background: Option<Option<DynamicValue<RawColor>>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub rounded: Option<Option<f32>>,
     #[serde(default)]
@@ -546,17 +424,15 @@ pub struct PlacementRaw {
 #[cfg(test)]
 mod raw_tests {
     use super::*;
-    use crate::models::Color;
-    use std::str::FromStr;
 
     #[test]
-    fn text_raw_ink_deserialization() {
-        let make_yaml = |ink_str: &str| {
+    fn text_raw_color_deserialization() {
+        let make_yaml = |color_str: &str| {
             format!(
                 r#"
 value: "Hello"
 font_size: 12
-ink: {ink_str}
+color: {color_str}
 "#
             )
         };
@@ -564,127 +440,38 @@ ink: {ink_str}
         // Valid literal named color
         let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("red")).unwrap();
         assert_eq!(
-            raw.ink,
-            Some(DynamicValue::Literal(Ink::from_str("red").unwrap()))
+            raw.color,
+            Some(Some(DynamicValue::Literal(RawColor("red".to_string()))))
         );
 
         // Valid hex color
         let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("\"#ff4136\"")).unwrap();
         assert_eq!(
-            raw.ink,
-            Some(DynamicValue::Literal(Ink::from_str("#ff4136").unwrap()))
+            raw.color,
+            Some(Some(DynamicValue::Literal(RawColor("#ff4136".to_string()))))
         );
 
         // Valid reference
         let raw: TextRaw = serde_yaml_ng::from_str(&make_yaml("\"{brand}\"")).unwrap();
-        assert_eq!(raw.ink, Some(DynamicValue::Ref("brand".to_string())));
+        assert_eq!(
+            raw.color,
+            Some(Some(DynamicValue::Ref("brand".to_string())))
+        );
 
-        // Refused ink strings and values: chartreuse, redmm, "#ff0000in", "ff0000", "#ff000", "", 16711680
-        for bad in [
-            "chartreuse",
-            "redmm",
-            "\"#ff0000in\"",
-            "\"ff0000\"",
-            "\"#ff000\"",
-            "\"\"",
-            "16711680",
-            "true",
-            "[255, 0, 0]",
-        ] {
+        // Non-string types rejected at deserialization
+        for bad in ["16711680", "true", "[255, 0, 0]"] {
             let res = serde_yaml_ng::from_str::<TextRaw>(&make_yaml(bad));
-            assert!(res.is_err(), "expected ink '{bad}' to be rejected");
+            assert!(res.is_err(), "expected non-string '{bad}' to be rejected");
         }
 
-        // Absent ink is None
-        let raw_no_ink: TextRaw =
+        // Absent color is None
+        let raw_no_color: TextRaw =
             serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\n").unwrap();
-        assert_eq!(raw_no_ink.ink, None);
+        assert_eq!(raw_no_color.color, None);
 
-        // Null ink is None
-        let raw_null_ink: TextRaw =
-            serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\nink: null\n").unwrap();
-        assert_eq!(raw_null_ink.ink, None);
-    }
-
-    #[test]
-    fn parse_color_accepted_hex_forms() {
-        // 3-digit hex (doubling)
-        let c3 = parse_color("#f0c").expect("3-digit hex");
-        assert_eq!(c3, Color::rgba(0xff, 0x00, 0xcc, 0xff));
-        assert_eq!(c3.hex(), "#ff00ccff");
-
-        // 4-digit hex (doubling with alpha)
-        let c4 = parse_color("#F0F8").expect("4-digit hex");
-        assert_eq!(c4, Color::rgba(0xff, 0x00, 0xff, 0x88));
-        assert_eq!(c4.hex(), "#ff00ff88");
-
-        // 6-digit hex
-        let c6 = parse_color("#ff00ff").expect("6-digit hex");
-        assert_eq!(c6, Color::rgba(0xff, 0x00, 0xff, 0xff));
-        assert_eq!(c6.hex(), "#ff00ffff");
-
-        // 8-digit hex
-        let c8 = parse_color("#FF00FF80").expect("8-digit hex");
-        assert_eq!(c8, Color::rgba(0xff, 0x00, 0xff, 0x80));
-        assert_eq!(c8.hex(), "#ff00ff80");
-    }
-
-    #[test]
-    fn parse_color_sixteen_css_level_1_names() {
-        let expected = [
-            ("black", Color::rgba(0x00, 0x00, 0x00, 0xff), "#000000ff"),
-            ("silver", Color::rgba(0xc0, 0xc0, 0xc0, 0xff), "#c0c0c0ff"),
-            ("gray", Color::rgba(0x80, 0x80, 0x80, 0xff), "#808080ff"),
-            ("white", Color::rgba(0xff, 0xff, 0xff, 0xff), "#ffffffff"),
-            ("maroon", Color::rgba(0x80, 0x00, 0x00, 0xff), "#800000ff"),
-            ("red", Color::rgba(0xff, 0x00, 0x00, 0xff), "#ff0000ff"),
-            ("purple", Color::rgba(0x80, 0x00, 0x80, 0xff), "#800080ff"),
-            ("fuchsia", Color::rgba(0xff, 0x00, 0xff, 0xff), "#ff00ffff"),
-            ("green", Color::rgba(0x00, 0x80, 0x00, 0xff), "#008000ff"),
-            ("lime", Color::rgba(0x00, 0xff, 0x00, 0xff), "#00ff00ff"),
-            ("olive", Color::rgba(0x80, 0x80, 0x00, 0xff), "#808000ff"),
-            ("yellow", Color::rgba(0xff, 0xff, 0x00, 0xff), "#ffff00ff"),
-            ("navy", Color::rgba(0x00, 0x00, 0x80, 0xff), "#000080ff"),
-            ("blue", Color::rgba(0x00, 0x00, 0xff, 0xff), "#0000ffff"),
-            ("teal", Color::rgba(0x00, 0x80, 0x80, 0xff), "#008080ff"),
-            ("aqua", Color::rgba(0x00, 0xff, 0xff, 0xff), "#00ffffff"),
-        ];
-
-        for (name, color, canonical) in expected {
-            let parsed =
-                parse_color(name).unwrap_or_else(|e| panic!("failed to parse {name}: {e}"));
-            assert_eq!(parsed, color, "parsed {name}");
-            assert_eq!(parsed.hex(), canonical, "hex for {name}");
-        }
-
-        // Case-insensitivity
-        assert_eq!(parse_color("Red").unwrap(), Color::rgba(0xff, 0, 0, 255));
-        assert_eq!(parse_color("RED").unwrap(), Color::rgba(0xff, 0, 0, 255));
-        assert_eq!(parse_color("rEd").unwrap(), Color::rgba(0xff, 0, 0, 255));
-
-        // Task 1.3: Assert red is #ff0000ff and not Typst's #ff4136
-        let red = parse_color("red").unwrap();
-        assert_eq!(red, Color::rgba(255, 0, 0, 255));
-        assert_ne!(red, Color::rgba(0xff, 0x41, 0x36, 255));
-    }
-
-    #[test]
-    fn parse_color_refusals() {
-        // Five digits
-        assert!(parse_color("#ff00f").is_err());
-        // Missing #
-        assert!(parse_color("ff00ff").is_err());
-        // Non-hex character
-        assert!(parse_color("#gg0000").is_err());
-        assert!(parse_color("#12g4").is_err());
-        // Invalid lengths
-        assert!(parse_color("#f").is_err());
-        assert!(parse_color("#12").is_err());
-        assert!(parse_color("#1234567").is_err());
-        assert!(parse_color("#123456789").is_err());
-        // Unknown name
-        assert!(parse_color("chartreuse").is_err());
-        assert!(parse_color("coral").is_err());
-        assert!(parse_color("transparent").is_err());
+        // Null color is Some(None)
+        let raw_null_color: TextRaw =
+            serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\ncolor: null\n").unwrap();
+        assert_eq!(raw_null_color.color, Some(None));
     }
 }

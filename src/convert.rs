@@ -1,7 +1,8 @@
 use crate::errors::TemplateError;
 use crate::models::{
-    Color, DynamicDimension, Extent, Flow, FlowDirection, FlowOverflow, Layout, LayoutItem,
-    Padding, ParamSpec, ParamType, ParamValue, Placement, Size, SizeValue, Stroke, TemplateFormat,
+    Color, DynamicDimension, DynamicValue, Extent, Flow, FlowDirection, FlowOverflow, Layout,
+    LayoutItem, Padding, ParamSpec, ParamType, ParamValue, Placement, Size, SizeValue, Stroke,
+    TemplateFormat,
 };
 use crate::raw::{
     ContainerRaw, LayoutItemRaw, PaddingRaw, PlacementRaw, RawDimension, RawParamSpec,
@@ -29,16 +30,28 @@ impl TryFrom<StrokeRaw> for Stroke {
             Some(Some(t)) => t,
         };
 
-        let color = match raw.color {
-            None => Color::BLACK,
-            Some(None) => {
-                return Err(TemplateError::Validation {
-                    path: "color".to_string(),
-                    msg: "stroke color cannot be null".to_string(),
-                });
-            }
-            Some(Some(c)) => c.0,
-        };
+        let color =
+            match raw.color {
+                None => DynamicValue::Literal(Color::black()),
+                Some(None) => {
+                    return Err(TemplateError::Validation {
+                        path: "color".to_string(),
+                        msg: "stroke color cannot be null".to_string(),
+                    });
+                }
+                Some(Some(raw_dyn)) => match raw_dyn {
+                    DynamicValue::Ref(r) => DynamicValue::Ref(r),
+                    DynamicValue::Literal(raw_color) => {
+                        let c = raw_color.0.parse::<Color>().map_err(|e| {
+                            TemplateError::Validation {
+                                path: "color".to_string(),
+                                msg: e,
+                            }
+                        })?;
+                        DynamicValue::Literal(c)
+                    }
+                },
+            };
 
         Ok(Stroke { thickness, color })
     }
@@ -245,7 +258,21 @@ impl ContainerRaw {
                     msg: "background cannot be null".to_string(),
                 });
             }
-            Some(Some(raw_color)) => Some(raw_color.0),
+            Some(Some(raw_dyn)) => {
+                let dyn_color = match raw_dyn {
+                    DynamicValue::Ref(r) => DynamicValue::Ref(r),
+                    DynamicValue::Literal(raw_color) => {
+                        let c = raw_color.0.parse::<Color>().map_err(|e| {
+                            TemplateError::Validation {
+                                path: "background".to_string(),
+                                msg: e,
+                            }
+                        })?;
+                        DynamicValue::Literal(c)
+                    }
+                };
+                Some(dyn_color)
+            }
             None => None,
         };
 
@@ -311,12 +338,30 @@ impl LayoutItem {
                         });
                     }
                 }
+                let color = match raw.color {
+                    None | Some(None) => None,
+                    Some(Some(raw_dyn)) => {
+                        let dyn_color = match raw_dyn {
+                            DynamicValue::Ref(r) => DynamicValue::Ref(r),
+                            DynamicValue::Literal(raw_color) => {
+                                let c = raw_color.0.parse::<Color>().map_err(|e| {
+                                    TemplateError::Validation {
+                                        path: "color".to_string(),
+                                        msg: e,
+                                    }
+                                })?;
+                                DynamicValue::Literal(c)
+                            }
+                        };
+                        Some(dyn_color)
+                    }
+                };
                 Ok(LayoutItem::Text {
                     value: raw.value,
                     placement: raw.placement.into_placement("text", None, is_packed)?,
                     font_size: raw.font_size,
                     font_weight: raw.font_weight,
-                    ink: raw.ink,
+                    color,
                     wrap: raw.wrap,
                     alignment: raw.alignment,
                     overflow: raw.overflow,
@@ -611,6 +656,7 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
 mod tests {
     use crate::raw::TemplateDefinitionRaw;
     use crate::templates::TemplateContent;
+    use std::str::FromStr;
 
     fn try_build(layout_yaml: &str) -> Result<TemplateContent, String> {
         let yaml = format!(
@@ -896,8 +942,11 @@ mod tests {
         {
             let stroke = stroke.as_ref().expect("stroke should be present");
             assert_eq!(stroke.thickness, 0.5);
-            assert_eq!(stroke.color, crate::models::Color::BLACK);
-            assert_eq!(stroke.color.hex(), "#000000ff");
+            assert_eq!(
+                stroke.color,
+                crate::models::DynamicValue::Literal(crate::models::Color::black())
+            );
+            assert_eq!(stroke.color.as_literal().unwrap().hex(), "#000000ff");
             assert!(background.is_none());
             assert!(rounded.is_none());
         } else {
@@ -918,11 +967,15 @@ mod tests {
             assert_eq!(stroke.thickness, 0.0001);
             assert_eq!(
                 stroke.color,
-                crate::models::Color::rgba(0xff, 0x00, 0xcc, 0xff)
+                crate::models::DynamicValue::Literal(
+                    crate::models::Color::from_str("#f0c").unwrap()
+                )
             );
             assert_eq!(
-                background.unwrap(),
-                crate::models::Color::rgba(0x00, 0x00, 0x80, 0xff)
+                background.as_ref().unwrap(),
+                &crate::models::DynamicValue::Literal(
+                    crate::models::Color::from_str("navy").unwrap()
+                )
             );
             assert_eq!(rounded.unwrap(), 0.0001);
         } else {
@@ -1005,7 +1058,10 @@ mod tests {
         if let crate::models::LayoutItem::Line { stroke, .. } = &items[0] {
             let stroke = stroke.as_ref().unwrap();
             assert_eq!(stroke.thickness, 0.5);
-            assert_eq!(stroke.color, crate::models::Color::BLACK);
+            assert_eq!(
+                stroke.color,
+                crate::models::DynamicValue::Literal(crate::models::Color::black())
+            );
         } else {
             panic!("expected line");
         }

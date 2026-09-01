@@ -9,7 +9,7 @@ use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow, FontSize,
     InputControl, InputSpec, Layout, LayoutItem, Options, ParamSpec, ParamType, Placement, Point,
-    Size, SizeValue, TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
+    Size, SizeValue, Stroke, TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -281,7 +281,7 @@ impl TemplateContent {
                     LayoutItem::Text {
                         placement,
                         font_weight,
-                        ink,
+                        color,
                         value,
                         wrap,
                         ..
@@ -296,7 +296,7 @@ impl TemplateContent {
                         if let Some(DynamicValue::Ref(r)) = font_weight {
                             record_ref(r, false, false, false);
                         }
-                        if let Some(DynamicValue::Ref(r)) = ink {
+                        if let Some(DynamicValue::Ref(r)) = color {
                             record_ref(r, false, false, false);
                         }
                         for name in bare_token_names(value) {
@@ -344,9 +344,21 @@ impl TemplateContent {
                             }
                         }
                     }
-                    LayoutItem::Line { .. } => {}
+                    LayoutItem::Line { stroke, .. } => {
+                        if let Some(Stroke {
+                            color: DynamicValue::Ref(r),
+                            ..
+                        }) = stroke
+                        {
+                            record_ref(r, false, false, false);
+                        }
+                    }
                     LayoutItem::Container {
-                        placement, items, ..
+                        placement,
+                        stroke,
+                        background,
+                        items,
+                        ..
                     } => {
                         if let Extent::Size(size) = &placement.extent {
                             for sv in &size.0 {
@@ -354,6 +366,16 @@ impl TemplateContent {
                                     record_ref(r, false, false, false);
                                 }
                             }
+                        }
+                        if let Some(Stroke {
+                            color: DynamicValue::Ref(r),
+                            ..
+                        }) = stroke
+                        {
+                            record_ref(r, false, false, false);
+                        }
+                        if let Some(DynamicValue::Ref(r)) = background {
+                            record_ref(r, false, false, false);
                         }
                         walk_items(items, params, resolved_data, record_ref);
                     }
@@ -1452,7 +1474,7 @@ fn validate_item_references(
             value,
             placement,
             font_weight,
-            ink,
+            color,
             when,
             ..
         } => {
@@ -1461,8 +1483,8 @@ fn validate_item_references(
             if let Some(DynamicValue::Ref(ref_name)) = font_weight {
                 check_param_ref(params, ref_name, "font_weight", &["integer"])?;
             }
-            if let Some(DynamicValue::Ref(ref_name)) = ink {
-                check_param_ref(params, ref_name, "ink", &["string", "enum"])?;
+            if let Some(DynamicValue::Ref(ref_name)) = color {
+                check_param_ref(params, ref_name, "color", &["string", "enum"])?;
             }
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
@@ -1533,16 +1555,35 @@ fn validate_item_references(
                 }
             }
         }
-        LayoutItem::Line { when, .. } => {
+        LayoutItem::Line { stroke, when, .. } => {
             validate_when_references(when.as_ref(), params)?;
+            if let Some(Stroke {
+                color: DynamicValue::Ref(ref_name),
+                ..
+            }) = stroke
+            {
+                check_param_ref(params, ref_name, "stroke.color", &["string", "enum"])?;
+            }
         }
         LayoutItem::Container {
             placement,
             when,
+            stroke,
+            background,
             items,
             ..
         } => {
             validate_when_references(when.as_ref(), params)?;
+            if let Some(Stroke {
+                color: DynamicValue::Ref(ref_name),
+                ..
+            }) = stroke
+            {
+                check_param_ref(params, ref_name, "stroke.color", &["string", "enum"])?;
+            }
+            if let Some(DynamicValue::Ref(ref_name)) = background {
+                check_param_ref(params, ref_name, "background", &["string", "enum"])?;
+            }
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
                     if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
@@ -1701,7 +1742,7 @@ fn instantiate_item_defaults(
             placement,
             font_size,
             font_weight,
-            ink,
+            color,
             wrap,
             alignment,
             overflow,
@@ -1716,7 +1757,7 @@ fn instantiate_item_defaults(
                 placement: inst_placement(placement),
                 font_size: font_size.clone(),
                 font_weight: fw,
-                ink: ink.clone(),
+                color: color.clone(),
                 wrap: *wrap,
                 alignment: alignment.clone(),
                 overflow: *overflow,
@@ -1771,7 +1812,7 @@ fn instantiate_item_defaults(
             placement: inst_placement(placement),
             when: when.clone(),
             stroke: stroke.clone(),
-            background: *background,
+            background: background.clone(),
             rounded: *rounded,
             padding: *padding,
             flow: flow.clone(),
@@ -2451,7 +2492,7 @@ mod tests {
                 to: Position([10.0, 10.0]),
                 stroke: Some(Stroke {
                     thickness,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 when: None,
             }])
@@ -2483,7 +2524,7 @@ mod tests {
                 when: None,
                 stroke: Some(Stroke {
                     thickness,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 background: None,
                 rounded: None,
@@ -3265,7 +3306,7 @@ layout: []
                 ),
                 font_size: FontSize::Fixed(10.0),
                 font_weight: Some(DynamicValue::Literal(350)),
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3370,7 +3411,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(8.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3428,7 +3469,7 @@ layout:
                 to: Position([1.0, 1.0]),
                 stroke: Some(Stroke {
                     thickness: 0.2,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 when: None,
             }]),
@@ -3455,7 +3496,7 @@ layout:
                 to,
                 stroke: Some(Stroke {
                     thickness: 0.2,
-                    color: Color::BLACK,
+                    color: DynamicValue::Literal(Color::black()),
                 }),
                 when: None,
             }]),
@@ -3523,7 +3564,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3598,7 +3639,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: true,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3635,7 +3676,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: false,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -3669,7 +3710,7 @@ layout:
                 ),
                 font_size: FontSize::Fixed(6.0),
                 font_weight: None,
-                ink: None,
+                color: None,
                 wrap: true,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
@@ -4524,6 +4565,7 @@ layout:
                         LayoutItem::Text {
                             placement,
                             font_weight,
+                            color,
                             value,
                             ..
                         } => {
@@ -4541,6 +4583,12 @@ layout:
                                 assert!(
                                     inputs_all_names.contains(r),
                                     "template {template_id} missing font_weight ref {r} in inputs.all"
+                                );
+                            }
+                            if let Some(DynamicValue::Ref(r)) = color {
+                                assert!(
+                                    inputs_all_names.contains(r),
+                                    "template {template_id} missing text color ref {r} in inputs.all"
                                 );
                             }
                             for name in bare_token_names(value) {
@@ -4601,9 +4649,24 @@ layout:
                                 }
                             }
                         }
-                        LayoutItem::Line { .. } => {}
+                        LayoutItem::Line { stroke, .. } => {
+                            if let Some(Stroke {
+                                color: DynamicValue::Ref(r),
+                                ..
+                            }) = stroke
+                            {
+                                assert!(
+                                    inputs_all_names.contains(r),
+                                    "template {template_id} missing line stroke color ref {r} in inputs.all"
+                                );
+                            }
+                        }
                         LayoutItem::Container {
-                            placement, items, ..
+                            placement,
+                            stroke,
+                            background,
+                            items,
+                            ..
                         } => {
                             if let Extent::Size(size) = &placement.extent {
                                 for sv in &size.0 {
@@ -4614,6 +4677,22 @@ layout:
                                         );
                                     }
                                 }
+                            }
+                            if let Some(Stroke {
+                                color: DynamicValue::Ref(r),
+                                ..
+                            }) = stroke
+                            {
+                                assert!(
+                                    inputs_all_names.contains(r),
+                                    "template {template_id} missing container stroke color ref {r} in inputs.all"
+                                );
+                            }
+                            if let Some(DynamicValue::Ref(r)) = background {
+                                assert!(
+                                    inputs_all_names.contains(r),
+                                    "template {template_id} missing container background ref {r} in inputs.all"
+                                );
                             }
                             check_items(items, inputs_all_names, template_id);
                         }
@@ -5873,8 +5952,8 @@ layout:
     }
 
     #[test]
-    fn invalid_ink_literal_on_text_item_fails_load() {
-        for bad_ink in [
+    fn invalid_color_literal_on_text_item_fails_load() {
+        for bad_color in [
             "chartreuse",
             "redmm",
             "\"#ff0000in\"",
@@ -5882,10 +5961,12 @@ layout:
             "\"#ff000\"",
             "\"\"",
             "16711680",
+            "\" red \"",
+            "\" #ff0000 \"",
         ] {
             let bad_yaml = format!(
                 r#"
-name: BadInk
+name: BadColor
 unit: mm
 dpi: 200
 format: {{ type: single, width: 50, height: 20 }}
@@ -5895,27 +5976,110 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: {bad_ink}
+    color: {bad_color}
 "#
             );
             let err = match parse_and_validate(&bad_yaml) {
-                Ok(val) => panic!("bad_ink '{bad_ink}' unexpectedly succeeded validation: {val:?}"),
+                Ok(val) => {
+                    panic!("bad_color '{bad_color}' unexpectedly succeeded validation: {val:?}")
+                }
                 Err(err) => err,
             };
             let err_str = err.to_string();
             assert!(
                 err_str.contains("layout[0]")
-                    && (err_str.contains("invalid ink")
-                        || err_str.contains("expected a named colour")),
-                "expected error naming layout path and invalid ink for '{bad_ink}', got: {err_str}"
+                    && (err_str.contains("color") || err_str.contains("colour")),
+                "expected error naming layout path and color field for '{bad_color}', got: {err_str}"
+            );
+            assert!(
+                !err_str.contains("unknown field"),
+                "failure for '{bad_color}' must be colour validation rather than an unrecognised field, got: {err_str}"
             );
         }
     }
 
     #[test]
-    fn ink_rejected_on_non_text_items() {
+    fn invalid_color_literal_on_shape_items_fails_load() {
+        for bad_color in ["chartreuse", "\" red \"", "\" #ff0000 \""] {
+            // Container background invalid color
+            let bad_bg_yaml = format!(
+                r#"
+name: BadBg
+unit: mm
+dpi: 200
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: {bad_color}
+    items: []
+"#
+            );
+            let err_bg = parse_and_validate(&bad_bg_yaml).unwrap_err();
+            let err_bg_str = err_bg.to_string();
+            assert!(
+                err_bg_str.contains("layout[0]") && err_bg_str.contains("background"),
+                "expected error naming layout[0] and background field for '{bad_color}', got: {err_bg_str}"
+            );
+
+            // Line stroke color invalid color
+            let bad_stroke_line_yaml = format!(
+                r#"
+name: BadStrokeLine
+unit: mm
+dpi: 200
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: line
+    at: [0, 0]
+    to: [50, 20]
+    stroke:
+      thickness: 0.5
+      color: {bad_color}
+"#
+            );
+            let err_stroke_line = parse_and_validate(&bad_stroke_line_yaml).unwrap_err();
+            let err_stroke_line_str = err_stroke_line.to_string();
+            assert!(
+                err_stroke_line_str.contains("layout[0]")
+                    && err_stroke_line_str.contains("stroke")
+                    && err_stroke_line_str.contains("color"),
+                "expected error naming layout[0], stroke, and color for '{bad_color}', got: {err_stroke_line_str}"
+            );
+
+            // Container stroke color invalid color
+            let bad_stroke_container_yaml = format!(
+                r#"
+name: BadStrokeContainer
+unit: mm
+dpi: 200
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    stroke:
+      thickness: 0.5
+      color: {bad_color}
+    items: []
+"#
+            );
+            let err_stroke_container = parse_and_validate(&bad_stroke_container_yaml).unwrap_err();
+            let err_stroke_container_str = err_stroke_container.to_string();
+            assert!(
+                err_stroke_container_str.contains("layout[0]")
+                    && err_stroke_container_str.contains("stroke")
+                    && err_stroke_container_str.contains("color"),
+                "expected error naming layout[0], stroke, and color for '{bad_color}', got: {err_stroke_container_str}"
+            );
+        }
+    }
+
+    #[test]
+    fn color_rejected_on_non_paint_items() {
         let qr_yaml = r#"
-name: QR Ink
+name: QR Color
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
@@ -5924,17 +6088,17 @@ layout:
     value: "test"
     at: [0, 0]
     size: [20, 20]
-    ink: red
+    color: red
 "#;
         let err = parse_and_validate(qr_yaml).unwrap_err();
         let err_str = err.to_string();
         assert!(
-            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            err_str.contains("layout[0]") && err_str.contains("unknown field `color`"),
             "got: {err_str}"
         );
 
         let image_yaml = r#"
-name: Image Ink
+name: Image Color
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
@@ -5943,17 +6107,17 @@ layout:
     name: "logo.png"
     at: [0, 0]
     size: [20, 20]
-    ink: red
+    color: red
 "#;
         let err = parse_and_validate(image_yaml).unwrap_err();
         let err_str = err.to_string();
         assert!(
-            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            err_str.contains("layout[0]") && err_str.contains("unknown field `color`"),
             "got: {err_str}"
         );
 
         let line_yaml = r#"
-name: Line Ink
+name: Line Color
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
@@ -5963,17 +6127,17 @@ layout:
     to: [50, 20]
     stroke:
       thickness: 1
-    ink: red
+    color: red
 "#;
         let err = parse_and_validate(line_yaml).unwrap_err();
         let err_str = err.to_string();
         assert!(
-            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            err_str.contains("layout[0]") && err_str.contains("unknown field `color`"),
             "got: {err_str}"
         );
 
         let container_yaml = r#"
-name: Container Ink
+name: Container Color
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
@@ -5981,21 +6145,21 @@ layout:
   - type: container
     at: [0, 0]
     size: [50, 20]
-    ink: red
+    color: red
     items: []
 "#;
         let err = parse_and_validate(container_yaml).unwrap_err();
         let err_str = err.to_string();
         assert!(
-            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            err_str.contains("layout[0]") && err_str.contains("unknown field `color`"),
             "got: {err_str}"
         );
     }
 
     #[test]
-    fn reject_undeclared_or_bad_type_ink_parameter_reference() {
-        let undeclared_yaml = r#"
-name: Undeclared Ink Ref
+    fn ink_rejected_on_text_item() {
+        let ink_yaml = r#"
+name: InkText
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
@@ -6005,7 +6169,31 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: "{missing}"
+    ink: red
+"#;
+        let err = parse_and_validate(ink_yaml).unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("layout[0]") && err_str.contains("unknown field `ink`"),
+            "ink on a text item must be refused with unknown field `ink` naming layout path, got: {err_str}"
+        );
+    }
+
+    #[test]
+    fn reject_undeclared_or_bad_type_color_parameter_reference() {
+        // 1. Text color
+        let undeclared_yaml = r#"
+name: Undeclared Color Ref
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: "{missing}"
 "#;
         let err = parse_and_validate(undeclared_yaml).unwrap_err();
         assert!(err.to_string().contains("missing"), "got: {err}");
@@ -6013,7 +6201,7 @@ layout:
         for bad_type in ["length", "number", "integer", "boolean", "datetime"] {
             let yaml = format!(
                 r#"
-name: Bad Type Ink Ref
+name: Bad Type Color Ref
 unit: mm
 dpi: 200
 params:
@@ -6026,7 +6214,7 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: "{{color_param}}"
+    color: "{{color_param}}"
 "#
             );
             let err = parse_and_validate(&yaml).unwrap_err();
@@ -6041,9 +6229,9 @@ layout:
             );
         }
 
-        // string and enum are accepted
+        // string and enum are accepted on text color
         let string_yaml = r#"
-name: String Ink Ref
+name: String Color Ref
 unit: mm
 dpi: 200
 params:
@@ -6056,12 +6244,12 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: "{brand}"
+    color: "{brand}"
 "#;
         assert!(parse_and_validate(string_yaml).is_ok());
 
         let enum_yaml = r#"
-name: Enum Ink Ref
+name: Enum Color Ref
 unit: mm
 dpi: 200
 params:
@@ -6075,79 +6263,252 @@ layout:
     at: [0, 0]
     size: [50, 20]
     font_size: 10
-    ink: "{brand}"
+    color: "{brand}"
 "#;
         assert!(parse_and_validate(enum_yaml).is_ok());
+
+        // 2. Container background
+        let undeclared_bg = r#"
+name: Undeclared Bg Ref
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: "{missing}"
+    items: []
+"#;
+        let err = parse_and_validate(undeclared_bg).unwrap_err();
+        assert!(err.to_string().contains("missing"), "got: {err}");
+
+        for bad_type in ["length", "number", "integer", "boolean", "datetime"] {
+            let bad_yaml = format!(
+                r#"
+name: Bad Type Bg Ref
+unit: mm
+dpi: 200
+params:
+  bg_param:
+    type: {bad_type}
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: "{{bg_param}}"
+    items: []
+"#
+            );
+            let err = parse_and_validate(&bad_yaml).unwrap_err();
+            let err_str = err.to_string().to_lowercase();
+            assert!(
+                err_str.contains("bg_param"),
+                "expected error to name bg_param for type {bad_type}, got: {err}"
+            );
+            assert!(
+                err_str.contains(bad_type),
+                "expected error to name type {bad_type}, got: {err}"
+            );
+        }
+
+        let good_bg = r#"
+name: Good Bg Ref
+unit: mm
+dpi: 200
+params:
+  bg_param:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: "{bg_param}"
+    items: []
+"#;
+        assert!(parse_and_validate(good_bg).is_ok());
+
+        // 3. Line and container stroke.color
+        let undeclared_line_stroke = r#"
+name: Undeclared Line Stroke Ref
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: line
+    at: [0, 0]
+    to: [50, 20]
+    stroke:
+      thickness: 1
+      color: "{missing}"
+"#;
+        let err = parse_and_validate(undeclared_line_stroke).unwrap_err();
+        assert!(err.to_string().contains("missing"), "got: {err}");
+
+        for bad_type in ["length", "number", "integer", "boolean", "datetime"] {
+            let bad_line_yaml = format!(
+                r#"
+name: Bad Line Stroke Ref
+unit: mm
+dpi: 200
+params:
+  border:
+    type: {bad_type}
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: line
+    at: [0, 0]
+    to: [50, 20]
+    stroke:
+      thickness: 1
+      color: "{{border}}"
+"#
+            );
+            let err = parse_and_validate(&bad_line_yaml).unwrap_err();
+            let err_str = err.to_string().to_lowercase();
+            assert!(
+                err_str.contains("border"),
+                "expected error to name border for type {bad_type}, got: {err}"
+            );
+            assert!(
+                err_str.contains(bad_type),
+                "expected error to name type {bad_type}, got: {err}"
+            );
+        }
+
+        let good_line_stroke = r#"
+name: Good Line Stroke Ref
+unit: mm
+dpi: 200
+params:
+  border:
+    type: enum
+    values: [red, green]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: line
+    at: [0, 0]
+    to: [50, 20]
+    stroke:
+      thickness: 1
+      color: "{border}"
+"#;
+        assert!(parse_and_validate(good_line_stroke).is_ok());
     }
 
     #[test]
-    fn input_derivation_for_ink_references() {
-        // 1. Ungated ink: "{brand}" puts brand in the list marked not interpolated
+    fn input_derivation_for_color_references() {
+        // 1. Ungated color, background, stroke.color (on container and line) references marked not interpolated
         let ungated_yaml = r#"
-name: Ungated Ink
+name: Ungated Colors
 unit: mm
 dpi: 200
 params:
   brand:
     type: string
+  bg_color:
+    type: string
+  border_color:
+    type: string
+  line_color:
+    type: string
 format: { type: single, width: 50, height: 20 }
 layout:
-  - type: text
-    value: "Hello"
+  - type: line
+    at: [0, 0]
+    to: [50, 0]
+    stroke:
+      thickness: 1
+      color: "{line_color}"
+  - type: container
     at: [0, 0]
     size: [50, 20]
-    font_size: 10
-    ink: "{brand}"
+    background: "{bg_color}"
+    stroke:
+      thickness: 1
+      color: "{border_color}"
+    items:
+      - type: text
+        value: "Hello"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+        color: "{brand}"
 "#;
         let t_ungated = parse_template_ok(ungated_yaml);
         let inputs = t_ungated.inputs_all();
-        let brand_input = inputs
-            .iter()
-            .find(|i| i.name == "brand")
-            .expect("brand in inputs_all");
-        assert!(
-            !brand_input.interpolated,
-            "ink reference must not be marked interpolated"
-        );
+        for param_name in ["brand", "bg_color", "border_color", "line_color"] {
+            let input = inputs
+                .iter()
+                .find(|i| i.name == param_name)
+                .unwrap_or_else(|| panic!("{param_name} in inputs_all"));
+            assert!(
+                !input.interpolated,
+                "{param_name} reference must not be marked interpolated"
+            );
+        }
 
-        // 2. when-gated-off item contributes nothing while when's own parameters still appear
+        // 2. when-gated-off item (container background or line stroke) contributes nothing while when's own parameters still appear
         let gated_yaml = r#"
-name: Gated Ink
+name: Gated Color
 unit: mm
 dpi: 200
 params:
   brand:
+    type: string
+  line_color:
     type: string
   show_brand:
     type: boolean
     default: false
+  show_line:
+    type: boolean
+    default: false
 format: { type: single, width: 50, height: 20 }
 layout:
-  - type: text
-    value: "Hello"
+  - type: container
     at: [0, 0]
     size: [50, 20]
-    font_size: 10
-    ink: "{brand}"
+    background: "{brand}"
     when:
       show_brand: "true"
+    items: []
+  - type: line
+    at: [0, 0]
+    to: [50, 0]
+    stroke:
+      thickness: 1
+      color: "{line_color}"
+    when:
+      show_line: "true"
 "#;
         let t_gated = parse_template_ok(gated_yaml);
         let mut data = HashMap::new();
         data.insert("show_brand".to_string(), serde_json::json!(false));
+        data.insert("show_line".to_string(), serde_json::json!(false));
         let inputs_for_label = t_gated.derive_inputs_for_label(&data, chrono::Local::now());
         assert!(
             !inputs_for_label.iter().any(|i| i.name == "brand"),
-            "gated-off ink param must not be in input list"
+            "gated-off container background color param must not be in input list"
+        );
+        assert!(
+            !inputs_for_label.iter().any(|i| i.name == "line_color"),
+            "gated-off line stroke color param must not be in input list"
         );
         assert!(
             inputs_for_label.iter().any(|i| i.name == "show_brand"),
             "when param must be in input list"
         );
+        assert!(
+            inputs_for_label.iter().any(|i| i.name == "show_line"),
+            "when param must be in input list"
+        );
 
-        // 3. Parameter used as an ink and interpolated elsewhere appears once, interpolated
+        // 3. Parameter used as a color and interpolated elsewhere appears once, interpolated
         let dual_yaml = r#"
-name: Dual Ink
+name: Dual Color
 unit: mm
 dpi: 200
 params:
@@ -6165,7 +6526,7 @@ layout:
     at: [0, 10]
     size: [50, 10]
     font_size: 10
-    ink: "{brand}"
+    color: "{brand}"
 "#;
         let t_dual = parse_template_ok(dual_yaml);
         let inputs = t_dual.inputs_all();
