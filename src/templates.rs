@@ -6236,8 +6236,9 @@ layout:
             "\"#ff000\"",
             "\"\"",
             "16711680",
-            "\" red \"",
-            "\" #ff0000 \"",
+            "\"   \"",
+            "\"re d\"",
+            "\"# f0f\"",
         ] {
             let bad_yaml = format!(
                 r#"
@@ -6275,7 +6276,7 @@ layout:
 
     #[test]
     fn invalid_color_literal_on_shape_items_fails_load() {
-        for bad_color in ["chartreuse", "\" red \"", "\" #ff0000 \""] {
+        for bad_color in ["chartreuse", "\"   \"", "\"re d\"", "\"# f0f\""] {
             // Container background invalid color
             let bad_bg_yaml = format!(
                 r#"
@@ -6811,5 +6812,36 @@ layout:
             matching[0].interpolated,
             "interpolated wins when parameter is used both ways"
         );
+    }
+
+    #[test]
+    fn whitespace_only_color_template_is_quarantined() {
+        let dir = temp_dir("whitespace_only_color_template_is_quarantined");
+        let bad_yaml = r#"
+name: WhitespaceColor
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: "   "
+"#;
+        write_template(&dir, "whitespace_color.yaml", bad_yaml);
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+        assert_eq!(registry.len(), 0);
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 1);
+        let item = &broken[0];
+        assert_eq!(item.path, "whitespace_color.yaml");
+        assert!(
+            item.error.contains("layout[0]") && item.error.contains("color"),
+            "expected layout path and field in error: {}",
+            item.error
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 }

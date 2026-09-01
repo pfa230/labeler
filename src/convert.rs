@@ -1049,4 +1049,54 @@ mod tests {
             panic!("expected line");
         }
     }
+
+    #[test]
+    fn padded_color_literals_convert_to_expected_colors() {
+        let layout_yaml = r#"  - type: container
+    at: [0, 0]
+    size: [10, 10]
+    background: " #F0F "
+    stroke:
+      thickness: 0.2
+      color: " navy "
+    items:
+      - type: text
+        value: "Hello"
+        at: [0, 0]
+        size: [10, 5]
+        font_size: 8
+        color: " red "
+"#;
+        let template = try_build(layout_yaml).expect("template should load");
+        let crate::models::Layout::Items(items) = &template.layout;
+        match &items[0] {
+            crate::models::LayoutItem::Container {
+                background,
+                stroke,
+                items: child_items,
+                ..
+            } => {
+                let bg = background.as_ref().expect("background present");
+                assert_eq!(bg.as_literal().unwrap().rgba(), [0xff, 0x00, 0xff, 0xff]);
+
+                let stroke_val = stroke.as_ref().expect("stroke present");
+                assert_eq!(
+                    stroke_val.color.as_literal().unwrap().rgba(),
+                    [0x00, 0x00, 0x80, 0xff]
+                );
+
+                match &child_items[0] {
+                    crate::models::LayoutItem::Text { color, .. } => {
+                        let text_col = color.as_ref().expect("text color present");
+                        assert_eq!(
+                            text_col.as_literal().unwrap().rgba(),
+                            [0xff, 0x00, 0x00, 0xff]
+                        );
+                    }
+                    _ => panic!("expected text child"),
+                }
+            }
+            _ => panic!("expected container"),
+        }
+    }
 }

@@ -8948,7 +8948,85 @@ layout:
     }
 
     #[test]
-    fn color_param_with_whitespace_is_rejected_at_render_time() {
+    fn emitted_typst_source_padded_color_literals() {
+        let yaml = r#"
+name: PaddedColorTest
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    background: " #F0F "
+    stroke:
+      thickness: 0.2
+      color: " navy "
+    items:
+      - type: text
+        value: "Hello"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+        color: " red "
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let crate::models::Layout::Items(items) = &template.layout;
+        let src = render_test_items(items, (50.0, 20.0)).expect("render padded template items");
+        assert!(
+            src.contains("fill: rgb(\"#ff00ffff\")"),
+            "container background must emit rgb(\"#ff00ffff\"), got: {src}"
+        );
+        assert!(
+            src.contains("rgb(\"#000080ff\")"),
+            "container stroke must emit rgb(\"#000080ff\"), got: {src}"
+        );
+        assert!(
+            src.contains("fill: rgb(\"#ff0000ff\")"),
+            "text color must emit rgb(\"#ff0000ff\"), got: {src}"
+        );
+    }
+
+    #[test]
+    fn padded_color_reference_loads_and_renders() {
+        let yaml = r#"
+name: PaddedColorRef
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: " {brand} "
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let crate::models::Layout::Items(items) = &template.layout;
+        match &items[0] {
+            crate::models::LayoutItem::Text { color, .. } => {
+                assert_eq!(
+                    color,
+                    &Some(crate::models::DynamicValue::Ref("brand".to_string()))
+                );
+            }
+            _ => panic!("expected text"),
+        }
+
+        let mut data = HashMap::new();
+        data.insert("brand".to_string(), serde_json::json!("red"));
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let res = super::render_single_label(&template, &data, None, &settings, &datetime);
+        assert!(res.is_ok(), "padded reference must render successfully");
+    }
+
+    #[test]
+    fn color_param_with_whitespace_renders_resolved_color() {
         let yaml = r#"
 name: WhiteSpaceColorParam
 unit: mm
@@ -8969,13 +9047,65 @@ layout:
         let settings = no_settings();
         let datetime = no_datetime();
 
-        for bad_val in [" red ", " #ff0000 "] {
-            let mut data = HashMap::new();
-            data.insert("brand".to_string(), serde_json::json!(bad_val));
-            let err = super::render_single_label(&template, &data, None, &settings, &datetime)
-                .unwrap_err();
-            assert_eq!(err.reason(), Some(Reason::ColorParamInvalid.as_slug()));
-        }
+        let mut data = HashMap::new();
+        data.insert("brand".to_string(), serde_json::json!(" navy "));
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let compiled = super::compile_label_source(&template, &data, None, &env).unwrap();
+        assert!(
+            compiled.source.contains("fill: rgb(\"#000080ff\")"),
+            "resolved ' navy ' must emit rgb(\"#000080ff\"), got: {}",
+            compiled.source
+        );
+        let rendered = super::render_single_label(&template, &data, None, &settings, &datetime)
+            .expect("padded brand must render");
+        let img = image::load_from_memory(&rendered)
+            .expect("valid png")
+            .to_rgba8();
+        let navy_pixels = img
+            .pixels()
+            .filter(|p| p[2] < 200 && p[0] < p[2] && p[1] < p[2])
+            .count();
+        assert!(
+            navy_pixels > 0,
+            "padded ' navy ' parameter must render navy text glyphs"
+        );
+    }
+
+    #[test]
+    fn color_param_with_whitespace_chained_ref_fails_with_chained_message() {
+        let yaml = r#"
+name: ChainedColorParam
+unit: mm
+dpi: 200
+params:
+  brand:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: "{brand}"
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let settings = no_settings();
+        let datetime = no_datetime();
+
+        let mut data = HashMap::new();
+        data.insert("brand".to_string(), serde_json::json!(" {other} "));
+        let err =
+            super::render_single_label(&template, &data, None, &settings, &datetime).unwrap_err();
+        assert_eq!(err.reason(), Some(Reason::ColorParamInvalid.as_slug()));
+        assert!(
+            err.message_text().contains("references cannot be chained"),
+            "expected chained-reference message, got: {}",
+            err.message_text()
+        );
     }
 
     #[test]

@@ -231,7 +231,7 @@ pub(super) fn resolve_dynamic_value_color(
                 .get(name)
                 .ok_or_else(|| AppError::color_param_invalid(name, "parameter was not supplied"))?;
             let s = match val {
-                JsonValue::String(s) => s,
+                JsonValue::String(s) => s.trim(),
                 _ => {
                     return Err(AppError::color_param_invalid(
                         name,
