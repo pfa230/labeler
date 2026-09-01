@@ -34,6 +34,27 @@ permanently under `openspec/changes/archive/`, and the contract lives in `opensp
 
 Also in `docs/`: `WORKFLOW.md` (how changes get made, for humans), `AUTHORING.md` (template model by worked example), `VISION.md`, `DEPLOY.md`.
 
+## Breaking changes, until 1.0
+
+The version is `0.1.0`. Until `1.0`, a change that alters behavior **breaks what came before, and that
+is the finished job**. No migration, no desugaring, no deprecation window, no second spelling kept
+alive beside the first, no accept-then-warn. A template written against a model that no longer exists
+fails to load, is quarantined with its path, and its author edits the file. Spending a change's budget
+on carrying the old shape forward buys nobody anything at this version and leaves a second code path
+that outlives the reason for it.
+
+**Break loudly.** The rule licenses removal, never silence. A dropped spelling becomes a parse error
+naming the file and the key, because `deny_unknown_fields` is already on the raw structs. A field that
+is read and ignored is what this rule forbids, not an example of it: the reader who wrote it gets no
+signal and keeps writing it. Same for a request field a handler drops on the floor.
+
+**Stored user data is not source, and is migrated.** `src/store.rs:154-168` migrates the SQLite schema
+across releases, tested at `store.rs:1070-1142`. A user's printers, connections, variables and tokens
+have no author to fix them and no file to re-author from, so breaking them destroys data rather than
+demanding an edit. That is the difference the exception rests on, and it is the only one.
+
+At `1.0` this section is rewritten rather than dropped, by whoever cuts that release.
+
 ## Tracking work
 
 GitHub issues and milestones are the sole live tracker. No markdown TODOs, no roadmap docs. File with
@@ -395,9 +416,10 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
 - **Layout model** (`models.rs`). `layout` is a tree of `LayoutItem`s: `Text`, `Qr`, `Image`, `Line`,
   `Container`. `Container` nests `items` recursively and may carry `frame` and `padding`. Any item may
   carry `when:`, the universal conditional-visibility predicate over `params` (ADR-0056, #162).
-  Write new templates with `params` + `when`, but note the legacy top-level `options:` map and
-  `container.option` still **parse**: they desugar into an enum `params` entry and into `when`
-  (`convert.rs:284`, `convert.rs:107`). Do not treat a template using them as invalid.
+  Write templates with `params` + `when`. The legacy top-level `options:` map and `container.option`
+  are the model ADR-0056 replaced; they still desugar into an enum `params` entry and into `when`
+  (`convert.rs:628`, `convert.rs:300`), and #305 deletes that, after which either spelling fails to
+  load. Do not add a template using them and do not extend the desugaring.
 - **Coordinates.** Bottom-left origin, y-up, in the template `unit` (`mm` or `in`). Typst is top-left,
   so the renderer flips with `frame_height_units - top`. A `Container` re-bases children into its
   padded inner box via a fresh `RenderContext`. *Watch this when touching placement math.*
