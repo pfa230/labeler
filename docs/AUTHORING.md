@@ -394,7 +394,7 @@ Text layout items support an optional `wrap: bool` flag (default: `false`):
 - **Hard newlines always survive:** Any newline (`\n`) in input data creates a new line box, whether `wrap` is `true` or `false`.
 - **Soft wrapping (`wrap: true`):** When a line exceeds the width of its box, it is softly wrapped to subsequent lines at word boundaries (or character boundaries for words wider than the box).
 - **No soft wrapping (`wrap: false`):** Lines are not broken beyond authored newlines. If an individual line exceeds the box width, `overflow` handles it.
-- **Form inputs in the web UI:** For a **declared** parameter, whether the print form displays a multi-line `<textarea>` or a single-line `<input>` is controlled entirely by `params.<field>.multiline: true`. A field the layout references but `params:` does not declare still takes a `<textarea>` from a wrapping text item that reads it; issue #269 removes that fallback, after which the declaration is the only source.
+- **Form inputs in the web UI:** Whether the print form displays a multi-line `<textarea>` or a single-line `<input>` is controlled entirely by `params.<field>.multiline: true`. Every field referenced by the layout must be declared in `params:`, and a `wrap: true` layout item reading a `multiline: false` parameter keeps a single-line `<input>`.
 
 ## 8. Edge-relative coordinates and `to:`
 
@@ -606,7 +606,7 @@ What to know:
   - **Defaults.** Datetime parameters support explicit string defaults, such as `default: "{sys.now}"` to default to the render date (which resolves to local midnight on that date), a token with a time pattern like `default: "{sys.now:iso_timestamp}"`, or a literal ISO 8601 date/time string. If no default is declared, the parameter is required and omitting it returns `422 MissingField`. Note that bare `{sys.now}` renders `%Y-%m-%d`, so defaulting a `time: true` parameter with bare `{sys.now}` resolves to `00:00` local time rather than the wall clock; to include time in the default, use a pattern that formats the time.
 - **Format syntax and restrictions.**
   - A format is attached with a colon (`:`), never a dot. Attaching a format to a value that is neither `sys.now` nor a declared `type: datetime` parameter (e.g. `{title:short_date}`, `{vars.qr_base_url:long_date}`) is a load-time rejection.
-  - `{datetime}` is an ordinary request data field, not a reserved word.
+  - `{datetime}` is an ordinary parameter name, not a reserved word; like every bare token, it must be declared in `params:` to be read by the layout.
   - The old dotted spellings `{datetime.<name>}` and `{sys.now.<name>}` are load-time rejections that point to the replacement `{sys.now:<name>}`.
 - **UI controls.** The web UI renders a date picker (`<input type="date">`) when `time: false` (or omitted), and a date-and-time picker (`<input type="datetime-local">`) when `time: true`. The control is seeded from `default` if declared, and left empty otherwise.
 - **Overrides in batches and CSV imports.** Requests can provide ISO date strings (`YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, `YYYY-MM-DDTHH:MM:SS`, or RFC 3339 timestamps with timezone offsets) to override specific labels.

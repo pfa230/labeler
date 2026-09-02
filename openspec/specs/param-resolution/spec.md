@@ -406,10 +406,10 @@ batch stays all-or-nothing: no PDF, no ZIP and no print job SHALL be produced.
 
 A thumbnail or preview render has no request behind it, so every value it prints is one the service
 chose. This is placeholder substitution, it is preview-only, and it never reaches a render a caller
-asked for. It is the one place the service supplies a value the template does not declare, and exactly
-three rules govern it:
+asked for. Every placeholder stands in for a parameter the template declares, and exactly
+three rules govern it.
 
-1. **Every request field or declared parameter that a token reads and that the service has no value
+1. **Every declared parameter that a token reads and that the service has no value
    of its own for** gets a placeholder, chosen to be legal for the kind of control it is.
    `template-inputs` owns that table and this capability does not restate it; what matters here is that
    a parameter this change makes required — an undefaulted `boolean` or `datetime` — now falls inside it,

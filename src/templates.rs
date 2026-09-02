@@ -45,14 +45,6 @@ fn vars_token_keys(s: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Whether a name is a declared `datetime` parameter, which the service supplies from the render
-/// instant and which no single-line item can truncate.
-fn is_datetime_param(params: &std::collections::BTreeMap<String, ParamSpec>, name: &str) -> bool {
-    params
-        .get(name)
-        .is_some_and(|spec| matches!(spec.param_type, ParamType::Datetime { .. }))
-}
-
 #[derive(Debug, Clone)]
 pub struct TemplateContent {
     pub name: String,
@@ -204,44 +196,30 @@ impl TemplateContent {
     ) -> Vec<InputSpec> {
         let single_line_names = collect_single_line_names(&self.layout);
         let mut collected: HashMap<String, NameInfo> = HashMap::new();
-        let mut next_order = 0;
 
-        let mut record_ref =
-            |name: &str, interpolated: bool, image_bound: bool, multiline_text: bool| {
-                let entry = collected.entry(name.to_string()).or_insert_with(|| {
-                    let order = next_order;
-                    next_order += 1;
-                    NameInfo {
-                        order,
-                        interpolated: false,
-                        image_bound: false,
-                        multiline_text: false,
-                    }
-                });
-                if interpolated {
-                    entry.interpolated = true;
-                }
-                if image_bound {
-                    entry.image_bound = true;
-                }
-                if multiline_text {
-                    entry.multiline_text = true;
-                }
-            };
+        let mut record_ref = |name: &str, interpolated: bool, image_bound: bool| {
+            let entry = collected.entry(name.to_string()).or_default();
+            if interpolated {
+                entry.interpolated = true;
+            }
+            if image_bound {
+                entry.image_bound = true;
+            }
+        };
 
         // 1. format dynamic dimensions
         if let TemplateFormat::Single { width, height, .. } = &self.format {
             for dim in [width, height] {
                 match dim {
                     DynamicDimension::Fixed(DynamicValue::Ref(r)) => {
-                        record_ref(r, false, false, false);
+                        record_ref(r, false, false);
                     }
                     DynamicDimension::Dynamic { min, max } => {
                         if let Some(DynamicValue::Ref(r)) = min {
-                            record_ref(r, false, false, false);
+                            record_ref(r, false, false);
                         }
                         if let Some(DynamicValue::Ref(r)) = max {
-                            record_ref(r, false, false, false);
+                            record_ref(r, false, false);
                         }
                     }
                     _ => {}
@@ -253,17 +231,16 @@ impl TemplateContent {
         let Layout::Items(items) = &self.layout;
         fn walk_items<F>(
             items: &[LayoutItem],
-            params: &std::collections::BTreeMap<String, ParamSpec>,
             resolved_data: Option<&HashMap<String, serde_json::Value>>,
             record_ref: &mut F,
         ) where
-            F: FnMut(&str, bool, bool, bool),
+            F: FnMut(&str, bool, bool),
         {
             for item in items {
                 // Record when: keys unconditionally for any item encountered in this active scope
                 if let Some(when) = item.when() {
                     for key in when.keys() {
-                        record_ref(key, false, false, false);
+                        record_ref(key, false, false);
                     }
                 }
 
@@ -293,29 +270,23 @@ impl TemplateContent {
                         font_weight,
                         color,
                         value,
-                        wrap,
                         ..
                     } => {
                         if let Extent::Size(size) = &placement.extent {
                             for sv in &size.0 {
                                 if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false, false);
+                                    record_ref(r, false, false);
                                 }
                             }
                         }
                         if let Some(DynamicValue::Ref(r)) = font_weight {
-                            record_ref(r, false, false, false);
+                            record_ref(r, false, false);
                         }
                         if let Some(DynamicValue::Ref(r)) = color {
-                            record_ref(r, false, false, false);
+                            record_ref(r, false, false);
                         }
                         for name in bare_token_names(value) {
-                            record_ref(
-                                name,
-                                true,
-                                false,
-                                *wrap && !is_datetime_param(params, name),
-                            );
+                            record_ref(name, true, false);
                         }
                     }
                     LayoutItem::Qr {
@@ -324,12 +295,12 @@ impl TemplateContent {
                         if let Extent::Size(size) = &placement.extent {
                             for sv in &size.0 {
                                 if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false, false);
+                                    record_ref(r, false, false);
                                 }
                             }
                         }
                         for name in bare_token_names(value) {
-                            record_ref(name, true, false, false);
+                            record_ref(name, true, false);
                         }
                     }
                     LayoutItem::Image {
@@ -341,16 +312,16 @@ impl TemplateContent {
                         if let Extent::Size(size) = &placement.extent {
                             for sv in &size.0 {
                                 if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false, false);
+                                    record_ref(r, false, false);
                                 }
                             }
                         }
                         if let Some(n) = name {
-                            record_ref(n, true, true, false);
+                            record_ref(n, true, true);
                         }
                         if let Some(s) = src {
                             for name in bare_token_names(s) {
-                                record_ref(name, true, false, false);
+                                record_ref(name, true, false);
                             }
                         }
                     }
@@ -360,7 +331,7 @@ impl TemplateContent {
                             ..
                         }) = stroke
                         {
-                            record_ref(r, false, false, false);
+                            record_ref(r, false, false);
                         }
                     }
                     LayoutItem::Container {
@@ -373,7 +344,7 @@ impl TemplateContent {
                         if let Extent::Size(size) = &placement.extent {
                             for sv in &size.0 {
                                 if let SizeValue::Dynamic(DynamicValue::Ref(r)) = sv {
-                                    record_ref(r, false, false, false);
+                                    record_ref(r, false, false);
                                 }
                             }
                         }
@@ -382,147 +353,116 @@ impl TemplateContent {
                             ..
                         }) = stroke
                         {
-                            record_ref(r, false, false, false);
+                            record_ref(r, false, false);
                         }
                         if let Some(DynamicValue::Ref(r)) = background {
-                            record_ref(r, false, false, false);
+                            record_ref(r, false, false);
                         }
-                        walk_items(items, params, resolved_data, record_ref);
+                        walk_items(items, resolved_data, record_ref);
                     }
                 }
             }
         }
 
-        walk_items(items, &self.params, resolved_data, &mut record_ref);
+        walk_items(items, resolved_data, &mut record_ref);
 
-        let mut declared_specs = Vec::new();
-        let mut undeclared_specs = Vec::new();
+        let mut specs = Vec::new();
 
         for (name, info) in collected {
             let truncated_elsewhere = single_line_names.contains(&name);
-            if let Some(spec) = self.params.get(&name) {
-                let control = if info.image_bound {
-                    InputControl::Image
-                } else {
-                    match &spec.param_type {
-                        ParamType::Enum { .. } => InputControl::Select,
-                        ParamType::Boolean => InputControl::Checkbox,
-                        ParamType::Datetime { time } => {
-                            if *time {
-                                InputControl::Datetime
-                            } else {
-                                InputControl::Date
-                            }
-                        }
-                        ParamType::Integer => InputControl::Integer,
-                        ParamType::Number | ParamType::Length => InputControl::Number,
-                        ParamType::String { multiline } => {
-                            if *multiline {
-                                InputControl::Textarea
-                            } else {
-                                InputControl::Text
-                            }
-                        }
-                    }
-                };
-                let slider = matches!(
-                    spec.param_type,
-                    ParamType::Integer | ParamType::Number | ParamType::Length
-                ) && spec.min.is_some()
-                    && spec.max.is_some();
-                let (default, default_error, required) = match resolved_defaults.get(&name) {
-                    Some(ParamDefaultReport::Resolved { resolved }) => {
-                        (Some(resolved.clone()), None, false)
-                    }
-                    Some(ParamDefaultReport::Error { error }) => (None, Some(error.clone()), true),
-                    None => (None, None, true),
-                };
-                let values = if let ParamType::Enum { values } = &spec.param_type {
-                    Some(values.clone())
-                } else {
-                    None
-                };
-                let min = if matches!(
-                    spec.param_type,
-                    ParamType::Integer | ParamType::Number | ParamType::Length
-                ) {
-                    spec.min
-                } else {
-                    None
-                };
-                let max = if matches!(
-                    spec.param_type,
-                    ParamType::Integer | ParamType::Number | ParamType::Length
-                ) {
-                    spec.max
-                } else {
-                    None
-                };
-                let unit = if matches!(spec.param_type, ParamType::Length) {
-                    Some(self.unit.clone())
-                } else {
-                    None
-                };
+            let spec = self.params.get(&name).unwrap_or_else(|| {
+                panic!("undeclared parameter '{name}' encountered in derive_inputs_internal");
+            });
 
-                declared_specs.push(InputSpec {
-                    name,
-                    control,
-                    slider,
-                    required,
-                    default,
-                    default_error,
-                    values,
-                    min,
-                    max,
-                    unit,
-                    description: spec.description.clone(),
-                    interpolated: info.interpolated,
-                    truncated_elsewhere,
-                });
+            let control = if info.image_bound {
+                InputControl::Image
             } else {
-                let control = if info.image_bound {
-                    InputControl::Image
-                } else if info.multiline_text {
-                    InputControl::Textarea
-                } else {
-                    InputControl::Text
-                };
-                undeclared_specs.push((
-                    info.order,
-                    InputSpec {
-                        name,
-                        control,
-                        slider: false,
-                        required: true,
-                        default: None,
-                        default_error: None,
-                        values: None,
-                        min: None,
-                        max: None,
-                        unit: None,
-                        description: None,
-                        interpolated: info.interpolated,
-                        truncated_elsewhere,
-                    },
-                ));
-            }
+                match &spec.param_type {
+                    ParamType::Enum { .. } => InputControl::Select,
+                    ParamType::Boolean => InputControl::Checkbox,
+                    ParamType::Datetime { time } => {
+                        if *time {
+                            InputControl::Datetime
+                        } else {
+                            InputControl::Date
+                        }
+                    }
+                    ParamType::Integer => InputControl::Integer,
+                    ParamType::Number | ParamType::Length => InputControl::Number,
+                    ParamType::String { multiline } => {
+                        if *multiline {
+                            InputControl::Textarea
+                        } else {
+                            InputControl::Text
+                        }
+                    }
+                }
+            };
+            let slider = matches!(
+                spec.param_type,
+                ParamType::Integer | ParamType::Number | ParamType::Length
+            ) && spec.min.is_some()
+                && spec.max.is_some();
+            let (default, default_error, required) = match resolved_defaults.get(&name) {
+                Some(ParamDefaultReport::Resolved { resolved }) => {
+                    (Some(resolved.clone()), None, false)
+                }
+                Some(ParamDefaultReport::Error { error }) => (None, Some(error.clone()), true),
+                None => (None, None, true),
+            };
+            let values = if let ParamType::Enum { values } = &spec.param_type {
+                Some(values.clone())
+            } else {
+                None
+            };
+            let min = if matches!(
+                spec.param_type,
+                ParamType::Integer | ParamType::Number | ParamType::Length
+            ) {
+                spec.min
+            } else {
+                None
+            };
+            let max = if matches!(
+                spec.param_type,
+                ParamType::Integer | ParamType::Number | ParamType::Length
+            ) {
+                spec.max
+            } else {
+                None
+            };
+            let unit = if matches!(spec.param_type, ParamType::Length) {
+                Some(self.unit.clone())
+            } else {
+                None
+            };
+
+            specs.push(InputSpec {
+                name,
+                control,
+                slider,
+                required,
+                default,
+                default_error,
+                values,
+                min,
+                max,
+                unit,
+                description: spec.description.clone(),
+                interpolated: info.interpolated,
+                truncated_elsewhere,
+            });
         }
 
-        declared_specs.sort_by(|a, b| a.name.cmp(&b.name));
-        undeclared_specs.sort_by_key(|(order, _)| *order);
-
-        let mut result = declared_specs;
-        result.extend(undeclared_specs.into_iter().map(|(_, spec)| spec));
-        result
+        specs.sort_by(|a, b| a.name.cmp(&b.name));
+        specs
     }
 }
 
 #[derive(Default, Debug)]
 struct NameInfo {
-    order: usize,
     interpolated: bool,
     image_bound: bool,
-    multiline_text: bool,
 }
 
 fn collect_single_line_names(layout: &Layout) -> HashSet<String> {
@@ -1461,6 +1401,14 @@ fn validate_interpolated_string(
             }
             Err(e) => return Err(e.to_string()),
         };
+        if let crate::interpolation::Source::Bare(name) = &token.source {
+            if !params.contains_key(*name) {
+                return Err(format!(
+                    "template contains '{}': undeclared parameter '{name}'",
+                    scanned.raw
+                ));
+            }
+        }
         if let Some(fmt) = token.format {
             let is_instant = match token.source {
                 crate::interpolation::Source::Sys(crate::interpolation::SysValue::Now) => true,
@@ -1553,6 +1501,7 @@ fn validate_item_references(
                         "image name '{n}' contains invalid characters; must match ^[a-zA-Z0-9_-]+$"
                     ));
                 }
+                check_param_ref(params, n, "image name", &["string"])?;
             }
             if let Some(s) = src {
                 validate_interpolated_string(s, params)?;
@@ -2579,13 +2528,13 @@ mod tests {
         assert!(parse_and_validate(yaml_qr_rnd).is_err());
 
         // Shape attributes rejected on image
-        let yaml_img_stroke = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 1.0\n";
+        let yaml_img_stroke = "name: T\nunit: mm\ndpi: 200\nparams:\n  logo:\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    stroke:\n      thickness: 1.0\n";
         assert!(parse_and_validate(yaml_img_stroke).is_err());
 
-        let yaml_img_bg = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    background: red\n";
+        let yaml_img_bg = "name: T\nunit: mm\ndpi: 200\nparams:\n  logo:\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    background: red\n";
         assert!(parse_and_validate(yaml_img_bg).is_err());
 
-        let yaml_img_rnd = "name: T\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    rounded: 1.0\n";
+        let yaml_img_rnd = "name: T\nunit: mm\ndpi: 200\nparams:\n  logo:\n    type: string\nformat:\n  type: single\n  width: 20\n  height: 20\nlayout:\n  - type: image\n    name: logo\n    at: [0,0]\n    size: [10,10]\n    rounded: 1.0\n";
         assert!(parse_and_validate(yaml_img_rnd).is_err());
     }
 
@@ -3478,6 +3427,9 @@ name: Sample
 description: Sample template
 unit: mm
 dpi: 300
+params:
+  message:
+    type: string
 format:
   type: single
   width: 12.0
@@ -3763,18 +3715,30 @@ layout: []
                 height: Dimension::Fixed(25.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([(
-                "variant".to_string(),
-                ParamSpec {
-                    param_type: ParamType::Enum {
-                        values: vec!["default".to_string()],
+            params: BTreeMap::from([
+                (
+                    "variant".to_string(),
+                    ParamSpec {
+                        param_type: ParamType::Enum {
+                            values: vec!["default".to_string()],
+                        },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
                     },
-                    default: None,
-                    min: None,
-                    max: None,
-                    description: None,
-                },
-            )]),
+                ),
+                (
+                    "logo".to_string(),
+                    ParamSpec {
+                        param_type: ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                ),
+            ]),
             layout: Layout::Items(vec![
                 LayoutItem::Image {
                     name: Some("logo".to_string()),
@@ -5195,6 +5159,15 @@ params:
     type: string
   single_title:
     type: string
+  alpha_text:
+    type: string
+  qr_code_val:
+    type: string
+  beta_multiline:
+    type: string
+    multiline: true
+  asset_path:
+    type: string
 format:
   type: single
   width:
@@ -5267,17 +5240,17 @@ layout:
         assert_eq!(
             default_names,
             vec![
+                "alpha_text",
                 "branch",
                 "dyn_w",
                 "img_dim",
                 "img_param",
+                "qr_code_val",
                 "qr_dim",
                 "single_title",
                 "sub_branch",
                 "text_w",
                 "weight",
-                "alpha_text",
-                "qr_code_val"
             ]
         );
 
@@ -5316,20 +5289,20 @@ layout:
         assert_eq!(
             all_names,
             vec![
+                "alpha_text",
+                "asset_path",
+                "beta_multiline",
                 "branch",
                 "cont_dim",
                 "dyn_w",
                 "img_dim",
                 "img_param",
+                "qr_code_val",
                 "qr_dim",
                 "single_title",
                 "sub_branch",
                 "text_w",
-                "weight",
-                "alpha_text",
-                "qr_code_val",
-                "beta_multiline",
-                "asset_path"
+                "weight"
             ]
         );
 
@@ -5719,6 +5692,8 @@ name: Option Test
 unit: mm
 dpi: 200
 params:
+  title:
+    type: string
   style:
     type: enum
     values: [plain, fancy]
@@ -7071,5 +7046,366 @@ layout:
             item.error
         );
         fs::remove_dir_all(&dir).ok();
+    }
+
+    // Issue 322: Task 1.3 - Unit-test the refusal for each site: text value, qr value, image src
+    #[test]
+    fn issue_322_bare_token_undeclared_refused_at_all_sites() {
+        // 1. text value
+        let yaml_text = r#"
+name: T
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: text
+    value: "{sku}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml_text).unwrap_err();
+        assert_eq!(err, "template contains '{sku}': undeclared parameter 'sku'");
+
+        // 2. qr value
+        let yaml_qr = r#"
+name: T
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: qr
+    value: "https://example.com/{sku}"
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let err = parse_and_validate(yaml_qr).unwrap_err();
+        assert_eq!(err, "template contains '{sku}': undeclared parameter 'sku'");
+
+        // 3. image src
+        let yaml_img = r#"
+name: T
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: image
+    src: "logos/{sku}.png"
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let err = parse_and_validate(yaml_img).unwrap_err();
+        assert_eq!(err, "template contains '{sku}': undeclared parameter 'sku'");
+    }
+
+    // Issue 322: Task 1.4 - Unit-test what the rule does not touch
+    #[test]
+    fn issue_322_namespaced_tokens_and_defaults_and_datetime() {
+        // 1. vars and sys tokens load without declaration
+        let yaml_namespaced = r#"
+name: T
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: text
+    value: "{vars.site} {sys.now} {sys.now:iso_date}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+"#;
+        assert!(parse_and_validate(yaml_namespaced).is_ok());
+
+        // 2. default with bare token reports bare-token-in-default message
+        let yaml_default = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  declared:
+    type: string
+    default: "{message}"
+format: { type: single, width: 20, height: 10 }
+layout: []
+"#;
+        let err = parse_and_validate(yaml_default).unwrap_err();
+        assert_eq!(
+            err,
+            "bare token '{message}' is not allowed in a default; only namespaced tokens ({vars.…}, {sys.…}) are supported"
+        );
+
+        // 3. template printing {datetime} loads when declared and is quarantined/rejected when not
+        let yaml_dt_undeclared = r#"
+name: T
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: text
+    value: "{datetime}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+"#;
+        let err = parse_and_validate(yaml_dt_undeclared).unwrap_err();
+        assert_eq!(
+            err,
+            "template contains '{datetime}': undeclared parameter 'datetime'"
+        );
+
+        let yaml_dt_declared = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  datetime:
+    type: string
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: text
+    value: "{datetime}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+"#;
+        assert!(parse_and_validate(yaml_dt_declared).is_ok());
+    }
+
+    // Issue 322: Task 1.5 - Existence is the only condition (any type)
+    #[test]
+    fn issue_322_bare_token_accepts_any_declared_parameter_type() {
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  copies:
+    type: integer
+  bold:
+    type: boolean
+  width:
+    type: length
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{copies} {bold} {width}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        assert!(parse_and_validate(yaml).is_ok());
+    }
+
+    // Issue 322: Task 2.2 - Image name validation: undeclared, wrong type, invalid characters
+    #[test]
+    fn issue_322_image_name_validation_outcomes() {
+        // 1. name: logo with no logo declared
+        let yaml_undeclared = r#"
+name: T
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: image
+    name: logo
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let err = parse_and_validate(yaml_undeclared).unwrap_err();
+        assert_eq!(err, "undeclared parameter 'logo' referenced in image name");
+
+        // 2. logo declared as integer (wrong type)
+        let yaml_wrong_type = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  logo:
+    type: integer
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: image
+    name: logo
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let err = parse_and_validate(yaml_wrong_type).unwrap_err();
+        assert_eq!(
+            err,
+            "parameter 'logo' of type Integer cannot be used in image name"
+        );
+
+        // 3. name: "my logo" with spaces reports charset first
+        let yaml_bad_charset = r#"
+name: T
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: image
+    name: "my logo"
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let err = parse_and_validate(yaml_bad_charset).unwrap_err();
+        assert_eq!(
+            err,
+            "image name 'my logo' contains invalid characters; must match ^[a-zA-Z0-9_-]+$"
+        );
+    }
+
+    // Issue 322: Task 2.3 - Declared string image name binds and renders/errors as expected
+    #[test]
+    fn issue_322_image_name_declared_string_binding_and_render() {
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  logo:
+    type: string
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: image
+    name: logo
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let template = parse_template_ok(yaml);
+        let dt_formats = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now: chrono::Local::now(),
+        };
+
+        // Render with logo supplied as PNG data URI -> Ok
+        let mut data = HashMap::new();
+        data.insert(
+            "logo".to_string(),
+            json!(crate::render::SAMPLE_PNG_DATA_URI),
+        );
+        let png = crate::render::render_single_label_image(
+            &template,
+            &data,
+            None,
+            &BTreeMap::new(),
+            &dt,
+            crate::render::ImageRenderOptions::default(),
+        );
+        assert!(png.is_ok());
+
+        // Render omitting logo -> 422 MissingField naming logo
+        let empty_data = HashMap::new();
+        let err = crate::render::render_single_label_image(
+            &template,
+            &empty_data,
+            None,
+            &BTreeMap::new(),
+            &dt,
+            crate::render::ImageRenderOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "MissingField");
+        assert_eq!(err.details().unwrap()["field"], "logo");
+    }
+
+    // Issue 322: Task 4.2 - Post-change input entry derivation rules
+    #[test]
+    fn issue_322_input_entry_derivation_rules() {
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  zeta_text:
+    type: string
+    multiline: false
+  alpha_area:
+    type: string
+    multiline: true
+  asset_path:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{zeta_text}"
+    wrap: true
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+  - type: text
+    value: "{alpha_area}"
+    at: [0, 10]
+    size: [50, 10]
+    font_size: 8
+  - type: image
+    src: "{asset_path}"
+    at: [0, 0]
+    size: [10, 10]
+"#;
+        let template = parse_template_ok(yaml);
+        let inputs = test_inputs_all(&template);
+        let names: Vec<&str> = inputs.iter().map(|i| i.name.as_str()).collect();
+
+        // 1. Sorted alphabetically by name
+        assert_eq!(names, vec!["alpha_area", "asset_path", "zeta_text"]);
+
+        // 2. multiline: true string gets Textarea
+        assert_eq!(inputs[0].control, InputControl::Textarea);
+
+        // 3. image src over declared param gets Text
+        assert_eq!(inputs[1].control, InputControl::Text);
+        assert!(inputs[1].interpolated);
+
+        // 4. multiline: false string read by wrap: true item keeps Text (no promotion)
+        assert_eq!(inputs[2].control, InputControl::Text);
+    }
+
+    // Issue 322: Task 4.3 - Union rule: image name in one branch and text in another gets Image
+    #[test]
+    fn issue_322_input_entry_union_rule_image_wins() {
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  mode:
+    type: enum
+    values: [img, txt]
+    default: img
+  shared:
+    type: string
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      mode: img
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: image
+        name: shared
+        at: [0, 0]
+        size: [10, 10]
+  - type: container
+    when:
+      mode: txt
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "{shared}"
+        at: [0, 0]
+        size: [50, 10]
+        font_size: 8
+"#;
+        let template = parse_template_ok(yaml);
+        let all = test_inputs_all(&template);
+        let shared_input = all.iter().find(|i| i.name == "shared").unwrap();
+        assert_eq!(
+            shared_input.control,
+            InputControl::Image,
+            "image binding must win in inputs.all union"
+        );
     }
 }

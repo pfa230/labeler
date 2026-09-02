@@ -17,7 +17,7 @@ complete:
 
 | Field | Meaning |
 | --- | --- |
-| `name` | The request `data` key the control fills. |
+| `name` | The declared parameter the control fills, which is the request `data` key that carries it. |
 | `control` | `text`, `textarea`, `integer`, `number`, `select`, `checkbox`, `date`, `datetime`, or `image`. |
 | `slider` | For `integer` and `number`, whether both bounds are declared so the control is a slider. False otherwise. |
 | `required` | Whether the label is incomplete without a value. |
@@ -34,33 +34,35 @@ An entry SHALL be present for a name the label's render will read, and for no ot
 particular an entry SHALL be present for a parameter read only as a `when:` key, and for one read
 only by a layout attribute, so the operator keeps the control that selects a branch or sizes a box.
 
-A name resolved by the service SHALL NOT appear: a `{vars.<key>}` reference, a `{datetime}` or
-`{datetime.<format>}` token, and any name no active item reads.
+**Every entry names a parameter the template declares.** A template reads only names it declares
+(`interpolation-tokens`), so there is no other kind of entry and no branch of these rules for one. The
+entries are still narrower than `params:`: a declared parameter no active item, condition or attribute
+reads has no entry.
 
-**`control` is decided by declaration first, use second**, which preserves how the print form renders
-a declared parameter today:
+A name resolved by the service SHALL NOT appear: a `{vars.<key>}` reference, a `{sys.now}` token, and
+any name no active item reads. The retired `{datetime}` and `{datetime.<format>}` spellings this
+sentence used to name are gone: `{datetime.<format>}` fails when the template loads, and `{datetime}`
+is an ordinary bare token, so it is an entry when the template declares that parameter and a load-time
+refusal when it does not (`interpolation-tokens`).
 
-- For a name the template declares under `params:`, `control` follows the declared type: `select` for
-  `enum`; `checkbox` for `boolean`; `date` or `datetime` for `datetime` according to its `time` flag;
-  `integer` for `integer`; `number` for `length` and `number`; `textarea` for a `string` declaring
-  `multiline: true`, and `text` for a `string` otherwise. The one override is `image`: a `string`
-  parameter that any active `image` item binds through its `name:` gets `image`, since the value it
-  carries is a data URI.
+**`control` is decided by the declaration**, which preserves how the print form renders a declared
+parameter today. It follows the declared type: `select` for `enum`; `checkbox` for `boolean`; `date` or
+`datetime` for `datetime` according to its `time` flag; `integer` for `integer`; `number` for `length`
+and `number`; `textarea` for a `string` declaring `multiline: true`, and `text` for a `string`
+otherwise. The one override is `image`: a `string` parameter that any active `image` item binds through
+its `name:` gets `image`, since the value it carries is a data URI.
 
-  `integer` and `number` are distinct controls, not one numeric control, because they are stepped and
-  parsed differently: a client steps an `integer` by 1 and reads a whole number, and steps a `number`
-  freely and reads a decimal. Collapsing them would force the client back to the declared type to
-  tell them apart. `slider` then says whether the control is presented as a slider, which is true
-  exactly when both `min` and `max` are declared.
-- For a name the template does not declare, `control` follows use: `image` when an active `image`
-  item binds it through `name:`; otherwise `textarea` when an active `wrap: true` `text` item reads
-  it; otherwise `text`. That a layout flag decides a text control at all is a leftover this capability
-  keeps only until #269: `wrap` says whether the renderer soft-wraps a line, which is not a statement
-  about what a caller types into.
+`integer` and `number` are distinct controls, not one numeric control, because they are stepped and
+parsed differently: a client steps an `integer` by 1 and reads a whole number, and steps a `number`
+freely and reads a decimal. Collapsing them would force the client back to the declared type to
+tell them apart. `slider` then says whether the control is presented as a slider, which is true
+exactly when both `min` and `max` are declared.
 
-These two rules are total and mutually exclusive, so a name with several uses has exactly one
-`control`. A declared `string` read by a `wrap: true` text item but declared `multiline: false`
-therefore keeps its single-line control. `truncated_elsewhere` still reports the reverse pairing, but
+**No layout flag decides a control.** The rule that read `wrap: true` as a `textarea` applied to a name
+the template did not declare, and that case no longer exists, so the leftover this capability was
+keeping until #269 goes with it. A declared `string` read by a `wrap: true` text item but declared
+`multiline: false` keeps its single-line control, as it already did.
+`truncated_elsewhere` still reports the reverse pairing, but
 it no longer describes a loss: since #251 every `\n` segment of a value enters layout under either
 control and under either flag. Only the authored `overflow` policy may then shorten a line, drop lines,
 or — under `overflow: fail` — reject the render with `text_does_not_fit`; a shortened or dropped line is
@@ -80,8 +82,8 @@ declaration forbids. In the second case `default_error` SHALL carry that failure
 client rendering only an input list can say why the control is empty without a second request.
 
 `required` SHALL be false exactly when the entry publishes a `default`, and true otherwise. It means
-"this parameter has no usable resolved default", which covers a parameter declaring none, a parameter
-whose declared default failed to resolve, and every undeclared name. A parameter whose default failed is
+"this parameter has no usable resolved default", which covers a parameter declaring none and a
+parameter whose declared default failed to resolve. A parameter whose default failed is
 `required: true` because an operator must supply a value for the print to succeed. Neither type nor the
 presence of a `default:` in the template decides it: a `boolean`, an `enum` and a `datetime` declaring no
 default are each `required: true`, and so is one declaring `default: "yes"` on a `boolean`, because the
@@ -91,10 +93,10 @@ Resolution is per request, so an entry's `default`, `default_error` and `require
 requests for the same template when the variables store or the instant differs. The report on the
 template detail is keyed on the same resolution, and the two SHALL agree entry for entry.
 
-Entries SHALL be ordered by declared parameters first, in ascending name order, then names the
-template does not declare, in the order the layout first reads them. Ascending rather than "as
-written" because `params` is an ordered map keyed by name and a template's authoring order is not
-retained.
+Entries SHALL be ordered by name, ascending. Ascending rather than "as written" because `params` is an
+ordered map keyed by name and a template's authoring order is not retained. There is no second
+ordering group: every entry names a declared parameter, so nothing is ordered by where the layout first
+reads it, and the layout-order bookkeeping that group needed has no other reader.
 
 #### Scenario: A gated field is absent from the list
 
@@ -128,20 +130,27 @@ retained.
 #### Scenario: An undeclared name read by a multiline item gets a textarea
 
 - **WHEN** a `wrap: true` `text` item reads `{body}` and `body` is not declared under `params:`
-- **THEN** its entry carries control `textarea` and `required` true
+- **THEN** the template is quarantined, so no input list is derived for it and no entry is produced
+  under any control
+- **AND** where the same template declares `body: { type: string, multiline: true }` with no
+  `default:`, its entry carries control `textarea` and `required` true, decided by that declaration
+  rather than by the item's `wrap`
+
+*This scenario's name records the rule it replaces. A `MODIFIED` requirement carries every scenario
+name the spec already has, so the name stays while the behaviour under it does not.*
 
 #### Scenario: An interpolated image source is an input
 
-- **WHEN** an `image` item carries `src: "{asset_path}"` and `asset_path` is not declared under
-  `params:`
+- **WHEN** an `image` item carries `src: "{asset_path}"` and the template declares
+  `asset_path: { type: string }` with no `default:`
 - **THEN** the input list holds an entry for `asset_path` with control `text`, since the value names a
   bundled asset rather than carrying image bytes
 
 #### Scenario: A resolved name is never asked for
 
-- **WHEN** a `qr` item interpolates `{vars.base_url}/{id}` and a `text` item interpolates
-  `{datetime.iso_date}`
-- **THEN** the input list holds an entry for `id` and none for `base_url` or `datetime`
+- **WHEN** a template declaring `id: { type: string }` interpolates `{vars.base_url}/{id}` in a `qr`
+  item and `{sys.now:iso_date}` in a `text` item
+- **THEN** the input list holds an entry for `id` and none for `base_url` or `sys.now`
 
 #### Scenario: A parameter the template never reads is not an input
 
@@ -157,9 +166,10 @@ retained.
 
 #### Scenario: Entries are ordered by name, then by first use
 
-- **WHEN** a template declares `zebra` and `alpha` and reads undeclared `{second}` before
-  undeclared `{first}`
-- **THEN** the list runs `alpha`, `zebra`, `second`, `first`
+- **WHEN** a template declares `zebra`, `alpha` and `mid`, and a `text` item reads `{zebra}` before
+  `{mid}` and `{alpha}`
+- **THEN** the list runs `alpha`, `mid`, `zebra`, ordered by name alone: the second group this
+  scenario's name records is gone, because every entry names a declared parameter
 
 #### Scenario: A tokened default is published as the value it resolves to
 
@@ -193,7 +203,6 @@ retained.
   render path resolves it to, and `required: false`
 - **AND** the entry could not have been computed without the formats map, so a derivation lacking one
   cannot produce this list
-
 ### Requirement: The service computes an input list for a given label
 
 `POST /api/templates/{id}/inputs` SHALL accept `{ "labels": [ { "data": { ... } }, ... ] }`, the same
@@ -387,10 +396,10 @@ replacing one and moving one between groups each return it, and each is read by 
 a form from it.
 
 An entry in `inputs.all` SHALL carry the same fields as one in `inputs.default`, decided by the same
-declaration-first rule. That rule already yields one `control` per name, so branches cannot disagree
-about a declared parameter. For a name the template does not declare, where different branches use it
-differently, `image` SHALL win over `textarea`, and `textarea` over `text`, so the union never offers
-a control that cannot hold what some branch needs.
+rule. That rule yields one `control` per name from the declaration alone, and every name is declared,
+so two branches cannot disagree about an entry and the union needs no rule for widening one. The one
+override use decides, `image` for a `string` an `image` item binds, applies to the union whenever
+**any** branch binds it, so the union never offers a control that cannot hold what some branch needs.
 
 #### Scenario: The detail lists inputs from every branch
 
@@ -404,7 +413,10 @@ a control that cannot hold what some branch needs.
 
 - **WHEN** undeclared `{title}` is read by a `wrap: true` `text` item in one branch and a `wrap: false`
   one in another
-- **THEN** its `inputs.all` entry carries control `textarea` and `truncated_elsewhere` true
+- **THEN** the template is quarantined, so there is no union to widen
+- **AND** where a declared `string` `logo` is bound by an `image` item's `name:` in one branch and
+  printed by a `text` item in another, its `inputs.all` entry carries control `image`, which is the
+  only widening left and is decided by use in every branch
 
 #### Scenario: Variables are listed separately
 
@@ -422,7 +434,6 @@ a control that cannot hold what some branch needs.
 - **WHEN** a client creates or replaces a template through `POST`/`PUT`, or moves one between groups
 - **THEN** the `TemplateDetail` it receives carries `param_defaults` for the template it just wrote,
   computed on the same terms `GET /api/templates/{id}` computes it
-
 ### Requirement: The thumbnail renders the default selection from placeholder data
 
 *This requirement supersedes the `GET /templates/{id}/thumbnail` bullet of `docs/SPEC.md` §2.0
@@ -586,14 +597,14 @@ render or interpolation failures.
 
 #### Scenario: An asset that exists renders
 
-- **WHEN** an `image` item carries `src: "{logo}"`, `logo` is undeclared, and `logo` exists under the
-  assets root
+- **WHEN** an `image` item carries `src: "{logo}"`, the template declares `logo: { type: string }` with
+  no `default:`, and `logo` exists under the assets root
 - **THEN** the thumbnail renders that asset
 
 #### Scenario: A thumbnail still shows field names
 
 - **WHEN** a thumbnail is rendered for a template reading `{title}` unconditionally, where `title` is
-  not declared under `params:`
+  declared as a `string` with no `default:`
 - **THEN** the label shows the literal text `title`
 
 #### Scenario: A thumbnail still shows an image placeholder
@@ -652,7 +663,6 @@ render or interpolation failures.
 - **THEN** the entry is `required: true`, the thumbnail fills `title` with its own name and renders,
   while a caller's render of the same template omitting `title` is still
   `422 TemplateInvalid` with reason `param_default_unresolvable`
-
 ### Requirement: One derivation serves the thumbnail and the catalog index
 
 The placeholder data a thumbnail renders from, and the field list the catalog index publishes, SHALL

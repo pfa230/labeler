@@ -635,6 +635,9 @@ layout:
 name: Missing Field In Flow
 unit: mm
 dpi: 200
+params:
+  unsupplied_variable:
+    type: string
 format: { type: single, width: 40, height: 20 }
 layout:
   - type: container

@@ -2433,6 +2433,9 @@ mod http_tests {
 description: d
 unit: mm
 dpi: 300
+params:
+  msg:
+    type: string
 format:
   type: single
   width: 20.0
@@ -3459,6 +3462,109 @@ layout:
         assert_eq!(broken.len(), 1);
         assert_eq!(broken[0]["path"], "bad.yaml");
         assert!(broken[0]["error"].as_str().unwrap().contains("bad.yaml"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A template file reading an undeclared parameter is quarantined at startup and on reload,
+    /// while the service starts and continues serving its valid siblings (#175, issue 322).
+    #[tokio::test]
+    async fn issue_322_template_with_undeclared_name_quarantined_at_startup_and_reload() {
+        let dir = temp_templates_dir();
+        // Valid sibling
+        std::fs::write(dir.join("valid.yaml"), template_yaml("valid")).unwrap();
+
+        // Undeclared name template
+        let bad_yaml = r#"
+name: bad_tpl
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: text
+    value: "{undeclared_name}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+"#;
+        std::fs::write(dir.join("bad.yaml"), bad_yaml).unwrap();
+
+        // 1. Startup: Service starts, serves valid template, quarantines bad
+        let app = build_app_in(&dir);
+        let (_, list) = get_json(&app, "/api/templates").await;
+        let templates = list["templates"].as_array().unwrap();
+        assert_eq!(templates.len(), 1);
+        assert_eq!(templates[0]["name"], "valid");
+
+        let broken = list["broken"].as_array().unwrap();
+        assert_eq!(broken.len(), 1);
+        assert_eq!(broken[0]["path"], "bad.yaml");
+        assert!(broken[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("undeclared parameter 'undeclared_name'"));
+
+        // 2. Reload: POST /api/templates/reload keeps valid served and bad quarantined
+        let reload_body = reload(&app).await;
+        assert_eq!(reload_body["count"], 1);
+        assert_eq!(reload_body["broken_count"], 1);
+
+        let (_, list_after_reload) = get_json(&app, "/api/templates").await;
+        assert_eq!(list_after_reload["templates"].as_array().unwrap().len(), 1);
+        assert_eq!(list_after_reload["broken"].as_array().unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A template write (PUT) with an undeclared parameter reference is rejected with 422 TemplateInvalid
+    /// and details.reason template_validation_failed, and nothing is written to disk (issue 322).
+    #[tokio::test]
+    async fn issue_322_template_put_with_undeclared_name_rejected_and_not_stored() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let bad_yaml = r#"
+name: new_bad
+unit: mm
+dpi: 200
+format: { type: single, width: 20, height: 10 }
+layout:
+  - type: text
+    value: "{undeclared_name}"
+    at: [0, 0]
+    size: [20, 10]
+    font_size: 10
+"#;
+        let res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/new_bad",
+                "PUT",
+                bad_yaml.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("undeclared parameter 'undeclared_name'"));
+
+        // Nothing was written to disk
+        assert!(!dir.join("new_bad.yaml").exists());
+        assert!(!dir.join("new_bad.yml").exists());
+
+        // Template registry has no templates and no broken files
+        let (_, list) = get_json(&app, "/api/templates").await;
+        assert_eq!(list["templates"].as_array().unwrap().len(), 0);
+        assert!(list.get("broken").is_none() || list["broken"].as_array().unwrap().is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -9989,6 +10095,9 @@ layout:
 name: Trim Does Not Draw Image
 unit: mm
 dpi: 200
+params:
+  missing_image:
+    type: string
 format: { type: single, width: 20, height: 10 }
 layout:
   - type: container
@@ -11039,6 +11148,10 @@ params:
     type: enum
     values: [a, b]
     default: a
+  field_a:
+    type: string
+  field_b:
+    type: string
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: container
@@ -11196,6 +11309,8 @@ params:
   site_param:
     type: string
     default: "{vars.site}"
+  prod_secret:
+    type: string
 format: { type: single, width: 50, height: 20 }
 layout:
   - type: container
