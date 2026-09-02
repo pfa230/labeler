@@ -5706,7 +5706,38 @@ layout:
                 height: crate::models::Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: BTreeMap::from([
+                (
+                    "title".into(),
+                    crate::models::ParamSpec {
+                        param_type: crate::models::ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                ),
+                (
+                    "url".into(),
+                    crate::models::ParamSpec {
+                        param_type: crate::models::ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                ),
+                (
+                    "logo".into(),
+                    crate::models::ParamSpec {
+                        param_type: crate::models::ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                ),
+            ]),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     value: "{title} {url} {vars.base} {sys.now} {sys.now:short_date}".into(),
@@ -5768,7 +5799,16 @@ layout:
                 height: crate::models::Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: BTreeMap::from([(
+                "real".into(),
+                crate::models::ParamSpec {
+                    param_type: crate::models::ParamType::String { multiline: false },
+                    default: None,
+                    min: None,
+                    max: None,
+                    description: None,
+                },
+            )]),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "{} {real}".into(),
                 placement: Placement::sized(
@@ -6485,7 +6525,16 @@ layout:
                 height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: BTreeMap::from([(
+                "v".to_string(),
+                crate::models::ParamSpec {
+                    param_type: crate::models::ParamType::String { multiline: false },
+                    default: None,
+                    min: None,
+                    max: None,
+                    description: None,
+                },
+            )]),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "{v}".to_string(),
                 placement: Placement {
@@ -7101,6 +7150,8 @@ name: Test DateTime Fields
 unit: mm
 dpi: 200
 params:
+  title:
+    type: string
   printed_on:
     type: datetime
 format:
@@ -7266,6 +7317,10 @@ name: Adv Test
 unit: mm
 dpi: 200
 params:
+  datetime:
+    type: string
+  vars:
+    type: string
   printed_on:
     type: datetime
     default: "{sys.now}"
