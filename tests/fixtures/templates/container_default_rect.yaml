@@ -1,0 +1,21 @@
+name: Container Default Rect
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 40
+  height: 30
+layout:
+  - type: container
+    at: [2, 2]
+    size: [36, 26]
+    stroke:
+      thickness: 0.5
+      color: black
+    background: '#f0f0f0'
+    items:
+      - type: text
+        value: "Default Rect"
+        at: [2, 2]
+        size: [32, 10]
+        font_size: 8

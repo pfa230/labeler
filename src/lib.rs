@@ -8081,6 +8081,7 @@ layout:
 mod auth_http_tests {
     use super::store::Store;
     use super::{app, AppState};
+    use crate::TemplateRegistry;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -11657,5 +11658,259 @@ layout:
             details.get("message").is_none(),
             "message must not be duplicated in details"
         );
+    }
+
+    #[tokio::test]
+    async fn container_geometry_http_render_and_batch() {
+        let app = test_app_no_auth();
+
+        // 6.2 Render endpoint: content-sized circle
+        // Square resolution renders OK
+        let req_square = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "container_circle_content",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_square = app.clone().oneshot(req_square).await.unwrap();
+        assert_eq!(res_square.status(), StatusCode::OK);
+        assert_eq!(
+            res_square.headers().get("content-type").unwrap(),
+            "image/png"
+        );
+
+        // Non-square content circle returns 422 with UnsupportedLayoutItem and circle_box_not_square
+        let bad_content_circle_yaml = r#"
+name: BadContentCircle
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: [content, content]
+    items:
+      - type: text
+        value: "Non Square Text"
+        at: [0, 0]
+        size: [30, 10]
+        font_size: 8
+"#;
+        let (custom_app, _state) =
+            test_app_with_custom_templates(vec![("bad_content_circle", bad_content_circle_yaml)]);
+        let req_bad_content = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "bad_content_circle",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_bad_content = custom_app.clone().oneshot(req_bad_content).await.unwrap();
+        assert_eq!(res_bad_content.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_bad_content = body_json(res_bad_content).await;
+        assert_eq!(body_bad_content["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(
+            body_bad_content["error"]["details"]["reason"],
+            "circle_box_not_square"
+        );
+        assert!(body_bad_content["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("layout[0]"));
+
+        // 6.3 Batch endpoint: failure returns 422 BatchInvalid with failure details
+        let req_batch = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "bad_content_circle",
+                "labels": [
+                    { "data": {} }
+                ],
+                "mode": "download"
+            })
+            .to_string(),
+        );
+        let res_batch = custom_app.clone().oneshot(req_batch).await.unwrap();
+        assert_eq!(res_batch.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_batch = body_json(res_batch).await;
+        assert_eq!(body_batch["error"]["code"], "BatchInvalid");
+        let failures = body_batch["error"]["details"]["failures"]
+            .as_array()
+            .unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["index"], 0);
+        assert_eq!(failures[0]["code"], "UnsupportedLayoutItem");
+        assert_eq!(failures[0]["reason"], "circle_box_not_square");
+        assert!(failures[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("layout[0]"));
+
+        // 6.4 Render endpoint: container_circle_param
+        // No w supplied -> default w=20 (square) -> renders OK
+        let req_param_default = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "container_circle_param",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_param_default = app.clone().oneshot(req_param_default).await.unwrap();
+        assert_eq!(res_param_default.status(), StatusCode::OK);
+
+        // Supplying w=14 -> non-square (14x20) -> 422 UnsupportedLayoutItem / circle_box_not_square
+        let req_param_nonsquare = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "container_circle_param",
+                "data": { "w": 14.0 }
+            })
+            .to_string(),
+        );
+        let res_param_nonsquare = app.clone().oneshot(req_param_nonsquare).await.unwrap();
+        assert_eq!(
+            res_param_nonsquare.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        let body_param_nonsquare = body_json(res_param_nonsquare).await;
+        assert_eq!(
+            body_param_nonsquare["error"]["code"],
+            "UnsupportedLayoutItem"
+        );
+        assert_eq!(
+            body_param_nonsquare["error"]["details"]["reason"],
+            "circle_box_not_square"
+        );
+        assert!(body_param_nonsquare["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("layout[0]"));
+
+        // 6.5 Render endpoint: container_circle_gated
+        // False when: (enabled: "no") with w=14 -> succeeds
+        let req_gated_off = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "container_circle_gated",
+                "data": { "enabled": "no", "w": 14.0 }
+            })
+            .to_string(),
+        );
+        let res_gated_off = app.clone().oneshot(req_gated_off).await.unwrap();
+        assert_eq!(res_gated_off.status(), StatusCode::OK);
+
+        // True when: (enabled: "yes") with w=14 -> refused with 422 UnsupportedLayoutItem / circle_box_not_square
+        let req_gated_on = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "container_circle_gated",
+                "data": { "enabled": "yes", "w": 14.0 }
+            })
+            .to_string(),
+        );
+        let res_gated_on = app.clone().oneshot(req_gated_on).await.unwrap();
+        assert_eq!(res_gated_on.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_gated_on = body_json(res_gated_on).await;
+        assert_eq!(body_gated_on["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(
+            body_gated_on["error"]["details"]["reason"],
+            "circle_box_not_square"
+        );
+        assert!(body_gated_on["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("layout[0]"));
+
+        // 6.6 Byte-identical render for default-rect container & unknown shape quarantine
+        let explicit_rect_yaml = r#"
+name: Container Default Rect
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 40
+  height: 30
+layout:
+  - type: container
+    at: [2, 2]
+    shape: rect
+    size: [36, 26]
+    stroke:
+      thickness: 0.5
+      color: black
+    background: '#f0f0f0'
+    items:
+      - type: text
+        value: "Default Rect"
+        at: [2, 2]
+        size: [32, 10]
+        font_size: 8
+"#;
+        let (rect_app, _state) =
+            test_app_with_custom_templates(vec![("explicit_rect", explicit_rect_yaml)]);
+        let req_default_rect = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "container_default_rect",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_default_rect = app.clone().oneshot(req_default_rect).await.unwrap();
+        assert_eq!(res_default_rect.status(), StatusCode::OK);
+        let bytes_default_rect = body_bytes(res_default_rect).await;
+
+        let req_explicit_rect = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "explicit_rect",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_explicit_rect = rect_app.clone().oneshot(req_explicit_rect).await.unwrap();
+        assert_eq!(res_explicit_rect.status(), StatusCode::OK);
+        let bytes_explicit_rect = body_bytes(res_explicit_rect).await;
+        assert_eq!(
+            bytes_default_rect, bytes_explicit_rect,
+            "omitted shape and explicit shape: rect must render byte-identically"
+        );
+
+        // Unknown shape leaves template quarantined while serving others
+        let unknown_shape_yaml = r#"
+name: UnknownShape
+unit: mm
+dpi: 200
+format: { type: single, width: 40, height: 30 }
+layout:
+  - type: container
+    at: [0, 0]
+    shape: octagon
+    items: []
+"#;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "labeler-quarantine-test-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("unknown_shape.yaml"), unknown_shape_yaml).unwrap();
+        std::fs::write(dir.join("valid_tpl.yaml"), explicit_rect_yaml).unwrap();
+
+        let registry = TemplateRegistry::load_from_dir(&dir).unwrap();
+        assert!(registry.get("valid_tpl").is_some());
+        assert!(registry.get("unknown_shape").is_none());
+        assert_eq!(registry.broken().len(), 1);
+        let broken = &registry.broken()[0];
+        assert_eq!(broken.path, "unknown_shape.yaml");
+        assert!(broken.error.contains("unknown shape 'octagon'"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

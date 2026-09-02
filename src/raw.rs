@@ -287,6 +287,8 @@ pub struct ContainerRaw {
     #[serde(default, deserialize_with = "deserialize_when_map")]
     pub when: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub shape: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub stroke: Option<Option<StrokeRaw>>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub background: Option<Option<DynamicValue<RawColor>>>,

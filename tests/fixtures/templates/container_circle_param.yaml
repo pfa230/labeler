@@ -1,0 +1,25 @@
+name: Container Circle Param
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+params:
+  w:
+    type: length
+    default: 20
+layout:
+  - type: container
+    at: [5, 5]
+    shape: circle
+    size: ["{w}", 20]
+    stroke:
+      thickness: 0.5
+      color: '#880000'
+    items:
+      - type: text
+        value: "Circle"
+        at: [2, 5]
+        size: [16, 10]
+        font_size: 8
