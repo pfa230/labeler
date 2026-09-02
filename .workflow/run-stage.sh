@@ -353,7 +353,7 @@ before_work=$(worktree_digest "${work_excl[@]}")
 case "$role" in
   implement|gate-fix)
     note_implementer "$wt" "$agent" || {
-      echo "cannot record the implementer at $runs/implement.last; not running." >&2
+      echo "cannot record '$agent' as the implementer at $runs/implement.last; not running." >&2
       exit 1; } ;;
 esac
 
