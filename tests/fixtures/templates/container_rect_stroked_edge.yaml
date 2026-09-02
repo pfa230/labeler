@@ -1,0 +1,22 @@
+name: Container Rect Stroked Edge
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [2, 2]
+    shape: rect
+    size: [46, 26]
+    stroke:
+      thickness: 1.0
+      color: '#333333'
+    background: '#ffffff'
+    items:
+      - type: text
+        value: "Edge reaching child"
+        at: [0, 0]
+        size: [46, 26]
+        font_size: 8

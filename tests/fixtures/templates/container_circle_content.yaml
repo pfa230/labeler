@@ -1,0 +1,22 @@
+name: Container Circle Content
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+layout:
+  - type: container
+    at: [5, 5]
+    shape: circle
+    size: [content, content]
+    stroke:
+      thickness: 0.5
+      color: '#000088'
+    background: '#eeeeff'
+    items:
+      - type: text
+        value: "Square"
+        at: [0, 0]
+        size: [20, 20]
+        font_size: 8

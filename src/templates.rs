@@ -9,8 +9,8 @@ use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow, FontSize,
     InputControl, InputSpec, Layout, LayoutItem, Options, ParamDefaultReport, ParamSpec, ParamType,
-    Placement, Point, ResolvedDefaults, Size, SizeValue, Stroke, TemplateDetail, TemplateFormat,
-    TemplateInputs, TemplateSummary,
+    Placement, Point, ResolvedDefaults, Shape, Size, SizeValue, Stroke, TemplateDetail,
+    TemplateFormat, TemplateInputs, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -1173,6 +1173,7 @@ impl TemplateContent {
             axes_resolved,
             &geometry_values,
         )?;
+        validate_circle_containers(&self.layout, &geometry_values)?;
 
         if let TemplateFormat::Single {
             media_width: Some(mw),
@@ -1816,6 +1817,7 @@ fn instantiate_item_defaults(
         LayoutItem::Container {
             placement,
             when,
+            shape,
             stroke,
             background,
             rounded,
@@ -1825,6 +1827,7 @@ fn instantiate_item_defaults(
         } => LayoutItem::Container {
             placement: inst_placement(placement),
             when: when.clone(),
+            shape: *shape,
             stroke: stroke.clone(),
             background: background.clone(),
             rounded: *rounded,
@@ -1903,6 +1906,44 @@ fn validate_layout_items(
             }
         }
         validate_layout_item(item, frame, axes_resolved, options, geometry_values)?;
+    }
+    Ok(())
+}
+
+fn validate_circle_containers(
+    layout: &Layout,
+    geometry_values: &HashMap<String, f32>,
+) -> Result<(), String> {
+    let Layout::Items(items) = layout;
+    for item in items {
+        validate_circle_item(item, geometry_values)?;
+    }
+    Ok(())
+}
+
+fn validate_circle_item(
+    item: &LayoutItem,
+    geometry_values: &HashMap<String, f32>,
+) -> Result<(), String> {
+    if let LayoutItem::Container {
+        placement,
+        shape,
+        items,
+        ..
+    } = item
+    {
+        let spec_0 = resolver::source_of(placement, 0, geometry_values);
+        let spec_1 = resolver::source_of(placement, 1, geometry_values);
+        if matches!(shape, Shape::Circle) && spec_0.fixed_by_template && spec_1.fixed_by_template {
+            let w = resolver::resolve(&spec_0, 0.0, 0.0, placement.max_w, None);
+            let h = resolver::resolve(&spec_1, 0.0, 0.0, placement.max_h, None);
+            if (w - h).abs() > resolver::BOUNDS_EPSILON {
+                return Err("circle container size must be square".to_string());
+            }
+        }
+        for child in items {
+            validate_circle_item(child, geometry_values)?;
+        }
     }
     Ok(())
 }
@@ -2028,6 +2069,7 @@ fn validate_layout_item(
         LayoutItem::Container {
             placement,
             when,
+            shape: _,
             stroke,
             background: _,
             rounded,
@@ -2348,7 +2390,7 @@ mod tests {
     use crate::models::{
         Alignment, Color, Dimension, DynamicDimension, DynamicValue, Extent, FontSize,
         InputControl, InputSpec, Layout, LayoutItem, ParamSpec, ParamType, ParamValue, Position,
-        Size, SizeValue, Stroke, TemplateFormat,
+        Shape, Size, SizeValue, Stroke, TemplateFormat,
     };
     use crate::reason::Reason;
     use serde_json::json;
@@ -2601,6 +2643,7 @@ mod tests {
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
                 ),
                 when: None,
+                shape: Shape::Rect,
                 stroke: Some(Stroke {
                     thickness,
                     color: DynamicValue::Literal(Color::black()),
@@ -2628,6 +2671,7 @@ mod tests {
                     Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
                 ),
                 when: None,
+                shape: Shape::Rect,
                 stroke: None,
                 background: None,
                 rounded: Some(radius),
@@ -2911,6 +2955,189 @@ layout:
                 && broken_entry.error.contains("unknown field `option`"),
             "expected layout[0] and 'unknown field `option`' in error: {}",
             broken_entry.error
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn circle_container_load_time_squareness_and_quarantine() {
+        let dir = temp_dir("circle_container_load");
+
+        // 1. Non-square fixed size [14, 12] quarantines naming size
+        let non_square_yaml = r#"
+name: NonSquareCircle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: [14, 12]
+    items: []
+"#;
+        write_template(&dir, "non_square_circle.yaml", non_square_yaml);
+
+        // 2. size: [content, content] loads without quarantine
+        let content_circle_yaml = r#"
+name: ContentCircle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: [content, content]
+    items: []
+"#;
+        write_template(&dir, "content_circle.yaml", content_circle_yaml);
+
+        // 3. size: ["{w}", 12] loads without quarantine
+        let param_circle_yaml = r#"
+name: ParamCircle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+params:
+  w:
+    type: length
+    default: 14
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: ["{w}", 12]
+    items: []
+"#;
+        write_template(&dir, "param_circle.yaml", param_circle_yaml);
+
+        // 4. Shrinking to loads without quarantine
+        let shrinking_circle_yaml = r#"
+name: ShrinkingCircle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+layout:
+  - type: container
+    at: [-20, 0]
+    shape: circle
+    to: [40, 10]
+    items: []
+"#;
+        write_template(&dir, "shrinking_circle.yaml", shrinking_circle_yaml);
+
+        // 5. Circle fixed by template with non-square size is refused even with false when
+        let when_circle_yaml = r#"
+name: WhenCircle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+params:
+  badge:
+    type: enum
+    values: [yes, no]
+    default: no
+layout:
+  - type: container
+    at: [0, 0]
+    shape: circle
+    size: [14, 12]
+    when: { badge: yes }
+    items: []
+"#;
+        write_template(&dir, "when_circle.yaml", when_circle_yaml);
+
+        // 6. at: [0.2, 0.0] with to: [0.3, 0.1] loads (diff < 0.0001)
+        let tolerance_ok_yaml = r#"
+name: ToleranceOkCircle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+layout:
+  - type: container
+    at: [0.2, 0.0]
+    shape: circle
+    to: [0.3, 0.1]
+    items: []
+"#;
+        write_template(&dir, "tolerance_ok_circle.yaml", tolerance_ok_yaml);
+
+        // 7. Difference of 0.001 is refused at load
+        let diff_001_yaml = r#"
+name: Diff001Circle
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+layout:
+  - type: container
+    at: [0.2, 0.0]
+    shape: circle
+    to: [0.301, 0.1]
+    items: []
+"#;
+        write_template(&dir, "diff_001_circle.yaml", diff_001_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).unwrap();
+
+        // 4 templates must load successfully
+        assert!(registry.get("content_circle").is_some());
+        assert!(registry.get("param_circle").is_some());
+        assert!(registry.get("shrinking_circle").is_some());
+        assert!(registry.get("tolerance_ok_circle").is_some());
+
+        // 3 templates must be quarantined
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 3);
+
+        let find_broken = |filename: &str| {
+            broken
+                .iter()
+                .find(|b| b.path == filename)
+                .unwrap_or_else(|| panic!("missing broken template {filename}"))
+        };
+
+        let non_square_broken = find_broken("non_square_circle.yaml");
+        assert!(
+            non_square_broken.error.contains("must be square"),
+            "expected 'must be square' in error: {}",
+            non_square_broken.error
+        );
+
+        let when_broken = find_broken("when_circle.yaml");
+        assert!(
+            when_broken.error.contains("must be square"),
+            "expected 'must be square' in error: {}",
+            when_broken.error
+        );
+
+        let diff_broken = find_broken("diff_001_circle.yaml");
+        assert!(
+            diff_broken.error.contains("must be square"),
+            "expected 'must be square' in error: {}",
+            diff_broken.error
         );
 
         fs::remove_dir_all(&dir).ok();
@@ -3807,6 +4034,7 @@ layout:
                     Size([SizeValue::fill(), SizeValue::fixed(12.0)]),
                 ),
                 when: None,
+                shape: Shape::Rect,
                 stroke: None,
                 background: None,
                 rounded: None,

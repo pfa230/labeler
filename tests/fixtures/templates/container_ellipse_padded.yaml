@@ -1,0 +1,23 @@
+name: Container Ellipse Padded
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: container
+    at: [2, 2]
+    shape: ellipse
+    size: [46, 26]
+    padding: 3
+    stroke:
+      thickness: 0.5
+      color: '#333333'
+    background: '#e0f0ff'
+    items:
+      - type: text
+        value: "Ellipse Padded"
+        at: [0, 0]
+        size: [40, 10]
+        font_size: 8
