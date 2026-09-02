@@ -702,10 +702,80 @@ add_passing_review issue-29-unwritable
 mkdir -p "$repo/.worktrees/issue-29/.agent-runs/implement.last"
 out=$(cd "$repo" && PATH="$rbin:$PATH" "$STAGE" implement agy issue-29-unwritable 2>&1); rc=$?
 find "$repo/.worktrees/issue-29/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
-if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'cannot record the implementer'; then
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "cannot record 'agy' as the implementer"; then
   ok "a run that cannot record who is writing does not run"
 else bad "an unrecordable run exited $rc"; fi
 find "$rbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- recording the implementer survives a vanished .agent-runs (#296) ---------------
+# note_implementer's mkdir and its write are two statements, and during the #235 run the
+# directory went away between them: the write failed with "No such file or directory" on
+# the line after its own mkdir -p had succeeded, in a worktree whose .agent-runs was there
+# before the stage and after it. What stepped into that window is not established, so what
+# is asserted here is the window itself and not a cause.
+setup
+add_change issue-35-vanish
+wt35="$repo/.worktrees/issue-35"
+mkdir -p "$wt35/.agent-runs"
+# The injection point sourcing agents.sh gives: a shell function named mkdir shadows the
+# command for the call inside note_implementer, so the directory can be created and then
+# taken away again before the write - exactly the window, which no amount of timing
+# reproduces. It steps aside after the first call, so the retry meets a normal mkdir.
+vanish=1
+mkdir() {
+  command mkdir "$@" || return 1
+  [ "$vanish" = "1" ] || return 0
+  vanish=0
+  find "$wt35/.agent-runs" -mindepth 0 -delete 2>/dev/null
+  return 0
+}
+note_implementer "$wt35" agy; rc=$?
+unset -f mkdir
+if [ "$rc" = "0" ] && [ "$(last_implementer "$wt35")" = "agy" ]; then
+  ok "a .agent-runs that vanishes under the write is retried rather than fatal"
+else bad "a vanished .agent-runs gave exit $rc and the record '$(last_implementer "$wt35")'"; fi
+
+# A write that returns 0 and records nothing, which the same window also produces: unlink
+# the directory once the file is open and printf writes into an orphaned inode, exits 0
+# and leaves no marker. /dev/null stands in for it, being the one path that accepts every
+# byte and keeps none. No retry can help here, so success has to mean the record reads
+# back rather than that the write returned 0.
+find "$wt35/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+ln -s /dev/null "$wt35/.agent-runs/implement.last"
+note_implementer "$wt35" opencode; rc=$?
+find "$wt35/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+if [ "$rc" != "0" ]; then ok "a write that lands nowhere is a failure, not a record"
+else bad "a write that recorded nothing returned 0"; fi
+teardown
+
+# And the stage stops on it, before launching anything. A run whose record did not land is
+# the one #292 forbids: an agent editing a tree the marker still attributes to somebody
+# else. The unwritable case above proves the refusal; this proves it also fires when the
+# write itself reports success.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-36-unlanded
+add_passing_review issue-36-unlanded
+vbin=$(mktemp -d)
+cat > "$vbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo ran >> ran.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$vbin/agy"
+mkdir -p "$repo/.worktrees/issue-36/.agent-runs"
+ln -s /dev/null "$repo/.worktrees/issue-36/.agent-runs/implement.last"
+out=$(cd "$repo" && PATH="$vbin:$PATH" "$STAGE" implement agy issue-36-unlanded 2>&1); rc=$?
+find "$repo/.worktrees/issue-36/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "cannot record 'agy' as the implementer"; then
+  ok "a stage whose record does not land refuses to run"
+else bad "a stage with an unlanded record exited $rc"; fi
+if [ ! -f "$repo/.worktrees/issue-36/ran.txt" ]; then
+  ok "and the agent never launched"
+else bad "the agent ran without a record of who was writing"; fi
+find "$vbin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
