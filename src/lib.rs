@@ -1329,6 +1329,242 @@ mod http_tests {
         assert!(body.is_empty(), "304 body must be empty");
     }
 
+    #[tokio::test]
+    async fn thumbnail_enum_with_default_shows_declared_default_via_http() {
+        let dir = temp_templates_dir();
+        let yaml_enum = r#"
+name: Enum HTTP
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: vertical
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{orientation}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let yaml_vertical = r#"
+name: Control Vertical
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "vertical"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let yaml_horizontal = r#"
+name: Control Horizontal
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "horizontal"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        std::fs::write(dir.join("enum_http.yaml"), yaml_enum).unwrap();
+        std::fs::write(dir.join("control_vertical.yaml"), yaml_vertical).unwrap();
+        std::fs::write(dir.join("control_horizontal.yaml"), yaml_horizontal).unwrap();
+        let app = build_app_in(&dir);
+        async fn fetch(app: &axum::Router, id: &str) -> Vec<u8> {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/templates/{id}/thumbnail"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "thumbnail {id} status");
+            assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
+            bytes_response(res).await
+        }
+        let png_enum = fetch(&app, "enum_http").await;
+        let png_vertical = fetch(&app, "control_vertical").await;
+        let png_horizontal = fetch(&app, "control_horizontal").await;
+        assert_eq!(
+            png_enum, png_vertical,
+            "enum thumbnail must match vertical literal control"
+        );
+        assert_ne!(
+            png_enum, png_horizontal,
+            "enum thumbnail must differ from horizontal control"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn thumbnail_broken_enum_default_is_422_via_http() {
+        let dir = temp_templates_dir();
+        let yaml = r#"
+name: Broken Enum HTTP
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: "{vars.orient}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{orientation}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        std::fs::write(dir.join("broken_enum.yaml"), yaml).unwrap();
+        let app = build_app_in(&dir);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/broken_enum/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("orientation"),
+            "error must name orientation"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn thumbnail_enum_gate_without_default_is_absent_via_http() {
+        let dir = temp_templates_dir();
+        let yaml_gate = r#"
+name: Enum Gate HTTP
+unit: mm
+dpi: 200
+params:
+  outline:
+    type: enum
+    values: [yes]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      outline: yes
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Gated"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+"#;
+        // Control with no gated items: post-change the gated thumbnail must be byte-identical
+        // to this empty label, while pre-change (option map supplies outline: yes) it draws the
+        // container and the bodies differ. This pins src/api.rs:1254 hands None.
+        let yaml_empty = r#"
+name: Empty HTTP
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout: []
+"#;
+        std::fs::write(dir.join("enum_gate.yaml"), yaml_gate).unwrap();
+        std::fs::write(dir.join("empty_control.yaml"), yaml_empty).unwrap();
+        let app = build_app_in(&dir);
+        async fn fetch(app: &axum::Router, id: &str) -> Vec<u8> {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/templates/{id}/thumbnail"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "thumbnail {id} status");
+            assert_eq!(res.headers().get("content-type").unwrap(), "image/png");
+            bytes_response(res).await
+        }
+        let png_gate = fetch(&app, "enum_gate").await;
+        let png_empty = fetch(&app, "empty_control").await;
+        assert_eq!(
+            png_gate, png_empty,
+            "undefaulted gate must be absent, so gated thumbnail equals empty control"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn thumbnail_enum_colour_ref_without_default_is_400_via_http() {
+        let dir = temp_templates_dir();
+        let yaml = r#"
+name: Enum Colour Ref HTTP
+unit: mm
+dpi: 200
+params:
+  palette:
+    type: enum
+    values: [red, blue]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: "{palette}"
+"#;
+        std::fs::write(dir.join("enum_colour.yaml"), yaml).unwrap();
+        let app = build_app_in(&dir);
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/enum_colour/thumbnail")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Handler now hands None for the option map, so palette is absent and colour
+        // resolution fails with color_param_invalid. Pre-change default_option_selection
+        // supplied palette: red and the thumbnail rendered 200.
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "color_param_invalid");
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("palette"),
+            "error must name palette"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     async fn set_variable(app: &axum::Router, key: &str, value: &str) {
         let res = app
             .clone()

@@ -145,7 +145,6 @@ impl TemplateContent {
         let resolved = crate::render::resolve_parameters_mode(
             self,
             data,
-            None,
             Some(variables),
             Some(datetime),
             crate::render::ResolveMode::Lenient,
@@ -186,7 +185,18 @@ impl TemplateContent {
                             input.name.clone(),
                         )])
                     }
-                    InputControl::Select => continue,
+                    InputControl::Select => {
+                        if input.default_error.is_some() {
+                            continue;
+                        }
+                        let values = input.values.as_ref().unwrap_or_else(|| {
+                            panic!("select placeholder for '{}' has no values", input.name)
+                        });
+                        let first = values.first().unwrap_or_else(|| {
+                            panic!("select placeholder for '{}' has empty values", input.name)
+                        });
+                        serde_json::Value::String(first.clone())
+                    }
                 };
                 data.insert(input.name, val);
             }
@@ -5401,7 +5411,7 @@ layout:
         let inputs1 = test_derive_inputs_for_label(&template, &data1);
         let input_names1: HashSet<String> = inputs1.into_iter().map(|i| i.name).collect();
 
-        let resolved1 = crate::render::resolve_parameters(&template, &data1, None, None, None)
+        let resolved1 = crate::render::resolve_parameters(&template, &data1, None, None)
             .expect("resolve label 1");
         for k in data1.keys() {
             assert!(
@@ -5437,7 +5447,7 @@ layout:
         assert!(input_names2.contains("asset_path"));
         assert!(input_names2.contains("dyn_w"));
 
-        let resolved2 = crate::render::resolve_parameters(&template, &data2, None, None, None)
+        let resolved2 = crate::render::resolve_parameters(&template, &data2, None, None)
             .expect("resolve label 2");
         for k in data2.keys() {
             assert!(
@@ -5525,15 +5535,8 @@ layout:
             formats: &dt_formats,
             now,
         };
-        let selection = crate::render::default_option_selection(&template);
-        let png = crate::render::render_thumbnail_png(
-            &template,
-            &ph,
-            selection.as_ref(),
-            &BTreeMap::new(),
-            &dt,
-        )
-        .expect("thumbnail must render without missing data");
+        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+            .expect("thumbnail must render without missing data");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -5591,15 +5594,8 @@ layout:
             formats: &dt_formats,
             now,
         };
-        let selection = crate::render::default_option_selection(&template);
-        let png = crate::render::render_thumbnail_png(
-            &template,
-            &ph,
-            selection.as_ref(),
-            &BTreeMap::new(),
-            &dt,
-        )
-        .expect("thumbnail must render active default branch");
+        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+            .expect("thumbnail must render active default branch");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -5650,7 +5646,7 @@ layout:
         assert_eq!(ph.get("count"), None);
 
         let now = chrono::Local::now();
-        let resolved = crate::render::resolve_parameters(&template, &ph, None, None, None)
+        let resolved = crate::render::resolve_parameters(&template, &ph, None, None)
             .expect("resolve placeholder parameters");
         assert_eq!(resolved.data.get("orientation"), Some(&json!("horizontal")));
         assert_eq!(resolved.data.get("prefix"), Some(&json!("custom_prefix")));
@@ -5661,15 +5657,8 @@ layout:
             formats: &dt_formats,
             now,
         };
-        let selection = crate::render::default_option_selection(&template);
-        let png = crate::render::render_thumbnail_png(
-            &template,
-            &ph,
-            selection.as_ref(),
-            &BTreeMap::new(),
-            &dt,
-        )
-        .expect("render thumbnail with resolved defaults");
+        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+            .expect("render thumbnail with resolved defaults");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -5715,7 +5704,7 @@ layout:
             Some(ParamValue::String("one".to_string()))
         );
         let strict_enum_err =
-            crate::render::resolve_parameters(&template, &bad_enum, None, None, None).unwrap_err();
+            crate::render::resolve_parameters(&template, &bad_enum, None, None).unwrap_err();
         assert_eq!(strict_enum_err.code(), "InvalidOptionValue");
 
         // 2. Non-numeric integer
@@ -5731,7 +5720,7 @@ layout:
             Some(ParamValue::Integer(5))
         );
         let strict_int_err =
-            crate::render::resolve_parameters(&template, &bad_int, None, None, None).unwrap_err();
+            crate::render::resolve_parameters(&template, &bad_int, None, None).unwrap_err();
         assert_eq!(
             strict_int_err.reason(),
             Some(Reason::RequestBodyInvalid.as_slug())
@@ -5743,7 +5732,7 @@ layout:
         let lenient_dt = test_derive_inputs_for_label(&template, &bad_dt);
         assert!(lenient_dt.iter().any(|i| i.name == "printed_on"));
         let strict_dt_err =
-            crate::render::resolve_parameters(&template, &bad_dt, None, None, None).unwrap_err();
+            crate::render::resolve_parameters(&template, &bad_dt, None, None).unwrap_err();
         assert_eq!(
             strict_dt_err.reason(),
             Some(Reason::DatetimeParamInvalid.as_slug())
@@ -5788,8 +5777,7 @@ layout:
         let inputs_with_opt = test_derive_inputs_for_label(&template, &data);
         assert_eq!(inputs_no_opt, inputs_with_opt);
 
-        let render_plain =
-            crate::render::resolve_parameters(&template, &data, None, None, None).unwrap();
+        let render_plain = crate::render::resolve_parameters(&template, &data, None, None).unwrap();
         assert_eq!(render_plain.data["style"], json!("plain"));
     }
 
@@ -6390,19 +6378,32 @@ layout:
 "#;
         let t_enum = parse_template_ok(yaml_enum_gate);
         let ph_enum = test_placeholder_data(&t_enum, now);
-        let opt = crate::render::default_option_selection(&t_enum);
-        assert_eq!(
-            opt.as_ref().unwrap().get("mode"),
-            Some(&"primary".to_string())
-        );
-        let png = crate::render::render_thumbnail_png(
-            &t_enum,
-            &ph_enum,
-            opt.as_ref(),
-            &BTreeMap::new(),
-            &dt_res,
+        assert!(!ph_enum.contains_key("mode"));
+        let Layout::Items(items_enum) = &t_enum.layout;
+        let images_enum = std::cell::RefCell::new(crate::render::ImageCollector::default());
+        let resolved_enum =
+            crate::render::resolve_parameters(&t_enum, &ph_enum, None, Some(&dt_res)).unwrap();
+        let empty_settings_enum = BTreeMap::new();
+        let env_enum = crate::render::RenderEnv {
+            settings: &empty_settings_enum,
+            datetime: &dt_res,
+        };
+        let ctx_enum = crate::render::RenderContext::new(
+            "mm",
+            200,
+            &resolved_enum.data,
+            None,
+            &env_enum,
+            &images_enum,
         )
-        .unwrap();
+        .with_instants(&resolved_enum.instants);
+        assert!(
+            !ctx_enum.is_item_active(&items_enum[0]),
+            "enum container with no default must be inactive in thumbnail"
+        );
+        let png =
+            crate::render::render_thumbnail_png(&t_enum, &ph_enum, None, &BTreeMap::new(), &dt_res)
+                .unwrap();
         assert!(!png.is_empty());
 
         // 4. Boolean-gated container with no default does NOT render in thumbnail
@@ -6434,7 +6435,7 @@ layout:
         let Layout::Items(items_bg) = &t_bg.layout;
         let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
         let resolved =
-            crate::render::resolve_parameters(&t_bg, &ph_bg, None, None, Some(&dt_res)).unwrap();
+            crate::render::resolve_parameters(&t_bg, &ph_bg, None, Some(&dt_res)).unwrap();
         let empty_settings = BTreeMap::new();
         let env = crate::render::RenderEnv {
             settings: &empty_settings,
@@ -6582,6 +6583,368 @@ layout:
         )
         .unwrap();
         assert!(!png_empty.is_empty());
+    }
+
+    #[test]
+    fn thumbnail_printed_enum_with_declared_default_shows_default() {
+        let yaml_enum = r#"
+name: Enum Default Vertical
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: vertical
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{orientation}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_enum = parse_template_ok(yaml_enum);
+        let now = chrono::Local::now();
+        let ph = test_placeholder_data(&t_enum, now);
+        assert_eq!(
+            ph.get("orientation"),
+            None,
+            "defaulted enum must not be invented for"
+        );
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now,
+        };
+        let png_enum =
+            crate::render::render_thumbnail_png(&t_enum, &ph, None, &BTreeMap::new(), &dt).unwrap();
+
+        // control templates with literals
+        let yaml_vertical = r#"
+name: Control Vertical
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "vertical"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let yaml_horizontal = r#"
+name: Control Horizontal
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "horizontal"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_vertical = parse_template_ok(yaml_vertical);
+        let t_horizontal = parse_template_ok(yaml_horizontal);
+        let ph_vert = test_placeholder_data(&t_vertical, now);
+        let ph_horiz = test_placeholder_data(&t_horizontal, now);
+        let png_vert =
+            crate::render::render_thumbnail_png(&t_vertical, &ph_vert, None, &BTreeMap::new(), &dt)
+                .unwrap();
+        let png_horiz = crate::render::render_thumbnail_png(
+            &t_horizontal,
+            &ph_horiz,
+            None,
+            &BTreeMap::new(),
+            &dt,
+        )
+        .unwrap();
+        assert_eq!(
+            png_enum, png_vert,
+            "enum thumbnail must match vertical literal control"
+        );
+        assert_ne!(
+            png_enum, png_horiz,
+            "enum thumbnail must differ from horizontal control"
+        );
+    }
+
+    #[test]
+    fn thumbnail_printed_enum_without_default_shows_first_value() {
+        let yaml = r#"
+name: Enum No Default
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{orientation}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+        let ph = test_placeholder_data(&template, now);
+        assert_eq!(ph.get("orientation"), Some(&json!("horizontal")));
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now,
+        };
+        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+            .expect("thumbnail with undefaulted printed enum must render");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        let resolved = crate::render::resolve_parameters(&template, &ph, None, Some(&dt)).unwrap();
+        assert_eq!(resolved.data.get("orientation"), Some(&json!("horizontal")));
+    }
+
+    #[test]
+    fn thumbnail_enum_only_gate_without_default_is_absent() {
+        let yaml = r#"
+name: Enum Gate No Default
+unit: mm
+dpi: 200
+params:
+  outline:
+    type: enum
+    values: [yes]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      outline: yes
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Gated"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+        let ph = test_placeholder_data(&template, now);
+        assert!(!ph.contains_key("outline"));
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now,
+        };
+        let resolved = crate::render::resolve_parameters(&template, &ph, None, Some(&dt)).unwrap();
+        assert!(!resolved.data.contains_key("outline"));
+        let Layout::Items(items) = &template.layout;
+        let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
+        let env = crate::render::RenderEnv {
+            settings: &BTreeMap::new(),
+            datetime: &dt,
+        };
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images)
+            .with_instants(&resolved.instants);
+        assert!(!ctx.is_item_active(&items[0]));
+        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+            .unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn thumbnail_enum_only_gate_with_default_is_present() {
+        let yaml = r#"
+name: Enum Gate With Default
+unit: mm
+dpi: 200
+params:
+  outline:
+    type: enum
+    values: [yes]
+    default: yes
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: container
+    when:
+      outline: yes
+    at: [0, 0]
+    size: [50, 20]
+    items:
+      - type: text
+        value: "Gated"
+        at: [0, 0]
+        size: [50, 20]
+        font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+        let ph = test_placeholder_data(&template, now);
+        assert!(!ph.contains_key("outline"));
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now,
+        };
+        let resolved = crate::render::resolve_parameters(&template, &ph, None, Some(&dt)).unwrap();
+        assert_eq!(resolved.data.get("outline"), Some(&json!("yes")));
+        let Layout::Items(items) = &template.layout;
+        let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
+        let env = crate::render::RenderEnv {
+            settings: &BTreeMap::new(),
+            datetime: &dt,
+        };
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images)
+            .with_instants(&resolved.instants);
+        assert!(ctx.is_item_active(&items[0]));
+        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+            .unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn thumbnail_broken_enum_default_fails() {
+        let yaml = r#"
+name: Broken Enum Default
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: "{vars.orient}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{orientation}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+        let ph = test_placeholder_data(&template, now);
+        assert!(
+            !ph.contains_key("orientation"),
+            "broken enum default must not be masked"
+        );
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now,
+        };
+        let variables = BTreeMap::new();
+        let resolved_defaults =
+            crate::render::resolve_declared_defaults(&template, &variables, &dt);
+        let ph2 = template.placeholder_data(&resolved_defaults, now);
+        assert!(!ph2.contains_key("orientation"));
+        let err = crate::render::render_thumbnail_png(&template, &ph2, None, &variables, &dt)
+            .unwrap_err();
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("param_default_unresolvable"));
+        assert!(
+            err.message_text().contains("orientation"),
+            "error must name orientation: {}",
+            err.message_text()
+        );
+    }
+
+    #[test]
+    fn thumbnail_broken_string_default_is_masked() {
+        let yaml = r#"
+name: Broken String Default
+unit: mm
+dpi: 200
+params:
+  title:
+    type: string
+    default: "{vars.base}"
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{title}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+        let variables = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now,
+        };
+        let resolved_defaults =
+            crate::render::resolve_declared_defaults(&template, &variables, &dt);
+        let ph = template.placeholder_data(&resolved_defaults, now);
+        assert_eq!(ph.get("title"), Some(&json!("title")));
+        let png =
+            crate::render::render_thumbnail_png(&template, &ph, None, &variables, &dt).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+
+        // caller's render omitting title must still fail
+        let err = crate::render::resolve_parameters(
+            &template,
+            &HashMap::new(),
+            Some(&variables),
+            Some(&dt),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "TemplateInvalid");
+        assert_eq!(err.reason(), Some("param_default_unresolvable"));
+    }
+
+    #[test]
+    fn thumbnail_enum_colour_ref_without_default_fails() {
+        // An active text item that reads an undefaulted enum through a colour `{ref}` is
+        // `interpolated: false` (`src/templates.rs:295`), so `placeholder_data` does not invent
+        // for it. The thumbnail must therefore fail with `color_param_invalid`, while a caller's
+        // render that supplies the enum succeeds. This pins the unlisted BREAKING change where the
+        // deleted `default_option_selection` previously supplied every declared enum.
+        let yaml = r#"
+name: Enum Colour Ref
+unit: mm
+dpi: 200
+params:
+  palette:
+    type: enum
+    values: [red, blue]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: "{palette}"
+"#;
+        let template = parse_template_ok(yaml);
+        let now = chrono::Local::now();
+        let variables = BTreeMap::new();
+        let dt = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now,
+        };
+        let resolved_defaults =
+            crate::render::resolve_declared_defaults(&template, &variables, &dt);
+        let ph = template.placeholder_data(&resolved_defaults, now);
+        assert!(
+            !ph.contains_key("palette"),
+            "colour ref is not interpolated, so placeholder must not contain palette"
+        );
+        let err =
+            crate::render::render_thumbnail_png(&template, &ph, None, &variables, &dt).unwrap_err();
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("color_param_invalid"));
+        assert!(
+            err.message_text().contains("palette"),
+            "error must name palette: {}",
+            err.message_text()
+        );
+
+        // Caller's render supplying the enum succeeds.
+        let mut data = HashMap::new();
+        data.insert("palette".to_string(), json!("red"));
+        let png = crate::render::render_thumbnail_png(&template, &data, None, &variables, &dt)
+            .expect("caller supplying palette must render");
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
     #[test]

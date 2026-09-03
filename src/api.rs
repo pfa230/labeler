@@ -1251,9 +1251,7 @@ pub async fn thumbnail(
     let variables = state.store().all_variables().await?;
     let resolved_defaults = crate::render::resolve_declared_defaults(template, &variables, &dt);
     let data = template.placeholder_data(&resolved_defaults, now);
-    let option = crate::render::default_option_selection(template);
-    let png =
-        crate::render::render_thumbnail_png(template, &data, option.as_ref(), &variables, &dt)?;
+    let png = crate::render::render_thumbnail_png(template, &data, None, &variables, &dt)?;
 
     // #129: key the ETag on the rendered bytes, not the template YAML. The image depends on the
     // template AND the renderer AND the variables it interpolates AND the datetime formats, so a key

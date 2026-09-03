@@ -532,8 +532,9 @@ only for an entry satisfying both of
 
 and SHALL invent by the entry's `control`: a 1×1 PNG data URI for `image`, the entry's own name for
 `text` and `textarea`, for `integer` and `number` the entry's `min` when it declares one and `1`
-otherwise, `false` for `checkbox`, the request's captured instant for `date` and `datetime`, and for
-`list` a one-element list holding the entry's own name.
+otherwise, `false` for `checkbox`, the request's captured instant for `date` and `datetime`, for
+`list` a one-element list holding the entry's own name, and the first of the entry's `values` for
+`select`. Only the `select` fill carries a further condition, stated below.
 
 The `list` fill is the `text` rule applied to the type that has no other sensible one, so
 `{tags:join(', ')}` renders `tags` on a thumbnail exactly as `{title}` renders `title`. It is legal for
@@ -547,12 +548,16 @@ fail with `MissingField`. Filling it with the entry's own name, which is what th
 replaces does, fails coercion instead. A declared bound, or `1`, is coercible and inside any declared
 range.
 
-A parameter whose declared default **fails to resolve** is `required: true` by that rule, so the
-thumbnail SHALL invent for it on exactly the terms it invents for a parameter declaring no default at
-all. The preview therefore renders where a caller's render of the same template would be
-`422 TemplateInvalid`. That is the uniform rule applied and not a carve-out: every value a preview
-prints is one the service chose, a preview never reaches a render a caller asked for, and it has never
-claimed that a caller's render would succeed. What says the default is broken is `param_defaults`, which
+A parameter whose declared default **fails to resolve** is `required: true` by that rule, so for
+every control but `select` the thumbnail SHALL invent for it on exactly the terms it invents for a
+parameter declaring no default at all. A `select` carries one further condition, stated and paid for
+below, and it is the whole of the difference: eligibility is `interpolated` and `required`, and a
+`select` additionally requires that the parameter declare no `default:`. So a broken default is masked
+by a placeholder on every other control, and propagates on a `select`. The preview of such a template
+therefore renders where a caller's render of it would be `422 TemplateInvalid`. On those controls that
+is the uniform rule applied and not a carve-out: every value a preview prints is one the service
+chose, a preview never reaches a render a caller asked for, and it has never claimed that a caller's
+render would succeed. What says the default is broken is `param_defaults`, which
 is on the same response the catalog grid already reads.
 
 `checkbox`, `date` and `datetime` join that list because `param-resolution` removed the fallbacks that
@@ -564,13 +569,32 @@ by the service because no caller supplied anything, it never reaches a render a 
 is not a default. The instant SHALL be the one the request already captured, so a thumbnail reads the
 clock once (`interpolation-tokens`).
 
-An entry whose control is `select` SHALL never be invented for here, because the default option
-selection supplies it: the first allowed value of every declared `enum`, which is what the frozen
-contract's "default option selection is used automatically" meant before every option became an enum
-parameter. That selection is preview-only and is unchanged by `param-resolution`.
+An entry whose control is `select` SHALL be invented for only where the template declares **no**
+`default:` for it, and the invented value SHALL be the first of the entry's `values`, which is
+non-empty for every template that loads. An `enum` that declares a `default:` is therefore never stood
+in for: the default is resolved and shown, and one that cannot be resolved fails the thumbnail with
+`param_default_unresolvable` naming the parameter, on the same terms a caller's render of that
+template fails. That is where a `select` parts company with the other controls, which are stood in for
+whether or not their declared default resolves. Nothing supplies a value for a declared `enum` alongside the
+placeholder data, and no preview-only selection covers one a token never reads.
 
-Every name not invented for and not supplied by that selection SHALL take the value the service resolves
-for it, which after `param-resolution` is its declared `default:` and nothing else. A name with no
+**Why `select` alone carries that condition.** Every other fill announces itself: the literal text
+`title` where a title belongs, a 1×1 transparent PNG, `false`, `1`. The first of an `enum`'s `values`
+is a legal value of that parameter and announces nothing, so inventing one for a **broken** default
+would restore the first-value stand-in this requirement drops, and would restore it for the one
+class of template whose author asked for something the service could not deliver: the catalog would
+show a thumbnail no reader can tell from a healthy template's. `param_defaults` reports the broken
+default on the response the grid already reads, and the picture beside it would still show a label the
+template does not describe. This is the whole of the departure, and it reaches nothing but a `select`
+whose parameter declares a `default:`.
+
+An `enum` that no active item prints is not invented for, by condition (1) above, so one declaring no
+`default:` is **absent**. A `when:` naming an absent parameter is false (`param-resolution`), so the
+item it gates does not draw, and a thumbnail shows a gated branch only where the template's own
+declarations select it.
+
+Every name not invented for SHALL take the value the service resolves for it, which after
+`param-resolution` is its declared `default:` and nothing else. A name with no
 declared default and no invented value is absent, and an absent name makes a gate naming it false rather
 than raising.
 
@@ -591,9 +615,9 @@ and its branch draws, in every thumbnail, on the rule above. That is what the re
 requirement does not change it. What the shape *is*, is a gate nobody else reaches: no declared
 default satisfies it unless the default is the parameter's own name, and no caller satisfies it
 without typing `mode` into the `mode` field. An author who wants a branch chosen by a named
-alternative declares `mode` an `enum` instead, which the thumbnail never invents for, whose value the
-default option selection supplies, and which an operator can choose. Nothing in this requirement
-offers `mode: mode` as an authoring form.
+alternative declares `mode` an `enum` instead, whose value is its declared `default:` or, declaring
+none, the first of its `values`, neither of which is the parameter's own name, and which an operator
+can choose. Nothing in this requirement offers `mode: mode` as an authoring form.
 
 **Two such gates on packed siblings can fail the thumbnail, and the fault is the template's.** A
 `flow` container packs its active children in order and accumulates their extents (`flow-layout`), so
@@ -710,18 +734,40 @@ render or interpolation failures.
 
 #### Scenario: A printed enum keeps its default in a thumbnail
 
-- **WHEN** a `text` item interpolates `{orientation}` for an `enum` parameter, so its entry carries
-  `interpolated` true and `required` false
-- **THEN** the thumbnail invents no value for it, and the label shows the first of its `values`, supplied
-  by the default option selection — which is its declared `default` wherever the two agree, and never the
-  literal text `orientation`
+- **WHEN** a `text` item interpolates `{orientation}` for an `enum` parameter declaring
+  `default: vertical`, so its entry carries `interpolated` true and `required` false
+- **THEN** the thumbnail invents no value for it and the label shows `vertical`, neither the first of
+  its `values` nor the literal text `orientation`
 
 #### Scenario: A printed enum shows the option selection where the two differ
 
 - **WHEN** a thumbnail is rendered for a template printing `{orientation}` where `orientation` declares
-  `values: [horizontal, vertical]` and `default: vertical`
-- **THEN** the label shows `horizontal`, because the default option selection is merged into the request
-  data before any declared default is consulted
+  `values: [horizontal, vertical]` and `default: vertical`, so the first of its `values` and its
+  declared default differ
+- **THEN** the label shows `vertical`, because no selection is merged into the request data and the
+  first of its `values` reaches nothing
+
+#### Scenario: A printed enum declaring no default shows the first of its values
+
+- **WHEN** a thumbnail is rendered for a template printing `{orientation}` where `orientation` declares
+  `values: [horizontal, vertical]` and no `default:`, so its entry carries `interpolated` true and
+  `required` true
+- **THEN** the label shows `horizontal`, and the thumbnail renders rather than failing on an
+  unresolved token
+
+#### Scenario: An enum only a gate names and declaring no default leaves its item out
+
+- **WHEN** a thumbnail is rendered for a template whose container carries `when: { outline: yes }`,
+  where `outline` declares `values: [yes]` and no `default:` and no active item prints it
+- **THEN** the thumbnail renders without that container, because `outline` is absent
+
+#### Scenario: A broken enum default fails the thumbnail
+
+- **WHEN** a thumbnail is rendered for a template declaring
+  `orientation: { type: enum, values: [horizontal, vertical], default: "{vars.orient}" }`, printed by
+  an active `text` item, and the store holds no `orient`
+- **THEN** the thumbnail is `422 TemplateInvalid` with `details.reason` `param_default_unresolvable`
+  naming `orientation`, rather than showing `horizontal`
 
 #### Scenario: A sheet template previews one slot
 
@@ -997,13 +1043,14 @@ across the rows present.
 The template preview fills sample values by the thumbnail's rule with one deliberate difference, over
 the same `inputs.all` set and for the same reason: a sample value is part of the request and can
 decide a gate, so a set drawn from `inputs.default` would not cover the branch its own samples
-activate. The difference is the `select` control. A thumbnail leaves one to the default option
-selection it passes alongside the data,
-which covers **every declared `enum`** whether or not a token reads it. A client has no option map to
-pass, so it SHALL put the first allowed value in the request `data` instead, and SHALL do so on the same
-terms — for every declared `enum` in `inputs.all`, including one only a `when:` key names, which carries
-`interpolated: false` and which the fill rule would otherwise skip. A `date` or `datetime` entry it fills
-SHALL carry an RFC 3339 value with an explicit offset or `Z`, not a bare date and not an offset-free
+activate. The difference is the `select` control. A thumbnail fills one only where the entry is
+interpolated, required and its parameter declares no `default:`, taking the first of the entry's
+`values`, and leaves every other `enum` to what the service resolves. A client SHALL fill more: the
+first allowed value in the request `data` for **every declared `enum`** in `inputs.all`, including one
+whose parameter declares a `default:` and one only a `when:` key names, which carries
+`interpolated: false` and which the fill rule would otherwise skip. Those two shapes are where the two
+differ, and there a template preview can show a value, or a branch, that the same template's thumbnail
+does not (#343). A `date` or `datetime` entry it fills SHALL carry an RFC 3339 value with an explicit offset or `Z`, not a bare date and not an offset-free
 local spelling: a bare date parses as midnight, and an offset-free spelling is read as *server*-local
 while a browser builds it from browser-local parts, so only an offset-bearing value names the same
 instant on both sides.

@@ -207,42 +207,25 @@ pub fn validate_label_data_keys(
     }
 }
 
-/// Resolve parameters by merging request data, explicit option selections, and template parameter defaults.
+/// Resolve parameters by merging request data and template parameter defaults.
 pub fn resolve_parameters(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     variables: Option<&BTreeMap<String, String>>,
     datetime: Option<&crate::datetime_fmt::DateTimeResolver>,
 ) -> Result<ResolvedParams, AppError> {
-    resolve_parameters_mode(
-        template,
-        data,
-        option,
-        variables,
-        datetime,
-        ResolveMode::Strict,
-    )
+    resolve_parameters_mode(template, data, variables, datetime, ResolveMode::Strict)
 }
 
 pub fn resolve_parameters_mode(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     variables: Option<&BTreeMap<String, String>>,
     datetime: Option<&crate::datetime_fmt::DateTimeResolver>,
     mode: ResolveMode,
 ) -> Result<ResolvedParams, AppError> {
     let mut resolved = data.clone();
     let mut instants = BTreeMap::new();
-
-    if let Some(opt) = option {
-        for (k, v) in opt {
-            if !resolved.contains_key(k) {
-                resolved.insert(k.clone(), JsonValue::String(v.clone()));
-            }
-        }
-    }
 
     for (name, spec) in &template.params {
         match &spec.param_type {
@@ -758,13 +741,7 @@ fn compile_label_source(
 ) -> Result<CompiledSource, AppError> {
     let unit = &template.unit;
     let selected_option = normalize_option(template, option)?;
-    let resolved = resolve_parameters(
-        template,
-        data,
-        selected_option,
-        Some(env.settings),
-        Some(env.datetime),
-    )?;
+    let resolved = resolve_parameters(template, data, Some(env.settings), Some(env.datetime))?;
     let resolved_data = &resolved.data;
     let items = select_layout_items(template)?;
     let images = RefCell::new(ImageCollector::default());
@@ -1084,25 +1061,20 @@ pub fn render_sheet_pages(
             rendered.push(String::new());
             continue;
         }
-        let resolved = match resolve_parameters(
-            template,
-            &lbl.data,
-            None,
-            Some(env.settings),
-            Some(env.datetime),
-        ) {
-            Ok(data) => data,
-            Err(err) => {
-                failures.push(crate::errors::BatchFailure {
-                    index: idx,
-                    code: err.code(),
-                    reason: err.reason(),
-                    message: err.message_text(),
-                });
-                rendered.push(String::new());
-                continue;
-            }
-        };
+        let resolved =
+            match resolve_parameters(template, &lbl.data, Some(env.settings), Some(env.datetime)) {
+                Ok(data) => data,
+                Err(err) => {
+                    failures.push(crate::errors::BatchFailure {
+                        index: idx,
+                        code: err.code(),
+                        reason: err.reason(),
+                        message: err.message_text(),
+                    });
+                    rendered.push(String::new());
+                    continue;
+                }
+            };
         let geometry_values = render_geometry_values(&resolved.data, template);
         let context = RenderContext::new(unit, template.dpi, &resolved.data, None, &env, &images)
             .with_instants(&resolved.instants);
@@ -2481,27 +2453,11 @@ impl<'a> RenderContext<'a> {
 pub const SAMPLE_PNG_DATA_URI: &str =
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
-/// First allowed value per declared option, or None when the template declares no options.
-pub fn default_option_selection(template: &TemplateContent) -> Option<BTreeMap<String, String>> {
-    let options = template.options()?;
-    let selection: BTreeMap<String, String> = options
-        .allowed()
-        .iter()
-        .filter_map(|(name, values)| values.first().map(|v| (name.clone(), v.clone())))
-        .collect();
-    if selection.is_empty() {
-        None
-    } else {
-        Some(selection)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        count_pdf_pages, default_option_selection, render_sheet_pages, render_single_label,
-        render_single_label_image, render_single_label_pdf, render_thumbnail_png,
-        SAMPLE_PNG_DATA_URI,
+        count_pdf_pages, render_sheet_pages, render_single_label, render_single_label_image,
+        render_single_label_pdf, render_thumbnail_png, SAMPLE_PNG_DATA_URI,
     };
     use crate::errors::AppError;
     use crate::models::{
@@ -5628,8 +5584,7 @@ layout:
         for summary in registry.summaries() {
             let template = registry.get(&summary.id).expect("template");
             let data = test_placeholder_data(template, dt.now);
-            let selection = default_option_selection(template);
-            let png = render_thumbnail_png(template, &data, selection.as_ref(), &settings, &dt)
+            let png = render_thumbnail_png(template, &data, None, &settings, &dt)
                 .unwrap_or_else(|e| panic!("render {}: {e:?}", summary.id));
             assert_eq!(
                 &png[..8],
@@ -6076,59 +6031,6 @@ layout:
         );
     }
 
-    #[test]
-    fn default_option_selection_picks_first_values() {
-        use crate::models::{Dimension, ParamSpec, ParamType};
-        let template = TemplateContent {
-            name: "t".into(),
-            description: String::new(),
-            unit: "mm".into(),
-            dpi: 96,
-            format: TemplateFormat::Single {
-                width: Dimension::Fixed(40.0).into(),
-                height: Dimension::Fixed(20.0).into(),
-                media_width: None,
-            },
-            params: BTreeMap::from([
-                (
-                    "color".to_string(),
-                    ParamSpec {
-                        param_type: ParamType::Enum {
-                            values: vec!["red".to_string(), "blue".to_string()],
-                        },
-                        description: None,
-                        default: None,
-                        min: None,
-                        max: None,
-                    },
-                ),
-                (
-                    "size".to_string(),
-                    ParamSpec {
-                        param_type: ParamType::Enum {
-                            values: vec!["small".to_string()],
-                        },
-                        description: None,
-                        default: None,
-                        min: None,
-                        max: None,
-                    },
-                ),
-            ]),
-            layout: Layout::Items(vec![]),
-            version: None,
-        };
-        let sel = default_option_selection(&template).expect("has options");
-        assert_eq!(sel.get("color").map(String::as_str), Some("red"));
-        assert_eq!(sel.get("size").map(String::as_str), Some("small"));
-
-        let no_opts = TemplateContent {
-            params: BTreeMap::new(),
-            ..template
-        };
-        assert!(default_option_selection(&no_opts).is_none());
-    }
-
     /// Engine-upgrade visual harness (#101): dumps a label-sized PNG for every bundled template
     /// (both avery orientations) into $LABELER_RENDER_DUMP_DIR. Run explicitly:
     /// LABELER_RENDER_DUMP_DIR=.render-scratch/pre-015 cargo test --lib dump_all_template_renders -- --ignored
@@ -6156,12 +6058,23 @@ layout:
         };
         for summary in registry.summaries() {
             let template = registry.get(&summary.id).expect("template");
-            let data = test_placeholder_data(template, datetime.now);
-            // Render every orientation variant explicitly (default_option_selection picks only the
-            // first). Start each variant from the FULL default selection and override orientation,
-            // so other option defaults (avery's `outline: yes`) stay in effect.
-            let base = default_option_selection(template);
-            let selections: Vec<(String, Option<BTreeMap<String, String>>)> = match template
+            let mut base_data = test_placeholder_data(template, datetime.now);
+            // Engine-upgrade visual baseline, not thumbnail-spec: keep the avery outline
+            // container covered even though thumbnails no longer draw it (undefaulted gate
+            // via `placeholder_data`'s `interpolated && required` rule). The deleted option
+            // map supplied `outline: yes` for every enum; this restores that one branch for
+            // the dump only, and only when the param is an enum whose values contain "yes".
+            if let Some(spec) = template.params.get("outline") {
+                if let crate::models::ParamType::Enum { values } = &spec.param_type {
+                    if values.contains(&"yes".to_string()) {
+                        base_data.insert(
+                            "outline".to_string(),
+                            serde_json::Value::String("yes".to_string()),
+                        );
+                    }
+                }
+            }
+            let variants: Vec<(String, HashMap<String, serde_json::Value>)> = match template
                 .options()
                 .as_ref()
                 .and_then(|o| o.allowed().get("orientation").cloned())
@@ -6169,17 +6082,19 @@ layout:
                 Some(orientations) => orientations
                     .into_iter()
                     .map(|o| {
-                        let mut sel = base.clone().unwrap_or_default();
-                        sel.insert("orientation".to_string(), o.clone());
-                        (format!("{}-{o}", summary.id), Some(sel))
+                        let mut data = base_data.clone();
+                        data.insert(
+                            "orientation".to_string(),
+                            serde_json::Value::String(o.clone()),
+                        );
+                        (format!("{}-{o}", summary.id), data)
                     })
                     .collect(),
-                None => vec![(summary.id.clone(), base.clone())],
+                None => vec![(summary.id.clone(), base_data.clone())],
             };
-            for (name, selection) in selections {
-                let png =
-                    render_thumbnail_png(template, &data, selection.as_ref(), &settings, &datetime)
-                        .unwrap_or_else(|e| panic!("render {name}: {e:?}"));
+            for (name, data) in variants {
+                let png = render_thumbnail_png(template, &data, None, &settings, &datetime)
+                    .unwrap_or_else(|e| panic!("render {name}: {e:?}"));
                 std::fs::write(dir.join(format!("{name}.png")), png).expect("write png");
             }
         }
@@ -7232,7 +7147,7 @@ layout:
             .expect("template needs a text item");
         let empty_vars = BTreeMap::new();
         let resolved =
-            super::resolve_parameters(template, data, None, Some(&empty_vars), Some(resolver))?;
+            super::resolve_parameters(template, data, Some(&empty_vars), Some(resolver))?;
         super::helpers::interpolate(
             &value,
             &resolved.data,
@@ -7442,7 +7357,6 @@ layout:
         let first = super::resolve_parameters(
             &template,
             &HashMap::new(),
-            None,
             Some(&empty_vars),
             Some(&resolver),
         )
@@ -7450,7 +7364,6 @@ layout:
         let second = super::resolve_parameters(
             &template,
             &HashMap::new(),
-            None,
             Some(&empty_vars),
             Some(&resolver),
         )
@@ -7555,7 +7468,7 @@ layout:
 
         let active_for = |data: HashMap<String, serde_json::Value>| {
             let resolved =
-                super::resolve_parameters(&template, &data, None, None, Some(&resolver)).unwrap();
+                super::resolve_parameters(&template, &data, None, Some(&resolver)).unwrap();
             let empty_settings = BTreeMap::new();
             let env = super::RenderEnv {
                 settings: &empty_settings,
@@ -7580,7 +7493,7 @@ layout:
         let mut rfc = HashMap::new();
         rfc.insert("printed_on".to_string(), json!("2026-08-19T23:15:00Z"));
         assert_eq!(
-            super::resolve_parameters(&template, &rfc, None, None, Some(&resolver))
+            super::resolve_parameters(&template, &rfc, None, Some(&resolver))
                 .unwrap()
                 .data["printed_on"],
             json!("2026-08-19")
@@ -7601,14 +7514,44 @@ layout:
         let data = test_placeholder_data(template, dt.now);
         assert!(!data.contains_key("orientation"));
         assert!(!data.contains_key("outline"));
-        let option = default_option_selection(template);
+        // outline declares no default and is only a gate key, so it must be absent and its
+        // container inactive in the thumbnail (the fixture's thumbnail no longer draws the
+        // outline). Horizontal branch must be active via its default.
         let settings = BTreeMap::new();
-        let dt_formats = BTreeMap::new();
-        let dt = crate::datetime_fmt::DateTimeResolver {
-            formats: &dt_formats,
-            now: chrono::Local::now(),
+        let dt_resolved = crate::datetime_fmt::DateTimeResolver {
+            formats: &BTreeMap::new(),
+            now: dt.now,
         };
-        let png = render_thumbnail_png(template, &data, option.as_ref(), &settings, &dt)
+        let resolved =
+            super::resolve_parameters(template, &data, None, Some(&dt_resolved)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &dt_resolved,
+        };
+        let ctx = super::RenderContext::new(
+            &template.unit,
+            template.dpi,
+            &resolved.data,
+            None,
+            &env,
+            &images,
+        )
+        .with_instants(&resolved.instants);
+        let Layout::Items(items) = &template.layout;
+        assert!(
+            !ctx.is_item_active(&items[0]),
+            "outline container must be inactive when outline declares no default"
+        );
+        assert!(
+            ctx.is_item_active(&items[1]),
+            "horizontal container must be active via default"
+        );
+        assert!(
+            !ctx.is_item_active(&items[2]),
+            "vertical container must be inactive"
+        );
+        let png = render_thumbnail_png(template, &data, None, &settings, &dt_resolved)
             .expect("render thumbnail");
         assert!(!png.is_empty());
     }
@@ -9377,8 +9320,7 @@ layout:
 
         // When bold and mode are omitted (no defaults), neither branch selects (both are inactive)
         let resolved_omitted =
-            super::resolve_parameters(&template, &HashMap::new(), None, None, Some(&res_dt))
-                .unwrap();
+            super::resolve_parameters(&template, &HashMap::new(), None, Some(&res_dt)).unwrap();
         let ctx = super::RenderContext::new("mm", 200, &resolved_omitted.data, None, &env, &images)
             .with_instants(&resolved_omitted.instants);
         assert!(
@@ -9394,8 +9336,7 @@ layout:
         let mut with_bold_false = HashMap::new();
         with_bold_false.insert("bold".to_string(), json!(false));
         let resolved_bf =
-            super::resolve_parameters(&template, &with_bold_false, None, None, Some(&res_dt))
-                .unwrap();
+            super::resolve_parameters(&template, &with_bold_false, None, Some(&res_dt)).unwrap();
         let ctx_bf = super::RenderContext::new("mm", 200, &resolved_bf.data, None, &env, &images)
             .with_instants(&resolved_bf.instants);
         assert!(ctx_bf.is_item_active(&items[0]));
@@ -9438,8 +9379,7 @@ layout:
             datetime: &res_dt,
         };
         let resolved1 =
-            super::resolve_parameters(&template1, &HashMap::new(), None, None, Some(&res_dt))
-                .unwrap();
+            super::resolve_parameters(&template1, &HashMap::new(), None, Some(&res_dt)).unwrap();
         let ctx1 = super::RenderContext::new("mm", 200, &resolved1.data, None, &env, &images)
             .with_instants(&resolved1.instants);
         assert!(
@@ -9594,8 +9534,7 @@ layout:
             settings: &empty_settings,
             datetime: &res_dt,
         };
-        let resolved =
-            super::resolve_parameters(template, &data, None, None, Some(&res_dt)).unwrap();
+        let resolved = super::resolve_parameters(template, &data, None, Some(&res_dt)).unwrap();
         let ctx = super::RenderContext::new("in", 300, &resolved.data, None, &env, &images)
             .with_instants(&resolved.instants);
         assert!(
@@ -10060,8 +9999,7 @@ layout:
             ("palette".to_string(), serde_json::json!("green")),
         ]);
         let resolved =
-            super::resolve_parameters(&template, &data, None, Some(&settings), Some(&datetime))
-                .unwrap();
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
         let (meas, _) = ctx
@@ -10119,7 +10057,6 @@ layout:
             let resolved_enum = super::resolve_parameters(
                 &template_enum,
                 &data_enum,
-                None,
                 Some(&settings),
                 Some(&datetime),
             )
@@ -10290,14 +10227,9 @@ layout:
             ("stroke_col".to_string(), serde_json::json!("yellow")),
             ("txt_col".to_string(), serde_json::json!("white")),
         ]);
-        let resolved_slot0 = super::resolve_parameters(
-            &template,
-            &data_slot0,
-            None,
-            Some(&settings),
-            Some(&datetime),
-        )
-        .unwrap();
+        let resolved_slot0 =
+            super::resolve_parameters(&template, &data_slot0, Some(&settings), Some(&datetime))
+                .unwrap();
         let images_slot0 = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx_slot0 =
             super::RenderContext::new("mm", 200, &resolved_slot0.data, None, &env, &images_slot0);
@@ -10321,14 +10253,9 @@ layout:
             ("stroke_col".to_string(), serde_json::json!("teal")),
             ("txt_col".to_string(), serde_json::json!("lime")),
         ]);
-        let resolved_slot1 = super::resolve_parameters(
-            &template,
-            &data_slot1,
-            None,
-            Some(&settings),
-            Some(&datetime),
-        )
-        .unwrap();
+        let resolved_slot1 =
+            super::resolve_parameters(&template, &data_slot1, Some(&settings), Some(&datetime))
+                .unwrap();
         let images_slot1 = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx_slot1 =
             super::RenderContext::new("mm", 200, &resolved_slot1.data, None, &env, &images_slot1);
