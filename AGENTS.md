@@ -250,8 +250,8 @@ The steps below are what those stages mean. Read them to understand the loop or 
 
    `apply.sh` records the outcome as `diff-review.md` in the change folder, carrying `AUTHORS:`,
    `REVIEWER:`, `VERDICT:`, `ROUNDS:`, `TREE_SHA256:` and `SPECS_SHA256:`, with each round kept
-   alongside as `diff-review-<n>.md` under its own `TREE_SHA256:`. That file is what the gate reads,
-   so a verdict living only in a transcript is a verdict nothing can check.
+   alongside as `diff-review-<n>.md` under its own `TREE_SHA256:` and `SPECS_SHA256:`. That file is
+   what the gate reads, so a verdict living only in a transcript is a verdict nothing can check.
 
    Two of those fields say *what* was judged and *who* wrote it, because a verdict answers neither on
    its own (#299). `TREE_SHA256:` is the digest of the worktree the approving review was handed, minus
@@ -289,6 +289,16 @@ The steps below are what those stages mean. Read them to understand the loop or 
    they match. During #291 two rounds returned opposite verdicts on a byte-identical tree and the
    second one shipped. An implementer that answered every finding in prose lands here too, which is
    right: whether prose answered the findings is a person's call, and no round of review can make it.
+
+   **The same bytes means the tree *and* the delta** (#362). A review measures code against the
+   contract, `tree_excl` keeps `openspec/changes` out of `TREE_SHA256:` on purpose, so a finding
+   answered in the delta specs leaves the tree byte-identical while the thing being judged has
+   moved. Keyed on the tree alone the refusal fired on a review that had never happened, and with
+   no override flag and nothing that could ever move the digest, #338 could not land at all. So each
+   round records the `SPECS_SHA256:` it judged against and the refusal needs both to match. A round
+   artifact carrying no contract cannot be shown to have judged this one, so it does not refuse: that
+   is `diff_verdict`'s own rule one level up, and it is the cheap direction, because a false launch
+   costs one review and a false stop costs the change.
 
    **Apply ends at implementation.** It does not commit, archive, sync deltas into
    `openspec/specs/`, or move the change folder. A checked box is a claim the next reader trusts
