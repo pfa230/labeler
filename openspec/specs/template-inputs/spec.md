@@ -223,12 +223,23 @@ Which entries appear SHALL be decided by the same rule the renderer applies: the
 are resolved, each item's `when:` is evaluated against them, and an inactive item, together with
 everything nested inside an inactive container, reads nothing.
 
-**Lenient resolution.** Resolution on this path differs from rendering in exactly one way: a value
-that cannot be coerced to its declared type SHALL be treated as though the label did not carry that
-name at all. Everything downstream then follows the ordinary omission rules, so the parameter takes
-its declared `default` if it has one and is otherwise absent (`param-resolution`), and gates naming it
-are evaluated against that — an absent parameter making its gate false rather than raising. This
-endpoint SHALL NOT reject a request because of a value's content.
+**Lenient resolution.** Resolution on this path differs from rendering in exactly two ways, and in no
+other.
+
+1. **A value that cannot be coerced** to its declared type SHALL be treated as though the label did not
+   carry that name at all. Everything downstream then follows the ordinary omission rules, so the
+   parameter takes its declared `default` if it has one and is otherwise absent (`param-resolution`),
+   and gates naming it are evaluated against that — an absent parameter making its gate false rather
+   than raising.
+2. **A key naming no declared parameter** SHALL be ignored, and the entry list SHALL be exactly the one
+   the same label would produce without it. The paths that render or print refuse such a key
+   (`request-data-keys`); this one SHALL NOT. The Import screen posts a CSV row's whole `data` map here
+   to learn which of its columns the chosen template can read, so a spreadsheet carrying a column the
+   template never declares must still get a list back rather than an error — the list is what the
+   screen prunes the row down to before it submits.
+
+This endpoint SHALL NOT reject a request because of a value's content or because of a name the
+template does not declare.
 
 **A declared default is resolved here exactly as a render resolves it.** This path SHALL read the
 variables store and capture one instant per request, and SHALL resolve every declared default against
@@ -279,11 +290,19 @@ to resolve is `required: true`, and it is so for every label in the request alik
 depends on the template and the request's snapshot and on no label's data. The two rules do not
 compete: no label's data can move `required`, and the snapshot that can is fixed for the whole request.
 
-Rendering is unchanged. The same value that this endpoint absorbs still fails a render, with the code
-that path already returns: an out-of-range `enum` is `422 InvalidOptionValue`; an uncoercible
+Rendering is unchanged by this requirement. Everything this endpoint absorbs still fails a render, with
+the code that path already returns: an out-of-range `enum` is `422 InvalidOptionValue`; an uncoercible
 `integer`, `number`, `length` or `boolean` is `400 InvalidRequest`; an unparseable `datetime` is
-`400 InvalidRequest` with reason `datetime_param_invalid` (`datetime-params`); and a per-label failure
-inside `POST /api/batch` is reported as `422 BatchInvalid` carrying that label's own code.
+`400 InvalidRequest` with reason `datetime_param_invalid` (`datetime-params`); a key naming no declared
+parameter is `400 InvalidRequest` with reason `data_key_unknown` (`request-data-keys`); and a per-label
+failure inside `POST /api/batch` is reported as `422 BatchInvalid` carrying that label's own code.
+
+That the two differ here is deliberate and is stated from both sides: the divergence is written into
+`request-data-keys`, which scopes its rule to the four paths that render or print, and into this
+requirement, which names the one endpoint that ignores what they refuse. Neither is an exception carved
+out of the other; they answer different questions. A render asks what to draw, and a key it cannot draw
+from is a caller's mistake. This endpoint asks what the operator must still supply, and answering that
+for a row it was handed whole is the only way a client can learn which of its columns to keep.
 
 #### Scenario: One request answers several labels
 
@@ -357,6 +376,19 @@ inside `POST /api/batch` is reported as `422 BatchInvalid` carrying that label's
 
 - **WHEN** a label carries `orientation: "sideways"` and is sent to `POST /api/render/label`
 - **THEN** it is rejected with `422 InvalidOptionValue`, unchanged from today
+
+#### Scenario: A key the template does not declare is ignored
+
+- **WHEN** a label carries `{ "title": "Bolts", "sku_legacy": "X-1" }` for a template declaring `title`
+  and not `sku_legacy`
+- **THEN** the response is `200` and the input list is exactly the one the same label without
+  `sku_legacy` produces
+
+#### Scenario: The same label fails a render
+
+- **WHEN** that label is sent to `POST /api/render/label`
+- **THEN** it is refused with `400 InvalidRequest` and `details.reason` `data_key_unknown`, and the two
+  outcomes are both correct because the two endpoints answer different questions
 
 #### Scenario: An option key is ignored
 
