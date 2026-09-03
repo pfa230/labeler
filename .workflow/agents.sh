@@ -205,11 +205,12 @@ agent_apply_prompt() { agent_step_prompt "$1" apply "$2"; }
 
 # agent_extract <agent> <raw> <log> <conv> -> status word on stdout.
 # Writes the agent's own answer to <log> and its resumable id to <conv>.
-# Returns non-zero when no answer could be found, which is the caller's signal that
-# <raw> is a console transcript rather than a review.
+# Returns non-zero when no answer could be found. That is the caller's signal that <raw>
+# is a console transcript rather than an answer, or that it is empty and the agent said
+# nothing at all; run-stage.sh tells those two apart and reports them differently (#315).
 #
 # One shape was read for every agent before (#274): agy's envelope. So claude and
-# codex reported NO_STRUCTURED_RESULT on every run and neither could ever be
+# codex yielded no answer on every run and neither could ever be
 # resumed. Each rule below was read off that CLI's own output, not off a table.
 #
 # The single-object agents are searched in the LAST FIVE LINES only: an agent that

@@ -15,6 +15,11 @@
 # Stops before commit, archive and merge. Those are deliberate steps, and the apply
 # lock makes git refuse them mid-run anyway.
 #
+# Exit 7 = a stage produced no readable result, so nothing it did can be reported (#315).
+# It covers the implementer as well as the reviewer: an implement stage whose answer cannot
+# be read is indistinguishable from one that ran, and during #287 the loop reviewed a diff
+# on that basis.
+#
 # Exit 8 = a stage wrote QUESTIONS.md and stopped rather than guess (#283). Answer them
 # in ANSWERS.md at the worktree root and re-run; every stage reads that file.
 #
@@ -167,6 +172,21 @@ ask_stop() { # ask_stop <label> <role>
   exit 8
 }
 
+# run-stage.sh exits 7 when no answer could be read out of what the agent printed, and it
+# does so for a writing role as readily as for a review (#315). One spelling for both roles
+# here, because it is one failure: the reviewer's used to say "produced a transcript", which
+# is only half of it - an agent that printed nothing produced no transcript either, and that
+# is the half that destroyed a run's record during #287. Carried out with its own status
+# rather than folded into the generic stop, so a person is not sent looking for a failure
+# the agent never reported.
+no_account_stop() { # no_account_stop <rc> <who>
+  [ "$1" -eq 7 ] || return 0
+  echo "$2 produced no readable result; stopping." >&2
+  echo "Its log under .agent-runs/ says whether that was a transcript with no answer in it," >&2
+  echo "or nothing at all." >&2
+  exit 7
+}
+
 # Whether this continues a session is run-stage.sh's decision, made under its own lock:
 # made here it would be a guess with a window in it, since another writing stage can
 # finish between deciding and locking (#292). --resume says what this caller intends; for
@@ -176,6 +196,7 @@ first="--resume"
 say "implement: $implementer"
 run_stage implement "$implementer" "$change" $first; rc=$?
 ask_stop "implement ($implementer)" implement
+no_account_stop "$rc" "the implementer"
 [ "$rc" -eq 0 ] || { echo "implement failed; stopping." >&2; exit 1; }
 
 round=1
@@ -212,12 +233,12 @@ while :; do
   ask_stop "review $round ($reviewer)" review
   review_log="$wt/.agent-runs/review-$reviewer.log"
   [ "$rc" -eq 5 ] && { echo "the reviewer edited files; its verdict cannot be trusted." >&2; exit 5; }
+  # Checked before anything is copied or read: an unreadable stage must not become the
+  # round artifact, and must not be mistaken for a verdict.
+  no_account_stop "$rc" "the reviewer"
   # Any other non-zero exit is a review that did not finish. A CLI can print a verdict
   # and then die, and reading that verdict would record an approval nobody stands behind.
-  [ "$rc" -ne 0 ] && [ "$rc" -ne 7 ] && { echo "the reviewer exited $rc; its verdict cannot be trusted." >&2; exit 1; }
-  # Checked before anything is copied or read: a transcript must not become the
-  # round artifact, and must not be mistaken for a verdict.
-  [ "$rc" -eq 7 ] && { echo "the reviewer produced a transcript, not a review; stopping." >&2; exit 7; }
+  [ "$rc" -ne 0 ] && { echo "the reviewer exited $rc; its verdict cannot be trusted." >&2; exit 1; }
 
   # Last line-start VERDICT wins: the reviewer's final word ends its output, and a
   # verdict quoted mid-prose never starts a line.
@@ -303,6 +324,7 @@ while :; do
     "Review findings on your implementation. They are in openspec/changes/$change/$round_file, relative to your worktree root. Read that file first; it is the whole review, and fixing every finding is the task."
   rc=$?
   ask_stop "fix round $round ($implementer)" implement
+  no_account_stop "$rc" "the implementer"
   [ "$rc" -eq 0 ] || { echo "fix round failed; stopping." >&2; exit 1; }
 
   if [ "$round" -ge "$max_rounds" ]; then
