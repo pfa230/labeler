@@ -92,6 +92,8 @@ reasons! {
     CsvRowInvalid => "csv_row_invalid",
     CsvEmpty => "csv_empty",
     CsvOptionColumnUnknown => "csv_option_column_unknown",
+    CsvDataColumnUnknown => "csv_data_column_unknown",
+    DataKeyUnknown => "data_key_unknown",
     ModeUnknown => "mode_unknown",
     PrinterRequired => "printer_required",
     CopiesInvalid => "copies_invalid",

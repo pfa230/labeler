@@ -4,7 +4,7 @@ use labeler::datetime_fmt::DateTimeResolver;
 use labeler::models::*;
 use labeler::parse::parse_template;
 use labeler::render::*;
-use labeler::templates::TemplateContent;
+use labeler::templates::{TemplateContent, TemplateDefinition};
 
 fn parse_and_validate(yaml: &str) -> Result<TemplateContent, labeler::errors::AppError> {
     let content = parse_template(yaml).map_err(|e| {
@@ -347,11 +347,16 @@ layout:
         size: [10, 10]
 "#;
     let t_sheet = parse_and_validate(yaml_sheet).unwrap();
+    let t_sheet_def = TemplateDefinition {
+        id: "sheet_test".to_string(),
+        group: None,
+        content: t_sheet,
+    };
     let labels = vec![LabelInput {
         data: HashMap::new(),
     }];
     let settings = BTreeMap::new();
-    let pdf_sheet = render_sheet_pages(&t_sheet, &labels, 0, &settings, &dt).unwrap();
+    let pdf_sheet = render_sheet_pages(&t_sheet_def, &labels, 0, &settings, &dt).unwrap();
     assert!(pdf_sheet.starts_with(b"%PDF"));
 
     // 9. A content-sized multiline text with a font_size range as a packed child
