@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
-# Entry point to the loop at tools/openspec-loop/ (#357).
+# The name callers use for the loop, which lives at tools/openspec-loop/ (#357).
 #
-# Callers: CI, .claude/commands/*, .claude/hooks/review-gate.sh.
-# Not the git hooks: they run from tools/openspec-loop/.githooks and call ../workflow.
+# A subtree rather than a submodule: run-change.sh creates a worktree per change, and
+# `git worktree add` does not populate a submodule, so the gates would be absent from
+# exactly where the loop runs. Verified on git 2.55.0: a fresh worktree gets every file
+# from a subtree and none from a submodule.
 #
-# Arguments and exit status pass through unchanged.
+# Used by CI, the Claude commands and the edit-time hook: callers that either sit outside
+# this repository or would otherwise hard-code the prefix above. The git hooks do NOT come
+# through here. They live inside the subtree beside workflow/ and resolve their scripts as
+# $here/../workflow, because routing them through a consumer file would leave the kit
+# unable to run its own suites.
+#
+# Arguments pass through unmodified and the exit status is the script's own, because
+# callers read specific codes: run-stage.sh 7, run-change.sh 4 and 8, apply.sh 10.
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || {
@@ -41,6 +50,8 @@ case "$cmd" in
   digest)        script=specs-digest.sh ;;
   detach)        script=detach.sh ;;
   setup)         script=setup-hooks.sh ;;
+  # The suites are the only check on the review process, so they are reachable by name
+  # rather than only from a CI file that could quietly stop naming them.
   test)
     rc=0
     for s in gate-tests.sh apply-tests.sh change-tests.sh; do
@@ -52,6 +63,9 @@ case "$cmd" in
   *)             echo "loop: unknown command '$cmd'" >&2; usage; exit 2 ;;
 esac
 
+# The subtree is checked in, so its absence is a broken checkout rather than a step
+# someone forgot: say which, because "no such file or directory" from four call sites in
+# two git hooks is not a diagnosis.
 [ -d "$kit" ] || {
   echo "loop: $kit is missing. The loop is a git subtree at tools/openspec-loop/;" >&2
   echo "loop: a checkout without it is incomplete, not un-installed." >&2
