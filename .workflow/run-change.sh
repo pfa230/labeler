@@ -753,10 +753,53 @@ say "branch run $run_id"
 gh run watch "$run_id" --exit-status || { echo "the branch run is red. Do not merge; fix it and re-run." >&2; exit 9; }
 
 say "green"
-cat <<EOF
-Issue #$issue is committed, pushed and green on $branch. Nothing has reached main.
 
-  git -C "$root" merge $branch && git -C "$root" push
+# Which sequence to print depends on whether main has moved, and that is the only case
+# where it matters. A plain `git merge` fast-forwards when it can and builds a merge commit
+# when it cannot, so printing it unconditionally recommended the shape #341 removed on
+# exactly the occasion it would be created, and nothing would have refused it: the hooks
+# allow a merge on main, which is where this one happens (#346).
+#
+# Anything that leaves the answer unreliable is printed WITH the commands rather than
+# ahead of them on stderr. What a person copies is this block; a caveat scrolled past two
+# screens earlier is one nothing downstream will repeat, and the hooks allow a merge on
+# main, so wrong advice here ships.
+behind=no; caveat=""
+git -C "$wt" fetch origin --quiet 2>/dev/null \
+  || caveat="Could not fetch origin, so this was decided from the last-known origin/main and may name the wrong command. Fetch and look before you run it."
+if git -C "$wt" rev-parse -q --verify origin/main >/dev/null 2>&1; then
+  git -C "$wt" merge-base --is-ancestor origin/main HEAD || behind=yes
+else
+  # Never silently the permissive answer. origin/main is what "has main moved" is asked of,
+  # and without it the question has no answer at all; saying so beats printing a
+  # fast-forward that has nothing to fast-forward onto.
+  caveat="origin/main does not resolve here, so whether main has moved could not be read at all. The sequence below assumes it has not."
+fi
+
+[ -n "$caveat" ] && caveat="
+WARNING: $caveat
+"
+if [ "$behind" = yes ]; then
+  cat <<EOF
+Issue #$issue is committed, pushed and green on $branch. Nothing has reached main.
+$caveat
+main has moved past this branch, so it will not fast-forward, and a change branch does not
+merge main into itself (#341). Rebase it:
+
+  git -C "$wt" rebase origin/main
+  git -C "$wt" push --force-with-lease --force-if-includes
+
+Then re-run this driver. That rebase edits the tree after the diff review approved it, and
+the branch run above judged the commit it replaces, so neither the review nor the run you
+have covers what would land. Nothing records that edit yet; #342 is where it would go.
+EOF
+else
+  cat <<EOF
+Issue #$issue is committed, pushed and green on $branch. Nothing has reached main.
+$caveat
+  git -C "$root" fetch origin
+  git -C "$root" merge --ff-only $branch && git -C "$root" push
   git -C "$root" push origin --delete $branch
   git -C "$root" worktree remove $wt && git -C "$root" branch -d $branch
 EOF
+fi
