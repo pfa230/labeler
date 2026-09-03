@@ -1516,5 +1516,136 @@ if ! DETACH_LAUNCHER='wat' "$DETACH" "$d/y" true >/dev/null 2>&1; then
 else bad "an unknown DETACH_LAUNCHER was accepted"; fi
 find "$d" -mindepth 0 -delete 2>/dev/null
 
+# --- a stage that could not run says what to do about it, and stops (#297) -----------
+# The run died a minute at a time for an hour and reported NO_STRUCTURED_RESULT, which
+# names neither the model nor a way forward. What is asserted is the naming and the
+# stopping. Nothing asserts a model switch, because nothing switches: the only model that
+# gets past a spent allowance bills, and that is not a runner's decision.
+
+# One spelling of the pin. A test repeating the default would pass while agent_command
+# used a different one, so the assertion is the relationship and never the string.
+default_model=$( unset OPENCODE_MODEL; . "$here/agents.sh"; agent_model opencode )
+if [ -n "$default_model" ]; then ok "agent_model names a default opencode model"
+else bad "agent_model named no default opencode model"; fi
+got=$( unset OPENCODE_MODEL; . "$here/agents.sh"; agent_command opencode implement p )
+if [ -n "$default_model" ] && printf '%s' "$got" | grep -qF -- "-m $default_model"; then
+  ok "and agent_command launches opencode with exactly that model"
+else bad "agent_command used something other than agent_model's '$default_model': $got"; fi
+got=$( OPENCODE_MODEL=over/ride; export OPENCODE_MODEL
+       . "$here/agents.sh"; agent_command opencode implement p )
+if printf '%s' "$got" | grep -qF -- "-m over/ride"; then
+  ok "and OPENCODE_MODEL overrides it all the way into the invocation"
+else bad "the override did not reach the invocation: $got"; fi
+
+# The tool's own error, which run-stage.sh used to report as its own parser's failure.
+ebin=$(mktemp -d)
+printf '%s\n' '{"type":"error","timestamp":1,"sessionID":"s-e","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_abc123"}}}' > "$ebin/err.json"
+printf '%s\n' '{"type":"text","sessionID":"s-e","part":{"type":"text","text":"hello"}}' > "$ebin/ok.json"
+emsg=$( . "$here/agents.sh"; agent_error opencode "$ebin/err.json" ); erc=$?
+if [ "$erc" = "0" ] && printf '%s' "$emsg" | grep -qF 'UnknownError' \
+   && printf '%s' "$emsg" | grep -qF 'err_abc123'; then
+  ok "agent_error reads opencode's own error envelope"
+else bad "agent_error exited $erc with '$emsg'"; fi
+# Paired with the positive, so a function that reports nothing at all cannot pass for one
+# that correctly reports nothing.
+if [ "$erc" = "0" ] && ! ( . "$here/agents.sh"; agent_error opencode "$ebin/ok.json" ) >/dev/null 2>&1; then
+  ok "and reports none where the tool reported none"
+else bad "agent_error does not distinguish a capture carrying an error from one that is not"; fi
+if [ "$erc" = "0" ] && ! ( . "$here/agents.sh"; agent_error codex "$ebin/err.json" ) >/dev/null 2>&1; then
+  ok "and answers for opencode only, which is the one tool with that shape"
+else bad "agent_error does not distinguish opencode's envelope from another tool's capture"; fi
+
+# The quota matcher. Only ever wording: if it is wrong the message is less precise, and
+# no money moves either way. Captured by running opencode against a provider returning a
+# 429 with that body, because whether responseBody survives into --format json is not
+# readable off the source.
+printf '%s\n' '{"type":"error","timestamp":1,"sessionID":"s-q","error":{"name":"APIError","data":{"message":"Free usage limit exceeded","statusCode":429,"isRetryable":true,"responseBody":"{\"error\": {\"name\": \"FreeUsageLimitError\"}}"}}}' > "$ebin/quota.json"
+printf '%s\n' '{"type":"text","part":{"type":"text","text":"opencode throws FreeUsageLimitError when the free tier is gone"}}' > "$ebin/prose.json"
+printf '%s\n' '{"type":"error","error":{"name":"APIError","data":{"message":"limit","statusCode":429,"responseBody":"{\"error\":{\"name\":\"GoUsageLimitError\"}}"}}}' > "$ebin/go.json"
+qpos=0
+( . "$here/agents.sh"; agent_quota_exhausted opencode "$ebin/quota.json" ) 2>/dev/null && qpos=1
+if [ "$qpos" = "1" ]; then
+  ok "agent_quota_exhausted reads the envelope a spent free allowance produces"
+else bad "the real quota envelope was not recognised"; fi
+qfired=""
+for c in err ok prose go; do
+  ( . "$here/agents.sh"; agent_quota_exhausted opencode "$ebin/$c.json" ) 2>/dev/null && qfired="$qfired $c"
+done
+if [ "$qpos" = "1" ] && [ -z "$qfired" ]; then
+  ok "and not on a server error, a clean run, prose naming it, or the paid account's own limit"
+else bad "agent_quota_exhausted fired on:$qfired (positive case: $qpos)"; fi
+
+# The two message shapes. Both name the model and offer the same override; only one of
+# them may say quota, because claiming it of an unrelated failure sends someone to pay
+# for a problem paying does not fix.
+qadv=$( unset OPENCODE_MODEL; . "$here/agents.sh"; agent_stall_advice opencode "$ebin/quota.json" )
+eadv=$( unset OPENCODE_MODEL; . "$here/agents.sh"; agent_error opencode "$ebin/err.json" >/dev/null
+        agent_stall_advice opencode "$ebin/err.json" )
+if printf '%s' "$qadv" | grep -qiF 'allowance' && printf '%s' "$qadv" | grep -qF "$default_model"; then
+  ok "agent_stall_advice says the free allowance is gone and names the model it was on"
+else bad "the quota message said: $qadv"; fi
+if printf '%s' "$eadv" | grep -qF 'UnknownError' && ! printf '%s' "$eadv" | grep -qiE 'allowance|quota'; then
+  ok "and reports any other failure as what the tool said, claiming no quota"
+else bad "the non-quota message said: $eadv"; fi
+for want in 'OPENCODE_MODEL=meta/muse-spark-1.2-contributor' 'BILLS'; do
+  if printf '%s' "$qadv" | grep -qF "$want" && printf '%s' "$eadv" | grep -qF "$want"; then
+    ok "and both messages carry '$want'"
+  else bad "'$want' is missing from one of the two messages"; fi
+done
+# Paired against the same call, because a function that does not exist declines codex too,
+# and declining everything is not answering the question.
+if ( . "$here/agents.sh"; agent_stall_advice opencode "$ebin/err.json" ) >/dev/null 2>&1 \
+   && ! ( . "$here/agents.sh"; agent_stall_advice codex "$ebin/err.json" ) >/dev/null 2>&1; then
+  ok "and there is nothing to say for a tool with no model to name"
+else bad "agent_stall_advice does not distinguish opencode from a tool it cannot advise on"; fi
+find "$ebin" -mindepth 0 -delete 2>/dev/null
+
+# Through run-stage.sh, where a person actually reads it.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-97-stall
+add_passing_review issue-97-stall
+sbin=$(mktemp -d)
+cat > "$sbin/opencode" <<'FAKE'
+#!/usr/bin/env bash
+echo launched >> "$LAUNCH_SINK"
+echo edited >> "$STAGE_MARK"
+printf '%s\n' "$STUB_EVENT"
+exit 1
+FAKE
+chmod +x "$sbin/opencode"
+
+quota_event='{"type":"error","timestamp":1,"sessionID":"s-q","error":{"name":"APIError","data":{"message":"Free usage limit exceeded","statusCode":429,"isRetryable":true,"responseBody":"{\"error\": {\"name\": \"FreeUsageLimitError\"}}"}}}'
+other_event='{"type":"error","timestamp":1,"sessionID":"s-o","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_zz9"}}}'
+
+: > "$sbin/sink"
+out=$(cd "$repo" && env -u OPENCODE_MODEL LAUNCH_SINK="$sbin/sink" STAGE_MARK=q.txt \
+      PATH="$sbin:$PATH" STUB_EVENT="$quota_event" \
+      "$STAGE" implement opencode issue-97-stall 2>&1); rc=$?
+if [ "$rc" != "0" ] && [ "$(wc -l < "$sbin/sink")" = "1" ]; then
+  ok "a spent allowance stops the stage after one launch, having switched to nothing"
+else bad "the quota stage exited $rc after $(wc -l < "$sbin/sink") launches"; fi
+if printf '%s' "$out" | grep -qiF 'allowance' \
+   && printf '%s' "$out" | grep -qF 'OPENCODE_MODEL=meta/muse-spark-1.2-contributor'; then
+  ok "and the stage output says so and gives the line that would move off it"
+else bad "the stage said nothing usable: $(printf '%s' "$out" | tail -12)"; fi
+
+: > "$sbin/sink"
+out=$(cd "$repo" && env -u OPENCODE_MODEL LAUNCH_SINK="$sbin/sink" STAGE_MARK=o.txt \
+      PATH="$sbin:$PATH" STUB_EVENT="$other_event" \
+      "$STAGE" implement opencode issue-97-stall 2>&1); rc=$?
+# The guard that makes the assertions above mean anything: an unrelated failure must
+# reach the same stop with a different sentence, never a claim about quota.
+if [ "$rc" != "0" ] && [ "$(wc -l < "$sbin/sink")" = "1" ] \
+   && ! printf '%s' "$out" | grep -qiE 'allowance|out of quota'; then
+  ok "an unrelated failure stops the same way without claiming an allowance ran out"
+else bad "the non-quota stage exited $rc after $(wc -l < "$sbin/sink") launches: $(printf '%s' "$out" | tail -12)"; fi
+if printf '%s' "$out" | grep -q 'status: AGENT_ERROR' && printf '%s' "$out" | grep -qF 'err_zz9'; then
+  ok "and is still reported as the error the tool itself gave"
+else bad "the error envelope was not named: $(printf '%s' "$out" | grep '^role:')"; fi
+find "$sbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]
