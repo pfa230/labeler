@@ -543,8 +543,9 @@ Do not merge on a red or absent branch run. CI on `main` is not a gate, it is a 
 time it fails, the commit is already integrated.
 
 **A change branch rebases onto `main`; it never merges `main` into itself** (#341). A back-merge
-records that a branch outlived `main` and nothing else, and 38 of the 163 merges on `main` are exactly
-that, their whole message being `Merge remote-tracking branch 'origin/main'`. It also breaks the one
+records that a branch outlived `main` and nothing else: of the 163 merges on `main`, 35 bring `main`
+into a branch, and 21 of those carry no message beyond `Merge remote-tracking branch 'origin/main'`.
+It also breaks the one
 check that reads history: `archive-merge-check.sh` asks whether `openspec/specs/` is the delta applied
 to *the* previous commit, and a merge has two, so it reports one parent's correctly archived work as a
 hand-edit. The hooks refuse the shape rather than leaving this to memory, and it takes two of them:
