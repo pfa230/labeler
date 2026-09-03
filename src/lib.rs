@@ -9026,8 +9026,7 @@ layout:
             };
             let mut data = std::collections::HashMap::new();
             data.insert("tags".to_string(), serde_json::json!([]));
-            let resolved =
-                crate::render::resolve_parameters(&tpl, &data, None, None, None).unwrap();
+            let resolved = crate::render::resolve_parameters(&tpl, &data, None, None).unwrap();
             assert_eq!(resolved.data.get("tags"), Some(&serde_json::json!([])));
         }
 

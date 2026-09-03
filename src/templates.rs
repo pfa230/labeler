@@ -6533,7 +6533,6 @@ layout:
             &t_list_def,
             &std::collections::HashMap::new(),
             None,
-            None,
             Some(&dt_res),
         )
         .unwrap();
@@ -6568,7 +6567,6 @@ layout:
         let resolved_empty = crate::render::resolve_parameters(
             &t_list_empty,
             &std::collections::HashMap::new(),
-            None,
             None,
             Some(&dt_res),
         )
