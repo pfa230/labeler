@@ -3,7 +3,8 @@
 This document describes the path a behavior change takes from issue to `main`, and the single point
 at which it stops for a human decision.
 
-The mechanics — commands, tooling, enforcement — are in [`AGENTS.md`](../AGENTS.md).
+The rules an agent follows are in [`AGENTS.md`](../AGENTS.md). The loop's own mechanics live with the
+loop, a git subtree at `tools/openspec-loop/` reached through `.workflow/loop <command>`.
 
 ## The input
 
@@ -13,8 +14,8 @@ implements exactly one open issue: scope is agreed there, before anything else h
 Not every commit is a change in this sense. The path below is for changes to labeler's behavior: its
 API, its template schema, its layout model, its coordinates and its error contract, which are exactly
 the ones that write a spec delta. The harness that runs this path is not labeler, however much
-changing it changes what the path does, so a commit against `.workflow/`, `.claude/`, `.githooks/`,
-`AGENTS.md`, this file or `openspec/config.yaml` is not a behavior change here. Nor is a documentation
+changing it changes what the path does, so a commit against `tools/openspec-loop/`, `.workflow/`,
+`.claude/`, `AGENTS.md`, this file or `openspec/config.yaml` is not a behavior change here. Nor is a documentation
 fix, a CI change or a dependency bump. Each still starts as an issue and still ends as one commit that
 closes it, but none of the stages apply to it. Nothing declares which kind a piece of work is, and
 size has no say: writing the delta is what makes it a change, and needing one is discovered rather
@@ -135,7 +136,7 @@ Implementation and its review run on two named agents, given when the stage is s
 decided later:
 
 ```bash
-.workflow/apply.sh agy codex issue-186-pin-rust-toolchain
+.workflow/loop apply agy codex issue-186-pin-rust-toolchain
 ```
 
 The pair comes first because it is the guarantee. The change comes last and is optional: left out, it
@@ -151,8 +152,8 @@ back to the implementer, which keeps the session it built in, and the reviewer r
 never fixes what it found. Transcripts stay in logs rather than being read back, since a full agent
 transcript is thousands of lines of no interest to anyone.
 
-Its commits are gated the same as anyone's — `core.hooksPath` resolves inside a worktree, so
-`.githooks/pre-commit` runs. What it cannot see is the Claude Code edit-time hook, so its only gate is
+Its commits are gated the same as anyone's — `core.hooksPath` resolves inside a worktree, so the
+vendored `pre-commit` hook runs. What it cannot see is the Claude Code edit-time hook, so its only gate is
 at commit time.
 
 Stages hand off through **files on disk, not conversation**. Every artifact's instructions re-read
@@ -164,7 +165,7 @@ The gate applies to all of them equally. It is a committed git pre-commit hook p
 CI, judging files rather than which agent produced them. Enable it once per clone:
 
 ```bash
-.workflow/setup-hooks.sh
+.workflow/loop setup
 ```
 
 The hooks also refuse one shape outright: a change branch merging into itself. Every check that reads
