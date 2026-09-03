@@ -17,10 +17,12 @@ pass=0; fail=0
 # shares. Read why in the file itself; the short version is that a fixture write that
 # fails silently leaves a case asserting against a file that was never written (#333).
 . "$here/suite-lib.sh"
+suite_parse_args "$@"
 
 expect() { # expect <want-exit> <label> -- <args...>
   local want="$1" label="$2"; shift 3
   local out rc
+  suite_selected "$label" || return 0
   canary
   out=$(cd "$cwd" && "$APPLY" "$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ]; then
@@ -435,5 +437,10 @@ fi
 # The guard on this suite's own fixtures.
 suite_guard_case "$here/apply-tests.sh"
 
-printf '\n%s passed, %s failed\n' "$pass" "$fail"
+if [ -n "$SUITE_FILTER" ]; then
+  printf '\n%s passed, %s failed, %s skipped by --filter %s\n' "$pass" "$fail" "$skipped" "$SUITE_FILTER"
+  [ "$((pass + fail))" -gt 0 ] || { printf 'no case matched --filter %s\n' "$SUITE_FILTER" >&2; exit 2; }
+else
+  printf '\n%s passed, %s failed\n' "$pass" "$fail"
+fi
 [ "$fail" = "0" ]
