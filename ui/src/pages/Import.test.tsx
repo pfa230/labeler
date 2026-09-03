@@ -89,7 +89,7 @@ async function loadTemplateAndCsv() {
   await screen.findByRole("option", { name: "Tag" });
   fireEvent.change(picker, { target: { value: "t1" } });
   const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-  fireEvent.change(csv, { target: { value: "sku,option.color\n1,red\n2,blue\n" } });
+  fireEvent.change(csv, { target: { value: "sku,color\n1,red\n2,blue\n" } });
   fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
   // The editor now renders before the template detail resolves; wait for detail-gated controls (copies)
   // so callers can interact with them synchronously.
@@ -121,7 +121,7 @@ describe("CSV Import screen", () => {
     await screen.findByRole("option", { name: "Tag" });
     fireEvent.change(picker, { target: { value: "t1" } });
     const fileInput = (await screen.findByLabelText(/csv file/i)) as HTMLInputElement;
-    const file = new File(["sku,option.color\n7,blue\n"], "labels.csv", { type: "text/csv" });
+    const file = new File(["sku,color\n7,blue\n"], "labels.csv", { type: "text/csv" });
     fireEvent.change(fileInput, { target: { files: [file] } });
     expect(await screen.findByText("7")).toBeInTheDocument();
   });
@@ -132,7 +132,7 @@ describe("CSV Import screen", () => {
     await screen.findByRole("option", { name: "Tag" });
     fireEvent.change(picker, { target: { value: "t1" } });
     const zone = await screen.findByLabelText(/csv dropzone/i);
-    const file = new File(["sku,option.color\n8,red\n"], "labels.csv", { type: "text/csv" });
+    const file = new File(["sku,color\n8,red\n"], "labels.csv", { type: "text/csv" });
     fireEvent.drop(zone, { dataTransfer: { files: [file] } });
     expect(await screen.findByText("8")).toBeInTheDocument();
   });
@@ -159,7 +159,7 @@ describe("CSV Import screen", () => {
     await screen.findByRole("option", { name: "Tag" });
     fireEvent.change(picker, { target: { value: "t1" } });
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } }); // no option.color column
+    fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } }); // no color column
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByText("1");
     const download = await screen.findByRole("button", { name: /download/i });
@@ -281,14 +281,14 @@ describe("CSV Import screen", () => {
     expect(screen.getByText("2")).toBeInTheDocument();
   });
 
-  it("preserves a row's raw CSV option across a no-template edit then template pick", async () => {
+  it("preserves a row's raw CSV field across a no-template edit then template pick", async () => {
     renderPage();
     await screen.findByRole("option", { name: "Tag" });
-    // Load a CSV carrying option.color while NO template is selected (t1 is not yet known).
+    // Load a CSV carrying color while NO template is selected (t1 is not yet known).
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    fireEvent.change(csv, { target: { value: "sku,option.color\n1,blue\n" } });
+    fireEvent.change(csv, { target: { value: "sku,color\n1,blue\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    // Edit the sku cell while still template-less: this commits the displayed option map for the row.
+    // Edit the sku cell while still template-less: this commits the displayed field map for the row.
     fireEvent.doubleClick(await screen.findByText("1")); // enter edit mode (react-data-grid default)
     const skuCell = (await screen.findByLabelText("edit sku")) as HTMLInputElement;
     fireEvent.change(skuCell, { target: { value: "9" } });

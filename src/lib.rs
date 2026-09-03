@@ -2622,9 +2622,9 @@ layout:
     #[tokio::test]
     async fn import_csv_routes_option_columns() {
         let app = build_app();
-        // avery5163_asset_tag declares orientation/outline. The `option.orientation` column routes
-        // into the per-row option selection, so the horizontal variant renders.
-        let csv = "id,url,name,tags,description,option.orientation,option.outline\n\
+        // avery5163_asset_tag declares orientation/outline. The orientation column routes
+        // into data, so the horizontal variant renders.
+        let csv = "id,url,name,tags,description,orientation,outline\n\
             A1,https://x,Widget,t,desc,horizontal,yes\n";
         let response = app
             .oneshot(
@@ -2643,8 +2643,8 @@ layout:
     #[tokio::test]
     async fn import_csv_undeclared_option_column_returns_400() {
         let app = build_app();
-        // avery5163_asset_tag does not declare `bogus`; an undeclared option.<name> column must be
-        // rejected (per SPEC section E), not silently ignored.
+        // avery5163_asset_tag does not declare `option.bogus`; an unrecognized column must be
+        // rejected as csv_data_column_unknown, not silently ignored.
         let csv = "id,url,name,tags,description,option.bogus\n\
             A1,https://x,Widget,t,desc,whatever\n";
         let response = app
@@ -2659,6 +2659,12 @@ layout:
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "csv_data_column_unknown"
+        );
     }
 
     #[tokio::test]
@@ -2666,7 +2672,7 @@ layout:
         let app = build_app();
         // A disallowed option value flows through the shared batch path and fails the row as
         // BatchInvalid with a per-row InvalidEnumValue (not a top-level InvalidEnumValue).
-        let csv = "id,url,name,tags,description,option.orientation\n\
+        let csv = "id,url,name,tags,description,orientation\n\
             A1,https://x,Widget,t,desc,sideways\n";
         let response = app
             .oneshot(
@@ -11502,7 +11508,7 @@ layout:
         let body = json_response(res).await;
         assert_eq!(body["error"]["details"]["reason"], "csv_empty");
 
-        // c) Breaking both column rules -> csv_option_column_unknown
+        // c) Column option.size naming no declared parameter fails as csv_data_column_unknown
         let csv_both_cols = "id,message,bad_data,option.bad_opt\n1,m,d,o\n";
         let req = Request::builder()
             .method("POST")
@@ -11515,8 +11521,10 @@ layout:
         let body = json_response(res).await;
         assert_eq!(
             body["error"]["details"]["reason"],
-            "csv_option_column_unknown"
+            "csv_data_column_unknown"
         );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("'bad_data', 'option.bad_opt'"));
 
         // 5.5 File exceeding label cap + unrecognized data column reports csv_data_column_unknown
         let mut large_csv = String::from("id,message,bad_col\n");
@@ -11537,8 +11545,24 @@ layout:
             "csv_data_column_unknown"
         );
 
-        // 5.6 File naming only declared params alongside option. columns naming declared ones still imports
-        let csv_valid = "id,url,name,tags,description,option.orientation,option.outline\n1,https://example.com,Item1,tags1,desc1,horizontal,yes\n2,https://example.com,Item2,tags2,desc2,horizontal,yes\n";
+        // 5.6 File with option. columns fails with 400 csv_data_column_unknown
+        let csv_option_cols = "id,url,name,tags,description,option.orientation,option.outline\n1,https://example.com,Item1,tags1,desc1,horizontal,yes\n2,https://example.com,Item2,tags2,desc2,horizontal,yes\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=avery5163_asset_tag")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_option_cols.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "csv_data_column_unknown"
+        );
+
+        // 5.7 File naming only declared params still imports
+        let csv_valid = "id,url,name,tags,description,orientation,outline\n1,https://example.com,Item1,tags1,desc1,horizontal,yes\n2,https://example.com,Item2,tags2,desc2,horizontal,yes\n";
         let req = Request::builder()
             .method("POST")
             .uri("/api/import/csv?template=avery5163_asset_tag")

@@ -2,13 +2,12 @@ import { describe, it, expect } from "vitest";
 import { parseCsv, MAX_CSV_BYTES } from "./csv";
 
 describe("parseCsv", () => {
-  it("splits data fields from option.<name> columns and maps each row", () => {
-    const r = parseCsv("sku,name,option.color\n1,Widget,red\n2,Gadget,blue\n");
-    expect(r.fields).toEqual(["sku", "name"]);
-    expect(r.optionColumns).toEqual(["color"]);
+  it("parses data fields and maps each row", () => {
+    const r = parseCsv("sku,name,color\n1,Widget,red\n2,Gadget,blue\n");
+    expect(r.fields).toEqual(["sku", "name", "color"]);
     expect(r.rows).toEqual([
-      { data: { sku: "1", name: "Widget" }, option: { color: "red" } },
-      { data: { sku: "2", name: "Gadget" }, option: { color: "blue" } },
+      { data: { sku: "1", name: "Widget", color: "red" } },
+      { data: { sku: "2", name: "Gadget", color: "blue" } },
     ]);
     expect(r.issues).toEqual([]);
   });
@@ -59,8 +58,8 @@ describe("parseCsv", () => {
     const r = parseCsv("sku\n1\n2\n");
     expect(r.fatal).toBe(false);
     expect(r.rows).toEqual([
-      { data: { sku: "1" }, option: {} },
-      { data: { sku: "2" }, option: {} },
+      { data: { sku: "1" } },
+      { data: { sku: "2" } },
     ]);
   });
 
