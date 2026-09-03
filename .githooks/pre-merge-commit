@@ -19,6 +19,10 @@
 # tree that holds them, so the case the exemption was for is reached without the "any".
 #
 # It does not run at all for a fast-forward, which creates no commit to hook (#317).
+#
+# Since #341 it carries a second refusal: a change branch rebases onto main and never
+# merges into itself. Both duties belong here for the same reason, which is that git splits
+# a merge commit across two hooks and this is the half pre-commit never sees.
 set -euo pipefail
 
 refuse() { # refuse <lock> <whose>
@@ -32,6 +36,17 @@ mine=$(git rev-parse --path-format=absolute --git-dir)
 if [ -f "$mine/APPLY_IN_PROGRESS" ]; then
   refuse "$mine/APPLY_IN_PROGRESS" "here"
 fi
+
+# After this tree's lock and before the MERGE_HEAD guard below, which exits 0 (#341). The
+# order matches pre-commit's, where the lock is also asked first, so the same attempt gets
+# the same answer whichever hook git happens to run. It cannot go after the guard: git has
+# not written MERGE_HEAD when it runs this hook, so everything past that line is already
+# unreachable on the path this refusal exists for.
+#
+# Found beside this hook rather than under the repository root: change-tests.sh runs this
+# hook by path against a throwaway repo that has no .workflow of its own, so a root-relative
+# lookup would exit 127 there and a suite would assert against a hook that never ran.
+"$(dirname "$0")/../.workflow/merge-shape-check.sh"
 
 # Staged but uncommitted, which is where this hook runs, so MERGE_HEAD is the merge in
 # hand. It holds one line per commit being merged, so an octopus is read as written.
