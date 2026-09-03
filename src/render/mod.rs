@@ -10410,7 +10410,6 @@ layout:
             super::resolve_parameters_mode(
                 &tpl,
                 &submitted,
-                None,
                 Some(&variables),
                 Some(&datetime_ctx),
                 super::ResolveMode::Strict,
@@ -10501,7 +10500,6 @@ layout:
         let err = super::resolve_parameters_mode(
             &tpl_list,
             &submitted_str,
-            None,
             Some(&variables),
             Some(&datetime_ctx),
             super::ResolveMode::Strict,
@@ -10518,7 +10516,6 @@ layout:
         let err = super::resolve_parameters_mode(
             &tpl_list,
             &submitted_bad_elem,
-            None,
             Some(&variables),
             Some(&datetime_ctx),
             super::ResolveMode::Strict,
