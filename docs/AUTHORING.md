@@ -750,7 +750,7 @@ or, on an auto-length label, it produced a width the layout cannot live in. Eith
 
 Four error codes carry a stable `details.reason` slug naming the specific cause; match on the slug,
 never on the message text ([SPEC §10.1](SPEC.md#101-detailsreason)). Everything else is identified by
-`code` alone. Every row below is a slug except `MissingField` and `InvalidOptionValue`, which are codes and carry no slug.
+`code` alone. Every row below is a slug except `MissingField` and `InvalidEnumValue`, which are codes and carry no slug.
 
 | Reason / Code | What actually happened | Usual fix |
 | --- | --- | --- |
@@ -763,7 +763,7 @@ never on the message text ([SPEC §10.1](SPEC.md#101-detailsreason)). Everything
 | `line_endpoint_out_of_frame` | A line endpoint resolved outside the frame. Endpoints are errors, not clipped. | Same as above; check the container frame you are actually in. |
 | `dimension_exceeds_limit` | A resolved label dimension exceeds the `max_label_dimension_mm` application setting (default 1000mm) or is `<= 0`. | Check requested dimension parameters or update the setting. |
 | `MissingField` (422) | A `{token}` or data-bound image `name` has no value in the request `data` and no declared `default` in `params:`. | Check parameter spelling. An inactive `when:` branch never demands its unreferenced parameters (§9). |
-| `InvalidOptionValue` (422) | An `enum` parameter was supplied with a value not in its declared `values`. | Check allowed enum values declared in the template's `params:`. |
+| `InvalidEnumValue` (422) | An `enum` parameter was supplied with a value not in its declared `values`. | Check allowed enum values declared in the template's `params:`. |
 | `template_validation_failed` (at startup) | Structural validation. The message carries the JSON path to the offending item. | Read the path; it names the exact item. |
 
 Two visual failures that return `200` and still need fixing:

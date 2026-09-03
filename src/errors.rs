@@ -15,7 +15,7 @@ const CODE_TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
 const CODE_INVALID_REQUEST: &str = "InvalidRequest";
 const CODE_UNSUPPORTED_MEDIA_TYPE: &str = "UnsupportedMediaType";
 const CODE_NOT_IMPLEMENTED: &str = "NotImplemented";
-const CODE_INVALID_OPTION_VALUE: &str = "InvalidOptionValue";
+const CODE_INVALID_ENUM_VALUE: &str = "InvalidEnumValue";
 const CODE_MISSING_FIELD: &str = "MissingField";
 const CODE_UNSUPPORTED_LAYOUT: &str = "UnsupportedLayoutItem";
 const CODE_UNSUPPORTED_FORMAT: &str = "UnsupportedFormat";
@@ -200,13 +200,13 @@ impl AppError {
         )
     }
 
-    pub fn invalid_option_value(
+    pub fn invalid_enum_value(
         selection: &std::collections::BTreeMap<String, String>,
         allowed: &std::collections::BTreeMap<String, Vec<String>>,
     ) -> Self {
         Self::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            CODE_INVALID_OPTION_VALUE,
+            CODE_INVALID_ENUM_VALUE,
             "Invalid option selection".to_string(),
             Some(json!({ "selection": selection, "allowed": allowed })),
         )

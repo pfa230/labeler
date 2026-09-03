@@ -353,7 +353,7 @@ pub fn resolve_parameters_mode(
                                         selection.insert(name.clone(), bad_str);
                                         let mut allowed = BTreeMap::new();
                                         allowed.insert(name.clone(), values.clone());
-                                        return Err(AppError::invalid_option_value(
+                                        return Err(AppError::invalid_enum_value(
                                             &selection, &allowed,
                                         ));
                                     }
@@ -1216,7 +1216,7 @@ fn normalize_option<'a>(
         Some(options) => {
             if let Some(selection) = option {
                 if !options.is_valid_selection(selection) {
-                    return Err(AppError::invalid_option_value(selection, options.allowed()));
+                    return Err(AppError::invalid_enum_value(selection, options.allowed()));
                 }
             }
             Ok(option)
@@ -10615,7 +10615,7 @@ layout:
         assert_eq!(err.reason(), Some("request_body_invalid"));
         assert_eq!(err.message_text(), "parameter 'size' is not a valid number");
 
-        // 5. Enum (422 Unprocessable Entity, InvalidOptionValue)
+        // 5. Enum (422 Unprocessable Entity, InvalidEnumValue)
         let err = run_strict(
             "tier",
             crate::models::ParamType::Enum {
@@ -10624,9 +10624,18 @@ layout:
         )
         .unwrap_err();
         assert_eq!(err.status().as_u16(), 422);
-        assert_eq!(err.code(), "InvalidOptionValue");
-        assert_eq!(err.reason(), None); // invalid_option_value uses unreasoned new()
+        assert_eq!(err.code(), "InvalidEnumValue");
+        assert_eq!(err.reason(), None); // invalid_enum_value uses unreasoned new()
         assert_eq!(err.message_text(), "Invalid option selection");
+        let details = err.details().expect("details");
+        assert_eq!(details["selection"]["tier"], "[\"foo\",\"bar\"]");
+        assert_eq!(details["allowed"]["tier"], serde_json::json!(["A", "B"]));
+        assert!(details.get("reason").is_none(), "must carry no reason");
+        assert_eq!(
+            details.as_object().unwrap().len(),
+            2,
+            "details must be exactly selection+allowed"
+        );
 
         // 6. Datetime
         let err = run_strict(
@@ -10676,6 +10685,73 @@ layout:
         assert_eq!(
             err.message_text(),
             "element at position 1 of parameter 'tags' must be a string"
+        );
+    }
+
+    #[test]
+    fn invalid_enum_value_pins_spec_selection_and_allowed() {
+        let orientation_param = crate::models::ParamType::Enum {
+            values: vec!["horizontal".to_string(), "vertical".to_string()],
+        };
+        let mut params = BTreeMap::new();
+        params.insert(
+            "orientation".to_string(),
+            crate::models::ParamSpec {
+                param_type: orientation_param,
+                description: None,
+                default: None,
+                min: None,
+                max: None,
+            },
+        );
+        let template = TemplateContent {
+            name: "Test".to_string(),
+            version: None,
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 200,
+            format: crate::models::TemplateFormat::Single {
+                width: crate::models::Dimension::Fixed(50.0).into(),
+                height: crate::models::Dimension::Fixed(20.0).into(),
+                media_width: None,
+            },
+            params,
+            layout: crate::models::Layout::Items(vec![]),
+        };
+        let mut submitted = HashMap::new();
+        submitted.insert("orientation".to_string(), serde_json::json!("sideways"));
+        let variables = BTreeMap::new();
+        let datetime_ctx = no_datetime();
+        let err = super::resolve_parameters_mode(
+            &template,
+            &submitted,
+            Some(&variables),
+            Some(&datetime_ctx),
+            super::ResolveMode::Strict,
+        )
+        .unwrap_err();
+        assert_eq!(err.status().as_u16(), 422);
+        assert_eq!(err.code(), "InvalidEnumValue");
+        assert_eq!(err.reason(), None);
+        assert_eq!(err.message_text(), "Invalid option selection");
+        let details = err.details().expect("details");
+        assert_eq!(details["selection"]["orientation"], "sideways");
+        assert_eq!(
+            details["allowed"]["orientation"],
+            serde_json::json!(["horizontal", "vertical"])
+        );
+        assert!(details.get("reason").is_none(), "must carry no reason");
+        assert_eq!(
+            details.as_object().unwrap().len(),
+            2,
+            "details must be exactly selection and allowed"
+        );
+        // Verify byte-identical keys: only selection and allowed present
+        let keys: std::collections::BTreeSet<&String> =
+            details.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys.into_iter().cloned().collect::<Vec<_>>(),
+            vec!["allowed".to_string(), "selection".to_string()]
         );
     }
 
