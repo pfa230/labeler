@@ -1,0 +1,7 @@
+# What this project is, for the loop vendored at tools/openspec-loop/.
+
+# Directories holding implementation. A commit touching one is subject to the plan gate.
+impl_paths: [src, ui/src]
+
+# Files frozen against edits, named to every writing stage.
+frozen_paths: [docs/SPEC.md, docs/adr/]
