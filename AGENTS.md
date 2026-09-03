@@ -68,6 +68,13 @@ behavior identical goes: issue, worktree, the three gates, one commit with `Fixe
 change folder, no plan review, no `diff-review.md`. Nothing else relaxes: it still starts as an issue
 and still ends as one commit that closes it.
 
+A correction to a published spec under `openspec/specs/` is not that lane, however much it reads like
+a documentation fix. `archive-merge-check.sh:141` refuses a commit that changes a published spec with
+no delta behind it, because those files are written by archive and never by hand, so the correction
+arrives as a delta and a delta is what sends a change through the loop. What it does not have is code:
+the deliverable is the delta itself, and the plan says so in one line, `DELIVERABLE: spec-only`
+(#313).
+
 Size decides nothing. A nine-line handler check that alters behavior is a full change; a five-hundred
 line documentation rewrite is not. There is no lane to declare, no criteria to qualify under and no
 step that promotes one to the other. Writing a delta is what makes a change one, and
@@ -207,7 +214,29 @@ The steps below are what those stages mean. Read them to understand the loop or 
    is every agent whose `implement` or `gate-fix` stage actually changed that worktree, comma-separated
    and first-written-first, read from the `authors` ledger `run-stage.sh` keeps in the change folder.
    It is not the implementer this invocation was given: during #291 that named the last stage to run,
-   attributing six rounds of another agent's work to an agent that wrote none of it.
+   attributing six rounds of another agent's work to an agent that wrote none of it. On a change
+   declaring `DELIVERABLE: spec-only` it is instead the `propose` stage that wrote the delta, because
+   the delta is what lands and no implement stage wrote a line of it.
+
+   **A change whose deliverable is the delta.** A plan may ask for no code at all: correcting a
+   published spec is that shape, and #266 was it, twelve verification tasks over a `MODIFIED`
+   requirement the planner had already written. Such a proposal carries one line reading
+   `DELIVERABLE: spec-only`, and that line is the whole mechanism. `run-stage.sh` reads it **before**
+   the agent launches and never after, because `openspec/changes` is outside implement's work digest,
+   so a stage that wrote the line during its own run would be exempting itself for free. The exemption
+   is not from being measured, only from being measured by the code written: the stage must still have
+   changed the change folder, having ticked the boxes it verified, so an implementer that silently
+   failed is refused exactly as before (exit 3, `run-stage.sh:507`). The line has one legal value and
+   any other stops the stage, because a plan naming a deliverable this loop cannot act on is not a plan
+   to guess at. Every change that delivers code omits the line. What it does not bind is the plan
+   review: `SPECS_SHA256:` covers `specs/` alone, so a planner may add the line after its verdict, and
+   what that buys is an empty implement stage that the diff reviewer still has to approve as an empty
+   diff, over a line sitting in the committed `proposal.md` for anyone to read.
+
+   That makes the planner the only author of such a change, and therefore the one agent that cannot
+   review its diff. `apply.sh` refuses a reviewer the `authors` ledger already names, before launching
+   either role, rather than leaving it to the landing gate, which sees it at the commit with every
+   agent already paid for.
 
    **`apply.sh` exits 10 rather than review the same bytes twice.** Before each review after the first
    it compares the tree it would hand the reviewer against the `TREE_SHA256:` of the previous round,
@@ -294,7 +323,8 @@ edit-time signal for Claude Code.
 
 `.workflow/change-tests.sh` does the same for `run-change.sh` and the roles it drives: the self-review
 and non-resumable refusals, every stage the resumption logic can resolve to, the guards in
-`run-stage.sh` that a role change could silently unkey, and the question protocol.
+`run-stage.sh` that a role change could silently unkey, the `DELIVERABLE: spec-only` exemption from
+one of them, and the question protocol.
 
 `.workflow/gate-tests.sh` asserts both scripts against a throwaway repo, mostly on the refusals: a
 gate that stops firing looks exactly like a gate that passes, and both of these did that once during

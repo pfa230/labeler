@@ -49,6 +49,12 @@ rules:
     - >-
       Keep scope inside that issue's accepted scope. Work discovered mid-change that falls outside
       it becomes a new GitHub issue, never an extra task here.
+    - >-
+      When the change's whole deliverable is its delta under `specs/` - correcting a published spec
+      is that shape, since `openspec/specs/` is written by archive and never by hand - write one line
+      reading `DELIVERABLE: spec-only` in the proposal. It is the only value the field takes, and
+      `.workflow/run-stage.sh` reads it to accept an implement stage that writes no code, having
+      verified its tasks and ticked them. Omit the line on every change that delivers code.
 
   specs:
     - >-
@@ -134,8 +140,10 @@ operations:
         empty `AUTHORS:` list, and refuses one naming its reviewer among the authors.
         `.workflow/apply.sh` writes it. If the diff was reviewed some other way, write the file with
         the same fields: `AUTHORS:` is every agent that actually changed the worktree,
-        comma-separated and first-written-first, and `TREE_SHA256:` is the digest of the tree the
-        review judged, which `.workflow/run-stage.sh` prints as its `tree:` line.
+        comma-separated and first-written-first - or, on a change declaring
+        `DELIVERABLE: spec-only`, the propose stage that wrote the delta, since the delta is what
+        lands and no implement stage wrote a line of it - and `TREE_SHA256:` is the digest of the
+        tree the review judged, which `.workflow/run-stage.sh` prints as its `tree:` line.
       - >-
         Then verify, in this order: `openspec doctor`, `openspec validate --all --strict
         --no-interactive`, `openspec validate --archived --no-interactive`, `cargo fmt`,

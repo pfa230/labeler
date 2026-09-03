@@ -5,7 +5,8 @@
 #
 # Exit 5 = the reviewer edited files. 7 = no answer could be read out of what the agent
 # printed, whatever role it was running and whatever status it exited with (#315).
-# 3 = implement changed nothing.
+# 3 = implement changed nothing, which a plan declaring `DELIVERABLE: spec-only`
+# answers for its own change (#313).
 #
 #   role   propose | plan-review | tasks | implement | review | gate-fix | archive |
 #          commit-msg
@@ -21,7 +22,9 @@
 #             the gates, so anything it changed would be committed without either.
 #   produces  must leave the worktree DIFFERENT, by the same digest. A stage that was
 #             asked for an artifact and exited cleanly having written nothing did not
-#             run, and the caller would otherwise record the work as done.
+#             run, and the caller would otherwise record the work as done. What "the
+#             worktree" means is per role: for implement it excludes openspec/changes,
+#             so a run that only ticked task boxes has not implemented anything.
 #
 # Both are measured as a delta ACROSS the stage, never as the absolute dirtiness of the
 # tree: by the time a fix round runs, the tree is already dirty with the work being
@@ -104,12 +107,57 @@ fi
 # Where that folder is right now. The author ledger is written into it, and the two stages
 # that write it straddle archive's move: implement runs before it, gate-fix after. Resolved
 # the way the check above resolves it, so the two cannot disagree about where the change is.
-change_dir=""
-if [ -d "$wt/openspec/changes/$change" ]; then
-  change_dir="$wt/openspec/changes/$change"
-else
-  for d in "$wt"/openspec/changes/archive/*"$change"/; do [ -d "$d" ] && change_dir="$d"; done
-fi
+# A function because propose creates the folder DURING its stage, so the answer taken before
+# the run is empty for exactly the role that then has to write into it.
+resolve_change_dir() {
+  local d
+  change_dir=""
+  if [ -d "$wt/openspec/changes/$change" ]; then
+    change_dir="$wt/openspec/changes/$change"
+  else
+    for d in "$wt"/openspec/changes/archive/*"$change"/; do [ -d "$d" ] && change_dir="$d"; done
+  fi
+}
+resolve_change_dir
+
+# What the plan says this change delivers, and empty when the plan says nothing. One legal
+# value, `spec-only`: the delta under specs/ IS the deliverable, so implementing it writes
+# no file outside openspec/changes, which is the shape the produces guard below would
+# otherwise read as a stage that never ran (#313). Absent is the stated
+# default and means the change delivers code, which is every other change.
+#
+# Anything else stops the stage rather than being read as absent. There is no second
+# spelling of the default and no third value: a plan carrying one has said something this
+# tooling cannot act on, and guessing which way it meant is the silent fallback.
+read_deliverable() { # read_deliverable <change-dir> -> the declared value; 1 = malformed
+  local dir="${1:-}" p n v
+  p="$dir/proposal.md"
+  [ -n "$dir" ] && [ -f "$p" ] || return 0
+  n=$(grep -c '^DELIVERABLE:' "$p" 2>/dev/null || true)
+  case "${n:-0}" in
+    0) return 0 ;;
+    1) ;;
+    *) echo "$p carries $n 'DELIVERABLE:' lines, so which one is the plan is a guess." >&2
+       return 1 ;;
+  esac
+  # Trimmed at the ends only. Deleting every space would read `spec - only` as `spec-only`
+  # and accept it, which is this reader normalising a malformed value into the one legal
+  # one while every other malformation above it stops the stage. The field is written by
+  # hand, so what it says is what it must mean (#313).
+  v=$(grep '^DELIVERABLE:' "$p" | sed 's/^DELIVERABLE:[[:space:]]*//; s/[[:space:]]*$//')
+  [ "$v" = "spec-only" ] || {
+    echo "$p declares 'DELIVERABLE: $v', which is not a deliverable this loop knows." >&2
+    echo "The only value is 'spec-only', for a change whose delta under specs/ is the whole" >&2
+    echo "deliverable. Every change that delivers code omits the line." >&2
+    return 1; }
+  printf '%s' "$v"
+}
+# Read HERE, before the agent is launched, and never re-read for the guard below. The
+# exemption it grants is the one thing an implement stage gains by writing the line itself,
+# and openspec/changes is excluded from that stage's work digest, so writing it would cost
+# nothing and buy the exemption. Read before the launch, the stage it exempts cannot have
+# written it.
+deliverable=$(read_deliverable "$change_dir") || exit 2
 
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
 # --plan-only because this fires before the diff review exists: demanding one here
@@ -427,7 +475,26 @@ echo "log: $log"
 #
 # Writing it here cannot make a no-op look like work: implement's own digest excludes
 # openspec/changes, and every digest above was taken before this line runs.
-if { [ "$role" = "implement" ] || [ "$role" = "gate-fix" ]; } && [ "$produced" = "yes" ]; then
+#
+# The propose stage of a spec-only change is an author for the same reason those two are:
+# what lands is the delta, and propose is the stage that wrote it. Nothing else can claim
+# it - implement has no code to write - so without this the ledger is empty, AUTHORS: is
+# empty, and the landing gate refuses a change nobody could have finished but by hand
+# (#313, and review-gate-check.sh:71-75 names this case). Re-read after the run, because the
+# stage being judged is the one that wrote both the delta and the declaration; claiming
+# authorship of what it just wrote is a liability it is telling the truth about, not an
+# exemption it is granting itself.
+authored=no
+if [ "$produced" = "yes" ]; then
+  case "$role" in
+    implement|gate-fix) authored=yes ;;
+    propose)
+      resolve_change_dir
+      proposed_deliverable=$(read_deliverable "$change_dir") || exit 2
+      [ "$proposed_deliverable" = "spec-only" ] && authored=yes ;;
+  esac
+fi
+if [ "$authored" = "yes" ]; then
   [ -n "$change_dir" ] || {
     echo >&2; echo "no folder for '$change' in $wt, so the author cannot be recorded." >&2
     exit 1; }
@@ -498,6 +565,20 @@ if [ "$produces" = "1" ] && [ "$status" -eq 0 ] && [ "$produced" = "no" ]; then
     echo >&2
     echo "warning: this fix round changed nothing. Either every finding was answered in" >&2
     echo "prose, or none was acted on. $log is the whole of what it said." >&2
+  # The second case where nothing is the right answer: a change whose plan declares its
+  # delta the whole deliverable has no code for this stage to write, so measuring it by
+  # the code it wrote asks the wrong question. It is not exempt from being measured. The
+  # measurement moves to the folder the work digest excludes: this stage must still have
+  # ticked its task boxes, or left something else behind in the change, and a stage that
+  # touched nothing at all anywhere is refused below exactly as it is today. That is what
+  # keeps a silently failed implementer from passing here, and the declaration is read
+  # before the launch so this stage cannot have written it (#313).
+  elif [ "$role" = "implement" ] && [ "$deliverable" = "spec-only" ] \
+       && [ "$before_guard" != "$after_guard" ]; then
+    echo >&2
+    echo "note: this change declares DELIVERABLE: spec-only, so its delta under specs/ is the" >&2
+    echo "whole deliverable and there is no code for an implement stage to write. It ran: it" >&2
+    echo "changed the change folder and nothing outside it. $log is what it said." >&2
   else
     echo >&2; echo "$role produced no changes despite a clean exit. It did not run. See $raw" >&2
     exit 3

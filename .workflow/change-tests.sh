@@ -1592,6 +1592,235 @@ if ! DETACH_LAUNCHER='wat' "$DETACH" "$d/y" true >/dev/null 2>&1; then
 else bad "an unknown DETACH_LAUNCHER was accepted"; fi
 find "$d" -mindepth 0 -delete 2>/dev/null
 
+# --- a change whose deliverable is the delta spec (#313) ---------------------------
+# run-change.sh could not drive one. implement carries produces=1, so a stage that wrote
+# no code because its plan asked for none exited 3 and the run stopped reporting that it
+# never ran. Two facts tell those apart, and both are artifacts: the plan's own
+# `DELIVERABLE: spec-only` line, read before the agent launches, and the stage still
+# having had to leave something in the change folder.
+
+# This section gates in two places on purpose. What follows is refused before any agent is
+# launched, so it needs no pty and runs on a shell that cannot allocate one; everything
+# under the pty_available guard below launches a stand-in agent through script(1) and
+# cannot. Moving these inside that guard would skip the refusals on exactly the shells
+# where nothing else here runs either.
+#
+# The declaration has one legal value. Anything else is a plan saying something this
+# tooling cannot act on, and reading it as absent is the guess.
+setup
+add_change issue-40-deliverable
+add_passing_review issue-40-deliverable
+dbin=$(mktemp -d)
+cat > "$dbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo launched >> launched.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$dbin/agy"
+dd40="$repo/.worktrees/issue-40/openspec/changes/issue-40-deliverable"
+printf '# Proposal\n\nDELIVERABLE: whatever\n' > "$dd40/proposal.md"
+out=$(cd "$repo" && PATH="$dbin:$PATH" "$STAGE" implement agy issue-40-deliverable 2>&1); rc=$?
+if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q "not a deliverable this loop knows"; then
+  ok "a deliverable the loop does not know refuses the stage"
+else
+  bad "an unknown DELIVERABLE value gave exit $rc"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -4
+fi
+printf '# Proposal\n\nDELIVERABLE: spec-only\nDELIVERABLE: spec-only\n' > "$dd40/proposal.md"
+out=$(cd "$repo" && PATH="$dbin:$PATH" "$STAGE" implement agy issue-40-deliverable 2>&1); rc=$?
+if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q "which one is the plan is a guess"; then
+  ok "and two of them are a guess, not a declaration"
+else bad "a doubled DELIVERABLE line gave exit $rc"; fi
+# Trimmed at the ends, never through the middle. Deleting every space would read this as
+# the legal value and accept it, which is the reader repairing a malformed declaration
+# instead of refusing it, in the one place a planner types the field by hand.
+printf '# Proposal\n\nDELIVERABLE: spec - only\n' > "$dd40/proposal.md"
+out=$(cd "$repo" && PATH="$dbin:$PATH" "$STAGE" implement agy issue-40-deliverable 2>&1); rc=$?
+if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q "spec - only"; then
+  ok "and a value spelled with spaces inside it is not repaired into the legal one"
+else bad "'DELIVERABLE: spec - only' gave exit $rc"; fi
+if [ ! -f "$repo/.worktrees/issue-40/launched.txt" ]; then
+  ok "with no agent launched on any of them"
+else bad "an agent ran on a plan the loop had already refused"; fi
+find "$dbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-41-specdelta
+add_passing_review issue-41-specdelta
+sbin=$(mktemp -d)
+d41="$repo/.worktrees/issue-41/openspec/changes/issue-41-specdelta"
+# Padded on purpose. Whitespace around the value is not part of it, and this is the fixture
+# that carries a legal declaration through a stage that actually runs.
+printf '# Proposal\n\nDELIVERABLE:   spec-only  \n' > "$d41/proposal.md"
+# What such an implement stage legitimately does: it verifies, ticks its boxes, and writes
+# no code. openspec/changes is excluded from implement's work digest, so this is exactly
+# the shape the guard read as a stage that had not run.
+cat > "$sbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf -- '- [x] 1.1 confirmed against src/convert.rs\n' \
+  > openspec/changes/issue-41-specdelta/tasks.md
+echo '{"conversation_id":"c","status":"COMPLETED","response":"nothing to write"}'
+FAKE
+chmod +x "$sbin/agy"
+out=$(cd "$repo" && PATH="$sbin:$PATH" "$STAGE" implement agy issue-41-specdelta 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "an implement stage that writes no code passes on a spec-only plan"
+else
+  bad "a spec-only change still could not get past implement (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if printf '%s' "$out" | grep -q 'DELIVERABLE: spec-only'; then
+  ok "saying why, rather than passing quietly"
+else bad "nothing in the output says why an empty implement was accepted"; fi
+# The exemption is not from being measured, only from being measured by the code written.
+# A stage that touched nothing anywhere did not run, spec-only plan or not.
+cat > "$sbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"conversation_id":"c","status":"COMPLETED","response":"did nothing"}'
+FAKE
+chmod +x "$sbin/agy"
+out=$(cd "$repo" && PATH="$sbin:$PATH" "$STAGE" implement agy issue-41-specdelta 2>&1); rc=$?
+if [ "$rc" = "3" ]; then ok "and one that touched nothing at all is still refused"
+else bad "a silent implementer passed on a spec-only change (exit $rc)"; fi
+# The declaration is read before the launch, so the stage it would exempt cannot write it.
+# openspec/changes is outside implement's work digest, so writing it costs nothing.
+add_change issue-42-selfdeclared
+add_passing_review issue-42-selfdeclared
+cat > "$sbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf 'DELIVERABLE: spec-only\n' >> openspec/changes/issue-42-selfdeclared/proposal.md
+echo '{"conversation_id":"c","status":"COMPLETED","response":"declared myself done"}'
+FAKE
+chmod +x "$sbin/agy"
+out=$(cd "$repo" && PATH="$sbin:$PATH" "$STAGE" implement agy issue-42-selfdeclared 2>&1); rc=$?
+if [ "$rc" = "3" ]; then ok "an implement stage cannot declare its own change spec-only"
+else bad "a stage exempted itself by writing the declaration (exit $rc)"; fi
+find "$sbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The author ledger. Nothing else can claim a spec-only change: implement writes no code,
+# and an empty AUTHORS: is what the landing gate refuses, so the field was written by hand.
+setup
+git worktree add -q .worktrees/issue-43 -b issue-43-ledger 2>/dev/null
+pbin=$(mktemp -d)
+cat > "$pbin/claude" <<'FAKE'
+#!/usr/bin/env bash
+mkdir -p "openspec/changes/$CHANGE/specs/thing"
+printf '# Proposal\n\n%s\n' "${DECLARE:-}" > "openspec/changes/$CHANGE/proposal.md"
+printf '## MODIFIED Requirements\n' > "openspec/changes/$CHANGE/specs/thing/spec.md"
+echo '{"type":"result","subtype":"success","result":"proposed","session_id":"sess-43"}'
+FAKE
+chmod +x "$pbin/claude"
+led43="$repo/.worktrees/issue-43/openspec/changes/issue-43-ledger/authors"
+(cd "$repo" && CHANGE=issue-43-ledger DECLARE='DELIVERABLE: spec-only' \
+   PATH="$pbin:$PATH" "$STAGE" propose claude issue-43-ledger) >/dev/null 2>&1
+if [ "$(cat "$led43" 2>/dev/null)" = "claude" ]; then
+  ok "the propose stage of a spec-only change is its author"
+else bad "the ledger reads '$(cat "$led43" 2>/dev/null)', not 'claude'"; fi
+# And only there. On every other change the code is what lands, propose wrote none of it,
+# and naming the planner would refuse a code reviewer that had written nothing.
+git worktree add -q .worktrees/issue-44 -b issue-44-normal 2>/dev/null
+led44="$repo/.worktrees/issue-44/openspec/changes/issue-44-normal/authors"
+(cd "$repo" && CHANGE=issue-44-normal DECLARE='' \
+   PATH="$pbin:$PATH" "$STAGE" propose claude issue-44-normal) >/dev/null 2>&1
+if [ ! -e "$led44" ]; then ok "and a plan that delivers code claims no authorship of it"
+else bad "propose claimed authorship on a change that delivers code"; fi
+find "$pbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The pairing that becomes unusable. With the planner as the only author, a code reviewer
+# named at launch can turn out to be that author; the landing gate would say so at the
+# commit, after every agent has run.
+setup
+add_change issue-45-pairing
+add_passing_review issue-45-pairing
+abin=$(mktemp -d)
+cat > "$abin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo launched >> launched.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+cat > "$abin/claude" <<'FAKE'
+#!/usr/bin/env bash
+echo launched >> launched.txt
+echo '{"type":"result","subtype":"success","result":"done","session_id":"s-45"}'
+FAKE
+chmod +x "$abin/agy" "$abin/claude"
+printf 'claude\n' > "$repo/.worktrees/issue-45/openspec/changes/issue-45-pairing/authors"
+out=$(cd "$repo" && PATH="$abin:$PATH" "$APPLY" agy claude issue-45-pairing 2>&1); rc=$?
+if [ "$rc" = "2" ]; then ok "apply.sh refuses a reviewer the author ledger names"
+else
+  bad "an author was accepted as the reviewer of its own work (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -4
+fi
+if [ ! -f "$repo/.worktrees/issue-45/launched.txt" ]; then
+  ok "before launching either of them"
+else bad "the refusal came after an agent had already run"; fi
+# Compared the way review-gate-check.sh:88 compares, or a name spelled differently in the
+# two files passes here, launches both agents and is refused at the commit.
+printf 'Claude\n' > "$repo/.worktrees/issue-45/openspec/changes/issue-45-pairing/authors"
+out=$(cd "$repo" && PATH="$abin:$PATH" "$APPLY" agy claude issue-45-pairing 2>&1); rc=$?
+if [ "$rc" = "2" ] && [ ! -f "$repo/.worktrees/issue-45/launched.txt" ]; then
+  ok "however the ledger spells the author's name"
+else bad "a differently-cased author was accepted as its own reviewer (exit $rc)"; fi
+find "$abin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# End to end on the shape that could not be driven: propose writes the delta and the
+# declaration, implement ticks its boxes and writes no code, the review approves, and what
+# lands names the planner as the author. That last field is what #266 wrote by hand.
+setup
+git worktree add -q .worktrees/issue-46 -b issue-46-endtoend 2>/dev/null
+ebin=$(mktemp -d)
+cat > "$ebin/claude" <<'FAKE'
+#!/usr/bin/env bash
+mkdir -p openspec/changes/issue-46-endtoend/specs/thing
+printf '# Proposal\n\nDELIVERABLE: spec-only\n' > openspec/changes/issue-46-endtoend/proposal.md
+printf '## MODIFIED Requirements\n' > openspec/changes/issue-46-endtoend/specs/thing/spec.md
+echo '{"type":"result","subtype":"success","result":"proposed","session_id":"sess-46"}'
+FAKE
+cat > "$ebin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf -- '- [x] 1.1 confirmed; the delta is the whole deliverable\n' \
+  > openspec/changes/issue-46-endtoend/tasks.md
+echo '{"conversation_id":"c","status":"COMPLETED","response":"nothing to write"}'
+FAKE
+cat > "$ebin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"t-46"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$ebin/claude" "$ebin/agy" "$ebin/codex"
+(cd "$repo" && PATH="$ebin:$PATH" "$STAGE" propose claude issue-46-endtoend) >/dev/null 2>&1
+add_passing_review issue-46-endtoend
+d46="$repo/.worktrees/issue-46/openspec/changes/issue-46-endtoend"
+out=$(cd "$repo" && PATH="$ebin:$PATH" "$APPLY" agy codex issue-46-endtoend --rounds 1 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "a change whose deliverable is the delta runs through apply.sh"
+else
+  bad "apply.sh could not drive a spec-only change (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if grep -qx 'AUTHORS: claude' "$d46/diff-review.md" 2>/dev/null; then
+  ok "naming the stage that wrote the delta, which is what landed"
+else bad "AUTHORS reads '$(grep '^AUTHORS:' "$d46/diff-review.md" 2>/dev/null)'"; fi
+arch46="$repo/.worktrees/issue-46/openspec/changes/archive/2026-01-01-issue-46-endtoend"
+mkdir -p "$repo/.worktrees/issue-46/openspec/changes/archive"
+cp -r "$d46" "$arch46"
+( cd "$repo/.worktrees/issue-46" && "$here/review-gate-check.sh" . \
+    openspec/changes/archive/2026-01-01-issue-46-endtoend/diff-review.md ) >/dev/null 2>&1
+grc=$?
+if [ "$grc" = "0" ]; then ok "and the landing gate accepts it with nobody filling a field in by hand"
+else
+  bad "the landing gate refuses a spec-only change (exit $grc)"
+  ( cd "$repo/.worktrees/issue-46" && "$here/review-gate-check.sh" . \
+      openspec/changes/archive/2026-01-01-issue-46-endtoend/diff-review.md ) 2>&1 \
+    | sed 's/^/        /' | head -3
+fi
+find "$ebin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
 # --- a stage that gives no account of itself (#315) ---------------------------------
 # One run of #287 hit both shapes of this in an afternoon. agy printed nothing at all
 # across 21 minutes while writing 1193 lines, and the line that copied its empty capture
