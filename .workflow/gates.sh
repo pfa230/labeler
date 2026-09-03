@@ -208,7 +208,8 @@ gate_attribute() { # gate_attribute <worktree> <gates-exit> <gates-log> <base-lo
   case "$rc" in
     "$GATE_TEST_FAILED") ;;
     "$GATE_FMT_FAILED")
-      gate_err "cargo fmt failed, which is not a thing a baseline excuses."
+      gate_err "cargo fmt --check failed: the tree is not formatted, or the formatter itself"
+      gate_err "errored. Neither is a thing a baseline excuses."
       return 1 ;;
     "$GATE_CLIPPY_FAILED")
       gate_err "clippy failed. It is deterministic, and a pre-existing lint is not a thing this"
