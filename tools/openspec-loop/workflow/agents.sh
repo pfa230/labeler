@@ -189,19 +189,19 @@ agent_command() {
       # < /dev/null for the same reason codex needs it above: `opencode run` reads stdin
       # and blocks forever without it. Omitting it produced a silent multi-minute hang
       # with zero bytes of output, which looks identical to a slow model (#286).
-      local ro="" r=""
-      # Asked for, not enforced. .opencode/agents/reviewer.md denies edit, write, patch
-      # and bash, and opencode 1.18.25 honours none of them: a reviewer configured with
-      # all four denied was told to write two files and wrote them, reaching for bash to
-      # do it. The flag is still passed, because it costs nothing and a later opencode may
-      # mean it, but it buys no guarantee. What stops a reviewer that edits is the
-      # worktree digest in run-stage.sh, and for this agent it is the only thing that
-      # does. #286 claimed the deny block removed the tools from the model's toolset;
-      # that was true of nothing this repo has ever run against.
-      case "$role" in review|plan-review) ro='--agent reviewer ' ;; esac
+      local r=""
+      # No read-only flag, because opencode has none that applies here. The review roles
+      # used to pass --agent reviewer; `opencode run --agent` takes a primary agent, and
+      # .opencode/agents/reviewer.md declares mode: subagent, so opencode answered
+      # "agent 'reviewer' is a subagent, not a primary agent. Falling back to default
+      # agent" and selected nothing. Passing a flag that silently selects nothing reads
+      # like a reviewer that was constrained.
+      #
+      # What stops a reviewer that edits is the worktree digest in run-stage.sh, and for
+      # this agent it is the only thing that does.
       [ -n "$resume" ] && printf -v r -- '-s %q ' "$resume"
-      printf -v out 'opencode run --pure --format json -m %q %s%s%q < /dev/null' \
-        "$(agent_model opencode)" "$ro" "$r" "$prompt"
+      printf -v out 'opencode run --pure --format json -m %q %s%q < /dev/null' \
+        "$(agent_model opencode)" "$r" "$prompt"
       ;;
     *) return 1 ;;
   esac
