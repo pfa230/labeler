@@ -97,6 +97,21 @@ launched. Every agent currently satisfies that, so the refusal has nothing to fi
 kept because it is what a new entry is checked against: `opencode` failed it until it grew a way to
 continue a session, and it took every role from that point.
 
+A stage that fails on a model says which model it was on and what to set to move off it, and then
+stops. It does not move off it. The default model for `opencode` costs nothing, and the model that
+gets past a spent free allowance is billed to this account, so the run offers that as a line to run
+and never runs it: paying is a decision with a bill attached, and a runner does not get to make it
+quietly. Where the tool said its free allowance is what ran out, the message says so; where it said
+anything else, the message repeats what it said and claims nothing about allowances. Either way the
+run stops and the same override is offered, so a wrong guess about the cause costs a less precise
+sentence and never a surprise charge.
+
+Nothing checks before a stage starts that the model it names still answers. That check is the one
+thing that would have caught what this was filed over, and it is not here: the list a tool can be
+asked for is a cache of names, an exhausted model is still a name on it, and a check that passes
+whenever it cannot see the answer is worse than no check. So this fails late, loudly, and legibly
+rather than early.
+
 The stage commands differ per agent, because OpenSpec writes a separate command set for each and not
 every tool reads the same one. Two forms exist: the **workflow** form `/opsx-*` and the **skill** form
 `/openspec-*`.

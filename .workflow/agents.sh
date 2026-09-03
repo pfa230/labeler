@@ -9,9 +9,9 @@
 #   - agy's default model rejects --effort outright and still exits 0.
 #   - codex blocks forever reading stdin unless it is given < /dev/null.
 #   - script(1) is two incompatible programs sharing a name; see pty_run below.
-# Each entry below records how its form was arrived at. That is a comment, not a
-# runtime check: whether an invocation works is decided by running it, and the
-# runner already reports a failed launch, an unstructured result and a no-op.
+# Each entry below records how its form was arrived at. That is a comment and not a
+# runtime check, because whether an invocation works is decided by running it. What the
+# run then says when it did not work is agent_error and agent_stall_advice below (#297).
 
 # Roles: implement (may write) | review (must not write).
 #
@@ -125,6 +125,21 @@ handover_plan() {
   fi
 }
 
+# agent_model <agent> — the model this agent is launched with, or non-zero where its
+# invocation names none. One place, because agent_command below reads it rather than
+# spelling the default a second time: two spellings is how a check ends up asserting a
+# model nothing runs.
+#
+# The default is free. Nothing here moves off it on its own; when it stops answering the
+# run stops and says what to set, because spending money is not a runner's decision to
+# make quietly (#297).
+agent_model() {
+  case "$1" in
+    opencode) printf '%s' "${OPENCODE_MODEL:-opencode/muse-spark-1.2-contributor-free}" ;;
+    *) return 1 ;;
+  esac
+}
+
 # agent_command <agent> <role> <prompt> [resume_id] -> command string on stdout
 agent_command() {
   local agent="$1" role="$2" prompt="$3" resume="${4:-}" out=""
@@ -181,7 +196,7 @@ agent_command() {
       case "$role" in review|plan-review) ro='--agent reviewer ' ;; esac
       [ -n "$resume" ] && printf -v r -- '-s %q ' "$resume"
       printf -v out 'opencode run --pure --format json -m %q %s%s%q < /dev/null' \
-        "${OPENCODE_MODEL:-meta/muse-spark-1.2-contributor}" "$ro" "$r" "$prompt"
+        "$(agent_model opencode)" "$ro" "$r" "$prompt"
       ;;
     *) return 1 ;;
   esac
@@ -300,6 +315,106 @@ agent_extract() {
   # Truncated when there is no id, so a stale one from an earlier run is never resumed.
   printf '%s' "$id" > "$conv"
   printf '%s' "$status"
+}
+
+# agent_error <agent> <raw> — the tool's OWN error from a capture that yielded no answer.
+# Prints one line and returns 0 when the CLI said what went wrong; returns non-zero when
+# it did not, which leaves the caller with a transcript and nothing more.
+#
+# "we could not parse an answer" and "the tool reported an error" are different facts, and
+# run-stage.sh reported the first for the second: an opencode model it cannot reach prints
+# one {"type":"error"} event and exits 1, agent_extract finds no text parts in that, and the
+# run came back NO_STRUCTURED_RESULT with nothing about a model in it (#297).
+#
+# Only opencode has a shape to read. agy and claude print a single envelope whose status
+# and result agent_extract already reports, and codex ends a failed turn with an
+# agent_message like any other, so neither has an error object this could name.
+agent_error() {
+  local agent="$1" raw="$2" msg=""
+  case "$agent" in
+    opencode)
+      # Line-anchored, for the reason agent_extract's opencode branch is: one JSON event
+      # per line, so a foreign file echoed into the transcript arrives escaped inside a
+      # single event and cannot be read as an error of this run's own.
+      msg=$(jq -sRr '[splits("\n") | fromjson?]
+                     | map(select(.type == "error")) | last
+                     | if . == null then empty
+                       else (.error.name // "error") + ": "
+                            + (.error.data.message // "no message")
+                            + (if (.error.data.ref // "") == "" then ""
+                               else " (ref " + .error.data.ref + ")" end)
+                       end' "$raw" 2>/dev/null | tr '\n' ' ') ;;
+    *) return 1 ;;
+  esac
+  [ -n "$msg" ] || return 1
+  printf '%s' "$msg"
+}
+
+# agent_quota_exhausted <agent> <raw> — whether the tool said its FREE allowance ran out.
+#
+# Wording only. Nothing branches on this except which sentence agent_stall_advice prints,
+# so a wrong answer costs precision and never a charge; that is the whole reason the run
+# stops here rather than moving to a paid model on the strength of a regex.
+#
+# It is not invented. opencode's own retry code tests
+# `e.data.responseBody?.includes("FreeUsageLimitError")` for exactly this, and this asks
+# the same question of the same field. What no amount of reading settles, and running it
+# did: that the field reaches `--format json` at all. Pointed at a provider returning 429
+# with that body, opencode puts the whole APIError on stdout and exits 1:
+#   {"type":"error","error":{"name":"APIError","data":{"message":"Free usage limit
+#    exceeded","statusCode":429,"isRetryable":true,"responseBody":"{...
+#    FreeUsageLimitError...}"}}}
+#
+# Scoped to that event's own data fields rather than the line, so a model writing the word
+# in prose does not trip it. `message` is read too, because opencode falls back to the body
+# when the message is empty. `GoUsageLimitError`, the PAID account's rate limit, is left
+# unmatched: it is not a free allowance and saying so would be wrong.
+agent_quota_exhausted() {
+  local agent="$1" raw="$2"
+  case "$agent" in
+    opencode)
+      [ -f "$raw" ] || return 1
+      jq -e -sRr '[splits("\n") | fromjson?]
+                  | map(select(.type == "error") | .error.data
+                        | [(.responseBody // ""), (.message // "")])
+                  | flatten | any(contains("FreeUsageLimitError"))' \
+         "$raw" >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+# agent_stall_advice <agent> <raw> — what a person does next after a stage failed.
+# Prints to stdout and returns non-zero where there is nothing tool-specific to say.
+#
+# The run STOPS either way. #297 was filed on a run that spent an hour dying a minute at
+# a time with nothing naming a model, and the fix is that the failure says which model it
+# was on and what to set to move off it. It is NOT that the runner moves off it: an
+# allowance running out is durable account state and paying to get past it is a decision
+# with a bill attached, so it is offered as a line to run and never taken automatically.
+#
+# The quota case is separated only to word the message accurately. If the matcher is
+# wrong the cost is a less precise sentence, never an unexpected charge, which is the
+# whole reason the switch this replaced is not here.
+agent_stall_advice() {
+  local agent="$1" raw="$2" model err
+  case "$agent" in
+    opencode)
+      model=$(agent_model opencode)
+      if agent_quota_exhausted opencode "$raw"; then
+        echo "opencode's free allowance on '$model' is gone."
+        echo "That is account state, not a hiccup: re-running the stage as it is will"
+        echo "fail the same way until the allowance resets."
+      else
+        err=$(agent_error opencode "$raw") || err="the tool reported no error"
+        echo "opencode failed on '$model': $err"
+        echo "That is the failure the tool itself reported, whatever its cause."
+      fi
+      echo
+      echo "To run this stage on a model that BILLS this account, re-run it with:"
+      echo "  OPENCODE_MODEL=meta/muse-spark-1.2-contributor"
+      echo "Nothing changes model on its own. Spending is yours to decide." ;;
+    *) return 1 ;;
+  esac
 }
 
 # clean_capture — filter a pty capture on stdin into plain text on stdout.
