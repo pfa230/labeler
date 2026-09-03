@@ -16,9 +16,15 @@ GATE="$here/review-gate-check.sh"
 MERGE="$here/archive-merge-check.sh"
 pass=0; fail=0
 
+# fatal, canary, fixture_built and suite_guard_case: the fixture guard every suite here
+# shares. Read why in the file itself; the short version is that a fixture write that
+# fails silently turns a refusal case into a gate that appears to have stopped firing.
+. "$here/suite-lib.sh"
+
 expect() { # expect <want-exit> <label> <script> <args...>
   local want="$1" label="$2"; shift 2
   local out rc
+  canary
   out=$("$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ]; then
     pass=$((pass + 1)); printf 'ok    %s\n' "$label"
@@ -33,6 +39,7 @@ expect() { # expect <want-exit> <label> <script> <args...>
 expect_says() { # expect_says <want-exit> <pattern> <label> <script> <args...>
   local want="$1" pat="$2" label="$3"; shift 3
   local out rc
+  canary
   out=$("$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ] && printf '%s\n' "$out" | grep -qF -- "$pat"; then
     pass=$((pass + 1)); printf 'ok    %s\n' "$label"
@@ -52,10 +59,10 @@ TREE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 # tree where a change is landing: one requirement modified, one added, the untouched
 # one left alone. Every case starts from that shape and breaks one thing.
 setup() {
-  repo=$(mktemp -d)
-  cd "$repo" || exit 2
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
-  mkdir -p openspec/specs/thing
+  mkdir -p openspec/specs/thing || fatal "cannot create the fixture's spec directory."
   cat > openspec/specs/thing/spec.md <<'EOF'
 # thing
 
@@ -75,7 +82,7 @@ The second thing SHALL happen.
 EOF
   git add -A; git commit -qm base
 
-  mkdir -p "$CDIR/specs/thing"
+  mkdir -p "$CDIR/specs/thing" || fatal "cannot create the fixture's change directory."
   printf '# Proposal\n' > "$CDIR/proposal.md"
   printf 'Design prose.\n' > "$CDIR/design.md"
   cat > "$CDIR/specs/thing/spec.md" <<'EOF'
@@ -116,6 +123,10 @@ EOF
   "$here/specs-digest.sh" "$CDIR" --write > /dev/null
   printf 'AUTHORS: agy, opencode\nREVIEWER: codex\nVERDICT: APPROVE\nTREE_SHA256: %s\n' "$TREE" > "$CDIR/diff-review.md"
   FILES=(openspec/specs/thing/spec.md "$CDIR/proposal.md" "$CDIR/specs/thing/spec.md" src/main.rs)
+  fixture_built "$repo" openspec/specs/thing/spec.md "$CDIR/proposal.md" "$CDIR/design.md" \
+                "$CDIR/specs/thing/spec.md" "$CDIR/review.md" "$CDIR/diff-review.md"
+  grep -q '^SPECS_SHA256:' "$CDIR/review.md" \
+    || fatal "specs-digest.sh recorded no digest in the fixture's review.md, so every staleness case below would pass for the wrong reason."
 }
 
 teardown() {
@@ -248,11 +259,11 @@ teardown
 # that matters: the name has to round-trip, or a delta is checked against the wrong
 # published spec (#329).
 setup_nested() {
-  repo=$(mktemp -d)
-  cd "$repo" || exit 2
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
   for cap in identity/user-auth billing/user-auth; do
-    mkdir -p "openspec/specs/$cap"
+    mkdir -p "openspec/specs/$cap" || fatal "cannot create the fixture's spec directory."
     cat > "openspec/specs/$cap/spec.md" <<EOF
 # $cap
 
@@ -279,6 +290,8 @@ EOF
 
 Another identity thing SHALL happen.
 EOF
+  fixture_built "$repo" openspec/specs/identity/user-auth/spec.md openspec/specs/billing/user-auth/spec.md \
+                "$CDIR/specs/identity/user-auth/spec.md"
 }
 
 setup_nested
@@ -436,6 +449,44 @@ expect 0 "gate: an approved live change lets code through" "$GATE" "$repo" src/m
 printf '\nAnd more.\n' >> "$LIVE/specs/thing/spec.md"
 expect 1 "gate: a live change whose specs moved after the verdict" "$GATE" "$repo" src/main.rs
 teardown
+
+# --- what could not be read is not what was found to be right (#333) --------------
+# Both scripts used to reach their permissive branch through a failure they could not
+# see. A base ref that does not resolve is the shape a fixture takes when its commit
+# failed to write, and it is what turned three merge cases and a block of gate cases
+# green while saying nothing at all: every capability read as new, so nothing had a
+# predecessor to be compared against.
+setup_uncommitted() {
+  setup
+  rm -rf .git
+  git init -q . && git config user.email t@t && git config user.name t \
+    || fatal "cannot re-init the fixture repo without a commit."
+  # A violation only the base ref can catch: this requirement is in no delta, so it is
+  # checked against its published predecessor and nothing else.
+  sed -i.bak 's/^The first thing SHALL happen./The first thing SHALL NOT happen./' openspec/specs/thing/spec.md
+  rm -f openspec/specs/thing/spec.md.bak
+}
+setup_uncommitted
+expect_says 2 "does not resolve to a commit" \
+  "merge: an unresolvable base ref is refused, not read as a capability with nothing to displace" \
+  "$MERGE" "$repo" "${FILES[@]}"
+expect_says 2 "does not resolve to a commit" \
+  "gate: an unresolvable base ref is refused, not read as a change that is already archived" \
+  "$GATE" "$repo" "${FILES[@]}"
+teardown
+
+# The gate's own version of the same hole: a commit naming a change while the directory
+# that would hold it is absent. That is a tree nothing can be read out of, and it used to
+# exit 0 before a single file was opened.
+setup
+find openspec/changes -mindepth 0 -delete 2>/dev/null
+expect_says 2 "does not exist" \
+  "gate: a commit naming a change with no openspec/changes to hold it is refused" \
+  "$GATE" "$repo" "${FILES[@]}"
+teardown
+
+# The guard on this suite's own fixtures.
+suite_guard_case "$here/gate-tests.sh"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]
