@@ -46,9 +46,9 @@ One command runs the whole loop:
 
 The issue number, then the four agents: who plans, who reviews the plan, who implements, who reviews
 the code. It scopes the issue with you first, which is the only part that asks anything, and then runs
-worktree, plan, plan review, implementation, diff review, archive, the gates, the commit and the push
-unattended, stopping when the branch run is green. The merge into `main` is left to you, and by that
-point it is mechanical.
+worktree, plan, plan review, implementation, diff review, archive, the gates and the commit unattended,
+printing the merge sequence and stopping. The merge into `main` is left to you, and by that point it is
+mechanical.
 
 Which stage runs next is read off the artifacts on disk rather than off a record of what ran, so
 re-running the same command after any stop resumes where it left off instead of starting over.
@@ -279,8 +279,8 @@ lints are never set aside that way. Where the comparison cannot be made at all, 
 against the change and it stops, because a change waved through on an attribution nobody could make is
 worse than a stop.
 
-**The merge.** Nothing reaches `main` unattended. The work is committed, pushed and green on its
-branch when you are asked, so what is left is a decision, not an inspection.
+**The merge.** Nothing reaches `main` unattended. The work is committed on its branch when you are
+asked, so what is left is a decision, not an inspection.
 
 ## What is not guaranteed
 
@@ -301,9 +301,10 @@ branch when you are asked, so what is left is a decision, not an inspection.
 - Whether a rendered label looks right is checked by nobody either. It is a visual judgement made
   against a running server, no artifact of it reaches the repository, and the process says so rather
   than carrying a checkbox that cannot fail.
-- There are no pull requests, so a change is checked by pushing its branch, which runs the validation
-  jobs without publishing anything. Merging on a red or absent branch run puts the failure on `main`,
-  where CI becomes a post-mortem rather than a gate.
+- There are no pull requests and no branch runs. What is given up is a check on a clean machine
+  before the commit lands; a broken commit surfaces on `main`'s own CI run instead, where it is a
+  post-mortem rather than a gate. Publishing is unaffected, because `build` needs `[rust, ui]` and
+  runs only on `main` or a tag, so a broken commit ships nothing until it is fixed forward.
 - Specs live in two places during migration. `docs/SPEC.md` is frozen and remains authoritative for
   behavior that has not moved; `openspec/specs/` holds everything since. A spec in the new location
   names the frozen section it replaces, so precedence is recorded rather than inferred.
