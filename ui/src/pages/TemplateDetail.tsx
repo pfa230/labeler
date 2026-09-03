@@ -283,64 +283,65 @@ export function TemplateDetail() {
         <section className="flex flex-col gap-2">
           <h2 className="text-lg font-semibold">Parameters</h2>
           <div className="flex flex-col gap-2">
-            {detail.params.map((param) => (
-              <div
-                key={param.name}
-                className="flex flex-col gap-1 rounded-md border p-3 text-sm"
-                style={{ borderColor: "var(--border)", background: "var(--surface)" }}
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-medium">{param.name}</span>
-                    <span
-                      className="rounded-full px-2 py-0.5 text-xs font-medium"
-                      style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
-                    >
-                      {param.type}
-                      {param.multiline ? " (multiline)" : ""}
-                    </span>
-                  </div>
-                  {param.default !== undefined && (
-                    <div className="flex flex-wrap items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
-                      <span>
-                        default: <code className="font-mono">{String(param.default)}</code>
+            {detail.params.map((param) => {
+              const report = detail.param_defaults?.[param.name];
+              return (
+                <div
+                  key={param.name}
+                  className="flex flex-col gap-1 rounded-md border p-3 text-sm"
+                  style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-medium">{param.name}</span>
+                      <span
+                        className="rounded-full px-2 py-0.5 text-xs font-medium"
+                        style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
+                      >
+                        {param.type}
+                        {param.multiline ? " (multiline)" : ""}
                       </span>
-                      {detail.param_defaults?.[param.name] && (
-                        "resolved" in detail.param_defaults[param.name] ? (
+                    </div>
+                    {param.default !== undefined && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
+                        <span>
+                          default: <code className="font-mono">{String(param.default)}</code>
+                        </span>
+                        {report && ("resolved" in report ? (
                           <span>
-                            (resolved: <code className="font-mono">{String(detail.param_defaults[param.name].resolved)}</code>)
+                            (resolved: <code className="font-mono">{String(report.resolved)}</code>)
                           </span>
                         ) : (
                           <span style={{ color: "var(--bad, #dc2626)" }}>
-                            ({detail.param_defaults[param.name].error.message})
+                            ({report.error.message})
                           </span>
-                        )
-                      )}
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {param.description && (
+                    <p className="text-xs" style={{ color: "var(--muted)" }}>
+                      {param.description}
+                    </p>
+                  )}
+                  {(param.min !== undefined || param.max !== undefined) && (
+                    <div className="text-xs" style={{ color: "var(--muted)" }}>
+                      bounds: {param.min ?? "-∞"} to {param.max ?? "+∞"}
+                    </div>
+                  )}
+                  {param.values && param.values.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-xs" style={{ color: "var(--muted)" }}>
+                        allowed values:
+                      </span>
+                      {param.values.map((v: string) => (
+                        <Chip key={v}>{v}</Chip>
+                      ))}
                     </div>
                   )}
                 </div>
-                {param.description && (
-                  <p className="text-xs" style={{ color: "var(--muted)" }}>
-                    {param.description}
-                  </p>
-                )}
-                {(param.min !== undefined || param.max !== undefined) && (
-                  <div className="text-xs" style={{ color: "var(--muted)" }}>
-                    bounds: {param.min ?? "-∞"} to {param.max ?? "+∞"}
-                  </div>
-                )}
-                {param.values && param.values.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <span className="text-xs" style={{ color: "var(--muted)" }}>
-                      allowed values:
-                    </span>
-                    {param.values.map((v: string) => (
-                      <Chip key={v}>{v}</Chip>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}
