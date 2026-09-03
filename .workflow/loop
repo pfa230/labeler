@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
-# The one path from this repository into the vendored loop (#357).
+# The name callers use for the loop, which lives at tools/openspec-loop/ (#357).
 #
-# The loop lives at tools/openspec-loop/, a git subtree of
-# https://github.com/pfa230/openspec-loop. A subtree rather than a submodule because
-# run-change.sh creates a worktree per change and `git worktree add` does not populate a
-# submodule: the gates would be absent from exactly where the loop runs. A subtree is
-# ordinary files, so a bare clone and every worktree have them.
-#
-# Everything addresses the loop through this file and never by script path: the git hooks,
-# CI, the Claude commands and the edit-time hook. That buys two things. The prefix above
-# becomes a one-file change rather than a sweep through hooks and workflows. And the
-# Claude surface ships as a plugin, from a repository that cannot know where a given
-# project put its subtree, so it needs a fixed name to call; this is that name.
+# Used by CI, the Claude commands and the edit-time hook: callers that either sit outside
+# this repository or would otherwise hard-code the prefix above. The git hooks do NOT come
+# through here. They live inside the subtree beside workflow/ and resolve their scripts as
+# $here/../workflow, because routing them through a consumer file would leave the kit
+# unable to run its own suites.
 #
 # Arguments pass through unmodified and the exit status is the script's own, because
 # callers read specific codes: run-stage.sh 7, run-change.sh 4 and 8, apply.sh 10.
