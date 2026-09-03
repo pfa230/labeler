@@ -247,6 +247,7 @@ impl TemplateContent {
         fn walk_items<F>(
             items: &[LayoutItem],
             resolved_data: Option<&HashMap<String, serde_json::Value>>,
+            repeated_names: &std::collections::BTreeSet<String>,
             record_ref: &mut F,
         ) where
             F: FnMut(&str, bool, bool),
@@ -255,7 +256,9 @@ impl TemplateContent {
                 // Record when: keys unconditionally for any item encountered in this active scope
                 if let Some(when) = item.when() {
                     for key in when.keys() {
-                        record_ref(key, false, false);
+                        if !repeated_names.contains(key) {
+                            record_ref(key, false, false);
+                        }
                     }
                 }
 
@@ -301,7 +304,9 @@ impl TemplateContent {
                             record_ref(r, false, false);
                         }
                         for name in bare_token_names(value) {
-                            record_ref(name, true, false);
+                            if !repeated_names.contains(name) {
+                                record_ref(name, true, false);
+                            }
                         }
                     }
                     LayoutItem::Qr {
@@ -315,7 +320,9 @@ impl TemplateContent {
                             }
                         }
                         for name in bare_token_names(value) {
-                            record_ref(name, true, false);
+                            if !repeated_names.contains(name) {
+                                record_ref(name, true, false);
+                            }
                         }
                     }
                     LayoutItem::Image {
@@ -336,7 +343,9 @@ impl TemplateContent {
                         }
                         if let Some(s) = src {
                             for name in bare_token_names(s) {
-                                record_ref(name, true, false);
+                                if !repeated_names.contains(name) {
+                                    record_ref(name, true, false);
+                                }
                             }
                         }
                     }
@@ -353,6 +362,7 @@ impl TemplateContent {
                         placement,
                         stroke,
                         background,
+                        repeat,
                         items,
                         ..
                     } => {
@@ -373,13 +383,44 @@ impl TemplateContent {
                         if let Some(DynamicValue::Ref(r)) = background {
                             record_ref(r, false, false);
                         }
-                        walk_items(items, resolved_data, record_ref);
+
+                        if let Some(rep_name) = repeat {
+                            record_ref(rep_name, true, false);
+                            let mut child_repeated = repeated_names.clone();
+                            child_repeated.insert(rep_name.clone());
+
+                            if let Some(data) = resolved_data {
+                                if let Some(serde_json::Value::Array(elements)) = data.get(rep_name)
+                                {
+                                    for elem in elements {
+                                        let mut child_data = data.clone();
+                                        child_data.insert(
+                                            rep_name.clone(),
+                                            serde_json::Value::String(
+                                                crate::render::value_to_string(elem),
+                                            ),
+                                        );
+                                        walk_items(
+                                            items,
+                                            Some(&child_data),
+                                            &child_repeated,
+                                            record_ref,
+                                        );
+                                    }
+                                }
+                            } else {
+                                walk_items(items, None, &child_repeated, record_ref);
+                            }
+                        } else {
+                            walk_items(items, resolved_data, repeated_names, record_ref);
+                        }
                     }
                 }
             }
         }
 
-        walk_items(items, resolved_data, &mut record_ref);
+        let initial_repeated = std::collections::BTreeSet::new();
+        walk_items(items, resolved_data, &initial_repeated, &mut record_ref);
 
         let mut specs = Vec::new();
 
@@ -981,7 +1022,8 @@ impl TemplateContent {
                         }
                     }
                 }
-                validate_interpolated_string(s, &self.params)?;
+                let empty_repeated = std::collections::BTreeSet::new();
+                validate_interpolated_string(s, &self.params, &empty_repeated)?;
             }
         }
         Ok(())
@@ -1027,8 +1069,14 @@ impl TemplateContent {
 
         match &self.layout {
             Layout::Items(items) => {
+                let repeated_names = std::collections::BTreeSet::new();
                 for (idx, item) in items.iter().enumerate() {
-                    validate_item_references(item, &self.params, &format!("layout[{idx}]"))?;
+                    validate_item_references(
+                        item,
+                        &self.params,
+                        &format!("layout[{idx}]"),
+                        &repeated_names,
+                    )?;
                 }
             }
         }
@@ -1361,13 +1409,14 @@ fn validate_when_references(
     when: Option<&std::collections::BTreeMap<String, String>>,
     params: &std::collections::BTreeMap<String, ParamSpec>,
     path: &str,
+    repeated_names: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     if let Some(when) = when {
         for (name, val) in when {
             let spec = params.get(name).ok_or_else(|| {
                 format!("undeclared parameter '{name}' referenced in when condition")
             })?;
-            if matches!(spec.param_type, ParamType::List) {
+            if matches!(spec.param_type, ParamType::List) && !repeated_names.contains(name) {
                 return Err(format!(
                     "when condition at {path} references list parameter '{name}'; list parameters cannot be used in when conditions"
                 ));
@@ -1387,6 +1436,7 @@ fn validate_when_references(
 fn validate_interpolated_string(
     s: &str,
     params: &std::collections::BTreeMap<String, ParamSpec>,
+    repeated_names: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     for scanned in crate::interpolation::scan_tokens(s) {
         let token = match crate::interpolation::parse(scanned.raw) {
@@ -1484,9 +1534,13 @@ fn validate_interpolated_string(
             None => {
                 let is_declared_list = match token.source {
                     crate::interpolation::Source::Bare(name) => {
-                        params.get(name).is_some_and(|spec| {
-                            matches!(spec.param_type, crate::models::ParamType::List)
-                        })
+                        if repeated_names.contains(name) {
+                            false
+                        } else {
+                            params.get(name).is_some_and(|spec| {
+                                matches!(spec.param_type, crate::models::ParamType::List)
+                            })
+                        }
                     }
                     _ => false,
                 };
@@ -1506,6 +1560,7 @@ fn validate_item_references(
     item: &LayoutItem,
     params: &std::collections::BTreeMap<String, ParamSpec>,
     path: &str,
+    repeated_names: &std::collections::BTreeSet<String>,
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
@@ -1516,8 +1571,8 @@ fn validate_item_references(
             when,
             ..
         } => {
-            validate_when_references(when.as_ref(), params, path)?;
-            validate_interpolated_string(value, params)?;
+            validate_when_references(when.as_ref(), params, path, repeated_names)?;
+            validate_interpolated_string(value, params, repeated_names)?;
             if let Some(DynamicValue::Ref(ref_name)) = font_weight {
                 check_param_ref(params, ref_name, "font_weight", &["integer"])?;
             }
@@ -1543,8 +1598,8 @@ fn validate_item_references(
             when,
             ..
         } => {
-            validate_when_references(when.as_ref(), params, path)?;
-            validate_interpolated_string(value, params)?;
+            validate_when_references(when.as_ref(), params, path, repeated_names)?;
+            validate_interpolated_string(value, params, repeated_names)?;
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
                     if let SizeValue::Dynamic(DynamicValue::Ref(ref_name)) = sv {
@@ -1565,7 +1620,7 @@ fn validate_item_references(
             when,
             ..
         } => {
-            validate_when_references(when.as_ref(), params, path)?;
+            validate_when_references(when.as_ref(), params, path, repeated_names)?;
             if let Some(n) = name {
                 if n.is_empty()
                     || !n
@@ -1579,7 +1634,7 @@ fn validate_item_references(
                 check_param_ref(params, n, "image name", &["string"])?;
             }
             if let Some(s) = src {
-                validate_interpolated_string(s, params)?;
+                validate_interpolated_string(s, params, repeated_names)?;
             }
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
@@ -1595,7 +1650,7 @@ fn validate_item_references(
             }
         }
         LayoutItem::Line { stroke, when, .. } => {
-            validate_when_references(when.as_ref(), params, path)?;
+            validate_when_references(when.as_ref(), params, path, repeated_names)?;
             if let Some(Stroke {
                 color: DynamicValue::Ref(ref_name),
                 ..
@@ -1609,10 +1664,11 @@ fn validate_item_references(
             when,
             stroke,
             background,
+            repeat,
             items,
             ..
         } => {
-            validate_when_references(when.as_ref(), params, path)?;
+            validate_when_references(when.as_ref(), params, path, repeated_names)?;
             if let Some(Stroke {
                 color: DynamicValue::Ref(ref_name),
                 ..
@@ -1635,8 +1691,17 @@ fn validate_item_references(
                     }
                 }
             }
+            let mut child_repeated = repeated_names.clone();
+            if let Some(r) = repeat {
+                child_repeated.insert(r.clone());
+            }
             for (child_idx, child) in items.iter().enumerate() {
-                validate_item_references(child, params, &format!("{path}.items[{child_idx}]"))?;
+                validate_item_references(
+                    child,
+                    params,
+                    &format!("{path}.items[{child_idx}]"),
+                    &child_repeated,
+                )?;
             }
         }
     }
@@ -1847,6 +1912,7 @@ fn instantiate_item_defaults(
             rounded,
             padding,
             flow,
+            repeat,
             items,
         } => LayoutItem::Container {
             placement: inst_placement(placement),
@@ -1857,6 +1923,7 @@ fn instantiate_item_defaults(
             rounded: *rounded,
             padding: *padding,
             flow: flow.clone(),
+            repeat: repeat.clone(),
             items: items
                 .iter()
                 .map(|child| instantiate_item_defaults(child, params))
@@ -2099,6 +2166,7 @@ fn validate_layout_item(
             rounded,
             padding,
             flow,
+            repeat: _,
             items,
         } => {
             validate_when(when.as_ref())?;
@@ -2676,6 +2744,7 @@ mod tests {
                 rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![],
             }])
         };
@@ -2701,6 +2770,7 @@ mod tests {
                 rounded: Some(radius),
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![],
             }])
         };
@@ -4079,6 +4149,7 @@ layout:
                 rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![],
             }]),
             version: None,
@@ -6946,6 +7017,82 @@ layout:
     }
 
     #[test]
+    fn repeating_container_thumbnail_placeholder_draws_one_instance() {
+        // 5.5: Thumbnail placeholder data invents 1 instance for repeat-only list parameter
+        let rep_yaml = r#"
+name: RepThumb
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+"#;
+        let template = parse_template_ok(rep_yaml);
+        let Layout::Items(items) = &template.layout;
+        let now = chrono::Local::now();
+        let ph = test_placeholder_data(&template, now);
+        assert_eq!(ph.get("tags"), Some(&serde_json::json!(["tags"])));
+        let dt_formats = BTreeMap::new();
+        let dt_res = crate::datetime_fmt::DateTimeResolver {
+            formats: &dt_formats,
+            now,
+        };
+        let empty_settings = BTreeMap::new();
+        let env = crate::render::RenderEnv {
+            settings: &empty_settings,
+            datetime: &dt_res,
+        };
+        let resolved =
+            crate::render::resolve_parameters(&template, &ph, Some(&empty_settings), Some(&dt_res))
+                .unwrap();
+        let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+        assert_eq!(
+            meas[0].children.len(),
+            1,
+            "thumbnail must measure 1 placeholder instance"
+        );
+        let src = ctx
+            .render_items(
+                items,
+                &meas,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+        assert!(
+            src.contains("Tag:\u{a0}tags") || src.contains("Tag: tags"),
+            "thumbnail must draw the placeholder instance"
+        );
+    }
+
+    #[test]
     fn load_time_unescaped_brace_in_default_rejected() {
         let yaml = r#"
 name: Bad Brace
@@ -8294,5 +8441,547 @@ layout:
             InputControl::Image,
             "image binding must win in inputs.all union"
         );
+    }
+
+    #[test]
+    fn repeat_scope_reference_refusals_and_permissions() {
+        // 3.4: inside repeat scope: size, color, image name referencing list parameter are refused
+        let size_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        items:
+          - type: text
+            value: "hi"
+            size: ["{tags}", 10]
+            font_size: 8
+"#;
+        let err = parse_and_validate(size_yaml).unwrap_err();
+        assert!(err.contains("parameter 'tags' of type List cannot be used in text width"));
+
+        let color_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        items:
+          - type: text
+            value: "hi"
+            size: [10, 10]
+            color: "{tags}"
+            font_size: 8
+"#;
+        let err = parse_and_validate(color_yaml).unwrap_err();
+        assert!(err.contains("parameter 'tags' of type List cannot be used in color"));
+
+        let image_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        items:
+          - type: image
+            name: tags
+            size: [10, 10]
+"#;
+        let err = parse_and_validate(image_yaml).unwrap_err();
+        assert!(err.contains("parameter 'tags' of type List cannot be used in image name"));
+
+        // 3.5: outside repeat scope: bare {tags} on list is refused
+        let bare_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: text
+    value: "{tags}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+"#;
+        let err = parse_and_validate(bare_yaml).unwrap_err();
+        assert!(err.contains("list parameter cannot be used as a bare token; a list is read through join('<separator>')"));
+
+        // 3.5: outside repeat scope: {tags:join(', ')} is accepted
+        let join_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: text
+    value: "{tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+"#;
+        assert!(parse_and_validate(join_yaml).is_ok());
+
+        // 3.5: when: naming list parameter outside repeat scope is refused
+        let when_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: text
+    when:
+      tags: foo
+    value: "hi"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+"#;
+        let err = parse_and_validate(when_yaml).unwrap_err();
+        assert!(err.contains(
+            "references list parameter 'tags'; list parameters cannot be used in when conditions"
+        ));
+
+        // 3.3 / 3.5: repeating container's own when: naming tags is refused (checked in outer scope)
+        let container_own_when_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        when:
+          tags: foo
+        items:
+          - type: text
+            value: "{tags}"
+            size: [10, 10]
+            font_size: 8
+"#;
+        let err = parse_and_validate(container_own_when_yaml).unwrap_err();
+        assert!(err.contains(
+            "references list parameter 'tags'; list parameters cannot be used in when conditions"
+        ));
+
+        // 3.3: sibling of a repeating container naming the repeated list in when: is refused
+        let sibling_when_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        items:
+          - type: text
+            value: "{tags}"
+            size: [10, 10]
+            font_size: 8
+      - type: text
+        when:
+          tags: foo
+        value: "sibling"
+        size: [10, 10]
+        font_size: 8
+"#;
+        let err = parse_and_validate(sibling_when_yaml).unwrap_err();
+        assert!(err.contains(
+            "references list parameter 'tags'; list parameters cannot be used in when conditions"
+        ));
+
+        // 3.2 / 3.3: inside repeating container, when: { tags: foo } and bare {tags} are permitted
+        let valid_repeat_yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        items:
+          - type: text
+            when:
+              tags: special
+            value: "Special: {tags}"
+            size: [10, 10]
+            font_size: 8
+"#;
+        assert!(parse_and_validate(valid_repeat_yaml).is_ok());
+    }
+
+    #[test]
+    fn repetition_load_refusals_quarantine_files() {
+        // 2.7: Test each of the eight refusals (1.3, 1.4, 1.5, 2.2, 2.3, 2.4, 2.5, 2.6):
+        // the file is quarantined, the service still starts and still serves every other template,
+        // and the message names the offending item's layout path.
+        let dir = temp_dir("repetition_load_refusals_quarantine");
+        let valid_yaml = sample_yaml("valid");
+        write_template(&dir, "valid.yaml", &valid_yaml);
+
+        // 1. (1.3) Null repeat on packed container inside root
+        let null_repeat_yaml = r#"
+name: NullRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags: { type: list }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: null
+        size: [10, 10]
+        items: []
+"#;
+        write_template(&dir, "null_repeat.yaml", null_repeat_yaml);
+
+        // 2. (1.4) Repeat on root container (unpacked)
+        let unpacked_repeat_yaml = r#"
+name: UnpackedRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags: { type: list }
+layout:
+  - type: container
+    repeat: tags
+    at: [0, 0]
+    size: [50, 50]
+    items: []
+"#;
+        write_template(&dir, "unpacked_repeat.yaml", unpacked_repeat_yaml);
+
+        // 3. (1.5) Repeat on text (non-container)
+        let text_repeat_yaml = r#"
+name: TextRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    repeat: tags
+    value: "hello"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+"#;
+        write_template(&dir, "text_repeat.yaml", text_repeat_yaml);
+
+        // 4. (2.2) Repeat naming undeclared parameter
+        let undeclared_repeat_yaml = r#"
+name: UndeclaredRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: missing_param
+        size: [10, 10]
+        items: []
+"#;
+        write_template(&dir, "undeclared_repeat.yaml", undeclared_repeat_yaml);
+
+        // 5. (2.3) Repeat naming declared parameter of type string (non-list)
+        let wrong_type_repeat_yaml = r#"
+name: WrongTypeRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  title: { type: string }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: title
+        size: [10, 10]
+        items: []
+"#;
+        write_template(&dir, "wrong_type_repeat.yaml", wrong_type_repeat_yaml);
+
+        // 6. (2.4) Nested repeat on same parameter
+        let nested_same_repeat_yaml = r#"
+name: NestedSameRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags: { type: list }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        flow: { direction: column }
+        items:
+          - type: container
+            repeat: tags
+            size: [10, 10]
+            items: []
+"#;
+        write_template(&dir, "nested_same_repeat.yaml", nested_same_repeat_yaml);
+
+        // 7. (2.5) {p:join(...)} inside repeat scope of p
+        let join_in_repeat_yaml = r#"
+name: JoinInRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags: { type: list }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "{tags:join(', ')}"
+            size: [10, 5]
+            font_size: 8
+"#;
+        write_template(&dir, "join_in_repeat.yaml", join_in_repeat_yaml);
+
+        // 8. (2.6) Bare reader / format {tags:short_date} inside repeat scope of tags
+        let format_in_repeat_yaml = r#"
+name: FormatInRepeat
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags: { type: list }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "{tags:short_date}"
+            size: [10, 5]
+            font_size: 8
+"#;
+        write_template(&dir, "format_in_repeat.yaml", format_in_repeat_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+        assert_eq!(registry.len(), 1, "valid template must be served");
+        assert!(registry.get("valid").is_some());
+
+        let broken = registry.broken();
+        assert_eq!(
+            broken.len(),
+            8,
+            "all 8 refusal templates must be quarantined"
+        );
+
+        let find_broken = |path: &str| broken.iter().find(|b| b.path == path).unwrap();
+
+        // 1.3: null repeat -> layout[0].items[0]
+        let b1 = find_broken("null_repeat.yaml");
+        assert!(b1.error.contains("repeat") && b1.error.contains("layout[0].items[0]"));
+
+        // 1.4: unpacked container -> layout[0]
+        let b2 = find_broken("unpacked_repeat.yaml");
+        assert!(b2.error.contains("repeat") && b2.error.contains("layout[0]"));
+
+        // 1.5: text repeat -> layout[0]
+        let b3 = find_broken("text_repeat.yaml");
+        assert!(b3.error.contains("layout[0]"));
+
+        // 2.2: undeclared repeat -> layout[0].items[0]
+        let b4 = find_broken("undeclared_repeat.yaml");
+        assert!(b4.error.contains("missing_param") && b4.error.contains("layout[0].items[0]"));
+
+        // 2.3: wrong type repeat -> layout[0].items[0]
+        let b5 = find_broken("wrong_type_repeat.yaml");
+        assert!(b5.error.contains("title") && b5.error.contains("layout[0].items[0]"));
+
+        // 2.4: nested same repeat -> layout[0].items[0].items[0]
+        let b6 = find_broken("nested_same_repeat.yaml");
+        assert!(b6.error.contains("tags") && b6.error.contains("layout[0].items[0].items[0]"));
+
+        // 2.5: join in repeat -> layout[0].items[0].items[0]
+        let b7 = find_broken("join_in_repeat.yaml");
+        assert!(b7.error.contains("tags:join") && b7.error.contains("layout[0].items[0].items[0]"));
+
+        // 2.6: format in repeat -> layout[0].items[0].items[0]
+        let b8 = find_broken("format_in_repeat.yaml");
+        assert!(
+            b8.error.contains("tags:short_date")
+                && b8.error.contains("layout[0].items[0].items[0]")
+        );
+    }
+
+    #[test]
+    fn repeat_input_derivation() {
+        // 5.4: template with repeat: tags reports tags in inputs.all with interpolated: true, control: list
+        // child {tags} token does not add an extra input
+        let yaml = r#"
+name: T
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+  extra_a:
+    type: string
+  extra_b:
+    type: string
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [10, 5]
+            font_size: 8
+          - type: text
+            when:
+              tags: A
+            value: "Extra A: {extra_a}"
+            size: [10, 5]
+            font_size: 8
+          - type: text
+            when:
+              tags: B
+            value: "Extra B: {extra_b}"
+            size: [10, 5]
+            font_size: 8
+"#;
+        let template = parse_template_ok(yaml);
+        let all = test_inputs_all(&template);
+        let tag_input = all
+            .iter()
+            .find(|i| i.name == "tags")
+            .expect("tags in inputs.all");
+        assert_eq!(tag_input.control, InputControl::List);
+        assert!(tag_input.interpolated);
+        assert!(tag_input.required);
+
+        // Per-label derive_inputs with tags: ["A", "B"] expands instances and evaluates when: gates
+        let mut data = HashMap::new();
+        data.insert("tags".to_string(), serde_json::json!(["A", "B"]));
+        let derived = test_derive_inputs_for_label(&template, &data);
+        let names: Vec<&str> = derived.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"tags"));
+        assert!(names.contains(&"extra_a"));
+        assert!(names.contains(&"extra_b"));
+
+        // With tags: ["A"], only extra_a is active
+        let mut data_a = HashMap::new();
+        data_a.insert("tags".to_string(), serde_json::json!(["A"]));
+        let derived_a = test_derive_inputs_for_label(&template, &data_a);
+        let names_a: Vec<&str> = derived_a.iter().map(|i| i.name.as_str()).collect();
+        assert!(names_a.contains(&"tags"));
+        assert!(names_a.contains(&"extra_a"));
+        assert!(!names_a.contains(&"extra_b"));
+
+        // With tags: ["C"], neither extra_a nor extra_b is active
+        let mut data_c = HashMap::new();
+        data_c.insert("tags".to_string(), serde_json::json!(["C"]));
+        let derived_c = test_derive_inputs_for_label(&template, &data_c);
+        let names_c: Vec<&str> = derived_c.iter().map(|i| i.name.as_str()).collect();
+        assert!(names_c.contains(&"tags"));
+        assert!(!names_c.contains(&"extra_a"));
+        assert!(!names_c.contains(&"extra_b"));
     }
 }

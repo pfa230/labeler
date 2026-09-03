@@ -299,6 +299,8 @@ pub struct ContainerRaw {
     pub padding: Option<PaddingRaw>,
     #[serde(default, deserialize_with = "deserialize_present_typed")]
     pub flow: Option<Option<FlowRaw>>,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub repeat: Option<Option<String>>,
     pub items: Vec<LayoutItemRaw>,
 }
 

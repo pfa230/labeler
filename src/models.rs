@@ -214,6 +214,21 @@ pub enum ParamType {
     List,
 }
 
+impl ParamType {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            ParamType::String { .. } => "string",
+            ParamType::Length => "length",
+            ParamType::Integer => "integer",
+            ParamType::Number => "number",
+            ParamType::Boolean => "boolean",
+            ParamType::Enum { .. } => "enum",
+            ParamType::Datetime { .. } => "datetime",
+            ParamType::List => "list",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
 #[serde(untagged)]
 pub enum ParamValue {
@@ -1117,6 +1132,8 @@ pub enum LayoutItem {
         padding: Padding,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         flow: Option<Flow>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat: Option<String>,
         #[schema(no_recursion)]
         items: Vec<LayoutItem>,
     },

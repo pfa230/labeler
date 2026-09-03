@@ -317,6 +317,26 @@ impl ContainerRaw {
             });
         }
 
+        let repeat = match self.repeat {
+            Some(None) => {
+                return Err(TemplateError::Validation {
+                    path: "repeat".to_string(),
+                    msg: "repeat cannot be null".to_string(),
+                });
+            }
+            Some(Some(r)) => {
+                if !is_packed {
+                    return Err(TemplateError::Validation {
+                        path: "repeat".to_string(),
+                        msg: "repeat is only valid on packed containers inside a flow layout"
+                            .to_string(),
+                    });
+                }
+                Some(r)
+            }
+            None => None,
+        };
+
         let is_flow = flow.is_some();
         let mut items = Vec::with_capacity(self.items.len());
         for (idx, item) in self.items.into_iter().enumerate() {
@@ -334,6 +354,7 @@ impl ContainerRaw {
             rounded,
             padding,
             flow,
+            repeat,
             items,
         })
     }
@@ -730,6 +751,9 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
 
         let format = TemplateFormat::try_from(raw.format)?;
 
+        let mut repeated_in_scope = Vec::new();
+        validate_repetition_layout(&items, &params, "layout", &mut repeated_in_scope)?;
+
         Ok(TemplateContent {
             name: raw.name,
             description: raw.description.unwrap_or_default(),
@@ -741,6 +765,123 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
             version: raw.version,
         })
     }
+}
+
+fn validate_repetition_layout(
+    items: &[LayoutItem],
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+    path_prefix: &str,
+    repeated_in_scope: &mut Vec<String>,
+) -> Result<(), TemplateError> {
+    for (idx, item) in items.iter().enumerate() {
+        let path = format!("{path_prefix}[{idx}]");
+        validate_repetition_item(item, params, &path, repeated_in_scope)?;
+    }
+    Ok(())
+}
+
+fn validate_repetition_item(
+    item: &LayoutItem,
+    params: &std::collections::BTreeMap<String, ParamSpec>,
+    path: &str,
+    repeated_in_scope: &mut Vec<String>,
+) -> Result<(), TemplateError> {
+    match item {
+        LayoutItem::Container { repeat, items, .. } => {
+            if let Some(rep_name) = repeat {
+                let spec = params
+                    .get(rep_name)
+                    .ok_or_else(|| TemplateError::Validation {
+                        path: path.to_string(),
+                        msg: format!("repeat references undeclared parameter '{rep_name}'"),
+                    })?;
+
+                if !matches!(spec.param_type, ParamType::List) {
+                    return Err(TemplateError::Validation {
+                        path: path.to_string(),
+                        msg: format!(
+                            "repeat references parameter '{rep_name}' declared as type: {}, but repeat requires a list",
+                            spec.param_type.type_name()
+                        ),
+                    });
+                }
+
+                if repeated_in_scope.iter().any(|r| r == rep_name) {
+                    return Err(TemplateError::Validation {
+                        path: path.to_string(),
+                        msg: format!(
+                            "nested repeat over '{rep_name}' is not allowed: parameter is already repeated by an enclosing container"
+                        ),
+                    });
+                }
+
+                repeated_in_scope.push(rep_name.clone());
+                let res = validate_repetition_layout(
+                    items,
+                    params,
+                    &format!("{path}.items"),
+                    repeated_in_scope,
+                );
+                repeated_in_scope.pop();
+                res?;
+            } else {
+                validate_repetition_layout(
+                    items,
+                    params,
+                    &format!("{path}.items"),
+                    repeated_in_scope,
+                )?;
+            }
+        }
+        LayoutItem::Text { value, .. } | LayoutItem::Qr { value, .. } => {
+            check_scoped_tokens(value, path, repeated_in_scope)?;
+        }
+        LayoutItem::Image { src: Some(src), .. } => {
+            check_scoped_tokens(src, path, repeated_in_scope)?;
+        }
+        LayoutItem::Image { src: None, .. } | LayoutItem::Line { .. } => {}
+    }
+    Ok(())
+}
+
+fn check_scoped_tokens(
+    text: &str,
+    path: &str,
+    repeated_in_scope: &[String],
+) -> Result<(), TemplateError> {
+    if repeated_in_scope.is_empty() {
+        return Ok(());
+    }
+    for scanned in crate::interpolation::scan_tokens(text) {
+        if let Ok(token) = crate::interpolation::parse(scanned.raw) {
+            if let crate::interpolation::Source::Bare(name) = token.source {
+                if repeated_in_scope.iter().any(|r| r == name) {
+                    match token.reader {
+                        Some(crate::interpolation::Reader::Join(_)) => {
+                            return Err(TemplateError::Validation {
+                                path: path.to_string(),
+                                msg: format!(
+                                    "template contains '{}': join cannot be used on '{name}' inside a repeat over that parameter",
+                                    scanned.raw
+                                ),
+                            });
+                        }
+                        Some(crate::interpolation::Reader::Format(fmt)) => {
+                            return Err(TemplateError::Validation {
+                                path: path.to_string(),
+                                msg: format!(
+                                    "template contains '{}': format '{fmt}' can only be applied to an instant (sys.now or type: datetime parameter)",
+                                    scanned.raw
+                                ),
+                            });
+                        }
+                        None => {}
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1455,5 +1596,153 @@ mod tests {
             err.contains("shape cannot be null"),
             "expected message in {err}"
         );
+    }
+
+    fn try_build_with_params(
+        params_yaml: &str,
+        layout_yaml: &str,
+    ) -> Result<crate::templates::TemplateContent, String> {
+        let yaml = format!(
+            "name: test\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 50\nparams:\n{params_yaml}\nlayout:\n{layout_yaml}"
+        );
+        let raw: crate::raw::TemplateDefinitionRaw =
+            serde_yaml_ng::from_str(&yaml).map_err(|e| e.to_string())?;
+        crate::templates::TemplateContent::try_from(raw).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn repeat_null_and_parent_flow_refusals() {
+        // 1.3: repeat: null on a container is refused naming the key and the container's layout path
+        let err = try_build_with_params(
+            "  items:\n    type: list\n",
+            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat:\n        items: []\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("layout[0].items[0].repeat"),
+            "expected path in {err}"
+        );
+        assert!(
+            err.contains("repeat cannot be null"),
+            "expected message in {err}"
+        );
+
+        // 1.4: repeat on a root-level container is refused naming the key and the layout path
+        let err = try_build_with_params(
+            "  items:\n    type: list\n",
+            "  - type: container\n    repeat: items\n    at: [0, 0]\n    size: [50, 50]\n    items: []\n",
+        )
+        .unwrap_err();
+        assert!(err.contains("layout[0].repeat"), "expected path in {err}");
+        assert!(
+            err.contains("repeat is only valid on packed containers inside a flow layout"),
+            "expected message in {err}"
+        );
+
+        // 1.4: repeat on a container inside an absolute-positioned container (no flow) is refused
+        let err = try_build_with_params(
+            "  items:\n    type: list\n",
+            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    items:\n      - type: container\n        repeat: items\n        at: [0, 0]\n        items: []\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("layout[0].items[0].repeat"),
+            "expected path in {err}"
+        );
+        assert!(
+            err.contains("repeat is only valid on packed containers inside a flow layout"),
+            "expected message in {err}"
+        );
+    }
+
+    #[test]
+    fn repeat_undeclared_and_type_refusals() {
+        // 2.2: repeat naming an undeclared parameter is refused with expected path and message
+        let err = try_build_with_params(
+            "  other:\n    type: list\n",
+            "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: missing\n        items: []\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("layout[0].items[0]"),
+            "expected container path in {err}"
+        );
+        assert!(
+            err.contains("repeat references undeclared parameter 'missing'"),
+            "expected message in {err}"
+        );
+
+        // 2.3: repeat naming a string / integer / datetime / enum parameter is refused
+        for (name, param_def, expected_type) in [
+            ("title", "type: string", "string"),
+            ("count", "type: integer", "integer"),
+            ("printed_on", "type: datetime", "datetime"),
+            ("mode", "type: enum\n    values: [a, b]", "enum"),
+        ] {
+            let params = format!("  {name}:\n    {param_def}\n");
+            let layout = format!(
+                "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: {{ direction: column }}\n    items:\n      - type: container\n        repeat: {name}\n        items: []\n"
+            );
+            let err = try_build_with_params(&params, &layout).unwrap_err();
+            assert!(
+                err.contains("layout[0].items[0]"),
+                "expected container path in {err}"
+            );
+            assert!(
+                err.contains(&format!(
+                    "repeat references parameter '{name}' declared as type: {expected_type}"
+                )),
+                "expected type in message for {name}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn repeat_nesting_and_scoped_token_refusals() {
+        // 2.4: Nested repeat over the same list is refused at the inner container path
+        let params = "  tags:\n    type: list\n";
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: tags\n            items: []\n";
+        let err = try_build_with_params(params, layout).unwrap_err();
+        assert!(
+            err.contains("layout[0].items[0].items[0]"),
+            "expected inner container path in {err}"
+        );
+        assert!(
+            err.contains("nested repeat over 'tags' is not allowed"),
+            "expected message in {err}"
+        );
+
+        // 2.4: Nested repeat over two different lists is accepted
+        let params = "  tags:\n    type: list\n  codes:\n    type: list\n";
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: codes\n            items: []\n";
+        assert!(try_build_with_params(params, layout).is_ok());
+
+        // 2.5: {p:join(',')} inside a repeat over p is refused
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags:join(',')}\"\n            size: [10, 5]\n            font_size: 8\n";
+        let err = try_build_with_params("  tags:\n    type: list\n", layout).unwrap_err();
+        assert!(
+            err.contains("layout[0].items[0].items[0]"),
+            "expected text item path in {err}"
+        );
+        assert!(
+            err.contains("join cannot be used on 'tags' inside a repeat over that parameter"),
+            "expected message in {err}"
+        );
+
+        // 2.6: {p:long_date} inside a repeat over p is refused as format on non-instant
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags:long_date}\"\n            size: [10, 5]\n            font_size: 8\n";
+        let err = try_build_with_params("  tags:\n    type: list\n", layout).unwrap_err();
+        assert!(
+            err.contains("layout[0].items[0].items[0]"),
+            "expected text item path in {err}"
+        );
+        assert!(
+            err.contains("format 'long_date' can only be applied to an instant"),
+            "expected message in {err}"
+        );
+
+        // Bare {tags} inside repeat over tags is accepted
+        let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags}\"\n            size: [10, 5]\n            font_size: 8\n";
+        assert!(try_build_with_params("  tags:\n    type: list\n", layout).is_ok());
     }
 }

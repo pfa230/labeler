@@ -43,6 +43,13 @@ describe("sampleData", () => {
     ]);
     expect(data.mode).toBe("draft");
   });
+
+  it("emits non-empty array for required interpolated list in inputs.all", () => {
+    const data = sampleData([
+      { name: "tags", control: "list", interpolated: true, required: true },
+    ]);
+    expect(data.tags).toEqual(["tags"]);
+  });
 });
 
 describe("useTemplatePreview", () => {

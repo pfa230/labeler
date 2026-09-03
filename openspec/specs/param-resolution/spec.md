@@ -25,6 +25,21 @@ naming the parameter, on the same terms and with the same payload as an absent r
 an item is active is decided by its `when:` predicate, and an item under an unmatched predicate is
 neither measured nor rendered, so a parameter that only an inactive branch reads SHALL NOT be required.
 
+**A `repeat:` key is a read of its parameter and gets the same answer.** An active `container` carrying
+`repeat: tags` reads the list it names in order to know how many instances to draw (`repetition`), so an
+absent `tags` SHALL be `422 MissingField` naming it, and one only an inactive container repeats SHALL
+NOT be required. An absent list SHALL NOT be read as a list of zero elements: `list-params` keeps `[]`
+distinct from an omission on every other path, and folding them together here would undo that
+distinction where it is most visible, in the count of things a label draws. This clause is written
+because the sentence above names a token and a `repeat:` is not one; nothing else about it differs.
+
+**A repeat binds one name inside one subtree, and that is not a third source.** Within the subtree a
+`repeat: tags` creates, the name `tags` denotes one element of the value the two sources above already
+resolved, for what that subtree reads as text (`repetition`). No new place is consulted: the list still
+comes from the request's `data` map or from the declared `default:`, and the binding only says which
+part of it a token or a `when:` key inside that subtree sees. Outside every such subtree the two-source
+rule reads exactly as it does above.
+
 An absent parameter named by a `when:` predicate SHALL make that predicate false. It SHALL NOT be an
 error, because a predicate asks what a value is and absence is an answer. A template whose every branch
 is gated on an absent parameter therefore renders none of them rather than failing.
@@ -72,6 +87,19 @@ sentence above is about the value a token reads.
 - **WHEN** a container carries `when: { bold: "false" }`, `bold` declares no `default:`, and the
   request omits `bold`
 - **THEN** that container is absent, rather than rendered because `bold` was taken as `false`
+
+#### Scenario: An omitted list a container repeats fails
+
+- **WHEN** a template declares `tags: { type: list }` with no default, an active packed container
+  carries `repeat: tags`, and the request omits `tags`
+- **THEN** the response is `422 MissingField` naming `tags`, rather than the strip rendering with no
+  instances
+
+#### Scenario: A list only an inactive repeat names is not required
+
+- **WHEN** that container also carries `when: { show_tags: "true" }` and the request omits both
+  `show_tags` and `tags`
+- **THEN** the label renders with no instances and no error
 
 #### Scenario: A parameter only an inactive branch reads is not required
 
