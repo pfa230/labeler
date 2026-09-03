@@ -2017,7 +2017,12 @@ drive_gates() { # drive_gates <issue> <change-failures-file> <base-failures-file
   bin=$(mktemp -d)
   cat > "$bin/cargo" <<FAKE
 #!/usr/bin/env bash
-case "\$1" in fmt|clippy) exit 0 ;; esac
+# fmt is recorded but not counted with the suites: what matters about it is the flag it
+# carried, not how many trees it ran in.
+case "\$1" in
+  fmt) printf '%s\n' "\$*" >> "$FMT_SINK"; exit 0 ;;
+  clippy) exit 0 ;;
+esac
 printf '%s\n' "\$*" >> "$ARGS_SINK"
 case "\$PWD" in
   *.worktrees/issue-$n*) cat "$cf" ;;
@@ -2050,7 +2055,7 @@ stage_gates_repo() { # stage_gates_repo <issue> <slug>
 setup
 stage_gates_repo 53 preexisting
 cfail=$(mktemp); bfail=$(mktemp)
-export ARGS_SINK=$(mktemp)
+export ARGS_SINK=$(mktemp) FMT_SINK=$(mktemp)
 canned "$cfail" fs_safe::tests::opens_a_path templates::tests::non_utf8
 cp "$cfail" "$bfail"
 out=$(drive_gates 53 "$cfail" "$bfail")
@@ -2060,6 +2065,13 @@ out=$(drive_gates 53 "$cfail" "$bfail")
 if [ "$(grep -c . "$ARGS_SINK")" = "2" ] && [ "$(grep -c -- '--no-fail-fast' "$ARGS_SINK")" = "2" ]; then
   ok "both the change's suite and the base's run every test binary"
 else bad "the suites ran as: $(tr '\n' '|' < "$ARGS_SINK")"; fi
+# Check mode, every time it runs. The gates fire after the diff review has approved the
+# tree, so a fmt that rewrites lands bytes nobody reviewed (#326); a revert to plain
+# `cargo fmt` is invisible to every other assertion here.
+fmtn=$(grep -c . "$FMT_SINK")
+if [ "$fmtn" -ge 1 ] && [ "$(grep -c -- '--check' "$FMT_SINK")" = "$fmtn" ]; then
+  ok "the fmt gate reports rather than rewriting the tree it was handed"
+else bad "fmt ran as: $(tr '\n' '|' < "$FMT_SINK")"; fi
 if printf '%s' "$out" | grep -q 'predate this change'; then
   ok "the driver names the failures it is not stopping for"
 else bad "the driver said nothing about a wholly pre-existing failure set"; fi
@@ -2078,8 +2090,8 @@ if printf '%s' "$out" | grep -q 'render::tests::flips_y' && printf '%s' "$out" |
 else bad "a regression alongside a pre-existing failure was not named"; fi
 if ! printf '%s' "$out" | grep -q '^== push'; then ok "and nothing is pushed"
 else bad "a change that broke a test reached the push"; fi
-find "$cfail" "$bfail" "$ARGS_SINK" -mindepth 0 -delete 2>/dev/null
-unset ARGS_SINK
+find "$cfail" "$bfail" "$ARGS_SINK" "$FMT_SINK" -mindepth 0 -delete 2>/dev/null
+unset ARGS_SINK FMT_SINK
 teardown
 
 # --- a change whose deliverable is the delta spec (#313) ---------------------------

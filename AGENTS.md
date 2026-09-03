@@ -270,6 +270,12 @@ The steps below are what those stages mean. Read them to understand the loop or 
    A gate failure gets the implementer one resumed round with the output, and a second failure stops
    the run, because a lint is what an unattended round should absorb and a second failure is a defect.
 
+   **Every gate command is read-only** (#326). `cargo fmt` runs as `cargo fmt --check`, the spelling CI
+   uses, so a gate reports a mis-formatted tree rather than repairing it. It has to: the gates run after
+   the diff review has approved the tree and before the commit, so anything a gate writes lands having
+   been reviewed by nobody, and the landing check on `TREE_SHA256:` is shape-only and would wave it
+   through. Repairing formatting is the fix round's job, and that round has an author.
+
    **A failure that was already there is neither** (#298). A failing `cargo test` is measured against
    the commit the branch forked from: `.workflow/gates.sh` checks that commit out in a scratch
    worktree outside the repository, runs the suite there, and subtracts. Failures present in both
