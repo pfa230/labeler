@@ -20,10 +20,12 @@ pass=0; fail=0
 # shares. Read why in the file itself; the short version is that a fixture write that
 # fails silently turns a refusal case into a gate that appears to have stopped firing.
 . "$here/suite-lib.sh"
+suite_parse_args "$@"
 
 expect() { # expect <want-exit> <label> <script> <args...>
   local want="$1" label="$2"; shift 2
   local out rc
+  suite_selected "$label" || return 0
   canary
   out=$("$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ]; then
@@ -39,6 +41,7 @@ expect() { # expect <want-exit> <label> <script> <args...>
 expect_says() { # expect_says <want-exit> <pattern> <label> <script> <args...>
   local want="$1" pat="$2" label="$3"; shift 3
   local out rc
+  suite_selected "$label" || return 0
   canary
   out=$("$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ] && printf '%s\n' "$out" | grep -qF -- "$pat"; then
@@ -724,5 +727,10 @@ teardown
 # The guard on this suite's own fixtures.
 suite_guard_case "$here/gate-tests.sh"
 
-printf '\n%s passed, %s failed\n' "$pass" "$fail"
+if [ -n "$SUITE_FILTER" ]; then
+  printf '\n%s passed, %s failed, %s skipped by --filter %s\n' "$pass" "$fail" "$skipped" "$SUITE_FILTER"
+  [ "$((pass + fail))" -gt 0 ] || { printf 'no case matched --filter %s\n' "$SUITE_FILTER" >&2; exit 2; }
+else
+  printf '\n%s passed, %s failed\n' "$pass" "$fail"
+fi
 [ "$fail" = "0" ]

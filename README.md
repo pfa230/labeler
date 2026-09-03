@@ -59,3 +59,7 @@ of them did that once during development.
 Forked from labeler at `e57d5ef`. `schema/` is itself a fork of OpenSpec CLI 1.9.0's built-in
 `spec-driven` schema, with the `review` artifact adapted from the `anvil` community schema by
 @jikkujoyce. `workflow/apply-with-agy.sh` was deliberately not extracted: it records no verdict.
+
+`--filter <substring>` runs only the cases whose label contains it, which turns a fixture
+fix from an eight-minute pass into seconds. A filter matching nothing exits 2 rather than
+reporting a clean zero.

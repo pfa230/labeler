@@ -29,8 +29,9 @@ pass=0; fail=0
 # shares. Read why in the file itself; the short version is that a fixture write that
 # fails silently leaves a case asserting against a file that was never written (#333).
 . "$here/suite-lib.sh"
+suite_parse_args "$@"
 
-ok()   { canary; pass=$((pass + 1)); printf 'ok    %s\n' "$1"; }
+ok()   { suite_selected "$1" || return 0; canary; pass=$((pass + 1)); printf 'ok    %s\n' "$1"; }
 bad()  { canary; fail=$((fail + 1)); printf 'FAIL  %s\n' "$1"; }
 
 expect() { # expect <want-exit> <label> -- <args...>
@@ -2941,5 +2942,10 @@ fi
 # The guard on this suite's own fixtures.
 suite_guard_case "$here/change-tests.sh"
 
-printf '\n%s passed, %s failed\n' "$pass" "$fail"
+if [ -n "$SUITE_FILTER" ]; then
+  printf '\n%s passed, %s failed, %s skipped by --filter %s\n' "$pass" "$fail" "$skipped" "$SUITE_FILTER"
+  [ "$((pass + fail))" -gt 0 ] || { printf 'no case matched --filter %s\n' "$SUITE_FILTER" >&2; exit 2; }
+else
+  printf '\n%s passed, %s failed\n' "$pass" "$fail"
+fi
 [ "$fail" = "0" ]

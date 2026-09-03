@@ -20,6 +20,30 @@
 
 # Exit 3, distinct from the 2 a suite already uses for its own argument errors, so a
 # caller can tell "this suite could not run" from "this suite ran and something failed".
+# --filter <substring>: run only the cases whose label contains it. The suites are linear
+# and change-tests.sh is 304 cases at about eight minutes, so a one-line fixture fix used
+# to cost a full pass to re-check. Matching is on the label an assertion already carries,
+# because that is what a reader has in front of them when a case fails.
+#
+# Skipped cases are counted and reported, so a filter that matches nothing says so instead
+# of printing a clean zero that reads like a pass.
+SUITE_FILTER=""
+skipped=0
+suite_parse_args() { # suite_parse_args "$@"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --filter) SUITE_FILTER="${2:?--filter needs a substring}"; shift 2 ;;
+      --filter=*) SUITE_FILTER="${1#*=}"; shift ;;
+      *) shift ;;
+    esac
+  done
+}
+suite_selected() { # suite_selected <label>
+  [ -z "$SUITE_FILTER" ] && return 0
+  case "$1" in *"$SUITE_FILTER"*) return 0 ;; esac
+  skipped=$((skipped + 1)); return 1
+}
+
 fatal() { # fatal <what went wrong>
   printf '\nFATAL %s\n' "$1" >&2
   printf 'The %s passed and %s failed above are not a verdict: this suite could not build what it asserts against.\n' "${pass:-0}" "${fail:-0}" >&2
@@ -85,6 +109,7 @@ fixture_built() { # fixture_built <repo> <file>...
 # stops before it launches any, and the stop is what is under test.
 suite_guard_case() { # suite_guard_case <suite-path>
   local out rc
+  suite_selected "suite: a fixture filesystem that will not take a write ends the run" || return 0
   out=$(SUITE_FIXTURE_FAIL=1 "$1" 2>&1); rc=$?
   if [ "$rc" = "3" ] && printf '%s\n' "$out" | grep -qF 'are not a verdict'; then
     pass=$((pass + 1)); printf 'ok    %s\n' "suite: a fixture filesystem that will not take a write ends the run"
