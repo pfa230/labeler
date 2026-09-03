@@ -57,11 +57,12 @@ VERDICT: <VALUE>
 
 ## Required Changes (APPROVE_WITH_CHANGES only)
 
-<!-- Numbered list of specific edits. The reviewer re-checks only these. -->
+<!-- Numbered list of specific edits. The author applies them and no further -->
+<!-- review follows, so state each one completely. -->
 
-<!-- CANONICAL FIELD - the AUTHOR sets this only after every required change is -->
-<!-- applied AND the reviewer has re-checked them. -->
-<!-- yes = all applied and re-checked | no = outstanding | n/a = verdict is APPROVE or REVISE -->
+<!-- CANONICAL FIELD - the AUTHOR sets this once every required change is -->
+<!-- applied. No reviewer sees them again: this verdict ends the plan review. -->
+<!-- yes = all applied | no = outstanding | n/a = verdict is APPROVE or REVISE -->
 
 CHANGES_APPLIED: <VALUE>
 
