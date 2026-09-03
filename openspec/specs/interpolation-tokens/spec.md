@@ -528,6 +528,22 @@ with no argument, and its message SHALL say that a list is read through `join('<
 only that a format applies to an instant, because the token an author meant to write is one character
 class away. This is what replaces printing a JSON array as its JSON text.
 
+**Both rules are written for a name that denotes the declared list, which is everywhere outside a
+repeat scope.** A `container` carrying `repeat: tags` binds `tags` to one element throughout the subtree
+it creates, so within that subtree the name denotes a string (`repetition`) and neither rule reaches it:
+
+- a **bare** `{tags}` there is an ordinary bare token on a string and SHALL render the bound element,
+  which is what makes the repeat readable at all;
+- what a reader attached to that name does there, and what the refusal reports, is stated by
+  `repetition`. It is not stated here, and the difference is one of ownership rather than of taste:
+  without a `repeat:` neither question exists, both are decided from the repeat's structure together
+  with the declaration, and `repetition` reports every refusal a `repeat:` brings into existence the
+  same way. The refusals **this** capability owns are decided from `params:` alone and keep the reason
+  it publishes.
+
+Outside every such scope both rules are unchanged, and one template may hold both readings of one
+parameter: a strip repeating `tags` and a caption joining it.
+
 **An argument may follow only the word `join`.** A bare reader name other than `join` carrying a
 parenthesized argument SHALL fail validation at load, naming the token, whatever value path it is
 attached to. `{sys.now:long_date(', ')}` and `{sys.now:join(', ')}` are both refused there: the first
@@ -635,6 +651,25 @@ parameter default can carry a `join`.
 - **WHEN** the same template contains `{tags:long_date}`
 - **THEN** the file fails validation with a message naming the token and stating that a format applies to
   an instant only
+
+#### Scenario: Inside a repeat scope the bare token is the spelling
+
+- **WHEN** a template declaring `tags: { type: list }` holds a packed container carrying `repeat: tags`
+  whose `text` reads `{tags}`, and a request sends `tags: ["A", "B"]`
+- **THEN** the template loads, and two instances print `A` and `B`
+
+#### Scenario: Inside a repeat scope a reader on the repeated name is `repetition`'s to refuse
+
+- **WHEN** that `text` instead reads `{tags:join(', ')}`, and when it instead reads `{tags:long_date}`
+- **THEN** each is refused when the template loads, on the terms `repetition` states, and neither is
+  refused by the two rules above, which read the name as the declared list and do not reach into the
+  scope
+
+#### Scenario: A join on the same parameter outside the scope is unchanged
+
+- **WHEN** the same template holds a `text` outside every repeating container reading
+  `{tags:join(', ')}`
+- **THEN** it loads and prints the joined list, exactly as it does for a template carrying no `repeat:`
 
 #### Scenario: A join on a value that is not a declared list is refused
 

@@ -27,12 +27,25 @@ complete:
 | `min`, `max` | For `integer` and `number`, the declared bounds. Absent otherwise. |
 | `unit` | For a `length` parameter, the template's unit, for display beside the control. Absent otherwise. |
 | `description` | The parameter's declared description. Absent when it declares none. |
-| `interpolated` | Whether some active item reads this name **as a value**: a `text` or `qr` token, an `image` `name:`, or an interpolated `image.src`. False for a name present only because it gates an item or resolves a layout attribute. |
+| `interpolated` | Whether some active item reads this name **as a value**: a `text` or `qr` token, an `image` `name:`, an interpolated `image.src`, or a `repeat:` key, whose value decides how many instances of a container are drawn. False for a name present only because it gates an item or resolves a layout attribute. |
 | `truncated_elsewhere` | Whether some `wrap: false` `text` item anywhere in the template, in any branch, reads this name. **The name is historical.** It meant that such an item would render only the value's first line; since #251 every segment of a value enters layout regardless of `wrap`, so the flag no longer reports a loss. It is still computed, still returned, and the print form still renders its note from it — a warning about a truncation that no longer happens. Issue #269 removes the field, the computation and the note together, because deleting a response field is a change of its own. |
 
 An entry SHALL be present for a name the label's render will read, and for no other name. In
-particular an entry SHALL be present for a parameter read only as a `when:` key, and for one read
-only by a layout attribute, so the operator keeps the control that selects a branch or sizes a box.
+particular an entry SHALL be present for a parameter read only as a `when:` key, for one read
+only by a layout attribute, and for one named only by a `repeat:` key, so the operator keeps the
+control that selects a branch, sizes a box, or decides how many instances a strip holds.
+
+**A `repeat:` key reads its parameter as a value, so `interpolated` is true for the name it names**,
+whether or not anything inside the repeated subtree also prints the element. The line this flag draws
+is not between structure and content but between a name whose absence the render survives and one
+whose absence it does not: a gate naming an absent parameter is false and the label still draws
+(`param-resolution`), a layout attribute resolves without one, and a `repeat:` naming an absent
+parameter is `422 MissingField` (`repetition`), exactly as a token is. `interpolated` is what tells the
+thumbnail below, and a client building its own preview, which names they must invent a value for, so
+reporting a repeat as structural would leave a strip of fixed-content instances with no value for the
+one name that decides its count: the preview would then fail with `MissingField` for a control the same
+response reported. A token inside the repeated subtree that reads the bound element is an ordinary
+`text` or `qr` token read of that name, and sets the same flag by the row above.
 
 **Every entry names a parameter the template declares.** A template reads only names it declares
 (`interpolation-tokens`), so there is no other kind of entry and no branch of these rules for one. The
@@ -240,6 +253,20 @@ name the spec already has, so the name stays while the behaviour under it does n
 
 - **WHEN** the same template declares `tags: { type: list }`
 - **THEN** its entry carries `required: true` and no `default`
+
+#### Scenario: A repeat is an interpolated read even when nothing prints the element
+
+- **WHEN** a template declares `tags: { type: list }` and a packed container carries `repeat: tags`
+  whose only child is a `text` reading a fixed string
+- **THEN** the input list holds a `tags` entry with control `list`, `required: true` and
+  `interpolated: true`
+- **AND** the thumbnail invents `["tags"]` for it by the rule below and draws one instance, rather
+  than failing with `422 MissingField` for a name it reported
+
+#### Scenario: A gate read stays uninterpolated
+
+- **WHEN** that same container instead carries `when: { show: "yes" }` over a declared `show` parameter
+- **THEN** `show` has an entry with `interpolated: false`, unchanged by this requirement
 
 #### Scenario: A screen skips a control it cannot draw
 
@@ -458,9 +485,10 @@ for a row it was handed whole is the only way a client can learn which of its co
 - `inputs.default`: the input list for a label carrying no `data`. A client renders its first form
   from this without a second round trip.
 - `inputs.all`: the union of every entry any label could produce, one per distinct name, ignoring
-  every `when:` condition. It is what the thumbnail and the template preview fill their sample values
-  from, for the closure reason given in the thumbnail requirement, and what a view describing the
-  template rather than a label reads.
+  every `when:` condition and **walking the subtree of every `repeat:` exactly once**, whatever the
+  parameter it names would resolve to for a label carrying no `data`. It is what the thumbnail and the
+  template preview fill their sample values from, for the closure reason given in the thumbnail
+  requirement, and what a view describing the template rather than a label reads.
 - `variables`: the `{vars.<key>}` keys the layout reads, as a list of keys without the prefix,
   ascending.
 - `param_defaults`: what each declared default resolves to for this request, under the requirement
@@ -471,6 +499,22 @@ Every other response carrying the same template-detail body SHALL include them t
 included. That is every response of this shape, not only `GET /api/templates/{id}`: creating a template,
 replacing one and moving one between groups each return it, and each is read by a client that will seed
 a form from it.
+
+**The single walk is the union rule applied to a repeat, not an exception to it.** A repeat draws one
+instance per element (`repetition`), so a label carrying no `data` draws none, and expanding the subtree
+against that label would report a strip's contents as read by nothing at all. Some label supplies a
+non-empty list, so those entries are ones a label could produce, which is what this union holds. The
+consequence is what the thumbnail depends on: a template whose only read of `tags` is a repeating
+container printing `{tags}` reports `tags` in `inputs.all` with `interpolated` true, the thumbnail
+invents a one-element list from it by the invention table below, and the preview draws one instance
+rather than an empty strip.
+
+**`inputs.default` and `POST /api/templates/{id}/inputs` do the opposite, because they answer a
+different question.** Each is computed for one label, by the rule the renderer applies, so each expands
+a repeat exactly as that label's render would: a repeat over an absent or empty list contributes only
+its own name, and the entries the subtree's other reads produce appear once the label carries elements.
+That is what a gated branch already does to those two lists, and `inputs.all` is what a client reads to
+see every control the template can ask for.
 
 An entry in `inputs.all` SHALL carry the same fields as one in `inputs.default`, decided by the same
 rule. That rule yields one `control` per name from the declaration alone, and every name is declared,
@@ -494,6 +538,26 @@ override use decides, `image` for a `string` an `image` item binds, applies to t
 - **AND** where a declared `string` `logo` is bound by an `image` item's `name:` in one branch and
   printed by a `text` item in another, its `inputs.all` entry carries control `image`, which is the
   only widening left and is decided by use in every branch
+
+#### Scenario: The union holds a repeated subtree's reads
+
+- **WHEN** a template declares `tags: { type: list }` with no default and a packed container carrying
+  `repeat: tags` prints `{tags}` and `{price}`
+- **THEN** `inputs.all` holds entries for `tags`, with control `list` and `interpolated` true, and for
+  `price`
+- **AND** `inputs.default`, computed for a label carrying no `data`, holds the `tags` entry alone,
+  because that label draws no instance
+
+#### Scenario: A label carrying elements reports the subtree's other controls
+
+- **WHEN** `POST /api/templates/{id}/inputs` is given one label carrying `tags: ["A"]` for that template
+- **THEN** its list holds `tags` and `price`
+
+#### Scenario: The thumbnail of a repeating template draws an instance
+
+- **WHEN** a thumbnail is rendered for that template
+- **THEN** `tags` is filled from `inputs.all` with a one-element list holding its own name, and the
+  preview draws one instance reading `tags`, rather than an empty strip
 
 #### Scenario: Variables are listed separately
 

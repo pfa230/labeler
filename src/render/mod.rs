@@ -1370,6 +1370,13 @@ struct TextRenderArgs<'a> {
     pub text_fit: &'a helpers::TextFit,
 }
 
+pub(crate) struct ExpandedItem<'a> {
+    pub orig_idx: usize,
+    pub elem_idx: Option<usize>,
+    pub item: &'a LayoutItem,
+    pub data: Option<HashMap<String, JsonValue>>,
+}
+
 impl<'a> RenderContext<'a> {
     pub(crate) fn new(
         unit: &'a str,
@@ -1387,6 +1394,21 @@ impl<'a> RenderContext<'a> {
             env,
             images,
             instants: None,
+        }
+    }
+
+    pub(crate) fn with_data<'b>(
+        &'b self,
+        data: &'b HashMap<String, JsonValue>,
+    ) -> RenderContext<'b> {
+        RenderContext {
+            unit: self.unit,
+            dpi: self.dpi,
+            data,
+            selected_option: self.selected_option,
+            env: self.env,
+            images: self.images,
+            instants: self.instants,
         }
     }
 
@@ -1410,6 +1432,54 @@ impl<'a> RenderContext<'a> {
         } else {
             true
         }
+    }
+
+    pub(crate) fn expand_items<'b>(
+        &self,
+        items: &'b [LayoutItem],
+    ) -> Result<Vec<ExpandedItem<'b>>, AppError> {
+        let mut expanded = Vec::new();
+        for (orig_idx, item) in items.iter().enumerate() {
+            if !self.is_item_active(item) {
+                continue;
+            }
+            if let LayoutItem::Container {
+                repeat: Some(rep_name),
+                ..
+            } = item
+            {
+                let val = self
+                    .data
+                    .get(rep_name)
+                    .ok_or_else(|| AppError::missing_field(rep_name))?;
+                if let Some(elements) = val.as_array() {
+                    for (elem_idx, elem) in elements.iter().enumerate() {
+                        let elem_str = value_to_string(elem);
+                        let mut new_data = self.data.clone();
+                        new_data.insert(rep_name.clone(), JsonValue::String(elem_str));
+                        expanded.push(ExpandedItem {
+                            orig_idx,
+                            elem_idx: Some(elem_idx),
+                            item,
+                            data: Some(new_data),
+                        });
+                    }
+                } else {
+                    return Err(AppError::unsupported_layout_item(
+                        Reason::FieldValueNotScalar,
+                        format!("parameter '{rep_name}' must be a list"),
+                    ));
+                }
+            } else {
+                expanded.push(ExpandedItem {
+                    orig_idx,
+                    elem_idx: None,
+                    item,
+                    data: None,
+                });
+            }
+        }
+        Ok(expanded)
     }
 
     fn resolve_item_text(&self, value: &str) -> Result<String, AppError> {
@@ -1485,13 +1555,19 @@ impl<'a> RenderContext<'a> {
         let mut measured_nodes = Vec::new();
         let mut max_req_w = 0.0_f32;
 
-        for (idx, item) in items.iter().enumerate() {
-            if !self.is_item_active(item) {
-                continue;
-            }
-            let path = format!("{path_prefix}[{idx}]");
+        let expanded_items = self.expand_items(items)?;
 
-            let node = match item.placement() {
+        for exp in &expanded_items {
+            let item_ctx = match &exp.data {
+                Some(d) => self.with_data(d),
+                None => self.with_data(self.data),
+            };
+            let path = match exp.elem_idx {
+                Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
+                None => format!("{path_prefix}[{}]", exp.orig_idx),
+            };
+
+            let node = match exp.item.placement() {
                 // A `line` has endpoints rather than a box: nothing to size, nothing to measure.
                 None => Measured {
                     intrinsic: [None, None],
@@ -1528,7 +1604,7 @@ impl<'a> RenderContext<'a> {
 
                     // A container's children are measured against the frame it gives them, which
                     // is its own unmeasured box less rotation and padding.
-                    let (children, child_frame) = match item {
+                    let (children, child_frame) = match exp.item {
                         LayoutItem::Container {
                             placement,
                             padding,
@@ -1542,7 +1618,7 @@ impl<'a> RenderContext<'a> {
                                 axes_resolved,
                                 geometry_values,
                             );
-                            let (children, _) = self.measure_items(
+                            let (children, _) = item_ctx.measure_items(
                                 child_items,
                                 geometry.inner,
                                 geometry.child_axes_resolved,
@@ -1554,8 +1630,8 @@ impl<'a> RenderContext<'a> {
                         _ => (vec![], measure_box),
                     };
 
-                    let (intrinsic, text) = self.intrinsic(IntrinsicInput {
-                        item,
+                    let (intrinsic, text) = item_ctx.intrinsic(IntrinsicInput {
+                        item: exp.item,
                         measure_box,
                         demands: [spec_0.demands_intrinsic(), spec_1.demands_intrinsic()],
                         children: &children,
@@ -1572,8 +1648,13 @@ impl<'a> RenderContext<'a> {
                 }
             };
 
-            max_req_w =
-                max_req_w.max(self.item_axis_requirement(item, 0, frame, geometry_values, &node));
+            max_req_w = max_req_w.max(item_ctx.item_axis_requirement(
+                exp.item,
+                0,
+                frame,
+                geometry_values,
+                &node,
+            ));
             measured_nodes.push(node);
         }
 
@@ -1794,45 +1875,44 @@ impl<'a> RenderContext<'a> {
                 if !demands[0] && !demands[1] {
                     return Ok(([None, None], None));
                 }
-                let active_children: Vec<(usize, &LayoutItem)> = child_items
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, i)| self.is_item_active(i))
-                    .collect();
+                let expanded_children = self.expand_items(child_items)?;
 
                 let author = match flow {
                     Some(flow) => {
-                        let mut flow_inputs = Vec::with_capacity(active_children.len());
-                        for ((orig_idx, child), measured) in
-                            active_children.iter().zip(children.iter())
-                        {
+                        let mut flow_inputs = Vec::with_capacity(expanded_children.len());
+                        for (exp, measured) in expanded_children.iter().zip(children.iter()) {
+                            let item_ctx = match &exp.data {
+                                Some(d) => self.with_data(d),
+                                None => self.with_data(self.data),
+                            };
                             let (req_0, req_1) = (
-                                self.item_axis_requirement(
-                                    child,
+                                item_ctx.item_axis_requirement(
+                                    exp.item,
                                     0,
                                     child_frame,
                                     geometry_values,
                                     measured,
                                 ),
-                                self.item_axis_requirement(
-                                    child,
+                                item_ctx.item_axis_requirement(
+                                    exp.item,
                                     1,
                                     child_frame,
                                     geometry_values,
                                     measured,
                                 ),
                             );
-                            let resolved_box = if let Some(p) = child.placement() {
+                            let child_path = match exp.elem_idx {
+                                Some(e_idx) => format!("{path}.items[{}]#{e_idx}", exp.orig_idx),
+                                None => format!("{path}.items[{}]", exp.orig_idx),
+                            };
+                            let resolved_box = if let Some(p) = exp.item.placement() {
                                 crate::resolver::resolve_packed(
                                     p,
                                     child_frame,
                                     geometry_values,
                                     measured.intrinsic,
                                 )
-                                .map_err(|v| {
-                                    let child_path = format!("{path}.items[{orig_idx}]");
-                                    violation_error(v, &child_path)
-                                })?
+                                .map_err(|v| violation_error(v, &child_path))?
                             } else {
                                 (0.0, 0.0)
                             };
@@ -1844,24 +1924,33 @@ impl<'a> RenderContext<'a> {
                         let flow_res =
                             crate::resolver::arrange_flow(child_frame, flow, &flow_inputs)
                                 .map_err(|(act_idx, v)| {
-                                    let (orig_idx, _) = active_children[act_idx];
-                                    let child_path = format!("{path}.items[{orig_idx}]");
+                                    let exp = &expanded_children[act_idx];
+                                    let child_path = match exp.elem_idx {
+                                        Some(e_idx) => {
+                                            format!("{path}.items[{}]#{e_idx}", exp.orig_idx)
+                                        }
+                                        None => format!("{path}.items[{}]", exp.orig_idx),
+                                    };
                                     violation_error(v, &child_path)
                                 })?;
                         flow_res.assembled
                     }
                     None => {
                         let mut author = (0.0_f32, 0.0_f32);
-                        for ((_, child), measured) in active_children.iter().zip(children.iter()) {
-                            author.0 = author.0.max(self.item_axis_requirement(
-                                child,
+                        for (exp, measured) in expanded_children.iter().zip(children.iter()) {
+                            let item_ctx = match &exp.data {
+                                Some(d) => self.with_data(d),
+                                None => self.with_data(self.data),
+                            };
+                            author.0 = author.0.max(item_ctx.item_axis_requirement(
+                                exp.item,
                                 0,
                                 child_frame,
                                 geometry_values,
                                 measured,
                             ));
-                            author.1 = author.1.max(self.item_axis_requirement(
-                                child,
+                            author.1 = author.1.max(item_ctx.item_axis_requirement(
+                                exp.item,
                                 1,
                                 child_frame,
                                 geometry_values,
@@ -1900,31 +1989,44 @@ impl<'a> RenderContext<'a> {
         path_prefix: &str,
     ) -> Result<String, AppError> {
         let mut out = String::new();
-        let active_items: Vec<(usize, &LayoutItem)> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| self.is_item_active(item))
-            .collect();
+        let expanded = self.expand_items(items)?;
 
         match flow {
             Some(flow) => {
-                let mut flow_inputs = Vec::with_capacity(active_items.len());
-                for (measured_node, &(orig_idx, item)) in measured.iter().zip(&active_items) {
+                let mut flow_inputs = Vec::with_capacity(expanded.len());
+                for (measured_node, exp) in measured.iter().zip(&expanded) {
+                    let item_ctx = match &exp.data {
+                        Some(d) => self.with_data(d),
+                        None => self.with_data(self.data),
+                    };
                     let (req_0, req_1) = (
-                        self.item_axis_requirement(item, 0, frame, geometry_values, measured_node),
-                        self.item_axis_requirement(item, 1, frame, geometry_values, measured_node),
+                        item_ctx.item_axis_requirement(
+                            exp.item,
+                            0,
+                            frame,
+                            geometry_values,
+                            measured_node,
+                        ),
+                        item_ctx.item_axis_requirement(
+                            exp.item,
+                            1,
+                            frame,
+                            geometry_values,
+                            measured_node,
+                        ),
                     );
-                    let resolved_box = if let Some(p) = item.placement() {
+                    let child_path = match exp.elem_idx {
+                        Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
+                        None => format!("{path_prefix}[{}]", exp.orig_idx),
+                    };
+                    let resolved_box = if let Some(p) = exp.item.placement() {
                         crate::resolver::resolve_packed(
                             p,
                             frame,
                             geometry_values,
                             measured_node.intrinsic,
                         )
-                        .map_err(|v| {
-                            let child_path = format!("{path_prefix}[{orig_idx}]");
-                            violation_error(v, &child_path)
-                        })?
+                        .map_err(|v| violation_error(v, &child_path))?
                     } else {
                         (0.0, 0.0)
                     };
@@ -1935,18 +2037,28 @@ impl<'a> RenderContext<'a> {
                 }
                 let flow_res = crate::resolver::arrange_flow(frame, flow, &flow_inputs).map_err(
                     |(act_idx, v)| {
-                        let (orig_idx, _) = active_items[act_idx];
-                        let child_path = format!("{path_prefix}[{orig_idx}]");
+                        let exp = &expanded[act_idx];
+                        let child_path = match exp.elem_idx {
+                            Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
+                            None => format!("{path_prefix}[{}]", exp.orig_idx),
+                        };
                         violation_error(v, &child_path)
                     },
                 )?;
 
-                for (placed, (measured_node, &(orig_idx, item))) in flow_res
+                for (placed, (measured_node, exp)) in flow_res
                     .rects
                     .into_iter()
-                    .zip(measured.iter().zip(&active_items))
+                    .zip(measured.iter().zip(&expanded))
                 {
-                    let path = format!("{path_prefix}[{orig_idx}]");
+                    let item_ctx = match &exp.data {
+                        Some(d) => self.with_data(d),
+                        None => self.with_data(self.data),
+                    };
+                    let path = match exp.elem_idx {
+                        Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
+                        None => format!("{path_prefix}[{}]", exp.orig_idx),
+                    };
                     let pbox = PlacedBox {
                         x: placed.x,
                         y: placed.y,
@@ -1954,10 +2066,10 @@ impl<'a> RenderContext<'a> {
                         h: placed.h,
                         frame,
                     };
-                    self.render_single_item(
+                    item_ctx.render_single_item(
                         &mut out,
                         SingleItemRenderArgs {
-                            item,
+                            item: exp.item,
                             measured_node,
                             pbox,
                             frame,
@@ -1968,10 +2080,17 @@ impl<'a> RenderContext<'a> {
                 }
             }
             None => {
-                for (measured_node, &(idx, item)) in measured.iter().zip(&active_items) {
-                    let path = format!("{path_prefix}[{idx}]");
-                    let pbox = match item.placement() {
-                        Some(placement) => self.resolve_placement_box(
+                for (measured_node, exp) in measured.iter().zip(&expanded) {
+                    let item_ctx = match &exp.data {
+                        Some(d) => self.with_data(d),
+                        None => self.with_data(self.data),
+                    };
+                    let path = match exp.elem_idx {
+                        Some(e_idx) => format!("{path_prefix}[{}]#{e_idx}", exp.orig_idx),
+                        None => format!("{path_prefix}[{}]", exp.orig_idx),
+                    };
+                    let pbox = match exp.item.placement() {
+                        Some(placement) => item_ctx.resolve_placement_box(
                             placement,
                             frame,
                             geometry_values,
@@ -1986,10 +2105,10 @@ impl<'a> RenderContext<'a> {
                             frame,
                         },
                     };
-                    self.render_single_item(
+                    item_ctx.render_single_item(
                         &mut out,
                         SingleItemRenderArgs {
-                            item,
+                            item: exp.item,
                             measured_node,
                             pbox,
                             frame,
@@ -2769,6 +2888,7 @@ mod tests {
                 left: 5.0,
             },
             flow: None,
+            repeat: None,
             items: vec![child],
         };
         let source = render_test_items(&[container], (80.0, 40.0)).expect("render");
@@ -3008,6 +3128,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![auto_text.clone()],
         };
 
@@ -3095,6 +3216,7 @@ layout:
                 left: 0.0,
             },
             flow: None,
+            repeat: None,
             items: vec![text],
         };
         let outer = LayoutItem::Container {
@@ -3109,6 +3231,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![inner],
         };
 
@@ -3197,6 +3320,7 @@ layout:
             rounded: None,
             padding: crate::models::Padding::ZERO,
             flow: None,
+            repeat: None,
             items,
         }
     }
@@ -3255,6 +3379,7 @@ layout:
                 rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![LayoutItem::Container {
                     placement: Placement {
                         at: Some(Position([-30.0, 0.0])),
@@ -3273,6 +3398,7 @@ layout:
                     rounded: None,
                     padding: crate::models::Padding::ZERO,
                     flow: None,
+                    repeat: None,
                     items: vec![],
                 }],
             }
@@ -3600,6 +3726,7 @@ layout:
                 left: 3.0,
             },
             flow: None,
+            repeat: None,
             items: vec![LayoutItem::Container {
                 placement: Placement {
                     at: Some(Position([-0.0, 0.0])),
@@ -3618,6 +3745,7 @@ layout:
                 rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![],
             }],
         };
@@ -3999,6 +4127,7 @@ layout:
                 left: 1.0,
             },
             flow: None,
+            repeat: None,
             items: vec![to_text([0.0, 0.0], [-0.0, 8.0], "Widget A-42")],
         };
         let (wrapped, pushed) = measured_extent_of(container, 80.0);
@@ -4130,6 +4259,7 @@ layout:
                 rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![to_text([0.0, 0.0], [-0.0, 6.0], "x")],
             }]),
             version: None,
@@ -4186,6 +4316,7 @@ layout:
                 rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![],
             }]),
             version: None,
@@ -4219,6 +4350,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src = render_test_items(&[container], (80.0, 40.0)).expect("render r0 container");
@@ -4262,6 +4394,7 @@ layout:
                 rounded: None,
                 padding: Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items,
             }]),
             version: None,
@@ -4413,6 +4546,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![LayoutItem::Text {
                 value: "inner".to_string(),
                 placement: Placement::sized(
@@ -4451,6 +4585,7 @@ layout:
                 left: 8.0,
             },
             flow: None,
+            repeat: None,
             items: vec![inner],
         };
         let template = TemplateContent {
@@ -5196,6 +5331,7 @@ layout:
                     rounded: Some(0.4),
                     padding: Padding::ZERO,
                     flow: None,
+                    repeat: None,
                     items: Vec::new(),
                 },
             ]),
@@ -6239,6 +6375,7 @@ layout:
                     rounded: None,
                     padding: crate::models::Padding::ZERO,
                     flow: None,
+                    repeat: None,
                     items: vec![LayoutItem::Line {
                         at: Position([0.0, 6.0]),
                         to: Position([20.0, 6.0]),
@@ -7755,6 +7892,7 @@ layout:
                 rounded: None,
                 padding: crate::models::Padding::ZERO,
                 flow: None,
+                repeat: None,
                 items: vec![],
                 when: None,
             }],
@@ -7785,6 +7923,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src = render_test_items(&[stroke_only], (20.0, 10.0)).expect("render stroke only");
@@ -7806,6 +7945,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src = render_test_items(&[bg_only], (20.0, 10.0)).expect("render bg only");
@@ -7830,6 +7970,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src = render_test_items(&[both], (20.0, 10.0)).expect("render both");
@@ -7855,6 +7996,7 @@ layout:
             rounded: Some(8.0),
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src =
@@ -7877,6 +8019,7 @@ layout:
             rounded: Some(1.5),
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src = render_test_items(&[rounded_fill_no_stroke], (20.0, 10.0))
@@ -7899,6 +8042,7 @@ layout:
             rounded: Some(2.0),
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src = render_test_items(&[neither], (20.0, 10.0)).expect("render neither");
@@ -7953,6 +8097,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![LayoutItem::Text {
                 value: "child_text".to_string(),
                 placement: Placement::sized(
@@ -8177,6 +8322,7 @@ layout:
             rounded: Some(2.0),
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src = render_test_items(&[rect_item], (20.0, 10.0)).expect("render rect");
@@ -8199,6 +8345,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src_ellipse = render_test_items(&[ellipse_item], (30.0, 20.0)).expect("render ellipse");
@@ -8228,6 +8375,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src_circle = render_test_items(&[circle_item], (20.0, 20.0)).expect("render circle");
@@ -8255,6 +8403,7 @@ layout:
             rounded: None,
             padding: Padding::ZERO,
             flow: None,
+            repeat: None,
             items: vec![],
         };
         let src_strokeless_el = render_test_items(&[strokeless_ellipse], (30.0, 20.0))
@@ -10617,5 +10766,691 @@ layout:
             let err_rep = super::validate_label_data_keys(&template, &map).unwrap_err();
             assert_eq!(err_rep.message_text(), msg);
         }
+    }
+
+    #[test]
+    fn repeating_container_drawn_geometry_sizes_each_instance_to_its_own_element() {
+        // 4.8: Test that each instance is sized on its own, by rendering three elements of different lengths
+        // into size: [content, content] instances and asserting each instance's drawn geometry rather than
+        // that a PNG came back.
+        let rep_yaml = r##"
+name: RepAutoSizingGeometry
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: row, gap: 2 }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        background: "#eeeeee"
+        items:
+          - type: text
+            value: "{tags}"
+            size: [content, content]
+            font_size: 8
+"##;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let data = HashMap::from([(
+            "tags".to_string(),
+            serde_json::json!(["A", "Medium tag", "A very substantially longer tag text"]),
+        )]);
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let resolved =
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+
+        // Check measured children of the outer container
+        let outer_children = &meas[0].children;
+        assert_eq!(outer_children.len(), 3, "must expand 3 measured instances");
+        let w0 = outer_children[0].intrinsic[0].expect("intrinsic width 0");
+        let w1 = outer_children[1].intrinsic[0].expect("intrinsic width 1");
+        let w2 = outer_children[2].intrinsic[0].expect("intrinsic width 2");
+
+        assert!(w0 > 0.0, "w0 must be positive");
+        assert!(w1 > w0, "w1 ({w1}) must be wider than w0 ({w0})");
+        assert!(w2 > w1, "w2 ({w2}) must be wider than w1 ({w1})");
+
+        let typst_src = ctx
+            .render_items(
+                items,
+                &meas,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+        // Assert that the generated Typst placement geometry contains distinct widths for the 3 instances
+        let box_w0 = super::helpers::format_length(w0, "mm").unwrap();
+        let box_w1 = super::helpers::format_length(w1, "mm").unwrap();
+        let box_w2 = super::helpers::format_length(w2, "mm").unwrap();
+        assert!(typst_src.contains(&format!("width: {box_w0}")));
+        assert!(typst_src.contains(&format!("width: {box_w1}")));
+        assert!(typst_src.contains(&format!("width: {box_w2}")));
+    }
+
+    #[test]
+    fn repeating_container_rendered_order_and_siblings() {
+        // 4.7: Three elements drawn in request order; siblings keep their places before and after the instances
+        let rep_yaml = r#"
+name: RepOrder
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: text
+        value: "PRE"
+        size: [content, content]
+        font_size: 8
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+      - type: text
+        value: "POST"
+        size: [content, content]
+        font_size: 8
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let data = HashMap::from([(
+            "tags".to_string(),
+            serde_json::json!(["First", "Second", "Third"]),
+        )]);
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let resolved =
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+        let src = ctx
+            .render_items(
+                items,
+                &meas,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+
+        let pos_pre = src.find("PRE").expect("PRE in Typst");
+        let pos_first = src.find("First").expect("First in Typst");
+        let pos_second = src.find("Second").expect("Second in Typst");
+        let pos_third = src.find("Third").expect("Third in Typst");
+        let pos_post = src.find("POST").expect("POST in Typst");
+
+        assert!(
+            pos_pre < pos_first
+                && pos_first < pos_second
+                && pos_second < pos_third
+                && pos_third < pos_post,
+            "Typst markup must preserve authored order of instances and siblings"
+        );
+    }
+
+    #[test]
+    fn repeating_container_scoped_tokens_and_joined_outside() {
+        // 4.11: Scoped token replacement, joined token outside, per-instance when:
+        let rep_yaml = r#"
+name: RepScope
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  cats:
+    type: list
+  items:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: text
+        value: "All: {cats:join('+')}"
+        size: [content, content]
+        font_size: 8
+      - type: container
+        repeat: cats
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: container
+            repeat: items
+            size: [content, content]
+            flow: { direction: column }
+            items:
+              - type: text
+                value: "{cats}: {items}"
+                size: [content, content]
+                font_size: 8
+              - type: text
+                when:
+                  items: Apple
+                value: "(FAVORITE)"
+                size: [content, content]
+                font_size: 8
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let data = HashMap::from([
+            ("cats".to_string(), serde_json::json!(["Fruit", "Veg"])),
+            (
+                "items".to_string(),
+                serde_json::json!(["Apple", "Broccoli"]),
+            ),
+        ]);
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let resolved =
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+        let src = ctx
+            .render_items(
+                items,
+                &meas,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+
+        assert!(
+            src.contains("Fruit+Veg"),
+            "outside joined token must be expanded as joined list"
+        );
+
+        let p1 = src
+            .find("Fruit:\u{a0}Apple")
+            .or_else(|| src.find("Fruit: Apple"))
+            .expect("Fruit: Apple in Typst");
+        let p_fav1 = src
+            .find("(FAVORITE)")
+            .expect("FAVORITE for Apple 1 in Typst");
+        let p2 = src
+            .find("Fruit:\u{a0}Broccoli")
+            .or_else(|| src.find("Fruit: Broccoli"))
+            .expect("Fruit: Broccoli in Typst");
+        let p3 = src
+            .find("Veg:\u{a0}Apple")
+            .or_else(|| src.find("Veg: Apple"))
+            .expect("Veg: Apple in Typst");
+        let p_fav2 = src
+            .rfind("(FAVORITE)")
+            .expect("FAVORITE for Apple 2 in Typst");
+        let p4 = src
+            .find("Veg:\u{a0}Broccoli")
+            .or_else(|| src.find("Veg: Broccoli"))
+            .expect("Veg: Broccoli in Typst");
+
+        assert!(
+            p1 < p_fav1 && p_fav1 < p2 && p2 < p3 && p3 < p_fav2 && p_fav2 < p4,
+            "nested combinations and when conditions must be rendered in sequence"
+        );
+    }
+
+    #[test]
+    fn repeating_container_empty_list_and_default_empty_draw_no_instances() {
+        // 4.7: [] and default: [] drawing the strip with no instances and no error
+        let rep_yaml = r#"
+name: RepEmpty
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  tags:
+    type: list
+    default: []
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: text
+        value: "PRE"
+        size: [content, content]
+        font_size: 8
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+      - type: text
+        value: "POST"
+        size: [content, content]
+        font_size: 8
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+
+        // 1. Over explicit empty list []
+        let data_empty = HashMap::from([("tags".to_string(), serde_json::json!([]))]);
+        let resolved_empty =
+            super::resolve_parameters(&template, &data_empty, Some(&settings), Some(&datetime))
+                .unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved_empty.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+        // Children of root container are PRE and POST (0 repeat instances)
+        assert_eq!(meas[0].children.len(), 2, "must measure only 2 siblings");
+        let src_empty = ctx
+            .render_items(
+                items,
+                &meas,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+        assert!(src_empty.contains("PRE"));
+        assert!(src_empty.contains("POST"));
+        assert!(!src_empty.contains("Tag:"));
+
+        // 2. Over omitted data using declared default: []
+        let data_omitted = HashMap::new();
+        let resolved_def =
+            super::resolve_parameters(&template, &data_omitted, Some(&settings), Some(&datetime))
+                .unwrap();
+        let images_def = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx_def =
+            super::RenderContext::new("mm", 200, &resolved_def.data, None, &env, &images_def);
+        let (meas_def, _) = ctx_def
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+        assert_eq!(
+            meas_def[0].children.len(),
+            2,
+            "must measure only 2 siblings"
+        );
+        let src_def = ctx_def
+            .render_items(
+                items,
+                &meas_def,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+        assert!(src_def.contains("PRE"));
+        assert!(src_def.contains("POST"));
+        assert!(!src_def.contains("Tag:"));
+    }
+
+    #[test]
+    fn repeating_container_declared_default_draws_elements() {
+        // 4.7: Declared default: supplying elements renders when data is omitted
+        let rep_yaml = r#"
+name: RepDefault
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  tags:
+    type: list
+    default: ["CONSUMABLE", "KIDS"]
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let data = HashMap::new();
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let resolved =
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+        assert_eq!(
+            meas[0].children.len(),
+            2,
+            "must measure 2 default instances"
+        );
+        let src = ctx
+            .render_items(
+                items,
+                &meas,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+        let p_cons = src.find("CONSUMABLE").expect("CONSUMABLE in Typst");
+        let p_kids = src.find("KIDS").expect("KIDS in Typst");
+        assert!(
+            p_cons < p_kids,
+            "default instances must be drawn in declared order"
+        );
+    }
+
+    #[test]
+    fn repeating_container_overflow_trim_draws_first_two_instances() {
+        // 4.9: Container under overflow: trim draws the first two and succeeds
+        let rep_yaml = r#"
+name: RepTrim
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 25 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 25]
+    flow: { direction: column, overflow: trim }
+    items:
+      - type: container
+        repeat: tags
+        size: [50, 10]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "Tag: {tags}"
+            size: [10, 5]
+            font_size: 8
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let data = HashMap::from([("tags".to_string(), serde_json::json!(["A", "B", "C"]))]);
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let resolved =
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(items, (50.0, 25.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        let src = ctx
+            .render_items(items, &meas, (50.0, 25.0), &HashMap::new(), None, "layout")
+            .unwrap();
+        let p_a = src
+            .find("Tag:\u{a0}A")
+            .or_else(|| src.find("Tag: A"))
+            .expect("Tag: A in Typst");
+        let p_b = src
+            .find("Tag:\u{a0}B")
+            .or_else(|| src.find("Tag: B"))
+            .expect("Tag: B in Typst");
+        assert!(p_a < p_b, "Tag A must appear before Tag B");
+        assert!(
+            !src.contains("Tag:\u{a0}C") && !src.contains("Tag: C"),
+            "Tag C must be trimmed"
+        );
+    }
+
+    #[test]
+    fn repeating_container_when_gate_evaluated_once_draws_all_instances() {
+        // 4.7: Repeating container gated by when: on an outer parameter:
+        // when matching, the gate is evaluated once and both instances are drawn.
+        let rep_yaml = r#"
+name: RepWhenGate
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  show_tags:
+    type: enum
+    values: ["yes", "no"]
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        when:
+          show_tags: "yes"
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let data = HashMap::from([
+            ("show_tags".to_string(), serde_json::json!("yes")),
+            ("tags".to_string(), serde_json::json!(["normal", "special"])),
+        ]);
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let resolved =
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(
+                items,
+                (100.0, 100.0),
+                [true, true],
+                &HashMap::new(),
+                "layout",
+            )
+            .unwrap();
+        assert_eq!(meas[0].children.len(), 2, "must measure 2 repeat instances");
+        let src = ctx
+            .render_items(
+                items,
+                &meas,
+                (100.0, 100.0),
+                &HashMap::new(),
+                None,
+                "layout",
+            )
+            .unwrap();
+        let p1 = src
+            .find("Tag:\u{a0}normal")
+            .or_else(|| src.find("Tag: normal"))
+            .expect("Tag: normal in Typst");
+        let p2 = src
+            .find("Tag:\u{a0}special")
+            .or_else(|| src.find("Tag: special"))
+            .expect("Tag: special in Typst");
+        assert!(p1 < p2, "both instances must be drawn in order");
+    }
+
+    #[test]
+    fn repeating_container_wrap_places_third_instance_on_second_line() {
+        // 4.9: Repeating container under flow wrap: true wraps overflow onto a second line
+        let rep_yaml = r#"
+name: RepWrap
+unit: mm
+dpi: 200
+format: { type: single, width: 25, height: 50 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [25, 50]
+    flow: { direction: row, wrap: true }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "Tag: {tags}"
+            size: [10, 5]
+            font_size: 8
+"#;
+        let template = crate::parse::parse_template(rep_yaml).unwrap();
+        let Layout::Items(items) = &template.layout;
+        let data = HashMap::from([("tags".to_string(), serde_json::json!(["A", "B", "C"]))]);
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let resolved =
+            super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let (meas, _) = ctx
+            .measure_items(items, (25.0, 50.0), [true, true], &HashMap::new(), "layout")
+            .unwrap();
+        assert_eq!(meas[0].children.len(), 3, "must measure 3 instances");
+        let src = ctx
+            .render_items(items, &meas, (25.0, 50.0), &HashMap::new(), None, "layout")
+            .unwrap();
+        // In a row of width 25, instances 0 and 1 take 10 mm each (dx: 0mm, dy: 0mm and dx: 10mm, dy: 0mm).
+        // Instance 2 overflows width 25 and wraps to line 2 (dx: 0mm, dy: 10mm).
+        assert!(src.contains("dx: 0mm, dy: 0mm"));
+        assert!(src.contains("dx: 10mm, dy: 0mm"));
+        assert!(
+            src.contains("dx: 0mm, dy: 10mm"),
+            "third instance must wrap to dy: 10mm on second line"
+        );
+        let p_a = src
+            .find("Tag:\u{a0}A")
+            .or_else(|| src.find("Tag: A"))
+            .expect("Tag: A in Typst");
+        let p_b = src
+            .find("Tag:\u{a0}B")
+            .or_else(|| src.find("Tag: B"))
+            .expect("Tag: B in Typst");
+        let p_c = src
+            .find("Tag:\u{a0}C")
+            .or_else(|| src.find("Tag: C"))
+            .expect("Tag: C in Typst");
+        assert!(p_a < p_b && p_b < p_c, "instances must be drawn in order");
     }
 }

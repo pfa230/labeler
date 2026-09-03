@@ -9596,6 +9596,1145 @@ layout:
         );
     }
 
+    #[tokio::test]
+    async fn render_label_repetition_expansion_empty_and_multiple() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 4.7: Template with repetition container and before/after siblings
+        let rep_tpl = r#"
+name: RepExpansion
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: text
+        value: "PRE"
+        size: [content, content]
+        font_size: 8
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+      - type: text
+        value: "POST"
+        size: [content, content]
+        font_size: 8
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_expansion",
+                "PUT",
+                rep_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        // 4.7: Over ["A", "B", "C"] produces 3 instances in authored request order with siblings in place
+        let res_multi = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_expansion", "data": { "tags": ["A", "B", "C"] } })
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_multi.status(), StatusCode::OK);
+        assert_eq!(res_multi.headers()["content-type"], "image/png");
+
+        // 4.7: Over [] produces 0 instances, siblings keep places, no error
+        let res_empty = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_expansion", "data": { "tags": [] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_empty.status(), StatusCode::OK);
+        assert_eq!(res_empty.headers()["content-type"], "image/png");
+
+        // 4.7: Declared default: supplying elements renders when data is omitted
+        let def_tpl = r#"
+name: RepDefault
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags:
+    type: list
+    default: ["DefA", "DefB"]
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+"#;
+        let put_def = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_default",
+                "PUT",
+                def_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_def.status(), StatusCode::CREATED);
+
+        let res_def = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_default", "data": {} }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_def.status(), StatusCode::OK);
+        assert_eq!(res_def.headers()["content-type"], "image/png");
+
+        // 4.7: default: [] draws strip with no instances and no error
+        let def_empty_tpl = r#"
+name: RepDefaultEmpty
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags:
+    type: list
+    default: []
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+"#;
+        let put_def_empty = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_default_empty",
+                "PUT",
+                def_empty_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_def_empty.status(), StatusCode::CREATED);
+
+        let res_def_empty = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_default_empty", "data": {} }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_def_empty.status(), StatusCode::OK);
+        assert_eq!(res_def_empty.headers()["content-type"], "image/png");
+
+        // 4.7: Absent undefaulted list is 422 MissingField
+        let res_missing = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_expansion", "data": {} }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_missing = json_response(res_missing).await;
+        assert_eq!(body_missing["error"]["code"], "MissingField");
+        assert_eq!(body_missing["error"]["details"]["field"], "tags");
+    }
+
+    #[tokio::test]
+    async fn render_label_repetition_auto_sizing() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 4.8: HTTP smoke test for repetition auto-sizing (exact drawn geometry assertions are in render::tests::repeating_container_drawn_geometry_sizes_each_instance_to_its_own_element)
+        let rep_tpl = r##"
+name: RepAutoSizing
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        background: "#eeeeee"
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "{tags}"
+            size: [content, content]
+            font_size: 8
+"##;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_autosize",
+                "PUT",
+                rep_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_autosize", "data": { "tags": ["Short", "Medium tag", "A substantially longer tag text"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "image/png");
+    }
+
+    #[tokio::test]
+    async fn render_label_repetition_nested_and_scope() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 4.11: Nested repeating containers compose, reading both {cats} and {items} in order;
+        // bare {p} prints one element; when: inside compares bound element; joined outside prints joined list
+        let rep_tpl = r#"
+name: RepNestedScope
+unit: mm
+dpi: 200
+format: { type: single, width: 100, height: 100 }
+params:
+  cats:
+    type: list
+  items:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [100, 100]
+    flow: { direction: column }
+    items:
+      - type: text
+        value: "All: {cats:join('+')}"
+        size: [content, content]
+        font_size: 8
+      - type: container
+        repeat: cats
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: container
+            repeat: items
+            size: [content, content]
+            flow: { direction: column }
+            items:
+              - type: text
+                value: "{cats}: {items}"
+                size: [content, content]
+                font_size: 8
+              - type: text
+                when:
+                  items: Apple
+                value: "(FAVORITE)"
+                size: [content, content]
+                font_size: 8
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_nested_scope",
+                "PUT",
+                rep_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({
+                    "template": "rep_nested_scope",
+                    "data": {
+                        "cats": ["Fruit", "Veg"],
+                        "items": ["Apple", "Broccoli"]
+                    }
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "image/png");
+    }
+
+    #[tokio::test]
+    async fn render_label_repetition_when_gating() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 4.7: when: on container gates whole repetition once; child when: evaluated per element
+        let rep_tpl = r#"
+name: RepWhen
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  show_tags:
+    type: enum
+    values: [yes, no]
+    default: yes
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        when:
+          show_tags: yes
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+          - type: text
+            when:
+              tags: special
+            value: "(SPECIAL)"
+            size: [content, content]
+            font_size: 8
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_when",
+                "PUT",
+                rep_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        // When gated off: does not require tags parameter -> 200 OK
+        let res_off = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_when", "data": { "show_tags": "no" } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_off.status(), StatusCode::OK);
+        assert_eq!(res_off.headers()["content-type"], "image/png");
+
+        // When active: evaluates child when per element -> 200 OK
+        let res_active = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_when", "data": { "show_tags": "yes", "tags": ["normal", "special"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_active.status(), StatusCode::OK);
+        assert_eq!(res_active.headers()["content-type"], "image/png");
+    }
+
+    #[tokio::test]
+    async fn render_label_repetition_arrangement() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 4.9: Overrun: instances that overrun fail with UnsupportedLayoutItem and details.reason item_out_of_frame
+        // naming layout[0].items[0]#2 for the third
+        let rep_overflow = r#"
+name: RepOverflow
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 25 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 25]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [50, 10]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "{tags}"
+            size: [10, 5]
+            font_size: 8
+"#;
+        let put_overflow = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_overflow",
+                "PUT",
+                rep_overflow.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_overflow.status(), StatusCode::CREATED);
+
+        let res_overflow = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_overflow", "data": { "tags": ["A", "B", "C"] } })
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_overflow.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_overflow = json_response(res_overflow).await;
+        assert_eq!(body_overflow["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(
+            body_overflow["error"]["details"]["reason"],
+            "item_out_of_frame"
+        );
+        let msg = body_overflow["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("layout[0].items[0]#2"),
+            "expected layout[0].items[0]#2 in error message: {msg}"
+        );
+
+        // 4.9: The same container under overflow: trim draws the first two and succeeds
+        let rep_trim = r#"
+name: RepTrim
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 25 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 25]
+    flow: { direction: column, overflow: trim }
+    items:
+      - type: container
+        repeat: tags
+        size: [50, 10]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "Tag: {tags}"
+            size: [10, 5]
+            font_size: 8
+"#;
+        let put_trim = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_trim",
+                "PUT",
+                rep_trim.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_trim.status(), StatusCode::CREATED);
+
+        let res_trim = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_trim", "data": { "tags": ["A", "B", "C"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_trim.status(), StatusCode::OK);
+        assert_eq!(res_trim.headers()["content-type"], "image/png");
+
+        // 4.9: Under wrap: true the third begins a second line
+        let rep_wrap = r#"
+name: RepWrap
+unit: mm
+dpi: 200
+format: { type: single, width: 25, height: 50 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [25, 50]
+    flow: { direction: row, wrap: true }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        items:
+          - type: text
+            at: [0, 0]
+            value: "{tags}"
+            size: [10, 10]
+            font_size: 8
+"#;
+        let put_wrap = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_wrap",
+                "PUT",
+                rep_wrap.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_wrap.status(), StatusCode::CREATED);
+
+        let res_wrap = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_wrap", "data": { "tags": ["A", "B", "C"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_wrap.status(), StatusCode::OK);
+        assert_eq!(res_wrap.headers()["content-type"], "image/png");
+    }
+
+    #[tokio::test]
+    async fn render_label_repetition_extentless_container() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 4.10: Repeating container written with neither size nor to renders one instance for
+        // a one-element list and fails with item_out_of_frame naming the second instance for a
+        // two-element one
+        let rep_extentless = r#"
+name: RepExtentless
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        items:
+          - type: text
+            at: [0, 0]
+            value: "{tags}"
+            size: [10, 10]
+            font_size: 8
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_extentless",
+                "PUT",
+                rep_extentless.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        // 1 element renders successfully
+        let res_one = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_extentless", "data": { "tags": ["A"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_one.status(), StatusCode::OK);
+        assert_eq!(res_one.headers()["content-type"], "image/png");
+
+        // 2 elements fail with item_out_of_frame naming layout[0].items[0]#1
+        let res_two = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "rep_extentless", "data": { "tags": ["A", "B"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_two.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_two = json_response(res_two).await;
+        assert_eq!(body_two["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(body_two["error"]["details"]["reason"], "item_out_of_frame");
+        let msg = body_two["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("layout[0].items[0]#1"),
+            "expected layout[0].items[0]#1 in error message: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn repetition_roundtrip_and_http_refusals() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 1.6: Round-trip through GET /api/templates/{id} and resubmitting unchanged
+        let rep_tpl = r#"name: RoundTrip
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 50
+params:
+  tags:
+    type: list
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow:
+      direction: column
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow:
+          direction: column
+        items:
+          - type: text
+            value: "{tags}"
+            size: [content, content]
+            font_size: 8
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/round_trip",
+                "PUT",
+                rep_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        let get_res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/round_trip")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_res.status(), StatusCode::OK);
+        let detail = json_response(get_res).await;
+        let layout_arr = detail["layout"].as_array().unwrap();
+        assert_eq!(layout_arr.len(), 1);
+        let root_container = &layout_arr[0];
+        let child_items = root_container["items"].as_array().unwrap();
+        assert_eq!(child_items.len(), 1);
+        assert_eq!(child_items[0]["repeat"], "tags");
+        assert!(child_items[0].get("at").is_none());
+        assert!(child_items[0].get("to").is_none());
+
+        // Resubmitting the returned source document unchanged is accepted
+        let source_res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/round_trip/source")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(source_res.status(), StatusCode::OK);
+        let source_bytes = axum::body::to_bytes(source_res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let source_str = String::from_utf8(source_bytes.to_vec()).unwrap();
+        let put_again = app
+            .clone()
+            .oneshot(yaml_post("/api/templates/round_trip", "PUT", source_str))
+            .await
+            .unwrap();
+        assert_eq!(put_again.status(), StatusCode::OK);
+
+        // 2.8: HTTP PUT refusals for all 8 repetition refusals
+        // Establish an existing template at "keeper" to verify it remains byte-for-byte unchanged
+        let keeper_tpl = r#"name: Keeper
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: text
+    value: "Original keeper template"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+"#;
+        let put_keeper = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/keeper",
+                "PUT",
+                keeper_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_keeper.status(), StatusCode::CREATED);
+
+        let keeper_orig_src = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/keeper/source")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let keeper_orig_bytes = axum::body::to_bytes(keeper_orig_src.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+
+        let eight_refusals = [
+            // 1. (1.3) Null repeat
+            (
+                "null_repeat",
+                r#"name: NullRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params: { tags: { type: list } }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: null
+        size: [10, 10]
+        items: []
+"#,
+                "layout[0].items[0].repeat",
+            ),
+            // 2. (1.4) Unpacked repeat on root container
+            (
+                "unpacked_repeat",
+                r#"name: UnpackedRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params: { tags: { type: list } }
+layout:
+  - type: container
+    repeat: tags
+    at: [0, 0]
+    size: [50, 50]
+    items: []
+"#,
+                "layout[0].repeat",
+            ),
+            // 3. (1.5) Repeat on text item
+            (
+                "text_repeat",
+                r#"name: TextRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params: { tags: { type: list } }
+layout:
+  - type: text
+    repeat: tags
+    value: "hi"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+"#,
+                "layout[0]",
+            ),
+            // 4. (2.2) Repeat on undeclared param
+            (
+                "undeclared_repeat",
+                r#"name: UndeclaredRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: missing
+        size: [10, 10]
+        items: []
+"#,
+                "layout[0].items[0]",
+            ),
+            // 5. (2.3) Repeat on non-list param
+            (
+                "wrong_type_repeat",
+                r#"name: WrongTypeRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params: { title: { type: string } }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: title
+        size: [10, 10]
+        items: []
+"#,
+                "layout[0].items[0]",
+            ),
+            // 6. (2.4) Nested repeat on same param
+            (
+                "nested_same_repeat",
+                r#"name: NestedSameRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params: { tags: { type: list } }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        flow: { direction: column }
+        items:
+          - type: container
+            repeat: tags
+            size: [10, 10]
+            items: []
+"#,
+                "layout[0].items[0].items[0]",
+            ),
+            // 7. (2.5) Join in repeat scope
+            (
+                "join_in_repeat",
+                r#"name: JoinInRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params: { tags: { type: list } }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "{tags:join(',')}"
+            size: [10, 5]
+            font_size: 8
+"#,
+                "layout[0].items[0].items[0]",
+            ),
+            // 8. (2.6) Bare format in repeat scope
+            (
+                "format_in_repeat",
+                r#"name: FormatInRep
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params: { tags: { type: list } }
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [10, 10]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "{tags:short_date}"
+            size: [10, 5]
+            font_size: 8
+"#,
+                "layout[0].items[0].items[0]",
+            ),
+        ];
+
+        for (id, yaml_content, expected_path) in eight_refusals {
+            // 2.8: Create-only write returns 422 and creates no file
+            let res = app
+                .clone()
+                .oneshot(yaml_post(
+                    &format!("/api/templates/{id}"),
+                    "PUT",
+                    yaml_content.to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "refusal for {id} must return 422"
+            );
+            let body = json_response(res).await;
+            assert_eq!(body["error"]["code"], "TemplateInvalid");
+            assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+            assert!(
+                body["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(expected_path),
+                "error message for {id} must contain path {expected_path}: {}",
+                body["error"]["message"]
+            );
+
+            // Verify no file was created
+            assert!(
+                !dir.join(format!("{id}.yaml")).exists(),
+                "create-only write for {id} must create no file"
+            );
+            let get_404 = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri(format!("/api/templates/{id}"))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(get_404.status(), StatusCode::NOT_FOUND);
+
+            // 2.8: Overwriting an existing template at "keeper" returns 422 and leaves it byte-for-byte unchanged
+            let res_keeper = app
+                .clone()
+                .oneshot(yaml_post(
+                    "/api/templates/keeper",
+                    "PUT",
+                    yaml_content.to_string(),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res_keeper.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+            let keeper_src = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method("GET")
+                        .uri("/api/templates/keeper/source")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(keeper_src.status(), StatusCode::OK);
+            let keeper_bytes = axum::body::to_bytes(keeper_src.into_body(), 64 * 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                keeper_bytes, keeper_orig_bytes,
+                "keeper template must be byte-for-byte unchanged after refused write ({id})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn template_detail_and_thumbnail_repetition() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 5.4 & 5.5: Repeat-only template reports tags with control list, required: true, interpolated: true;
+        // when: read on extra stays interpolated: false
+        let rep_tpl = r#"name: RepDetail
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  tags:
+    type: list
+  extra:
+    type: string
+layout:
+  - type: container
+    at: [0, 0]
+    size: [50, 50]
+    flow: { direction: column }
+    items:
+      - type: container
+        repeat: tags
+        size: [content, content]
+        flow: { direction: column }
+        items:
+          - type: text
+            value: "Tag: {tags}"
+            size: [content, content]
+            font_size: 8
+          - type: text
+            when:
+              tags: A
+              extra: yes
+            value: "Extra A"
+            size: [content, content]
+            font_size: 8
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/rep_detail",
+                "PUT",
+                rep_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        let get_res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/rep_detail")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_res.status(), StatusCode::OK);
+        let detail = json_response(get_res).await;
+
+        let inputs_all = detail["inputs"]["all"].as_array().unwrap();
+        let tags_all = inputs_all.iter().find(|i| i["name"] == "tags").unwrap();
+        assert_eq!(tags_all["control"], "list");
+        assert_eq!(tags_all["required"], true);
+        assert_eq!(tags_all["interpolated"], true);
+
+        // 5.4: a when: read on extra stays interpolated: false
+        let extra_all = inputs_all.iter().find(|i| i["name"] == "extra").unwrap();
+        assert_eq!(extra_all["interpolated"], false);
+
+        // inputs.all holds extra, while inputs.default (no data) does not hold extra
+        let inputs_def = detail["inputs"]["default"].as_array().unwrap();
+        assert!(!inputs_def.iter().any(|i| i["name"] == "extra"));
+
+        // POST /api/templates/{id}/inputs with tags: ["A"] holds extra
+        let post_inputs_res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/templates/rep_detail/inputs",
+                json!({ "labels": [{ "data": { "tags": ["A"] } }] }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post_inputs_res.status(), StatusCode::OK);
+        let post_inputs = json_response(post_inputs_res).await;
+        let post_inputs_arr = post_inputs["inputs"][0].as_array().unwrap();
+        assert!(post_inputs_arr.iter().any(|i| i["name"] == "extra"));
+
+        // 5.5: Thumbnail of repeat-only template draws 1 instance without 422 MissingField
+        let thumb_res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/rep_detail/thumbnail")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(thumb_res.status(), StatusCode::OK);
+        assert_eq!(thumb_res.headers()["content-type"], "image/png");
+    }
+
     // -----------------------------------------------------------------------
     // Issue #324 tests: refusing unrecognized data keys on render/batch/print/csv
     // -----------------------------------------------------------------------
