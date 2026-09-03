@@ -656,13 +656,14 @@ fn text_fits(
     segments: &[&str],
     wrap: bool,
     size_pt: f32,
-    width_pt: f32,
-    height_pt: f32,
+    line_spacing: Option<f32>,
+    bounds_pt: (f32, f32),
     vertical: VerticalAlign,
 ) -> bool {
+    let (width_pt, height_pt) = bounds_pt;
     const EPS: f32 = 0.01;
     let lines = break_lines(face, segments, wrap, size_pt, width_pt);
-    let h = block_height(face, size_pt, lines.len(), vertical);
+    let h = block_height(face, size_pt, lines.len(), line_spacing, vertical);
     if h > height_pt + EPS {
         return false;
     }
@@ -679,11 +680,12 @@ pub(super) fn largest_fitting_font(
     segments: &[&str],
     wrap: bool,
     weight: u16,
+    line_spacing: Option<f32>,
     vertical: VerticalAlign,
-    min_size: f32,
-    max_size: f32,
+    range: (f32, f32),
     fit: FitBox,
 ) -> f32 {
+    let (min_size, max_size) = range;
     let width_pt = units_to_pt(fit.width_units, fit.unit);
     let height_pt = units_to_pt(fit.height_units, fit.unit);
     // Parse once, mutate per candidate: the loop runs up to ~76 times at 0.5pt steps, and
@@ -696,7 +698,15 @@ pub(super) fn largest_fitting_font(
     while size >= min_size - f32::EPSILON {
         // opsz tracks the size Typst would render this candidate at.
         face.set_variation(OPSZ, size);
-        if text_fits(&face, segments, wrap, size, width_pt, height_pt, vertical) {
+        if text_fits(
+            &face,
+            segments,
+            wrap,
+            size,
+            line_spacing,
+            (width_pt, height_pt),
+            vertical,
+        ) {
             return size;
         }
         size -= 0.5;
@@ -718,6 +728,7 @@ pub(super) struct TextLayoutItem<'a> {
     pub font_size: &'a FontSize,
     pub font_weight: Option<crate::models::DynamicValue<u16>>,
     pub wrap: bool,
+    pub line_spacing: Option<f32>,
     pub alignment: Alignment,
     pub overflow: Overflow,
 }
@@ -749,9 +760,9 @@ pub(super) fn layout_text(
                 &segments,
                 item.wrap,
                 weight,
+                item.line_spacing,
                 vertical,
-                *min,
-                *max,
+                (*min, *max),
                 FitBox {
                     width_units: box_size.0,
                     height_units: box_size.1,
@@ -770,8 +781,8 @@ pub(super) fn layout_text(
         &segments,
         item.wrap,
         chosen_size,
-        width_pt,
-        height_pt,
+        item.line_spacing,
+        (width_pt, height_pt),
         vertical,
     );
 
@@ -796,7 +807,7 @@ pub(super) fn layout_text(
                         ),
                     ));
                 }
-                let line_1_h = block_height(&face, chosen_size, 1, vertical);
+                let line_1_h = block_height(&face, chosen_size, 1, item.line_spacing, vertical);
                 if line_1_h > height_pt + 0.01 {
                     return Err(AppError::unsupported_layout_item(
                         Reason::TextDoesNotFit,
@@ -807,11 +818,13 @@ pub(super) fn layout_text(
                     ));
                 }
 
-                let max_lines = ((height_pt - overflow_em(&face, vertical) * chosen_size
-                    + leading(chosen_size))
-                    / (cap_height(&face, chosen_size) + leading(chosen_size)))
-                .floor()
-                .max(1.0) as usize;
+                let spacing = resolve_line_spacing(item.line_spacing);
+                let p = line_pitch(chosen_size, spacing);
+                let lead = derived_leading(&face, chosen_size, spacing);
+                let max_lines = ((height_pt - overflow_em(&face, vertical) * chosen_size + lead)
+                    / p)
+                    .floor()
+                    .max(1.0) as usize;
 
                 let mut lines = raw_lines;
                 let any_dropped = lines.len() > max_lines;
@@ -837,7 +850,13 @@ pub(super) fn layout_text(
     let block_h_pt = if emitted_count == 0 {
         0.0
     } else {
-        block_height(&face, chosen_size, emitted_count, vertical)
+        block_height(
+            &face,
+            chosen_size,
+            emitted_count,
+            item.line_spacing,
+            vertical,
+        )
     };
     let max_w_pt = emitted_raw
         .iter()
@@ -1041,31 +1060,77 @@ fn overflow_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
     }
 }
 
-/// Typst's default paragraph leading, 0.65em (`model/par.rs`). Sits *between* lines only.
-fn leading(size: f32) -> f32 {
-    size * 0.65
+pub(super) const DEFAULT_LINE_SPACING: f32 = 1.2;
+
+pub(super) fn resolve_line_spacing(line_spacing: Option<f32>) -> f32 {
+    line_spacing.unwrap_or(DEFAULT_LINE_SPACING)
 }
 
-/// Height of an `n`-line metric block as Typst stacks it: leading between lines, not after the last one
-/// (typst-layout `collect.rs` pushes it only when `i > 0`). A fused per-line constant — which is what
-/// a "line height" is — overshoots by one leading per block and shrinks text that would have fit.
-fn metric_block_height(face: &ttf_parser::Face, size: f32, lines: usize) -> f32 {
-    let n = lines.max(1) as f32;
-    n * cap_height(face, size) + (n - 1.0) * leading(size)
+pub(super) fn line_pitch(size: f32, line_spacing: f32) -> f32 {
+    line_spacing * size
+}
+
+pub(super) fn derived_leading(face: &ttf_parser::Face, size: f32, line_spacing: f32) -> f32 {
+    line_pitch(size, line_spacing) - cap_height(face, size)
+}
+
+pub(super) fn derived_leading_pt(
+    weight: u16,
+    size: f32,
+    line_spacing: Option<f32>,
+) -> Result<f32, AppError> {
+    let face = instance(weight, size)?;
+    Ok(derived_leading(
+        &face,
+        size,
+        resolve_line_spacing(line_spacing),
+    ))
+}
+
+/// Height of an `n`-line metric block as Typst stacks it: `cap_height(s) + (n - 1) * pitch(s)`.
+fn metric_block_height(
+    face: &ttf_parser::Face,
+    size: f32,
+    lines: usize,
+    line_spacing: Option<f32>,
+) -> f32 {
+    if lines == 0 {
+        return 0.0;
+    }
+    let n = lines as f32;
+    let pitch = line_pitch(size, resolve_line_spacing(line_spacing));
+    cap_height(face, size) + (n - 1.0) * pitch
 }
 
 /// The reserved demand: the metric block height Typst lays out plus the ink reservation for the
 /// item's vertical alignment.
-fn block_height(face: &ttf_parser::Face, size: f32, lines: usize, vertical: VerticalAlign) -> f32 {
+fn block_height(
+    face: &ttf_parser::Face,
+    size: f32,
+    lines: usize,
+    line_spacing: Option<f32>,
+    vertical: VerticalAlign,
+) -> f32 {
     // The overflow is read off *this* face, already instanced at the candidate size: the metrics move
     // with the opsz axis, so a ratio captured earlier would belong to a different instance.
-    metric_block_height(face, size, lines) + overflow_em(face, vertical) * size
+    metric_block_height(face, size, lines, line_spacing) + overflow_em(face, vertical) * size
 }
 
 #[cfg(test)]
 pub(crate) fn block_height_for_test(weight: u16, size: f32, lines: usize) -> f32 {
     let face = instance(weight, size).expect("face");
-    metric_block_height(&face, size, lines)
+    metric_block_height(&face, size, lines, None)
+}
+
+#[cfg(test)]
+pub(crate) fn block_height_with_spacing_for_test(
+    weight: u16,
+    size: f32,
+    lines: usize,
+    line_spacing: Option<f32>,
+) -> f32 {
+    let face = instance(weight, size).expect("face");
+    metric_block_height(&face, size, lines, line_spacing)
 }
 
 #[cfg(test)]
@@ -1076,7 +1141,20 @@ pub(crate) fn block_height_with_align_for_test(
     vertical: VerticalAlign,
 ) -> f32 {
     let face = instance(weight, size).expect("face");
-    block_height(&face, size, lines, vertical)
+    block_height(&face, size, lines, None, vertical)
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn block_height_with_align_and_spacing_for_test(
+    weight: u16,
+    size: f32,
+    lines: usize,
+    line_spacing: Option<f32>,
+    vertical: VerticalAlign,
+) -> f32 {
+    let face = instance(weight, size).expect("face");
+    block_height(&face, size, lines, line_spacing, vertical)
 }
 
 #[cfg(test)]
@@ -1348,9 +1426,9 @@ mod helpers_tests {
                 &["Hi"],
                 false,
                 400,
+                None,
                 VerticalAlign::Center,
-                6.0,
-                20.0,
+                (6.0, 20.0),
                 FitBox {
                     width_units: 200.0,
                     height_units: 50.0,
@@ -1364,9 +1442,9 @@ mod helpers_tests {
                 &["A long label that cannot fit"],
                 false,
                 400,
+                None,
                 VerticalAlign::Center,
-                6.0,
-                20.0,
+                (6.0, 20.0),
                 FitBox {
                     width_units: 2.0,
                     height_units: 3.0,
@@ -1391,6 +1469,7 @@ mod helpers_tests {
                 font_size,
                 font_weight: None,
                 wrap,
+                line_spacing: None,
                 alignment: align,
                 overflow,
             },
@@ -1758,7 +1837,7 @@ mod helpers_tests {
         let face = super::instance(400, 10.0).unwrap();
         let msg_w_pt = super::text_width(&face, "message", 10.0);
         let msg_w_mm = super::pt_to_units(msg_w_pt, "mm");
-        let line_1_h_pt = super::block_height(&face, 10.0, 1, VerticalAlign::Top);
+        let line_1_h_pt = super::block_height(&face, 10.0, 1, None, VerticalAlign::Top);
         let line_1_h_mm = super::pt_to_units(line_1_h_pt, "mm");
 
         // Box is wide enough for "message" (msg_w_mm + 0.1) but not "message..."
@@ -1789,7 +1868,7 @@ mod helpers_tests {
         let face = super::instance(400, 10.0).unwrap();
         let dot_w_pt = super::text_width(&face, "...", 10.0);
         let dot_w_mm = super::pt_to_units(dot_w_pt, "mm");
-        let line_1_h_pt = super::block_height(&face, 10.0, 1, VerticalAlign::Top);
+        let line_1_h_pt = super::block_height(&face, 10.0, 1, None, VerticalAlign::Top);
         let line_1_h_mm = super::pt_to_units(line_1_h_pt, "mm");
 
         // Box is tall enough for 1 line, wide enough for "..."
@@ -2143,10 +2222,24 @@ mod measurement_tests {
             height_units: 10.0,
             unit: "mm",
         };
-        let aligned =
-            largest_fitting_font(&["Hxy"], false, 400, VerticalAlign::Bottom, 6.0, 80.0, fit);
-        let centered =
-            largest_fitting_font(&["Hxy"], false, 400, VerticalAlign::Center, 6.0, 80.0, fit);
+        let aligned = largest_fitting_font(
+            &["Hxy"],
+            false,
+            400,
+            None,
+            VerticalAlign::Bottom,
+            (6.0, 80.0),
+            fit,
+        );
+        let centered = largest_fitting_font(
+            &["Hxy"],
+            false,
+            400,
+            None,
+            VerticalAlign::Center,
+            (6.0, 80.0),
+            fit,
+        );
         let face = instance(400, aligned).expect("face");
         // In symmetric Inter, both alignments reserve the same 0.4824em, so they fit at the same size
         assert_eq!(

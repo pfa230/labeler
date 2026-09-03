@@ -408,6 +408,34 @@ impl LayoutItem {
                         Some(dyn_color)
                     }
                 };
+                let line_spacing = match raw.line_spacing {
+                    None => None,
+                    Some(None) => {
+                        return Err(TemplateError::Validation {
+                            path: "line_spacing".to_string(),
+                            msg: "line_spacing cannot be null".to_string(),
+                        });
+                    }
+                    Some(Some(crate::raw::RawLineSpacing::Float(spacing))) => {
+                        if !spacing.is_finite() || spacing <= 0.0 {
+                            return Err(TemplateError::Validation {
+                                path: "line_spacing".to_string(),
+                                msg: format!(
+                                    "line_spacing must be a finite number greater than 0, got {spacing}"
+                                ),
+                            });
+                        }
+                        Some(spacing)
+                    }
+                    Some(Some(crate::raw::RawLineSpacing::Invalid(s))) => {
+                        return Err(TemplateError::Validation {
+                            path: "line_spacing".to_string(),
+                            msg: format!(
+                                "line_spacing must be a bare number, finite, greater than zero, got {s}"
+                            ),
+                        });
+                    }
+                };
                 Ok(LayoutItem::Text {
                     value: raw.value,
                     placement: raw.placement.into_placement("text", None, is_packed)?,
@@ -415,6 +443,7 @@ impl LayoutItem {
                     font_weight: raw.font_weight,
                     color,
                     wrap: raw.wrap,
+                    line_spacing,
                     alignment: raw.alignment,
                     overflow: raw.overflow,
                     when: raw.when,

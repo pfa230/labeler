@@ -1357,6 +1357,7 @@ struct TextRenderArgs<'a> {
     pub font_weight: Option<u16>,
     pub color: Option<&'a crate::models::Color>,
     pub alignment: &'a crate::models::Alignment,
+    pub line_spacing: Option<f32>,
     pub pbox: PlacedBox,
     pub text_fit: &'a helpers::TextFit,
 }
@@ -1717,6 +1718,7 @@ impl<'a> RenderContext<'a> {
                 font_size,
                 font_weight,
                 wrap,
+                line_spacing,
                 alignment,
                 overflow,
                 ..
@@ -1745,6 +1747,7 @@ impl<'a> RenderContext<'a> {
                         font_size,
                         font_weight: dyn_weight,
                         wrap: *wrap,
+                        line_spacing: *line_spacing,
                         alignment: alignment.clone(),
                         overflow: *overflow,
                     },
@@ -2127,6 +2130,7 @@ impl<'a> RenderContext<'a> {
                 font_weight,
                 color,
                 alignment,
+                line_spacing,
                 ..
             } => {
                 let resolved_weight = match font_weight {
@@ -2144,6 +2148,7 @@ impl<'a> RenderContext<'a> {
                         font_weight: resolved_weight,
                         color: resolved_color.as_ref(),
                         alignment,
+                        line_spacing: *line_spacing,
                         pbox: args.pbox,
                         text_fit: args.measured_node.text.as_ref().unwrap(),
                     },
@@ -2250,8 +2255,11 @@ impl<'a> RenderContext<'a> {
             body.push_str("#linebreak()");
         }
 
+        let leading_pt =
+            helpers::derived_leading_pt(weight, args.text_fit.font_size_pt, args.line_spacing)?;
+
         let body = format!(
-            "#text(size: {}pt{weight_arg}{fill_arg})[{body}]",
+            "#text(size: {}pt{weight_arg}{fill_arg})[#set par(leading: {leading_pt}pt)\n{body}]",
             args.text_fit.font_size_pt
         );
 
@@ -2643,6 +2651,7 @@ mod tests {
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment {
                 horizontal,
                 vertical,
@@ -2677,6 +2686,7 @@ mod tests {
             font_weight: weight.map(Into::into),
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment {
                 horizontal,
                 vertical,
@@ -2822,6 +2832,7 @@ mod tests {
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Top,
@@ -2853,6 +2864,7 @@ mod tests {
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: Alignment {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Top,
@@ -2970,6 +2982,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
                     vertical: VerticalAlign::Top,
@@ -3029,6 +3042,7 @@ layout:
                 font_weight: weight.map(Into::into),
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3101,6 +3115,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -3187,6 +3202,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -3338,6 +3354,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -3442,6 +3459,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -3516,6 +3534,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3550,6 +3569,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3583,6 +3603,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -3775,6 +3796,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -3830,6 +3852,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -3934,6 +3957,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -4007,6 +4031,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4079,6 +4104,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: true,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4407,6 +4433,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4549,6 +4576,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4639,6 +4667,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap,
+                line_spacing: None,
                 alignment: Alignment {
                     horizontal: HorizontalAlign::Center,
                     vertical,
@@ -4919,6 +4948,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -4954,6 +4984,7 @@ layout:
                     font_weight: None,
                     color: None,
                     alignment: &Alignment::default(),
+                    line_spacing: None,
                     pbox,
                     text_fit: measured[0].text.as_ref().unwrap(),
                 },
@@ -5131,6 +5162,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -5229,6 +5261,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -5286,6 +5319,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -5385,6 +5419,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -5643,6 +5678,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -5816,6 +5852,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -5867,6 +5904,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -5948,6 +5986,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -6012,6 +6051,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -6082,6 +6122,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -6248,13 +6289,15 @@ layout:
     /// Lay out `lines` lines at `size` on an auto-height page with no margin: the page height Typst
     /// produces *is* the block height the fitter has to predict. Ink extents are the wrong quantity
     /// here — they include descenders and exclude leading.
-    fn typst_block_height_pt(lines: usize, size: f32) -> f32 {
+    fn typst_block_height_pt(lines: usize, size: f32, line_spacing: Option<f32>) -> f32 {
         let body = (0..lines)
             .map(|_| "Hxy")
             .collect::<Vec<_>>()
             .join("#linebreak()");
+        let leading =
+            super::helpers::derived_leading_pt(400, size, line_spacing).expect("derived leading");
         let source = format!(
-            "#set page(width: 200mm, height: auto, margin: 0mm)\n#set text(font: \"Inter\", size: {size}pt)\n{body}"
+            "#set page(width: 200mm, height: auto, margin: 0mm)\n#set text(font: \"Inter\", size: {size}pt)\n#set par(leading: {leading}pt)\n{body}"
         );
         compile_probe(&source).pages()[0].frame.height().to_pt() as f32
     }
@@ -6267,21 +6310,26 @@ layout:
     }
 
     /// The fitter's block model must match what Typst lays out, or auto-shrink is guessing. One, two
-    /// and three lines: a per-line constant that folds leading in is right at n=1 and wrong by one
-    /// leading per line after that, so a single count would not catch it (#96).
+    /// and three lines at authored leading values (0.5, 0.99, 1.2, 1.5): a per-line constant that folds
+    /// leading in is right at n=1 and wrong by one leading per line after that (#96).
     #[test]
     fn block_height_matches_typst_layout() {
-        for lines in 1..=3usize {
-            let rendered = typst_block_height_pt(lines, 20.0);
-            let predicted = super::helpers::block_height_for_test(400, 20.0, lines);
-            let drift = (rendered - predicted).abs() / rendered;
-            // Measured 0.00% off at every count; 1% leaves room for a future font revision without
-            // letting a model error through.
-            assert!(
-                drift < 0.01,
-                "{lines} line(s): predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
-                drift * 100.0
-            );
+        for spacing in [0.5, 0.99, 1.2, 1.5] {
+            for lines in 1..=3usize {
+                let rendered = typst_block_height_pt(lines, 20.0, Some(spacing));
+                let predicted = super::helpers::block_height_with_spacing_for_test(
+                    400,
+                    20.0,
+                    lines,
+                    Some(spacing),
+                );
+                let drift = (rendered - predicted).abs() / rendered;
+                assert!(
+                    drift < 0.01,
+                    "{lines} line(s) at pitch {spacing}: predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
+                    drift * 100.0
+                );
+            }
         }
     }
 
@@ -6339,6 +6387,194 @@ layout:
             bold as f64 >= regular as f64 * 1.10,
             "weight 700 must add ≥10% ink over 400 (got {regular} vs {bold}, ratio {:.3})",
             bold as f64 / regular as f64
+        );
+    }
+
+    /// Task 2.3: Render-measured tests on repeated lines ("Hxy\nHxy") proving band distances of
+    /// 0.99, 0.5, 1.5 and the 1.2 default, plus absent renders identically to explicit 1.2.
+    #[test]
+    fn render_measured_line_pitch_band_distances_and_default_equivalence() {
+        let render_hxy = |text: &str, spacing: Option<f32>| -> Vec<u8> {
+            let template = TemplateContent {
+                name: "Hxy".to_string(),
+                description: String::new(),
+                unit: "mm".to_string(),
+                dpi: 180,
+                format: TemplateFormat::Single {
+                    width: Dimension::Fixed(100.0).into(),
+                    height: Dimension::Fixed(60.0).into(),
+                    media_width: None,
+                },
+                params: BTreeMap::new(),
+                layout: Layout::Items(vec![LayoutItem::Text {
+                    value: text.to_string(),
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::fixed(100.0), SizeValue::fixed(60.0)]),
+                    ),
+                    font_size: FontSize::Fixed(20.0),
+                    font_weight: None,
+                    color: None,
+                    wrap: false,
+                    line_spacing: spacing,
+                    alignment: crate::models::Alignment {
+                        horizontal: HorizontalAlign::Left,
+                        vertical: VerticalAlign::Top,
+                    },
+                    overflow: Overflow::Ellipsis,
+                    when: None,
+                }]),
+                version: None,
+            };
+            render_single_label(
+                &template,
+                &HashMap::new(),
+                None,
+                &no_settings(),
+                &no_datetime(),
+            )
+            .expect("render hxy")
+        };
+
+        // 1. Absent line_spacing renders byte-identically to explicit 1.2
+        let png_absent = render_hxy("Hxy\nHxy", None);
+        let png_default = render_hxy("Hxy\nHxy", Some(1.2));
+        assert_eq!(
+            png_absent, png_default,
+            "absent line_spacing must render byte-identically to explicit 1.2"
+        );
+
+        // 2. Measure vertical distance between the two lines across spacing values
+        // At 180 dpi, 1 pt = 2.5 px. For 20pt font: expected pitch px = spacing * 20.0 * 2.5 = spacing * 50.0 px.
+        for spacing in [0.5, 0.99, 1.2, 1.5] {
+            let png_1line = render_hxy("Hxy", Some(spacing));
+            let png_2line = render_hxy("Hxy\nHxy", Some(spacing));
+
+            let (_, bottom1, _) = ink_rows(&png_1line);
+            let (_, bottom2, _) = ink_rows(&png_2line);
+
+            let expected_pitch_px = spacing * 50.0;
+            let measured_pitch = (bottom2 - bottom1) as f32;
+            let drift = (measured_pitch - expected_pitch_px).abs();
+            assert!(
+                drift <= 1.0,
+                "spacing {spacing}: measured pitch {measured_pitch}px, expected {expected_pitch_px}px (drift {drift}px)"
+            );
+        }
+    }
+
+    /// Task 2.4: Render-measured tests proving tighter pitch settles a height-bound range item
+    /// at a larger size than a looser one, and that a single-line item renders byte-identically.
+    #[test]
+    fn tighter_pitch_allows_larger_font_size_and_single_line_is_invariant() {
+        // 1. Height-bound 3-line text item with range font_size
+        let make_range_template = |spacing: Option<f32>| TemplateContent {
+            name: "RangePitch".to_string(),
+            description: String::new(),
+            unit: "mm".to_string(),
+            dpi: 180,
+            format: TemplateFormat::Single {
+                width: Dimension::Fixed(100.0).into(),
+                height: Dimension::Fixed(16.0).into(),
+                media_width: None,
+            },
+            params: BTreeMap::new(),
+            layout: Layout::Items(vec![LayoutItem::Text {
+                value: "First line of text\nSecond line of text\nThird line of text".to_string(),
+                placement: Placement::sized(
+                    Position([0.0, 0.0]),
+                    Size([SizeValue::fixed(100.0), SizeValue::fixed(16.0)]),
+                ),
+                font_size: FontSize::Range {
+                    min: 8.0,
+                    max: 24.0,
+                },
+                font_weight: None,
+                color: None,
+                wrap: false,
+                line_spacing: spacing,
+                alignment: crate::models::Alignment::default(),
+                overflow: Overflow::Ellipsis,
+                when: None,
+            }]),
+            version: None,
+        };
+
+        let env = super::RenderEnv {
+            settings: &no_settings(),
+            datetime: &no_datetime(),
+        };
+        let tpl_tight = make_range_template(Some(0.8));
+        let compiled_tight = super::compile_label_source(&tpl_tight, &HashMap::new(), None, &env)
+            .expect("compile tight");
+        let size_tight = fitted_pt(&compiled_tight.source);
+
+        let tpl_loose = make_range_template(Some(1.5));
+        let compiled_loose = super::compile_label_source(&tpl_loose, &HashMap::new(), None, &env)
+            .expect("compile loose");
+        let size_loose = fitted_pt(&compiled_loose.source);
+
+        assert!(
+            size_tight > size_loose,
+            "tighter pitch (0.8) must fit at larger font size than looser pitch (1.5): got {size_tight}pt vs {size_loose}pt"
+        );
+
+        // 2. Single-line text item renders byte-identically with and without line_spacing
+        let make_single_line = |spacing: Option<f32>| -> Vec<u8> {
+            let template = TemplateContent {
+                name: "SingleLine".to_string(),
+                description: String::new(),
+                unit: "mm".to_string(),
+                dpi: 180,
+                format: TemplateFormat::Single {
+                    width: Dimension::Fixed(60.0).into(),
+                    height: Dimension::Fixed(20.0).into(),
+                    media_width: None,
+                },
+                params: BTreeMap::new(),
+                layout: Layout::Items(vec![LayoutItem::Text {
+                    value: "Single Line Invariant".to_string(),
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::fixed(60.0), SizeValue::fixed(20.0)]),
+                    ),
+                    font_size: FontSize::Fixed(12.0),
+                    font_weight: None,
+                    color: None,
+                    wrap: false,
+                    line_spacing: spacing,
+                    alignment: crate::models::Alignment::default(),
+                    overflow: Overflow::Ellipsis,
+                    when: None,
+                }]),
+                version: None,
+            };
+            render_single_label(
+                &template,
+                &HashMap::new(),
+                None,
+                &no_settings(),
+                &no_datetime(),
+            )
+            .expect("render single line")
+        };
+
+        let png_absent = make_single_line(None);
+        let png_explicit_default = make_single_line(Some(1.2));
+        let png_tight = make_single_line(Some(0.5));
+        let png_loose = make_single_line(Some(1.5));
+
+        assert_eq!(
+            png_absent, png_explicit_default,
+            "single line absent line_spacing must match explicit 1.2"
+        );
+        assert_eq!(
+            png_absent, png_tight,
+            "single line absent line_spacing must match tight 0.5"
+        );
+        assert_eq!(
+            png_absent, png_loose,
+            "single line absent line_spacing must match loose 1.5"
         );
     }
 
@@ -6431,6 +6667,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -6489,6 +6726,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,
@@ -6654,7 +6892,7 @@ layout:
             "brother_24mm_lines_divider line 1 must fit at 17.5pt (down from 20pt)"
         );
 
-        // 3. brother_24mm_multiline: 2-line wrapped text in 16.1mm box (max 32pt) fits at 17.5pt (down from 21.5pt)
+        // 3. brother_24mm_multiline: 2-line wrapped text in 16.1mm box (max 32pt) fits at 18.5pt (down from 21.5pt with old leading)
         let multiline = registry
             .get("brother_24mm_multiline")
             .expect("multiline template");
@@ -6671,8 +6909,8 @@ layout:
             super::compile_label_source(multiline, &data3, None, &env3).expect("compile multiline");
         let size3 = fitted_pt(&compiled3.source);
         assert_eq!(
-            size3, 17.5,
-            "brother_24mm_multiline 2-line text must fit at 17.5pt (down from 21.5pt)"
+            size3, 18.5,
+            "brother_24mm_multiline 2-line text must fit at 18.5pt (down from 21.5pt)"
         );
 
         // 4. avery5163_asset_tag:
@@ -6717,16 +6955,12 @@ layout:
             "avery5163_asset_tag {{name}} must fit at 23.5pt (down from 24pt)"
         );
 
-        // {tags} / {description} in 0.65in box at fixed 12pt keeps 2 lines and ellipsizes when wrapping
+        // {tags} / {description} in 0.65in box at fixed 12pt fits all 3 lines without ellipsizing under 1.2 pitch
         let desc_chunk = &src4[name_idx..];
-        assert!(
-            desc_chunk.contains("..."),
-            "expected description to be ellipsized in source: {desc_chunk}"
-        );
         let linebreaks = desc_chunk.matches("#linebreak()").count();
         assert_eq!(
-            linebreaks, 2,
-            "avery5163_asset_tag tags and description must each wrap to 2 lines (1 linebreak each, down from 3 lines)"
+            linebreaks, 4,
+            "avery5163_asset_tag tags and description must each wrap to 3 lines (2 linebreaks each, 4 total)"
         );
     }
 
@@ -6772,6 +7006,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -6874,6 +7109,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -8100,6 +8336,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -9315,7 +9552,7 @@ layout:
     }
 
     /// #245 acceptance: a centered multiline text item in an 18.1mm box reserves its ink
-    /// and fits at 19.5pt rather than 24.0pt, keeping its descender closed and off the final raster row.
+    /// and fits at 21.0pt rather than 24.0pt, keeping its descender closed and off the final raster row.
     #[test]
     fn center_aligned_multiline_auto_shrink_descender_fits_and_closes_stroke() {
         let item = LayoutItem::Text {
@@ -9331,6 +9568,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: true,
+            line_spacing: None,
             alignment: crate::models::Alignment {
                 horizontal: HorizontalAlign::Center,
                 vertical: VerticalAlign::Center,
@@ -9340,7 +9578,7 @@ layout:
         };
         let src = render_test_items(&[item], (120.0, 18.1)).expect("render text item");
         let size = fitted_pt(&src);
-        assert_eq!(size, 19.5, "fitted size after fix should be 19.5pt");
+        assert_eq!(size, 21.0, "fitted size after fix should be 21.0pt");
 
         let yaml = r#"
 name: Issue 245 Repro
@@ -9704,6 +9942,7 @@ layout:
                 crate::models::Color::from_str("red").unwrap(),
             )),
             wrap: false,
+            line_spacing: None,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -9727,6 +9966,7 @@ layout:
                 crate::models::Color::from_str("#ff4136").unwrap(),
             )),
             wrap: false,
+            line_spacing: None,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -9748,6 +9988,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -10019,6 +10260,7 @@ layout:
             font_weight: None,
             color: color.map(|s| DynamicValue::Literal(crate::models::Color::from_str(s).unwrap())),
             wrap: true,
+            line_spacing: None,
             alignment: Alignment::default(),
             overflow: Overflow::Ellipsis,
             when: None,
@@ -10298,6 +10540,7 @@ layout:
                 font_weight: None,
                 color: Some(DynamicValue::Literal(name.parse().unwrap())),
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -10463,6 +10706,7 @@ layout:
             font_weight: None,
             color: None,
             wrap: false,
+            line_spacing: None,
             alignment: crate::models::Alignment {
                 horizontal: crate::models::HorizontalAlign::Left,
                 vertical: crate::models::VerticalAlign::Top,

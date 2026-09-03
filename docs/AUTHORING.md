@@ -396,6 +396,24 @@ Text layout items support an optional `wrap: bool` flag (default: `false`):
 - **No soft wrapping (`wrap: false`):** Lines are not broken beyond authored newlines. If an individual line exceeds the box width, `overflow` handles it.
 - **Form inputs in the web UI:** Whether the print form displays a multi-line `<textarea>` or a single-line `<input>` is controlled entirely by declaring `multiline: true` on the parameter in `params:`. Every field referenced by the layout must be declared in `params:`, and a `wrap: true` layout item reading a `multiline: false` parameter keeps a single-line `<input>`.
 
+### Line spacing (`line_spacing`)
+
+Text layout items support an optional `line_spacing: float` multiplier (default: `1.2`):
+- **Baseline-to-baseline pitch:** `pitch = line_spacing * font_size`. The spacing between consecutive lines is directly proportional to the font size.
+- **Tighter or looser lines:** Values below `1.2` (such as `0.99` or `1.0`) produce tighter line spacing for dense badges or multi-line descriptions, allowing auto-shrink to settle at larger font sizes within a height-constrained box. Values above `1.2` (such as `1.4` or `1.5`) create more open leading.
+- **Single-line invariant:** For single-line text, `line_spacing` has no effect on block height or rendering.
+- **Validation:** Must be a finite positive number (`> 0`). Unitless multiplier.
+
+```yaml
+- type: text
+  value: "{description}"
+  at: [0.0, 0.0]
+  size: [60.0, 20.0]
+  font_size: { min: 8.0, max: 14.0 }
+  wrap: true
+  line_spacing: 1.0     # tighter 1.0x line pitch for multi-line description
+```
+
 ## 8. Edge-relative coordinates and `to:`
 
 ### Edge-relative coordinates

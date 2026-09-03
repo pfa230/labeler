@@ -1085,6 +1085,8 @@ pub enum LayoutItem {
         color: Option<DynamicValue<Color>>,
         #[serde(default)]
         wrap: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line_spacing: Option<f32>,
         #[serde(default)]
         alignment: Alignment,
         #[serde(default)]
