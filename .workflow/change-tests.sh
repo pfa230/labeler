@@ -1592,6 +1592,365 @@ if ! DETACH_LAUNCHER='wat' "$DETACH" "$d/y" true >/dev/null 2>&1; then
 else bad "an unknown DETACH_LAUNCHER was accepted"; fi
 find "$d" -mindepth 0 -delete 2>/dev/null
 
+# --- a failure the base already has is not this change's (#298) ---------------------
+# The driver read every non-zero from the gates as the change's fault, so on a machine
+# whose suite does not pass at HEAD it could never finish. During #235 that threw away a
+# reviewed, approved, archived change over 16 failures that fail identically at the base.
+#
+# No real cargo suite runs here: the parse is asserted against a canned log, and every
+# decision that would launch one is driven through a stand-in cargo that answers from files
+# the test writes. What that stand-in also proves is where the baseline ran - it records its
+# own working directory - because "in a worktree that is not the one being written" is the
+# part a passing exit status would never show.
+source "$here/gates.sh"
+
+# The parse, keyed by target as well as by name. A test name is unique only within one
+# binary; merged on the name alone, the new failure in tests/http_tests.rs below would be
+# cancelled by the passing run of the same name under unittests.
+plog=$(mktemp)
+cat > "$plog" <<'LOG'
+   Compiling labeler v0.1.0 (/repo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.02s
+     Running unittests src/lib.rs (target/debug/deps/labeler-1111111111111111)
+
+running 3 tests
+test render::tests::flips_y ... ok
+test fs_safe::tests::opens_a_path ... FAILED
+test templates::tests::load_from_dir_handles_non_utf8_paths ... FAILED
+
+failures:
+    fs_safe::tests::opens_a_path
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+     Running tests/http_tests.rs (target/debug/deps/http_tests-2222222222222222)
+
+running 2 tests
+test fs_safe::tests::opens_a_path ... ok
+test template_group_renders ... FAILED
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+   Doc-tests labeler
+
+running 1 test
+test src/lib.rs - render (line 12) ... FAILED
+LOG
+want='Doc-tests labeler :: src/lib.rs - render (line 12)
+tests/http_tests.rs :: template_group_renders
+unittests src/lib.rs :: fs_safe::tests::opens_a_path
+unittests src/lib.rs :: templates::tests::load_from_dir_handles_non_utf8_paths'
+got=$(gate_failed_tests "$plog")
+if [ "$got" = "$want" ]; then ok "every failing test is read off a cargo log under its own target"
+else bad "gate_failed_tests read '$(printf '%s' "$got" | tr '\n' '|')'"; fi
+printf 'running 1 test\ntest a::b ... ok\n\ntest result: ok. 1 passed; 0 failed\n' > "$plog"
+if [ -z "$(gate_failed_tests "$plog")" ]; then ok "and a suite that passed names nothing"
+else bad "a passing log produced failures"; fi
+find "$plog" -mindepth 0 -delete 2>/dev/null
+
+# A cargo that answers from files the test controls, and says where it was run.
+mk_cargo() { # mk_cargo <bindir>
+  cat > "$1/cargo" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in fmt|clippy) exit 0 ;; esac
+printf 'cwd=%s target=%s\n' "$PWD" "${CARGO_TARGET_DIR:-unset}" >> "$CARGO_CALLS"
+cat "$CARGO_OUT"
+exit "${CARGO_RC:-101}"
+FAKE
+  chmod +x "$1/cargo"
+}
+canned() { # canned <file> <test-name>...
+  local f="$1"; shift
+  printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n' > "$f"
+  printf 'running %s tests\n' "$#" >> "$f"
+  for t in "$@"; do printf 'test %s ... FAILED\n' "$t" >> "$f"; done
+  printf '\ntest result: FAILED. 0 passed; %s failed\n' "$#" >> "$f"
+}
+
+setup
+add_change issue-50-attr
+wt50="$repo/.worktrees/issue-50"
+mkdir -p "$wt50/.agent-runs"
+glog="$wt50/.agent-runs/gates.log"
+blog="$wt50/.agent-runs/gates-base.log"
+abin=$(mktemp -d); mk_cargo "$abin"
+export CARGO_CALLS="$abin/calls" CARGO_OUT="$abin/base.log" CARGO_RC=101
+# A target directory in the environment, which the baseline must not take: that is how it
+# would end up sharing one with the tree it is measuring.
+export CARGO_TARGET_DIR="$abin/shared-target"
+: > "$CARGO_CALLS"
+canned "$CARGO_OUT" fs_safe::tests::opens_a_path templates::tests::non_utf8
+
+# The base commit is the fork point, never HEAD: on a re-run after the commit, HEAD carries
+# the change and comparing against it would subtract the change from itself. Nor is it the
+# tip of the default branch, which moves on while a change is in flight. Nor is it reachable
+# by counting parents: the fixture puts TWO commits on the change branch and ONE on the
+# default branch, so the fork point is HEAD~2 here and HEAD~1 nowhere, and the three wrong
+# answers - echo HEAD, the default tip, HEAD~1 - are all distinct commits from it and from
+# each other. Depth matters as much as divergence: against a single-commit repo all four
+# coincide, and against one commit a side the parent-arithmetic answer is right by accident.
+base50=$(git -C "$repo" rev-parse HEAD)
+for c in 1 2; do
+  printf 'the change, part %s\n' "$c" > "$wt50/change-$c.txt"
+  git -C "$wt50" add "change-$c.txt" >/dev/null 2>&1
+  git -C "$wt50" commit -q -m "the change's own commit $c" >/dev/null 2>&1
+done
+printf 'moved on\n' > "$repo/main-moved.txt"
+git -C "$repo" add main-moved.txt >/dev/null 2>&1
+git -C "$repo" commit -q -m "the default branch moves on" >/dev/null 2>&1
+got50=$(gate_base_commit "$wt50")
+if [ "$got50" = "$base50" ] \
+   && [ "$got50" != "$(git -C "$wt50" rev-parse HEAD)" ] \
+   && [ "$got50" != "$(git -C "$wt50" rev-parse HEAD~1)" ] \
+   && [ "$got50" != "$(git -C "$repo" rev-parse HEAD)" ]; then
+  ok "the baseline commit is the fork point, not the branch tip, its parent, or the default one"
+else bad "gate_base_commit gave '$got50', not the fork point $base50 (branch tip $(git -C "$wt50" rev-parse HEAD), its parent $(git -C "$wt50" rev-parse HEAD~1), default tip $(git -C "$repo" rev-parse HEAD))"; fi
+
+# fmt and clippy are deterministic, and a pre-existing lint is not a thing this repo
+# tolerates: they fail outright, and no baseline is run for them at all.
+canned "$glog" fs_safe::tests::opens_a_path
+for pair in "$GATE_FMT_FAILED:fmt" "$GATE_CLIPPY_FAILED:clippy"; do
+  out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "${pair%%:*}" "$glog" "$blog" 2>&1); rc=$?
+  if [ "$rc" = "1" ] && printf '%s' "$out" | grep -qi "${pair#*:}"; then
+    ok "a failing ${pair#*:} is this change's, whatever the base does"
+  else bad "a failing ${pair#*:} gave exit $rc: $out"; fi
+done
+if [ ! -s "$CARGO_CALLS" ]; then ok "and no baseline suite was run for either"
+else bad "a lint failure ran the baseline suite $(grep -c . "$CARGO_CALLS") time(s)"; fi
+
+# A build error names no test, so there is nothing to match against the base. That is the
+# refusal, not a pass: a driver that waved a change through on an attribution it could not
+# make would be worse than the false stop this replaces.
+printf 'error[E0432]: unresolved import `crate::nope`\nerror: could not compile `labeler`\n' > "$glog"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'without naming a single failing test'; then
+  ok "a test gate that named no test is this change's, and says why"
+else bad "an unattributable test failure gave exit $rc: $out"; fi
+if [ ! -s "$CARGO_CALLS" ]; then ok "and it did not pay for a baseline it could not use"
+else bad "the baseline ran with nothing to compare against"; fi
+
+# A result line the parse does not recognise is the other way to end up with an incomplete
+# set, and the dangerous one: a failure dropped here is subtracted away as pre-existing and
+# the change ships broken. So cargo's own count is checked against what was read, and a
+# disagreement stops the run rather than being compared anyway.
+{ printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n'
+  printf 'running 2 tests\n'
+  printf 'test render::tests::flips_y ... FAILED\n'
+  printf 'test fs_safe::tests::opens_a_path ... FAILED (time limit exceeded)\n'
+  printf '\ntest result: FAILED. 0 passed; 2 failed\n'; } > "$glog"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'counted 2 failing test(s) here and this read 1'; then
+  ok "a failure cargo counted but this could not read stops the run, both numbers named"
+else bad "an unreadable result line gave exit $rc: $out"; fi
+if [ ! -s "$CARGO_CALLS" ]; then ok "and no baseline is run against a set that cannot be trusted"
+else bad "the baseline ran on an incomplete failure set"; fi
+
+# The other way to hold an incomplete set, and the one the counts cannot see: a test binary
+# that dies mid-run prints its banner and never prints a result, so what it would have
+# failed on is missing while every failure cargo did count is read. Measured on this repo,
+# not imagined - an abort() in one test file under --no-fail-fast gave 8 banners against 7
+# summaries, 2 failures counted and 2 read - and without this the subtraction would have
+# excused a change that crashed the harness.
+{ printf '     Running tests/zz_broken.rs (target/debug/deps/zz_broken-aaaa)\n\n'
+  printf 'running 1 test\n'
+  printf '     Running tests/zz_failing.rs (target/debug/deps/zz_failing-bbbb)\n\n'
+  printf 'running 2 tests\n'
+  printf 'test zz_first ... FAILED\ntest zz_second ... FAILED\n'
+  printf '\ntest result: FAILED. 0 passed; 2 failed\n'; } > "$glog"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'started 2 test target(s) here and 1 reported'; then
+  ok "a test binary that died mid-run stops the run, however well the counts add up"
+else bad "a target that never reported gave exit $rc: $out"; fi
+if [ ! -s "$CARGO_CALLS" ]; then ok "and no baseline is run against a set missing a whole binary"
+else bad "the baseline ran against a set missing a target"; fi
+
+# The first direction: everything here fails there too.
+before_trees=$(git -C "$repo" worktree list | grep -c .)
+before_status=$(git -C "$wt50" status --porcelain)
+canned "$glog" fs_safe::tests::opens_a_path templates::tests::non_utf8
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "0" ] && printf '%s' "$out" | grep -q '2 failure(s) fail identically'; then
+  ok "failures the base has too predate the change, and are counted and named"
+else bad "a wholly pre-existing failure set gave exit $rc: $out"; fi
+if [ "$(grep -c . "$CARGO_CALLS")" = "1" ]; then ok "at the cost of one extra suite"
+else bad "the baseline ran $(grep -c . "$CARGO_CALLS") time(s)"; fi
+# Where it ran matters as much as that it ran: the change is uncommitted working state, so
+# checking the base out over it would destroy the work being judged.
+if ! grep -q 'cwd=[^ ]*\.worktrees/issue-50' "$CARGO_CALLS"; then
+  ok "in a worktree that is not the one being written"
+else bad "the baseline suite ran inside the change's own worktree"; fi
+# And in a target directory of its own. Cargo does not key this package's artifacts on the
+# tree they were built in, so a shared one lets each tree run the other's binaries: the
+# baseline would measure the change's compiled code, and the change's own re-run would be
+# stopped by a binary built in a scratch tree that has since been deleted. Both were
+# observed while this was written; the second failed as `read SPEC.md: NotFound` in a test
+# that reads through env!("CARGO_MANIFEST_DIR") (src/errors.rs:653).
+if grep -q "target=$wt50/target/baseline" "$CARGO_CALLS"; then
+  ok "and in a target directory that is not the change's, nor the environment's"
+else bad "the baseline built into $(sed -n 's/.*target=//p' "$CARGO_CALLS" | tail -1)"; fi
+if [ "$(git -C "$wt50" status --porcelain)" = "$before_status" ] \
+   && [ "$(git -C "$repo" worktree list | grep -c .)" = "$before_trees" ]; then
+  ok "leaving the change's tree exactly as it was and no scratch worktree behind"
+else bad "the baseline moved the change's tree or left $(git -C "$repo" worktree list | grep -c .) worktree(s)"; fi
+
+# The same base commit, so the fix round's re-run reuses the measurement rather than paying
+# for it again. Announced, because a cache nobody can see is a cache nobody can distrust.
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "0" ] && [ "$(grep -c . "$CARGO_CALLS")" = "1" ] && printf '%s' "$out" | grep -q 'reusing'; then
+  ok "a second attempt at the same base reuses the baseline and says so"
+else bad "the second attempt ran $(grep -c . "$CARGO_CALLS") suite(s), exit $rc"; fi
+
+# The other direction, against that same cached baseline: one failure the base does not
+# have, and the whole set is not excused by the two that it does.
+canned "$glog" fs_safe::tests::opens_a_path templates::tests::non_utf8 render::tests::flips_y
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'render::tests::flips_y'; then
+  ok "a failure the base does not have is this change's, and is named"
+else bad "a new failure among pre-existing ones gave exit $rc: $out"; fi
+if ! printf '%s' "$out" | grep -q 'fs_safe::tests::opens_a_path'; then
+  ok "and the ones that predate it are not put on the implementer"
+else bad "the report blamed the change for a pre-existing failure"; fi
+
+# A baseline that will not build reports nothing to subtract, and cannot be read as "the
+# base is clean, so every failure here is new" either.
+find "$blog.commit" -mindepth 0 -delete 2>/dev/null
+printf 'error: could not compile `labeler` (lib test)\n' > "$CARGO_OUT"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'without naming a failing test'; then
+  ok "a baseline that would not build attributes nothing, and stops"
+else bad "an unreadable baseline gave exit $rc: $out"; fi
+
+# The same count on the base's side, where a dropped failure blames this change for one it
+# did not cause. Not compared, and not cached either: a measurement that cannot be read
+# whole must not be reused by the fix round's re-run.
+canned "$glog" fs_safe::tests::opens_a_path
+{ printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n'
+  printf 'running 2 tests\n'
+  printf 'test fs_safe::tests::opens_a_path ... FAILED\n'
+  printf 'test templates::tests::non_utf8 ... FAILED (time limit exceeded)\n'
+  printf '\ntest result: FAILED. 0 passed; 2 failed\n'; } > "$CARGO_OUT"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'counted 2 failing test(s) at '; then
+  ok "a baseline whose failures cannot all be read is not subtracted from"
+else bad "an incompletely read baseline gave exit $rc: $out"; fi
+if [ ! -f "$blog.commit" ]; then ok "and is not cached as if it had measured something"
+else bad "an incomplete baseline was cached for the next attempt"; fi
+
+# And a baseline whose own harness died. Its missing failures would be read as passing
+# there, which is what turns a failure this change did not cause into one it gets blamed
+# for - or, when the change's set matches what is left, lets a real one through.
+canned "$glog" fs_safe::tests::opens_a_path
+{ printf '     Running tests/zz_broken.rs (target/debug/deps/zz_broken-aaaa)\n\n'
+  printf 'running 1 test\n'
+  printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n'
+  printf 'running 1 test\ntest fs_safe::tests::opens_a_path ... FAILED\n'
+  printf '\ntest result: FAILED. 0 passed; 1 failed\n'; } > "$CARGO_OUT"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'started 2 test target(s) at '; then
+  ok "a baseline whose harness died measures nothing, even where the failures line up"
+else bad "a baseline missing a target gave exit $rc: $out"; fi
+if [ ! -f "$blog.commit" ]; then ok "and that baseline is not cached either"
+else bad "a baseline missing a target was cached for the next attempt"; fi
+
+# A commit that is not there: the scratch worktree cannot be made, which is not the same as
+# a suite that ran and failed, and must not be read as one.
+gate_tests_at "$wt50" 0000000000000000000000000000000000000000 "$blog"; rc=$?
+if [ "$rc" = "125" ] && [ "$(git -C "$repo" worktree list | grep -c .)" = "$before_trees" ]; then
+  ok "a baseline that could not be checked out is a run that never happened"
+else bad "a bad commit gave $rc and left $(git -C "$repo" worktree list | grep -c .) worktree(s)"; fi
+find "$abin" -mindepth 0 -delete 2>/dev/null
+unset CARGO_CALLS CARGO_OUT CARGO_RC CARGO_TARGET_DIR
+teardown
+
+# No default branch anywhere, so there is no fork point and no baseline. Nothing is
+# guessed from it: without a base every failure is the change's.
+setup
+def=$(git -C "$repo" symbolic-ref --short HEAD)
+add_change issue-52-nobase
+git -C "$repo" branch -m "$def" sideline
+wt52="$repo/.worktrees/issue-52"
+mkdir -p "$wt52/.agent-runs"
+if ! gate_base_commit "$wt52" >/dev/null 2>&1; then ok "no default branch means no baseline commit"
+else bad "gate_base_commit invented a base of $(gate_base_commit "$wt52")"; fi
+canned "$wt52/.agent-runs/gates.log" fs_safe::tests::opens_a_path
+out=$(gate_attribute "$wt52" "$GATE_TEST_FAILED" "$wt52/.agent-runs/gates.log" "$wt52/.agent-runs/gates-base.log" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'no baseline'; then
+  ok "and every failure counts as this change's, said out loud"
+else bad "a missing baseline gave exit $rc: $out"; fi
+teardown
+
+# --- and the driver acts on it (#298) -----------------------------------------------
+# The gates stage end to end, which is reachable without stubbing an agent: an archived
+# change sends next_stage straight to the gates. The stand-in cargo answers differently in
+# the two trees, keyed on the path it was run in.
+drive_gates() { # drive_gates <issue> <change-failures-file> <base-failures-file> -> the run's output
+  local n="$1" cf="$2" bf="$3" bin out
+  bin=$(mktemp -d)
+  cat > "$bin/cargo" <<FAKE
+#!/usr/bin/env bash
+case "\$1" in fmt|clippy) exit 0 ;; esac
+printf '%s\n' "\$*" >> "$ARGS_SINK"
+case "\$PWD" in
+  *.worktrees/issue-$n*) cat "$cf" ;;
+  *) cat "$bf" ;;
+esac
+exit 101
+FAKE
+  # The issue body is read from the cached scope file below; a gh that answers would reach
+  # for a network this suite must not need. The implementer fails its fix round rather than
+  # being stubbed into fixing anything: what is read here is the attribution before it.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$bin/gh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$bin/agy"
+  chmod +x "$bin/cargo" "$bin/gh" "$bin/agy"
+  out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" "$n" claude codex agy codex 2>&1)
+  printf '%s\n' "$out"
+  find "$bin" -mindepth 0 -delete 2>/dev/null
+}
+stage_gates_repo() { # stage_gates_repo <issue> <slug>
+  local n="$1" name="issue-$1-$2" w="$repo/.worktrees/issue-$1"
+  git -C "$repo" worktree add -q "$w" -b "$name" 2>/dev/null
+  mkdir -p "$w/openspec/changes/archive/2026-01-01-$name" "$w/.agent-runs"
+  printf '# Proposal\n' > "$w/openspec/changes/archive/2026-01-01-$name/proposal.md"
+  printf '# Issue %s\n\nthe scope\n' "$n" > "$w/.agent-runs/issue-$n.md"
+  # Committed, so the gates stage is followed by the push rather than by a commit stage
+  # that would need an agent. What the run does at the gates is what is being read here.
+  git -C "$w" add -A >/dev/null 2>&1
+  git -C "$w" commit -q --no-verify -m "the change" >/dev/null 2>&1
+}
+
+setup
+stage_gates_repo 53 preexisting
+cfail=$(mktemp); bfail=$(mktemp)
+export ARGS_SINK=$(mktemp)
+canned "$cfail" fs_safe::tests::opens_a_path templates::tests::non_utf8
+cp "$cfail" "$bfail"
+out=$(drive_gates 53 "$cfail" "$bfail")
+# Both suites, or the two failure sets are not comparable: cargo stops after the first
+# failing test binary, so a regression in a later one would sit behind a pre-existing
+# failure in an earlier one and be subtracted away unseen.
+if [ "$(grep -c . "$ARGS_SINK")" = "2" ] && [ "$(grep -c -- '--no-fail-fast' "$ARGS_SINK")" = "2" ]; then
+  ok "both the change's suite and the base's run every test binary"
+else bad "the suites ran as: $(tr '\n' '|' < "$ARGS_SINK")"; fi
+if printf '%s' "$out" | grep -q 'predate this change'; then
+  ok "the driver names the failures it is not stopping for"
+else bad "the driver said nothing about a wholly pre-existing failure set"; fi
+if printf '%s' "$out" | grep -q '^== push' && ! printf '%s' "$out" | grep -q 'gets one round'; then
+  ok "and goes on to the push without spending the fix round"
+else bad "a change whose failures all predate it did not get past the gates"; fi
+teardown
+
+setup
+stage_gates_repo 54 regression
+canned "$cfail" fs_safe::tests::opens_a_path render::tests::flips_y
+canned "$bfail" fs_safe::tests::opens_a_path
+out=$(drive_gates 54 "$cfail" "$bfail")
+if printf '%s' "$out" | grep -q 'render::tests::flips_y' && printf '%s' "$out" | grep -q 'do not fail at'; then
+  ok "a test this change broke still stops the driver, by name"
+else bad "a regression alongside a pre-existing failure was not named"; fi
+if ! printf '%s' "$out" | grep -q '^== push'; then ok "and nothing is pushed"
+else bad "a change that broke a test reached the push"; fi
+find "$cfail" "$bfail" "$ARGS_SINK" -mindepth 0 -delete 2>/dev/null
+unset ARGS_SINK
+teardown
+
 # --- a change whose deliverable is the delta spec (#313) ---------------------------
 # run-change.sh could not drive one. implement carries produces=1, so a stage that wrote
 # no code because its plan asked for none exited 3 and the run stopped reporting that it

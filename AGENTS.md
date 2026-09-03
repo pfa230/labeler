@@ -259,6 +259,25 @@ The steps below are what those stages mean. Read them to understand the loop or 
    A gate failure gets the implementer one resumed round with the output, and a second failure stops
    the run, because a lint is what an unattended round should absorb and a second failure is a defect.
 
+   **A failure that was already there is neither** (#298). A failing `cargo test` is measured against
+   the commit the branch forked from: `.workflow/gates.sh` checks that commit out in a scratch
+   worktree outside the repository, runs the suite there, and subtracts. Failures present in both
+   predate the change, are named as such and do not stop the run; a failure absent at the base is this
+   change's, is named, and does. `cargo fmt` and `clippy` are never measured this way, because they
+   are deterministic and a pre-existing lint is not a thing this repo tolerates. The baseline runs
+   only after the gates have already failed, so the passing path costs nothing, and it is cached
+   against the commit it measured, so the fix round's re-run does not pay for it twice. It builds
+   into `target/baseline`, never the target directory of the tree it is measuring: cargo does not key
+   this package's artifacts on the tree they were built in, so a shared one lets each tree run the
+   other's binaries, and the first thing that breaks is `env!("CARGO_MANIFEST_DIR")` (`src/errors.rs`
+   reads `docs/SPEC.md` through it). That buys correctness for a cold build of every dependency, once
+   per worktree. Anything the comparison cannot establish - no base commit, a suite that failed
+   without naming a test, a failure set missing a target that died mid-run or a failure cargo
+   counted, a baseline that would not build - counts as this change's, because a run waved through
+   on an attribution nobody could make is worse than the false stop it replaces. During #235 that
+   false stop threw away a reviewed, approved, archived change over 16 failures that fail
+   identically at the base (#288).
+
 ### When a stage cannot decide something
 
 Any stage may write `QUESTIONS.md` at its worktree root and stop rather than guess; the driver stops
@@ -323,8 +342,9 @@ edit-time signal for Claude Code.
 
 `.workflow/change-tests.sh` does the same for `run-change.sh` and the roles it drives: the self-review
 and non-resumable refusals, every stage the resumption logic can resolve to, the guards in
-`run-stage.sh` that a role change could silently unkey, the `DELIVERABLE: spec-only` exemption from
-one of them, and the question protocol.
+`run-stage.sh` that a role change could silently unkey, the `DELIVERABLE: spec-only` exemption
+from one of them, the question protocol, and which side of the base commit a failing gate belongs
+to.
 
 `.workflow/gate-tests.sh` asserts both scripts against a throwaway repo, mostly on the refusals: a
 gate that stops firing looks exactly like a gate that passes, and both of these did that once during

@@ -37,6 +37,7 @@ usage='usage: run-change.sh <issue#> <planner> <plan-reviewer> <implementer> <co
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/agents.sh"
 source "$here/questions.sh"
+source "$here/gates.sh"
 
 issue=""; planner=""; plan_reviewer=""; implementer=""; code_reviewer=""
 max_rounds=3; dry_run=0
@@ -511,14 +512,32 @@ fi
 # The three CI runs, so that a pass here and a pass there mean the same thing. One fix
 # round, because a lint is exactly what an unattended round should absorb; a second
 # failure is a real defect and wants a person.
+#
+# A failure that fails identically at the base commit is neither, and that was the gap
+# (#298): the driver read every non-zero as this change's, so on a machine whose suite does
+# not pass at HEAD it could never finish. gates.sh answers that question, and only on the
+# failing path.
 gates_log="$wt/.agent-runs/gates.log"
+gates_base_log="$wt/.agent-runs/gates-base.log"
 run_gates() {
   (
     cd "$wt" || exit 1
-    cargo fmt || exit 1
-    cargo clippy --all-targets --all-features -- -D warnings || exit 1
-    cargo test || exit 1
+    cargo fmt || exit "$GATE_FMT_FAILED"
+    cargo clippy --all-targets --all-features -- -D warnings || exit "$GATE_CLIPPY_FAILED"
+    # --no-fail-fast because a partial failure set is worse than none here: cargo stops
+    # after the first failing test binary, so a regression in a later one would sit behind
+    # a pre-existing failure in an earlier one and be subtracted away unseen.
+    cargo test --no-fail-fast || exit "$GATE_TEST_FAILED"
   ) > "$gates_log" 2>&1
+}
+# One attempt at the gates and what its failure means. Zero when this change is clear:
+# everything passed, or every failure fails identically at the base commit and is not this
+# change's to fix. Anything gate_attribute cannot tell apart counts as this change's.
+gates_clear() {
+  run_gates; local rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  tail -30 "$gates_log"
+  gate_attribute "$wt" "$rc" "$gates_log" "$gates_base_log"
 }
 # An answered question whose stage never ran again. It happens when that stage had
 # already produced its output before it asked, so the state moved past it: archive with
@@ -548,8 +567,7 @@ reached=$(next_stage)
   echo "Something undid an earlier stage; stopping rather than committing past it." >&2
   exit 1; }
 say "gates: fmt, clippy, test"
-if ! run_gates; then
-  tail -30 "$gates_log"
+if ! gates_clear; then
   say "gates failed: $implementer gets one round"
   # run-stage.sh decides whether this continues a session, under its own lock (#292).
   "$stage" gate-fix "$implementer" "$change" --resume; rc=$?
@@ -557,9 +575,9 @@ if ! run_gates; then
   [ "$rc" -eq 0 ] || { echo "the gate fix round failed; stopping." >&2; exit 1; }
   stage_done gate-fix
   say "gates, again"
-  if ! run_gates; then
-    tail -30 "$gates_log"
-    echo >&2; echo "the gates still fail after one fix round. That is a defect, not a lint; stopping." >&2
+  if ! gates_clear; then
+    echo >&2; echo "the gates still fail after one fix round, on something that is this change's." >&2
+    echo "That is a defect, not a lint; stopping." >&2
     exit 1
   fi
 fi
