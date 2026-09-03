@@ -1617,7 +1617,19 @@ h=$("$DETACH" "$d/vanish" bash -c 'while [ ! -f "'"$d"'/vrelease" ]; do sleep 1;
 "$DETACH" --wait "$h" 30 >/dev/null 2>&1
 if [ "$?" = "2" ]; then ok "a log that vanishes mid-wait is an error, not a silent wait"
 else bad "a log vanishing mid-wait was not reported"; fi
+
+# Releasing it is not enough to end it, and the release has to be waited on. The poller
+# wakes once a second, $d is deleted well inside that second, and it then wakes to a
+# directory with no file in it and polls a path that can never exist again. It is
+# detached into its own session, which is what detach.sh is for, so it outlives the suite:
+# a green run leaked one every time, and #334 found 297 alive, the oldest three hours.
+# The wrapper records .exit when the command ends, and that is the only thing left that
+# can answer - the log itself was deleted above, and detach.sh tracks no pid on purpose.
 : > "$d/vrelease"
+released=0
+for _ in $(seq 1 30); do [ -f "$h.exit" ] && { released=1; break; }; sleep 1; done
+if [ "$released" = "1" ]; then ok "and the release ends that poller, rather than orphaning it"
+else bad "the poller outlived its release and will poll $d/vrelease for good"; fi
 
 # The run's own files are what --wait reports on; without them it has nothing to say.
 : > "$d/gone"
