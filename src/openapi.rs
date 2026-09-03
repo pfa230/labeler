@@ -11,7 +11,7 @@ use crate::{
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
         ExpansionPolicy, FieldSpec, FieldTransform, FieldType, FilterSpec, FilterType, FilterValue,
-        LabelRow, MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, Tier, View,
+        LabelRow, MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, RowValue, Tier, View,
     },
     models::{
         BatchRequest, BatchRowError, BatchSummary, Color, Dimension, ErrorBody, ErrorResponse,
@@ -175,6 +175,7 @@ use crate::{
             FilterValue,
             MaterializeRequest,
             ExpansionPolicy,
+            RowValue,
             LabelRow
         )
     ),

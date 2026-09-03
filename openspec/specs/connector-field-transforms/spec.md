@@ -71,6 +71,11 @@ A transform SHALL be rejected when any of the following holds:
 - `pattern` declares no named capture group;
 - `resource` is not a resource id offered by that connection's connector;
 - `source` is not a text-valued field of that resource;
+- `source` names a field the connector's schema marks **multi-valued**, whatever its display type. The
+  message SHALL name the source. A pattern is written against one value, and this service has no rule
+  for applying one to a list: applying it per element is a separate contract, tracked as #350, and
+  passing the field through untouched is refused rather than accepted, because a rule that quietly
+  derived nothing is exactly the silent fallback this repo forbids;
 - a capture-group name equals a field key the connector already declares for that resource;
 - a capture-group name is repeated within the same rule, or is produced by another rule on the same
   resource;
@@ -85,13 +90,15 @@ A transform SHALL be rejected when any of the following holds:
 A connector MAY declare that a resource carries text fields under a key prefix whose names it
 discovers from the upstream at runtime; Homebox's per-item custom fields, keyed `custom:<name>`, are
 the case that exists. A `source` under such a prefix SHALL be accepted without proving that the
-upstream carries that field, because validation does not contact the upstream. The cost is bounded
-and deliberate: a rule sourcing a custom field that does not exist is not an error, it simply never
-matches, and falls under the non-match requirement below.
+upstream carries that field, because validation does not contact the upstream. Today that prefix
+declares single-valued text. The cost is bounded and deliberate: a rule sourcing a custom field that
+does not exist is not an error, it simply never matches, and falls under the non-match requirement
+below.
 
 Because a derived name may never equal a field the connector declares, no rule can read another rule's
 output: transforms are a single flat pass over what the connector returned, and chaining is
-unreachable rather than merely discouraged.
+unreachable rather than merely discouraged. Every field a rule derives is single-valued text, so no
+rule can produce a multi-valued field either.
 
 Validation SHALL NOT contact the upstream system. A connection whose upstream is unreachable, or whose
 credential is wrong, SHALL still be able to save and correct its transforms.
@@ -149,6 +156,13 @@ three faults it names are unchanged.
 
 - **WHEN** a transform names a resource the connector does not offer, or a field that resource does not declare as text
 - **THEN** the save is refused
+
+#### Scenario: A multi-valued source is refused
+
+- **WHEN** a transform on `entities` sources `tags`, which the schema marks multi-valued
+- **THEN** the response is `400` with `details.reason` `connection_transform_invalid`
+- **AND** the message names `tags`
+- **AND** nothing is stored
 
 #### Scenario: An unreachable upstream does not block saving
 

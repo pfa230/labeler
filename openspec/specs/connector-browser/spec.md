@@ -36,6 +36,15 @@ parse as an ISO-8601 date or date-time. This SHALL NOT fall back to comparing th
 because a column that silently switches ordering rule based on its contents cannot be reasoned about
 by the person reading it.
 
+A **multi-valued** cell, which the `connector-multi-valued-fields` capability defines as a list of
+strings, SHALL be compared by its **display text** — its elements joined with `", "` in order — on
+exactly the terms above, with no rule of its own. So a multi-valued cell in a `text` or `badge` column
+orders by that text case-insensitively, an empty list orders with the blanks because its display text
+is empty, and a multi-valued cell in a `number`, `money` or `date` column is uninterpretable as that
+type and orders with the blanks. Comparing the display text is not the text fallback the paragraph
+above forbids: it is the same interpretation rule applied to the one text the browse table shows for
+that cell.
+
 Interpretation affects ordering only. Filtering SHALL continue to match against the cell as displayed,
 so a value too malformed to sort is still findable.
 
@@ -77,6 +86,18 @@ technology.
 
 - **WHEN** a `date` column holding "2026-01-05", "" and "sometime in June" is sorted in either direction
 - **THEN** only "2026-01-05" is ordered by date, and the other two follow it in the connector's order
+
+#### Scenario: A multi-valued text column sorts by its displayed text
+
+- **WHEN** a multi-valued `text` column holding `["KIDS", "CONSUMABLE"]`, `["ATTIC"]` and `[]` is
+  sorted ascending
+- **THEN** the order is `ATTIC`, `KIDS, CONSUMABLE`, then the empty list
+- **AND** sorting descending gives `KIDS, CONSUMABLE`, `ATTIC`, then the empty list
+
+#### Scenario: Sorting a multi-valued column does not fail
+
+- **WHEN** any column carrying a multi-valued cell is sorted in either direction
+- **THEN** the table reorders and stays usable, rather than erroring
 
 #### Scenario: An unsortable value is still findable by filtering
 

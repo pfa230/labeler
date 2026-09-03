@@ -1,4 +1,5 @@
 import type { CellValue, DisplayRow, FieldSpec, FieldType } from "../api/connectors";
+import { displayCellText } from "./connectorRows";
 
 export type SortDirection = "asc" | "desc";
 
@@ -8,7 +9,7 @@ const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+
 // A present, non-empty value is interpretable as text/badge; absence and "" are not.
 function textKey(value: CellValue | undefined): string | null {
   if (value === undefined) return null;
-  const text = typeof value === "number" ? String(value) : value;
+  const text = displayCellText(value);
   return text.length === 0 ? null : text.toLowerCase();
 }
 
@@ -18,7 +19,7 @@ function textKey(value: CellValue | undefined): string | null {
 // finite number", and guessing at currency formatting would be exactly the silent, unreasoned-about
 // rule the spec forbids for the date/number case.
 function numberKey(value: CellValue | undefined): number | null {
-  if (value === undefined) return null;
+  if (value === undefined || Array.isArray(value)) return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   const trimmed = value.trim();
   if (trimmed.length === 0) return null;
@@ -30,7 +31,7 @@ function numberKey(value: CellValue | undefined): number | null {
 // read as a date. The shape is validated before Date.parse is trusted, since Date.parse accepts a
 // wide range of non-ISO formats we don't want to treat as interpretable here.
 function dateKey(value: CellValue | undefined): number | null {
-  if (typeof value !== "string") return null;
+  if (value === undefined || typeof value === "number" || Array.isArray(value)) return null;
   const trimmed = value.trim();
   if (!ISO_DATE_RE.test(trimmed) && !ISO_DATETIME_RE.test(trimmed)) return null;
   const ms = Date.parse(trimmed);

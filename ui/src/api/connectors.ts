@@ -32,7 +32,7 @@ export type FieldType = "text" | "number" | "money" | "date" | "badge";
 export type FilterType = "search" | "location_id" | "label_id";
 export type Tier = "cheap" | "hydrated" | "derived";
 
-export interface FieldSpec { key: string; label: string; ty: FieldType; tier: Tier }
+export interface FieldSpec { key: string; label: string; ty: FieldType; tier: Tier; multi_valued: boolean }
 export interface FilterSpec { key: string; label: string; ty: FilterType }
 export interface ResourceSpec { id: string; label: string; view: ConnectorView; columns: FieldSpec[]; filters: FilterSpec[] }
 export interface RelationshipSpec { id: string; label: string; from: string; to: string }
@@ -40,7 +40,7 @@ export interface ConnectorSchema { version: string; resources: ResourceSpec[]; r
 
 export interface RowRef { resource: string; key: string }
 export interface SelectedRow { resource: string; key: string; label: string; breadcrumb?: string; lastSeen: number }
-export type CellValue = string | number; // backend untagged Text|Number
+export type CellValue = string | number | string[]; // backend untagged Text|Number|List
 export interface DisplayRow { id: RowRef; cells: Record<string, CellValue>; url?: string }
 export type FilterValue = string | string[];
 export interface BrowseParent { relationship: string; key: string }
@@ -54,7 +54,7 @@ export interface BrowseRequest {
 export interface BrowsePage { rows: DisplayRow[]; next_cursor: string | null; has_more: boolean; count: number | null }
 
 export interface MaterializeRequest { rows: RowRef[]; fields: string[]; expansion: "as_listed" }
-export interface LabelRowResult { source: RowRef; data: Record<string, string> }
+export interface LabelRowResult { source: RowRef; data: Record<string, string | string[]> }
 
 export function useConnections() {
   return useQuery({ queryKey: ["connections"], queryFn: () => getJson<Connection[]>("/connections") });

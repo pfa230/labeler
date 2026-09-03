@@ -4,7 +4,7 @@ import { useState } from "react";
 import { ConnectorBrowser } from "./ConnectorBrowser";
 import type { ConnectorSchema, SelectedRow } from "../../api/connectors";
 const schema: ConnectorSchema = { version: "h1", resources: [{ id: "entities", label: "Items", view: "table",
-  columns: [ { key: "name", label: "Name", ty: "text", tier: "cheap" }, { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap" } ], filters: [] }], relationships: [] };
+  columns: [ { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }, { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false } ], filters: [] }], relationships: [] };
 const rows = [ { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "A1" } },
                { id: { resource: "entities", key: "e2" }, cells: { name: "Saw", assetId: "B2" } } ];
 function H() { const [s, set] = useState<SelectedRow[]>([]); return <ConnectorBrowser connectionId="c1" schema={schema} selected={s} onSelectedChange={set} />; }

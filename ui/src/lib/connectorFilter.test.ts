@@ -70,4 +70,18 @@ describe("matchesFilters", () => {
   it("trims incidental surrounding spaces from a needle before matching", () => {
     expect(matchesFilters(row({ name: "Widget" }), { name: "  Widget  " })).toBe(true);
   });
+
+  it("matches a needle in a multi-valued cell case-insensitively", () => {
+    const r = row({ tags: ["KIDS", "CONSUMABLE"] });
+    expect(matchesFilters(r, { tags: "kids" })).toBe(true);
+    expect(matchesFilters(r, { tags: "CONSUMABLE" })).toBe(true);
+    expect(matchesFilters(r, { tags: "s, con" })).toBe(true);
+    expect(matchesFilters(r, { tags: "adult" })).toBe(false);
+  });
+
+  it("does not match a non-empty needle against an empty array multi-valued cell", () => {
+    const r = row({ tags: [] });
+    expect(matchesFilters(r, { tags: "kids" })).toBe(false);
+    expect(matchesFilters(r, { tags: "" })).toBe(true);
+  });
 });
