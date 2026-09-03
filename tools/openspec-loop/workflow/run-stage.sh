@@ -81,6 +81,17 @@ esac
 # checkout rather than whichever worktree we were called from: --show-toplevel
 # answers the latter, so it cannot locate either one (#264, same defect as #256).
 here=$(cd "$(dirname "$0")" && pwd)
+
+# Files this project has frozen, named to every writing stage. Read from the project
+# because only the project knows: labeler froze docs/SPEC.md and docs/adr/, and a project
+# that froze nothing gets nothing said to it rather than an instruction about a file it
+# has not got.
+frozen=""
+if [ -f "$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null)/.openspec-loop.yml" ]; then
+  _f=$(sed -n 's/^frozen_paths:[[:space:]]*\[\(.*\)\].*/\1/p' \
+        "$(git -C "$(pwd)" rev-parse --show-toplevel)/.openspec-loop.yml" | tr -d " '\"" | tr ',' ' ')
+  [ -n "$_f" ] && frozen=" Do not edit $(printf '%s' "$_f" | sed 's/ /, /g'), which is frozen."
+fi
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
 root=$(dirname "$common")
 . "$here/agents.sh"
@@ -162,9 +173,9 @@ deliverable=$(read_deliverable "$change_dir") || exit 2
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
 # --plan-only because this fires before the diff review exists: demanding one here
 # would refuse to start the very run that produces it.
-if [ "$role" = "implement" ] && ! "$here/review-gate-check.sh" --plan-only "$wt" src/_probe >/dev/null 2>&1; then
+if [ "$role" = "implement" ] && ! "$here/review-gate-check.sh" --plan-only --probe "$wt" >/dev/null 2>&1; then
   echo "review gate refuses this change; not starting:" >&2
-  "$here/review-gate-check.sh" --plan-only "$wt" src/_probe 2>&1 >/dev/null | sed 's/^/  /' >&2
+  "$here/review-gate-check.sh" --plan-only --probe "$wt" 2>&1 >/dev/null | sed 's/^/  /' >&2
   exit 1
 fi
 
@@ -281,18 +292,18 @@ case "$role" in
     # review, and the review is performed by a different agent. A propose workflow that
     # walks the whole dependency closure will otherwise write both, which is a task list
     # for an unjudged plan and, worse, a review of its own work.
-    base="$step Planning only: write proposal.md, the delta specs under specs/, and design.md, and nothing else. Do NOT write review.md: a different agent reviews this plan, and writing it yourself is reviewing your own work. Do NOT write tasks.md: the task list is written after the review, by a separate stage. Do not write or edit project code. Do not commit. Do not edit docs/SPEC.md, which is frozen. $questions"
+    base="$step Planning only: write proposal.md, the delta specs under specs/, and design.md, and nothing else. Do NOT write review.md: a different agent reviews this plan, and writing it yourself is reviewing your own work. Do NOT write tasks.md: the task list is written after the review, by a separate stage. Do not write or edit project code. Do not commit. $frozen$questions"
     # Neutral on purpose: a resumed propose is a revision after a review, a continuation
     # after a question, or the application of required changes, and the caller says which.
-    [ "$resume_requested" -eq 1 ] && base="Continue your work on the plan for $change. The same limits still hold: planning only, no project code, no commit, and docs/SPEC.md is frozen. $questions"
+    [ "$resume_requested" -eq 1 ] && base="Continue your work on the plan for $change. The same limits still hold: planning only, no project code, no commit.$frozen $questions"
     ;;
   implement)
     step=$(agent_step_prompt "$agent" apply "$change") || { echo "no apply prompt for $agent" >&2; exit 2; }
-    base="$step Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder. Do not edit docs/SPEC.md, which is frozen. Check a task only after actually performing it. $questions"
+    base="$step Stop when the tasks are implemented. Do not commit. Do not archive. Do not sync specs into openspec/specs/. Do not move or delete the change folder.$frozen Check a task only after actually performing it. $questions"
     # Neutral for the same reason: a resumed implement is a fix round, a gate fix, or a
     # continuation after a question. Telling it to "fix the findings" when the caller is
     # handing it a gate log describes the wrong task.
-    [ "$resume_requested" -eq 1 ] && base="Continue your work on $change. The same limits still hold: do not commit, archive, sync specs, move the change folder or edit docs/SPEC.md. $questions"
+    [ "$resume_requested" -eq 1 ] && base="Continue your work on $change. The same limits still hold: do not commit, archive, sync specs or move the change folder.$frozen $questions"
     ;;
   tasks)
     # No tool ships a command for this step, so every agent gets plain instructions. It
@@ -308,7 +319,7 @@ case "$role" in
     ;;
   archive)
     step=$(agent_step_prompt "$agent" archive "$change") || { echo "no archive prompt for $agent" >&2; exit 2; }
-    base="$step Sync every delta into openspec/specs/. The tool will offer to skip that sync or to accept unchecked tasks; both are forbidden here, so refuse both offers. Do not commit. Do not merge. Do not edit docs/SPEC.md, which is frozen. $questions"
+    base="$step Sync every delta into openspec/specs/. The tool will offer to skip that sync or to accept unchecked tasks; both are forbidden here, so refuse both offers. Do not commit. Do not merge. $frozen$questions"
     ;;
   plan-review)
     # Three verdicts, and the middle one is load-bearing: APPROVE_WITH_CHANGES ends the

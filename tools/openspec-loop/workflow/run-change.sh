@@ -178,7 +178,7 @@ propose_complete() {
 # The plan's state is whatever the gate says it is. Asking the gate rather than
 # re-reading review.md here means one parser for the verdict and the digest, so this
 # script cannot reach a different conclusion than the commit will.
-plan_passes() { "$here/review-gate-check.sh" --plan-only "$wt" src/_probe >/dev/null 2>&1; }
+plan_passes() { "$here/review-gate-check.sh" --plan-only --probe "$wt" >/dev/null 2>&1; }
 # The recorded diff-review verdict, or nothing — and nothing also when that verdict no
 # longer covers the contract. A code approval is against the delta specs as they stood;
 # once they move, the approval is about something else. Checked here rather than only
