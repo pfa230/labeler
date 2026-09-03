@@ -238,8 +238,7 @@ The steps below are what those stages mean. Read them to understand the loop or 
 
    **A transcript belongs in a log, not in this context and not in the repository.**
    Every run artifact goes to `.agent-runs/` at the worktree root: `run-stage.sh` writes
-   `<role>-<agent>.{log,json,conversation}` there, `apply-with-agy.sh` writes `agy-apply.*`, and a
-   new script writes its own there too. `.gitignore` matches the directory, so a `git add -A` stages
+   `<role>-<agent>.{log,json,conversation}` there, and a new script writes its own there too. `.gitignore` matches the directory, so a `git add -A` stages
    the change's output and nothing else; untracked was not enough, because it left every commit
    depending on whoever ran it noticing the dotfiles (#255). `review.md` and `diff-review.md` are the
    record, and each holds the reviewer's own final message rather than a summary of it, so there is

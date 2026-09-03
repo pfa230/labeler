@@ -33,7 +33,7 @@ ui/dist
 /CLAUDE.local.md
 
 # Agent run artifacts: logs, raw transcripts and resume ids, written by
-# .workflow/run-stage.sh and apply-with-agy.sh into the worktree they run in (#255).
+# .workflow/run-stage.sh into the worktree it runs in (#255).
 .agent-runs/
 
 # Machine-local agent lineup for run-change.sh and apply.sh (#330). Which CLIs are
