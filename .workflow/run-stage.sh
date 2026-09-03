@@ -538,11 +538,13 @@ tail -30 "$log"
 # this script's. One rule, so the agent no longer decides.
 # Keyed on extraction having failed for THIS agent rather than on one agent's envelope
 # being absent: keyed the latter way, no agent but agy could pass a review it had actually
-# written (#274). Each tool withholds edits its own way, and they are not equally strong:
-# codex enforces it with -s read-only, opencode by denying edit/write/bash to its reviewer
-# agent, which drops those tools from the model's toolset entirely (#286), and agy with
-# --mode plan, which is the agent declining to act without a Proceed rather than a harness
-# refusing it (#290). The digest below is what actually decides.
+# written (#274). Each tool withholds edits its own way, and only one of them is a harness
+# refusing anything: codex enforces it with -s read-only; opencode nominally denies
+# edit/write/bash to its reviewer agent and, at 1.18.25, enforces none of it, so a reviewer
+# with all four denied still writes files through bash (#286 said otherwise and was wrong);
+# agy uses --mode plan, which is the agent declining to act without a Proceed rather than a
+# harness refusing it (#290). The digest below is what actually decides, and for opencode
+# and agy it is the only thing that does.
 if [ "$extracted" -eq 0 ]; then
   echo >&2
   if [ "$agent_status" = "NO_OUTPUT" ]; then
