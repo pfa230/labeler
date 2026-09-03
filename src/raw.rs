@@ -211,6 +211,39 @@ pub enum LayoutItemRaw {
     Container(ContainerRaw),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawLineSpacing {
+    Float(f32),
+    Invalid(String),
+}
+
+impl<'de> Deserialize<'de> for RawLineSpacing {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde_yaml_ng::Value;
+        let v = Value::deserialize(deserializer)?;
+        match v {
+            Value::Number(n) => {
+                if let Some(f) = n.as_f64() {
+                    Ok(RawLineSpacing::Float(f as f32))
+                } else if let Some(i) = n.as_i64() {
+                    Ok(RawLineSpacing::Float(i as f32))
+                } else {
+                    Ok(RawLineSpacing::Invalid(format!("{n}")))
+                }
+            }
+            Value::String(s) => Ok(RawLineSpacing::Invalid(format!("\"{s}\""))),
+            Value::Bool(b) => Ok(RawLineSpacing::Invalid(format!("{b}"))),
+            Value::Sequence(_) => Ok(RawLineSpacing::Invalid("an array".to_string())),
+            Value::Mapping(_) => Ok(RawLineSpacing::Invalid("a mapping".to_string())),
+            Value::Null => Ok(RawLineSpacing::Invalid("null".to_string())),
+            Value::Tagged(t) => Ok(RawLineSpacing::Invalid(format!("{t:?}"))),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TextRaw {
@@ -224,6 +257,8 @@ pub struct TextRaw {
     pub color: Option<Option<DynamicValue<RawColor>>>,
     #[serde(default)]
     pub wrap: bool,
+    #[serde(default, deserialize_with = "deserialize_present_typed")]
+    pub line_spacing: Option<Option<RawLineSpacing>>,
     #[serde(default, deserialize_with = "deserialize_present")]
     pub multiline: Option<serde_yaml_ng::Value>,
     #[serde(default)]

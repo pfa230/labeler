@@ -1847,6 +1847,7 @@ fn instantiate_item_defaults(
             font_weight,
             color,
             wrap,
+            line_spacing,
             alignment,
             overflow,
             when,
@@ -1862,6 +1863,7 @@ fn instantiate_item_defaults(
                 font_weight: fw,
                 color: color.clone(),
                 wrap: *wrap,
+                line_spacing: *line_spacing,
                 alignment: alignment.clone(),
                 overflow: *overflow,
                 when: when.clone(),
@@ -2107,6 +2109,7 @@ fn validate_layout_item(
             placement,
             font_size,
             font_weight,
+            line_spacing,
             when,
             ..
         } => {
@@ -2115,6 +2118,7 @@ fn validate_layout_item(
             }
             validate_when(when.as_ref())?;
             validate_font_weight(font_weight.as_ref())?;
+            validate_line_spacing(*line_spacing)?;
             validate_font_size(font_size)?;
             validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
@@ -2354,6 +2358,15 @@ fn validate_font_weight(font_weight: Option<&DynamicValue<u16>>) -> Result<(), S
                 "font_weight must be a multiple of 100 between 100 and 900, got {weight}"
             ))
         }
+        _ => Ok(()),
+    }
+}
+
+fn validate_line_spacing(line_spacing: Option<f32>) -> Result<(), String> {
+    match line_spacing {
+        Some(spacing) if !spacing.is_finite() || spacing <= 0.0 => Err(format!(
+            "line_spacing must be a finite number greater than 0, got {spacing}"
+        )),
         _ => Ok(()),
     }
 }
@@ -3854,6 +3867,7 @@ layout: []
                 font_weight: Some(DynamicValue::Literal(350)),
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -3971,6 +3985,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -4124,6 +4139,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -4201,6 +4217,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: true,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -4238,6 +4255,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -4272,6 +4290,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: true,
+                line_spacing: None,
                 alignment: Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,
@@ -9200,5 +9219,73 @@ layout: []
             !err.contains("alpha"),
             "alpha should not be reported before zebra: {err}"
         );
+    }
+
+    #[test]
+    fn line_spacing_load_refusals_quarantine_files() {
+        let dir = temp_dir("line_spacing_load_refusals");
+        let valid_yaml = sample_yaml("valid");
+        write_template(&dir, "valid.yaml", &valid_yaml);
+
+        let make_yaml = |val: &str| {
+            format!(
+                r#"name: Test
+unit: mm
+dpi: 200
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: {val}
+"#
+            )
+        };
+
+        write_template(&dir, "str_unit.yaml", &make_yaml("\"1.2em\""));
+        write_template(&dir, "str_token.yaml", &make_yaml("\"{{ pitch }}\""));
+        write_template(&dir, "bool.yaml", &make_yaml("true"));
+        write_template(&dir, "array.yaml", &make_yaml("[1.2]"));
+        write_template(&dir, "null.yaml", &make_yaml("null"));
+        write_template(&dir, "zero.yaml", &make_yaml("0"));
+        write_template(&dir, "zero_float.yaml", &make_yaml("0.0"));
+        write_template(&dir, "negative.yaml", &make_yaml("-0.5"));
+        write_template(&dir, "nan.yaml", &make_yaml(".nan"));
+        write_template(&dir, "inf.yaml", &make_yaml(".inf"));
+
+        let valid_spacing_yaml = make_yaml("0.99");
+        write_template(&dir, "valid_spacing.yaml", &valid_spacing_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+        assert!(registry.get("valid").is_some());
+        assert!(registry.get("valid_spacing").is_some());
+
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 10);
+
+        for (filename, val_desc) in [
+            ("str_unit.yaml", "string unit"),
+            ("str_token.yaml", "string template token"),
+            ("bool.yaml", "boolean"),
+            ("array.yaml", "array"),
+            ("null.yaml", "null"),
+            ("zero.yaml", "zero"),
+            ("zero_float.yaml", "zero float"),
+            ("negative.yaml", "negative"),
+            ("nan.yaml", "NaN"),
+            ("inf.yaml", "infinity"),
+        ] {
+            let entry = broken
+                .iter()
+                .find(|b| b.path == filename)
+                .unwrap_or_else(|| panic!("expected {filename} ({val_desc}) to be quarantined"));
+            assert!(
+                entry.error.contains("line_spacing"),
+                "{filename} error should name 'line_spacing', got: {}",
+                entry.error
+            );
+        }
     }
 }

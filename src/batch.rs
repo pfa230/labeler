@@ -235,6 +235,7 @@ mod tests {
                     font_weight: None,
                     color: None,
                     wrap: false,
+                    line_spacing: None,
                     alignment: Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,

@@ -3379,6 +3379,126 @@ layout:
     }
 
     #[tokio::test]
+    async fn template_line_spacing_readback_and_refusals() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        // 1. PUT a template with explicit line_spacing: 0.99 and another item with absent line_spacing
+        let yaml_valid = r#"
+name: SpacingReadback
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 40 }
+layout:
+  - type: text
+    value: "Explicit Spacing"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: 0.99
+  - type: text
+    value: "Default Spacing"
+    at: [0, 20]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/spacing_readback",
+                "PUT",
+                yaml_valid.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+
+        // Readback via GET /api/templates/spacing_readback
+        let get_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/spacing_readback")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_res.status(), StatusCode::OK);
+        let body = json_response(get_res).await;
+
+        // Item 0 reports authored 0.99
+        assert_eq!(body["layout"][0]["line_spacing"], 0.99);
+        // Item 1 omits line_spacing key
+        assert!(body["layout"][1].get("line_spacing").is_none());
+
+        // 2. PUT with line_spacing on non-text items: container, qr, image, line
+        for (item_type, item_yaml) in [
+            (
+                "container",
+                r#"  - type: container
+    at: [0, 0]
+    size: [50, 20]
+    line_spacing: 0.99
+    items: []"#,
+            ),
+            (
+                "qr",
+                r#"  - type: qr
+    value: "https://example.com"
+    at: [0, 0]
+    size: [20, 20]
+    line_spacing: 0.99"#,
+            ),
+            (
+                "image",
+                r#"  - type: image
+    name: logo
+    at: [0, 0]
+    size: [20, 20]
+    line_spacing: 0.99"#,
+            ),
+            (
+                "line",
+                r#"  - type: line
+    at: [0, 0]
+    to: [50, 0]
+    line_spacing: 0.99"#,
+            ),
+        ] {
+            let id = format!("bad_item_{item_type}");
+            let bad_yaml = format!(
+                r#"name: Bad {item_type}
+unit: mm
+dpi: 200
+format: {{ type: single, width: 50, height: 20 }}
+layout:
+{item_yaml}
+"#
+            );
+            let bad_res = app
+                .clone()
+                .oneshot(yaml_post(&format!("/api/templates/{id}"), "PUT", bad_yaml))
+                .await
+                .unwrap();
+            assert_eq!(bad_res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let bad_body = json_response(bad_res).await;
+            assert_eq!(bad_body["error"]["code"], "TemplateInvalid");
+            let msg = bad_body["error"]["message"].as_str().unwrap_or("");
+            assert!(
+                msg.contains("unknown field `line_spacing`") || msg.contains("line_spacing"),
+                "error for {item_type} must mention line_spacing: {msg}"
+            );
+            assert!(
+                !dir.join(format!("{id}.yaml")).exists(),
+                "file {id}.yaml should not be written to disk"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
     async fn startup_quarantines_unreadable_shape_and_text_colors_and_serves_valid_sibling() {
         let dir = temp_templates_dir();
         let valid_yaml = r#"
@@ -15409,6 +15529,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
+                line_spacing: None,
                 alignment: crate::models::Alignment::default(),
                 overflow: crate::models::Overflow::Ellipsis,
                 when: None,

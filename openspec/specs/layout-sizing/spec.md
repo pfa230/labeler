@@ -1116,13 +1116,17 @@ the font instance it will render with:
 
 - `u` = ascent overflow = `max(0, typographic_ascender − cap_height) / units_per_em`
 - `d` = descent overflow = `max(0, −typographic_descender) / units_per_em`
-- `metric_block(n, s)` = `n × cap_height(s) + (n − 1) × leading(s)`, leading between lines only
+- `pitch(s)` = `line_spacing × s`, where `line_spacing` is the item's authored value or 1.2 when absent (`text-line-spacing`)
+- `leading(s)` = `pitch(s) − cap_height(s)`, the paragraph leading the renderer emits for the item; between lines only
+- `metric_block(n, s)` = `cap_height(s) + (n − 1) × pitch(s)`, leading between lines only
 - `reserve(vertical)` = `u + d` for `top` and `bottom`, and `2 × max(u, d)` for `center`
+
+A one-line block is one cap-height box whatever the pitch, so `metric_block(1, s)` is pitch-independent and the `text-line-spacing` single-line no-op holds at the fitting level with no special case.
 
 A block of `n` lines at size `s` SHALL be treated as fitting a box of height `H` when
 `metric_block(n, s) + reserve(vertical) × s ≤ H`, and the same reservation SHALL bound the number of
 lines kept, at
-`max(1, floor((H − reserve(vertical) × s + leading(s)) / (cap_height(s) + leading(s))))`. The floor of
+`max(1, floor((H − reserve(vertical) × s + leading(s)) / pitch(s)))`. The floor of
 one is not a containment claim: a box that cannot hold one line plus its reservation is refused by
 the one-line check before the budget is consulted, so the budget never has to describe a block of no
 lines.
@@ -1168,37 +1172,39 @@ definition of the `overflow` term in the wrapped line-count formula
 `alignment.vertical` aligns, the fixed metric box and the `top` schema default — is unchanged and
 remains authoritative. Its blank-edge lines bullet is **not**: the text-layout requirement above
 supersedes it, so a blank first or last line is emitted rather than dropped, and this requirement's
-reservation applies to the block that includes it.
+reservation applies to the block that includes it. The Typst-default leading (`0.65em`) the previous
+revision of this requirement inherited is retired: `leading(s)` above is derived from the authored
+pitch, and the pitch itself comes from the `text-line-spacing` capability, which owns its default.
 
 #### Scenario: A centred block auto-shrunk into a tight box keeps its descenders
 
 - **WHEN** a 24 mm tape template whose `center`-aligned, `wrap: true` `text` item is 120 mm wide
   and fills the full 18.1 mm printable height, with `font_size: { min: 10, max: 32 }`, renders a
-  value carrying a descender that breaks to exactly two lines at 24.0 pt and again at 19.5 pt, such
+  value carrying a descender that breaks to exactly two lines at 24.0 pt and again at 21.0 pt, such
   as "Kitchen Utensils and a much longer second line here"
-- **THEN** the chosen size is 19.5 pt, the largest 0.5 pt step whose
-  `metric_block(2, s) + 2 × max(u, d) × s` fits 51.31 pt, rather than the 24.0 pt the metric block
-  alone allowed before this requirement
+- **THEN** the chosen size is 21.0 pt, the largest 0.5 pt step whose
+  `metric_block(2, s) + 2 × max(u, d) × s` fits 51.31 pt
 - **AND** the two stated candidates decide it on height alone: line count does not increase as size
   falls, so a value that is two lines at both ends is two lines at every candidate between them, and
   every larger candidate fails on height at whatever count it breaks to — two lines at 24.5 pt
-  already demand 51.57 pt of the box's 51.31 pt before the reservation is added at all
+  already demand 59.04 pt of the box's 51.31 pt
 - **AND** in the rendered PNG the descender of `g` is a closed stroke, where the same template and
   value before this requirement cut it mid-stroke on the box's final raster row
 
 #### Scenario: A centred item with headroom is unaffected
 
-- **WHEN** a `center`-aligned text item whose height is authored, `fill` or `to` has a `font_size.max`
-  that still satisfies `metric_block(n, max) + 2 × max(u, d) × max ≤ H`
+- **WHEN** a `center`-aligned text item rendering a single line, a value with no line breaks that fits
+  its box width at `font_size.max`, sits in a box whose height is authored, `fill` or `to` with
+  `metric_block(1, max) + 2 × max(u, d) × max ≤ H`
 - **THEN** the size the fitter chooses is decided by width alone, exactly as before
-- **AND** the emitted output is byte-identical to what the same template and data produced before this
-  requirement
+- **AND** the rendered output is byte-identical to what the same template and data produced before this
+  requirement, because a one-line block carries no pitch term
 
 #### Scenario: A centred multiline block's line budget counts the reserve
 
 - **WHEN** a `center`-aligned `wrap: true` text item at a fixed `font_size` sits in a box that
   holds one line plus its reservation, so the one-line check passes, and wraps to more lines than
-  `max(1, floor((H − 2 × max(u, d) × s + leading(s)) / (cap_height(s) + leading(s))))`
+  `max(1, floor((H − 2 × max(u, d) × s + leading(s)) / pitch(s)))`
 - **THEN** the lines beyond that budget are dropped and the last kept line is ellipsized, or the
   render fails, according to the item's `overflow` policy
 - **AND** the kept block's ink, accents and descenders included, is inside the box to within the
@@ -1224,10 +1230,10 @@ reservation applies to the block that includes it.
 
 #### Scenario: Aligned edges are unchanged
 
-- **WHEN** a `top`- or `bottom`-aligned text item is fitted and rendered
+- **WHEN** a single-line `top`- or `bottom`-aligned text item is fitted and rendered
 - **THEN** it reserves `u + d` as before, and is inset at its aligned edge by that edge's overflow
-- **AND** the emitted output is byte-identical to what the same template and data produced before this
-  requirement
+- **AND** the rendered output is byte-identical to what the same template and data produced before this
+  requirement, because a one-line block carries no pitch term
 
 #### Scenario: A glyph outside the declared band still clips
 
@@ -1235,3 +1241,9 @@ reservation applies to the block that includes it.
   rendered into a box the fitter judged to fit
 - **THEN** that glyph may be clipped, at any `alignment.vertical`
 - **AND** the fitted size is the same as for a string of the same width without such a glyph
+
+#### Scenario: The default pitch tightens existing multi-line items
+
+- **WHEN** a two-line `wrap: true` item declaring no `line_spacing` renders with the bundled font at its fitted size `s`
+- **THEN** its metric block is `cap_height(s) + 1.2 × s`, not the `2 × cap_height(s) + 0.65 × s` the previous revision reserved
+- **AND** a height-bound item with a `font_size` range settles at a size no smaller than before, because the reservation never grows under that font
