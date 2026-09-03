@@ -295,8 +295,9 @@ artifacts:
       VERDICT, mutually exclusive:
       - APPROVE: downstream may proceed.
       - APPROVE_WITH_CHANGES: list the required edits as a numbered list. The author
-        applies them, the reviewer re-checks ONLY those items, then the author sets
-        CHANGES_APPLIED: yes.
+        applies them and sets CHANGES_APPLIED: yes. No further review follows, so
+        state each edit completely; an edit you cannot state that way belongs in
+        REVISE.
       - REVISE: fundamental defect. Fix the artifacts and re-run the FULL review in a
         fresh context. tasks MUST NOT be written while the latest verdict is REVISE.
 
