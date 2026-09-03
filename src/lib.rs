@@ -2611,7 +2611,7 @@ layout:
     async fn import_csv_disallowed_option_value_is_atomic() {
         let app = build_app();
         // A disallowed option value flows through the shared batch path and fails the row as
-        // BatchInvalid with a per-row InvalidOptionValue (not a top-level InvalidOptionValue).
+        // BatchInvalid with a per-row InvalidEnumValue (not a top-level InvalidEnumValue).
         let csv = "id,url,name,tags,description,option.orientation\n\
             A1,https://x,Widget,t,desc,sideways\n";
         let response = app
@@ -2631,7 +2631,112 @@ layout:
         let failures = body["error"]["details"]["failures"]
             .as_array()
             .expect("failures array");
-        assert_eq!(failures[0]["code"], "InvalidOptionValue");
+        assert_eq!(failures[0]["code"], "InvalidEnumValue");
+        assert_eq!(failures[0]["message"], "Invalid option selection");
+        assert!(
+            failures[0].get("reason").is_none(),
+            "per-row failure must carry no reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_enum_out_of_range_is_422_invalid_enum_value() {
+        let yaml = r#"
+name: Orientation Label
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: text
+    value: "{orientation}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+"#;
+        let (app, _) = build_app_with_custom_templates(vec![("enum_render", yaml)]);
+        let payload = serde_json::json!({
+            "template": "enum_render",
+            "data": { "orientation": "sideways" }
+        })
+        .to_string();
+        let req = json_req("POST", "/api/render/label?format=png", payload);
+        let res = app.oneshot(req).await.expect("request");
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidEnumValue");
+        assert_eq!(body["error"]["message"], "Invalid option selection");
+        let details = &body["error"]["details"];
+        assert_eq!(details["selection"]["orientation"], "sideways");
+        assert_eq!(
+            details["allowed"]["orientation"],
+            serde_json::json!(["horizontal", "vertical"])
+        );
+        assert!(
+            details.get("reason").is_none(),
+            "details must carry no reason"
+        );
+        assert_eq!(
+            details.as_object().unwrap().len(),
+            2,
+            "details must be exactly selection and allowed"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_enum_out_of_range_reports_invalid_enum_value_per_row() {
+        let yaml = r#"
+name: Orientation Label
+unit: mm
+dpi: 200
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+format:
+  type: single
+  width: 50
+  height: 30
+layout:
+  - type: text
+    value: "{orientation}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+"#;
+        let (app, _) = build_app_with_custom_templates(vec![("enum_batch", yaml)]);
+        let payload = serde_json::json!({
+            "template": "enum_batch",
+            "mode": "download",
+            "labels": [
+                { "data": { "orientation": "horizontal" } },
+                { "data": { "orientation": "sideways" } }
+            ]
+        })
+        .to_string();
+        let req = json_req("POST", "/api/batch", payload);
+        let res = app.oneshot(req).await.expect("request");
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"]
+            .as_array()
+            .expect("failures");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["code"], "InvalidEnumValue");
+        assert_eq!(failures[0]["message"], "Invalid option selection");
+        assert!(
+            failures[0].get("reason").is_none(),
+            "per-row failure must carry no reason"
+        );
+        // top-level details must be BatchInvalid shape, not reshaped
+        assert!(body["error"]["details"].get("failures").is_some());
     }
 
     fn temp_templates_dir() -> std::path::PathBuf {

@@ -363,7 +363,7 @@ depends on the template and the request's snapshot and on no label's data. The t
 compete: no label's data can move `required`, and the snapshot that can is fixed for the whole request.
 
 Rendering is unchanged by this requirement. Everything this endpoint absorbs still fails a render, with
-the code that path already returns: an out-of-range `enum` is `422 InvalidOptionValue`; an uncoercible
+the code that path already returns: an out-of-range `enum` is `422 InvalidEnumValue`; an uncoercible
 `integer`, `number`, `length` or `boolean` is `400 InvalidRequest`; an unparseable `datetime` is
 `400 InvalidRequest` with reason `datetime_param_invalid` (`datetime-params`); a key naming no declared
 parameter is `400 InvalidRequest` with reason `data_key_unknown` (`request-data-keys`); and a per-label
@@ -447,7 +447,7 @@ for a row it was handed whole is the only way a client can learn which of its co
 #### Scenario: An out-of-range enum still fails a render with its own code
 
 - **WHEN** a label carries `orientation: "sideways"` and is sent to `POST /api/render/label`
-- **THEN** it is rejected with `422 InvalidOptionValue`, unchanged from today
+- **THEN** it is rejected with `422 InvalidEnumValue` as defined by `enum-validation`
 
 #### Scenario: A key the template does not declare is ignored
 

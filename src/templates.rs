@@ -5776,7 +5776,18 @@ layout:
         );
         let strict_enum_err =
             crate::render::resolve_parameters(&template, &bad_enum, None, None).unwrap_err();
-        assert_eq!(strict_enum_err.code(), "InvalidOptionValue");
+        assert_eq!(strict_enum_err.code(), "InvalidEnumValue");
+        assert_eq!(strict_enum_err.status().as_u16(), 422);
+        assert_eq!(strict_enum_err.message_text(), "Invalid option selection");
+        assert_eq!(strict_enum_err.reason(), None);
+        let details = strict_enum_err.details().expect("details");
+        assert_eq!(details["selection"]["choice"], "invalid_choice");
+        assert_eq!(
+            details["allowed"]["choice"],
+            serde_json::json!(["one", "two"])
+        );
+        assert!(details.get("reason").is_none());
+        assert_eq!(details.as_object().unwrap().len(), 2);
 
         // 2. Non-numeric integer
         let mut bad_int = HashMap::new();
