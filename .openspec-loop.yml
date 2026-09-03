@@ -1,0 +1,6 @@
+# What this project is, for its own loop. The kit is the loop, so its implementation is
+# the workflow scripts themselves.
+
+impl_paths: [workflow]
+
+frozen_paths: []

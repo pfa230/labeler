@@ -15,7 +15,7 @@
 #   A change IN FLIGHT (a live folder under openspec/changes/) is checked only when the
 #   commit touches src/ or ui/src/, which keeps the planning loop itself writable.
 #
-# Usage: review-gate-check.sh [--plan-only] <repo-root> <changed-file>...
+# Usage: review-gate-check.sh [--plan-only] [--probe] <repo-root> [<changed-file>...]
 #
 #   --plan-only    skip the diff-review check. For callers that fire DURING
 #                  implementation, when no diff review can exist yet: run-stage.sh's
@@ -32,11 +32,18 @@ set -uo pipefail
 # through the repo under check works only while that repo is this one.
 here=$(cd "$(dirname "$0")" && pwd)
 
-plan_only=0
-if [ "${1:-}" = "--plan-only" ]; then plan_only=1; shift; fi
+plan_only=0; probe=0
+while :; do
+  case "${1:-}" in
+    --plan-only) plan_only=1; shift ;;
+    --probe)     probe=1; shift ;;
+    *)           break ;;
+  esac
+done
 
 root="${1:?repo root required}"; shift || true
-[ "$#" -gt 0 ] || exit 0
+# --probe asks about the tree, not about a commit, so it is the one caller with no files.
+[ "$#" -gt 0 ] || [ "$probe" = "1" ] || exit 0
 base_ref="${GATE_BASE_REF:-HEAD}"
 
 failed=0
@@ -45,6 +52,16 @@ fail() { printf 'review gate: %s\n' "$1" >&2; failed=1; }
 # A refusal says the commit is wrong. This says the commit could not be judged, which is
 # a different answer and must never arrive as the permissive one (#333).
 cannot() { printf 'review gate: %s\n' "$1" >&2; exit 2; }
+
+# Which directories hold implementation. Read from the project, because the answer is the
+# project's: src and ui/src here, lib elsewhere. A missing or empty setting is fatal, not
+# defaulted: a gate that guesses this guards the wrong paths and reports a pass.
+config="$root/.openspec-loop.yml"
+[ -f "$config" ] || cannot "no $config, so there is no way to know which paths hold implementation."
+impl_paths=$(sed -n 's/^impl_paths:[[:space:]]*\[\(.*\)\].*/\1/p' "$config" | tr -d " '\"" | tr ',' ' ')
+[ -n "$impl_paths" ] || impl_paths=$(sed -n '/^impl_paths:[[:space:]]*$/,/^[^[:space:]-]/p' "$config" \
+  | sed -n 's/^[[:space:]]*-[[:space:]]*//p' | tr -d " '\"" | tr '\n' ' ')
+[ -n "$impl_paths" ] || cannot "$config names no impl_paths, so no commit could ever be gated."
 
 changes_dir="$root/openspec/changes"
 if [ ! -d "$changes_dir" ]; then
@@ -211,11 +228,23 @@ for dir in $archived; do
 done
 
 # Changes in flight: gated only when the commit carries implementation code, so that
-# the planning and review loop itself stays writable.
+# the planning and review loop itself stays writable. Which paths hold implementation is
+# the project's to say; impl_paths in .openspec-loop.yml is where it says it.
+#
+# --probe asks whether a live change would be gated, without a commit to ask about. It
+# sets this unconditionally rather than matching a made-up filename against impl_paths:
+# the callers used to pass src/_probe, which stops matching the moment a project keeps its
+# code anywhere but src/, and a gate that matches nothing reports a pass.
 guarded=0
-for f in "$@"; do
-  case "$f" in src/*|ui/src/*) guarded=1 ;; esac
-done
+if [ "$probe" = "1" ]; then
+  guarded=1
+else
+  for f in "$@"; do
+    for p in $impl_paths; do
+      case "$f" in $p/*) guarded=1 ;; esac
+    done
+  done
+fi
 if [ "$guarded" = "1" ]; then
   for change in "$changes_dir"/*/; do
     name=$(basename "$change")

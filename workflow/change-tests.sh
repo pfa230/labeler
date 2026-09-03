@@ -54,6 +54,9 @@ setup() {
   git init -q . && git symbolic-ref HEAD refs/heads/main \
     || fatal "cannot init the fixture repo on a branch named main."
   git config user.email t@t; git config user.name t
+  # The gate reads impl_paths from here; without it it refuses to judge rather than guess,
+  # and every stage that probes the plan gate would read that refusal as a failed plan.
+  printf 'impl_paths: [src, ui/src]\nfrozen_paths: []\n' > .openspec-loop.yml
   mkdir -p openspec/changes/archive || fatal "cannot create the fixture's change directory."
   echo x > openspec/changes/archive/.gitkeep
   cp "$here/../.gitignore" .gitignore
@@ -61,9 +64,9 @@ setup() {
   cwd="$repo"
   # Hermetic against the developer's own lineup (#330): every case below decides for
   # itself whether a roles file exists, and this one does not until a case writes it.
-  export LABELER_ROLES_FILE="$repo/roles.local"
-  rm -f "$LABELER_ROLES_FILE"
-  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore
+  export OPENSPEC_LOOP_ROLES_FILE="$repo/roles.local"
+  rm -f "$OPENSPEC_LOOP_ROLES_FILE"
+  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore .openspec-loop.yml
 }
 teardown() { cd "$here" || exit 2; [ -n "${repo:-}" ] && [ -d "$repo" ] && find "$repo" -mindepth 0 -delete 2>/dev/null; repo=""; }
 
@@ -115,7 +118,7 @@ expect 0 "one agent may plan and implement"      -- 1 claude codex claude agy --
 # All four or none. The refusals matter more than the happy path: a partial lineup that
 # quietly topped itself up from a file, or a file whose bad value was reported as a usage
 # error, is exactly the half-configured state this was built to refuse.
-roles() { printf '%s\n' "$@" > "$LABELER_ROLES_FILE"; }
+roles() { printf '%s\n' "$@" > "$OPENSPEC_LOOP_ROLES_FILE"; }
 roles_say() { # roles_say <want-substring> <label> -- <args...>
   local want="$1" label="$2"; shift 3
   local out
@@ -126,9 +129,9 @@ roles_say() { # roles_say <want-substring> <label> -- <args...>
   esac
 }
 
-rm -f "$LABELER_ROLES_FILE"
+rm -f "$OPENSPEC_LOOP_ROLES_FILE"
 expect 2 "the issue alone with no roles file"    -- 1
-roles_say "$LABELER_ROLES_FILE" "the refusal names the file it wanted" -- 1
+roles_say "$OPENSPEC_LOOP_ROLES_FILE" "the refusal names the file it wanted" -- 1
 
 roles 'planner: claude' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
 expect 0 "the issue alone, roles from the file"  -- 1 --dry-run
@@ -173,7 +176,7 @@ roles_say "takes one agent name" "saying a role holds one name" -- 1 --dry-run
 # Comments and blank lines are the file's own, not an agent name.
 roles '# my machine' '' '  planner:  claude  ' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
 expect 0 "comments, blanks and loose spacing"    -- 1 --dry-run
-rm -f "$LABELER_ROLES_FILE"
+rm -f "$OPENSPEC_LOOP_ROLES_FILE"
 
 # opencode authored nothing until 1.18.20 gave it --format json and -s <sessionID>;
 # it now takes every role (#286). The resumability guard itself is exercised below
