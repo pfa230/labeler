@@ -14,7 +14,9 @@ set -euo pipefail
 # commit in every tree while any one of them was being written, which is two changes
 # serialized on disjoint files (#294). The lock names who holds it, so say that rather
 # than naming an agent this hook cannot know.
-lock="$(git rev-parse --path-format=absolute --git-dir)/APPLY_IN_PROGRESS"
+git_dir=$(git rev-parse --path-format=absolute --git-dir)
+
+lock="$git_dir/APPLY_IN_PROGRESS"
 if [ -f "$lock" ]; then
   echo "apply-lock: an apply is in progress here ($(cat "$lock"))." >&2
   echo "apply-lock: the apply stage does not commit. The change is committed once, after review and archive." >&2
@@ -22,6 +24,11 @@ if [ -f "$lock" ]; then
 fi
 
 root=$(git rev-parse --show-toplevel)
+
+# The conflicted half of the merge refusal (#341). git runs pre-merge-commit for a merge
+# it resolved on its own and this hook for one that conflicted and is being committed by
+# hand, so MERGE_HEAD is what tells the second case from an ordinary commit.
+[ -f "$git_dir/MERGE_HEAD" ] && "$root/.workflow/merge-shape-check.sh"
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
 [ "${#staged[@]}" -gt 0 ] || exit 0
 
