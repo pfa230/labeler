@@ -717,7 +717,6 @@ fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedD
 fn compile_single_doc(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     env: &RenderEnv,
 ) -> Result<PagedDocument, AppError> {
     if !matches!(template.format, TemplateFormat::Single { .. }) {
@@ -725,7 +724,7 @@ fn compile_single_doc(
             "render_label only supports single format",
         ));
     }
-    compile_label_doc(template, data, option, env)
+    compile_label_doc(template, data, env)
 }
 
 struct CompiledSource {
@@ -736,11 +735,9 @@ struct CompiledSource {
 fn compile_label_source(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     env: &RenderEnv,
 ) -> Result<CompiledSource, AppError> {
     let unit = &template.unit;
-    let selected_option = normalize_option(template, option)?;
     let resolved = resolve_parameters(template, data, Some(env.settings), Some(env.datetime))?;
     let resolved_data = &resolved.data;
     let items = select_layout_items(template)?;
@@ -791,15 +788,8 @@ fn compile_label_source(
         check_dimension_limit(min_w, unit, max_dim_mm, "width min")?;
         check_dimension_limit(max_w, unit, max_dim_mm, "width max")?;
 
-        let probe = RenderContext::new(
-            unit,
-            template.dpi,
-            resolved_data,
-            selected_option,
-            env,
-            &images,
-        )
-        .with_instants(&resolved.instants);
+        let probe = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
+            .with_instants(&resolved.instants);
         let (m_tree, root_w_req) = probe.measure_items(
             items,
             (max_w, height_units),
@@ -812,15 +802,8 @@ fn compile_label_source(
         measured = m_tree;
     } else {
         check_dimension_limit(width_units, unit, max_dim_mm, "width")?;
-        let probe = RenderContext::new(
-            unit,
-            template.dpi,
-            resolved_data,
-            selected_option,
-            env,
-            &images,
-        )
-        .with_instants(&resolved.instants);
+        let probe = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
+            .with_instants(&resolved.instants);
         let (m_tree, _) = probe.measure_items(
             items,
             (width_units, height_units),
@@ -851,15 +834,8 @@ fn compile_label_source(
         )
     })?;
 
-    let context = RenderContext::new(
-        unit,
-        template.dpi,
-        resolved_data,
-        selected_option,
-        env,
-        &images,
-    )
-    .with_instants(&resolved.instants);
+    let context = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
+        .with_instants(&resolved.instants);
     let body = context.render_items(
         items,
         &measured,
@@ -883,10 +859,9 @@ fn compile_label_source(
 fn compile_label_doc(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     env: &RenderEnv,
 ) -> Result<PagedDocument, AppError> {
-    let compiled = compile_label_source(template, data, option, env)?;
+    let compiled = compile_label_source(template, data, env)?;
     compile_paged(compiled.source, compiled.files)
 }
 
@@ -894,12 +869,11 @@ fn compile_label_doc(
 pub fn render_thumbnail_png(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
-    let doc = compile_label_doc(template, data, option, &env)?;
+    let doc = compile_label_doc(template, data, &env)?;
     let page = doc.pages().first().ok_or_else(|| {
         AppError::render_failed(Reason::TypstNoPages, "typst did not produce any pages")
     })?;
@@ -928,14 +902,12 @@ pub struct ImageRenderOptions {
 pub fn render_single_label(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
     render_single_label_image(
         template,
         data,
-        option,
         settings,
         datetime,
         ImageRenderOptions::default(),
@@ -945,13 +917,12 @@ pub fn render_single_label(
 pub fn render_single_label_image(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
     opts: ImageRenderOptions,
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
-    let doc = compile_single_doc(template, data, option, &env)?;
+    let doc = compile_single_doc(template, data, &env)?;
     let page = doc.pages().first().ok_or_else(|| {
         AppError::render_failed(Reason::TypstNoPages, "typst did not produce any pages")
     })?;
@@ -972,12 +943,11 @@ pub fn render_single_label_image(
 pub fn render_single_label_pdf(
     template: &TemplateContent,
     data: &HashMap<String, JsonValue>,
-    option: Option<&BTreeMap<String, String>>,
     settings: &BTreeMap<String, String>,
     datetime: &crate::datetime_fmt::DateTimeResolver,
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
-    let doc = compile_single_doc(template, data, option, &env)?;
+    let doc = compile_single_doc(template, data, &env)?;
     typst_pdf::pdf(&doc, &Default::default()).map_err(|err| {
         AppError::render_failed(
             Reason::PdfEncodeFailed,
@@ -1076,7 +1046,7 @@ pub fn render_sheet_pages(
                 }
             };
         let geometry_values = render_geometry_values(&resolved.data, template);
-        let context = RenderContext::new(unit, template.dpi, &resolved.data, None, &env, &images)
+        let context = RenderContext::new(unit, template.dpi, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         let (measured, _) = match context.measure_items(
             items,
@@ -1208,23 +1178,6 @@ fn select_layout_items(template: &TemplateContent) -> Result<&[LayoutItem], AppE
     }
 }
 
-fn normalize_option<'a>(
-    template: &TemplateContent,
-    option: Option<&'a BTreeMap<String, String>>,
-) -> Result<Option<&'a BTreeMap<String, String>>, AppError> {
-    match template.options() {
-        Some(options) => {
-            if let Some(selection) = option {
-                if !options.is_valid_selection(selection) {
-                    return Err(AppError::invalid_enum_value(selection, options.allowed()));
-                }
-            }
-            Ok(option)
-        }
-        None => Ok(None),
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Measured {
     pub intrinsic: [Option<f32>; 2],
@@ -1313,7 +1266,6 @@ pub(crate) struct RenderContext<'a> {
     pub unit: &'a str,
     pub dpi: u32,
     pub data: &'a HashMap<String, JsonValue>,
-    pub selected_option: Option<&'a BTreeMap<String, String>>,
     pub env: &'a RenderEnv<'a>,
     pub images: &'a RefCell<ImageCollector>,
     pub instants: Option<&'a BTreeMap<String, DateTime<Local>>>,
@@ -1374,7 +1326,6 @@ impl<'a> RenderContext<'a> {
         unit: &'a str,
         dpi: u32,
         data: &'a HashMap<String, JsonValue>,
-        selected_option: Option<&'a BTreeMap<String, String>>,
         env: &'a RenderEnv<'a>,
         images: &'a RefCell<ImageCollector>,
     ) -> Self {
@@ -1382,7 +1333,6 @@ impl<'a> RenderContext<'a> {
             unit,
             dpi,
             data,
-            selected_option,
             env,
             images,
             instants: None,
@@ -1397,7 +1347,6 @@ impl<'a> RenderContext<'a> {
             unit: self.unit,
             dpi: self.dpi,
             data,
-            selected_option: self.selected_option,
             env: self.env,
             images: self.images,
             instants: self.instants,
@@ -1411,16 +1360,12 @@ impl<'a> RenderContext<'a> {
 
     pub(crate) fn is_item_active(&self, item: &LayoutItem) -> bool {
         if let Some(when) = item.when() {
-            when.iter().all(|(param_name, expected_val)| {
-                if let Some(val) = self.data.get(param_name) {
-                    let val_str = value_to_string(val);
-                    &val_str == expected_val
-                } else if let Some(selected) = self.selected_option {
-                    selected.get(param_name) == Some(expected_val)
-                } else {
-                    false
-                }
-            })
+            when.iter().all(
+                |(param_name, expected_val)| match self.data.get(param_name) {
+                    Some(val) => &value_to_string(val) == expected_val,
+                    None => false,
+                },
+            )
         } else {
             true
         }
@@ -2599,7 +2544,7 @@ mod tests {
             datetime: &datetime,
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
         let geometry_values = HashMap::new();
         let (measured, _) =
             ctx.measure_items(items, frame, [true, true], &geometry_values, "layout")?;
@@ -2937,7 +2882,7 @@ layout:
             json!("This is a medium length label message"),
         );
         let png_fit =
-            render_single_label(&template, &data_fit, None, &BTreeMap::new(), &resolver()).unwrap();
+            render_single_label(&template, &data_fit, &BTreeMap::new(), &resolver()).unwrap();
         let img_fit = image::load_from_memory(&png_fit).unwrap();
         let min_px = (20.0_f32 / 25.4 * 200.0).round() as u32;
         let max_px = (100.0_f32 / 25.4 * 200.0).round() as u32;
@@ -2957,8 +2902,7 @@ layout:
         let mut data_short = HashMap::new();
         data_short.insert("message".to_string(), json!("Hi"));
         let png_short =
-            render_single_label(&template, &data_short, None, &BTreeMap::new(), &resolver())
-                .unwrap();
+            render_single_label(&template, &data_short, &BTreeMap::new(), &resolver()).unwrap();
         let img_short = image::load_from_memory(&png_short).unwrap();
         assert_eq!(
             img_short.width(),
@@ -3031,7 +2975,7 @@ layout:
                 datetime: &datetime,
             };
             let images = RefCell::new(super::ImageCollector::default());
-            let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+            let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
             let item = LayoutItem::Text {
                 value: "Widget A-42 Storage".to_string(),
                 placement: Placement::sized(
@@ -3103,7 +3047,7 @@ layout:
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
 
         let auto_text = LayoutItem::Text {
             value: "hello".to_string(),
@@ -3190,7 +3134,7 @@ layout:
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
 
         let text = LayoutItem::Text {
             value: "hi".to_string(),
@@ -3278,7 +3222,7 @@ layout:
             datetime: &datetime,
         };
         let images = RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
         let geometry_values = HashMap::new();
         let (measured, max_req_w) = ctx
             .measure_items(
@@ -3543,7 +3487,7 @@ layout:
         };
         assert_eq!(template.validate(), Ok(()));
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect("#155: a max_h above the frame must cap, not overflow");
     }
 
@@ -3678,7 +3622,7 @@ layout:
             "the cap loosening admits this at load"
         );
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let err = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect_err("a divider in a zero-width container cannot render");
         assert_eq!(
             err.reason(),
@@ -3701,7 +3645,7 @@ layout:
             "strokeless variant also admitted at load"
         );
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let err = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect_err("a strokeless degenerate line in a zero-width container must still fail");
         assert_eq!(
             err.reason(),
@@ -3919,7 +3863,7 @@ layout:
         };
         assert_eq!(*max_w, 120.0, "budget math below assumes width.max: 120");
         let data = test_placeholder_data(capped, chrono::Local::now());
-        let capped_png = render_thumbnail_png(capped, &data, None, &no_settings(), &no_datetime())
+        let capped_png = render_thumbnail_png(capped, &data, &no_settings(), &no_datetime())
             .expect("render capped");
 
         // Same template, `max_w` stripped from both text items: the fallback remainder is
@@ -3933,9 +3877,8 @@ layout:
                 placement.max_w = None;
             }
         }
-        let uncapped_png =
-            render_thumbnail_png(&uncapped, &data, None, &no_settings(), &no_datetime())
-                .expect("render uncapped");
+        let uncapped_png = render_thumbnail_png(&uncapped, &data, &no_settings(), &no_datetime())
+            .expect("render uncapped");
 
         assert_eq!(
             capped_png, uncapped_png,
@@ -4288,7 +4231,7 @@ layout:
             "a fixed-width container paired with an edge-relative at.x is a legal shape"
         );
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        render_single_label(&template, &data, None, &no_settings(), &no_datetime()).expect(
+        render_single_label(&template, &data, &no_settings(), &no_datetime()).expect(
             "a right-anchored container's frame-dependent child must still be measured, not \
              skipped along with the container",
         );
@@ -4345,7 +4288,7 @@ layout:
             "`size: [40, auto]` is a documented container idiom"
         );
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        render_single_label(&template, &data, None, &no_settings(), &no_datetime()).expect(
+        render_single_label(&template, &data, &no_settings(), &no_datetime()).expect(
             "an auto height with no max_h must fall back to the remaining frame height during \
              measurement, not error",
         );
@@ -4440,7 +4383,7 @@ layout:
             }],
         );
         let data = HashMap::new();
-        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect("render rotated container");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -4491,7 +4434,7 @@ layout:
             }],
         );
         let data = HashMap::new();
-        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect("render corner marker");
         let q = quadrant_dark_fraction(&png);
         assert!(
@@ -4519,7 +4462,6 @@ layout:
         let png = render_single_label(
             &rotated_container_template(180.0, qr()),
             &data,
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -4534,7 +4476,6 @@ layout:
         let png = render_single_label(
             &rotated_container_template(270.0, qr()),
             &data,
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -4622,14 +4563,8 @@ layout:
             layout: Layout::Items(vec![outer]),
             version: None,
         };
-        let png = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &no_settings(),
-            &no_datetime(),
-        )
-        .expect("render nested rotated containers");
+        let png = render_single_label(&template, &HashMap::new(), &no_settings(), &no_datetime())
+            .expect("render nested rotated containers");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -4802,14 +4737,8 @@ layout:
     }
 
     fn render_tape(template: &TemplateContent) -> Vec<u8> {
-        render_single_label(
-            template,
-            &HashMap::new(),
-            None,
-            &no_settings(),
-            &no_datetime(),
-        )
-        .expect("render tape label")
+        render_single_label(template, &HashMap::new(), &no_settings(), &no_datetime())
+            .expect("render tape label")
     }
 
     /// #123: auto-length text placed its own box using fontdue's full line height (~1.21 em) while
@@ -4936,7 +4865,7 @@ layout:
                 datetime: &datetime,
             };
             let images = RefCell::new(super::ImageCollector::default());
-            let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+            let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
 
             let item = LayoutItem::Text {
                 value: text.to_string(),
@@ -5270,15 +5199,8 @@ layout:
         };
 
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
-        let png = render_single_label(
-            &template,
-            &data,
-            Some(&selection),
-            &no_settings(),
-            &no_datetime(),
-        )
-        .expect("render label");
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
+            .expect("render label");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -5368,15 +5290,8 @@ layout:
             ("message".to_string(), json!("Hello")),
             ("code".to_string(), json!("QR-123")),
         ]);
-        let selection = BTreeMap::from([("variant".to_string(), "default".to_string())]);
-        let png = render_single_label(
-            &template,
-            &data,
-            Some(&selection),
-            &no_settings(),
-            &no_datetime(),
-        )
-        .expect("render label with qr");
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
+            .expect("render label with qr");
 
         assert!(!png.is_empty(), "rendered PNG is empty");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
@@ -5475,7 +5390,7 @@ layout:
             "logo".to_string(),
             json!(format!("data:image/png;base64,{PNG_1X1_B64}")),
         )]);
-        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect("render image");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -5484,9 +5399,7 @@ layout:
     fn render_image_missing_data_errors() {
         let template = image_single_template();
         let data = HashMap::new();
-        assert!(
-            render_single_label(&template, &data, None, &no_settings(), &no_datetime()).is_err()
-        );
+        assert!(render_single_label(&template, &data, &no_settings(), &no_datetime()).is_err());
     }
 
     #[test]
@@ -5496,9 +5409,7 @@ layout:
             "logo".to_string(),
             json!("data:image/png;base64,@@@not-base64@@@"),
         )]);
-        assert!(
-            render_single_label(&template, &data, None, &no_settings(), &no_datetime()).is_err()
-        );
+        assert!(render_single_label(&template, &data, &no_settings(), &no_datetime()).is_err());
     }
 
     #[test]
@@ -5560,7 +5471,7 @@ layout:
     fn one_code_two_reasons_for_unrelated_failures() {
         let template = image_single_template();
         let data = HashMap::from([("logo".to_string(), json!("not a data uri"))]);
-        let image_err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let image_err = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect_err("a non-data-URI image payload must not render");
 
         let geometry_err = render_test_items(
@@ -5608,7 +5519,7 @@ layout:
         );
         let template = image_single_template();
         let data = HashMap::from([("logo".to_string(), json!(uri))]);
-        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect("render svg");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -5634,7 +5545,6 @@ layout:
         let png = render_single_label(
             &image_single_template_with_src("logo.png"),
             &data,
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -5645,7 +5555,6 @@ layout:
         assert!(render_single_label(
             &image_single_template_with_src("missing.png"),
             &data,
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -5686,7 +5595,7 @@ layout:
             version: None,
         };
         let data = HashMap::from([("message".to_string(), json!("Hello"))]);
-        let pdf = render_single_label_pdf(&template, &data, None, &no_settings(), &no_datetime())
+        let pdf = render_single_label_pdf(&template, &data, &no_settings(), &no_datetime())
             .expect("render pdf");
         assert!(pdf.starts_with(b"%PDF"), "missing PDF header");
     }
@@ -5748,7 +5657,7 @@ layout:
         for summary in registry.summaries() {
             let template = registry.get(&summary.id).expect("template");
             let data = test_placeholder_data(template, dt.now);
-            let png = render_thumbnail_png(template, &data, None, &settings, &dt)
+            let png = render_thumbnail_png(template, &data, &settings, &dt)
                 .unwrap_or_else(|e| panic!("render {}: {e:?}", summary.id));
             assert_eq!(
                 &png[..8],
@@ -5871,14 +5780,12 @@ layout:
         };
         let data = HashMap::from([("id".to_string(), json!("A1"))]);
         let settings = BTreeMap::from([("qr_base_url".to_string(), "https://h/i".to_string())]);
-        let png = render_single_label(&template, &data, None, &settings, &no_datetime())
+        let png = render_single_label(&template, &data, &settings, &no_datetime())
             .expect("render interp");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
         // Missing setting is an error.
-        assert!(
-            render_single_label(&template, &data, None, &no_settings(), &no_datetime()).is_err()
-        );
+        assert!(render_single_label(&template, &data, &no_settings(), &no_datetime()).is_err());
     }
 
     #[test]
@@ -5913,7 +5820,7 @@ layout:
         };
         // Typst-hostile payload: markup that would call into the system if not escaped.
         let data = HashMap::from([("x".to_string(), json!(r#""]#sys.version[ \ end"#))]);
-        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect("render escaped");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -5932,12 +5839,11 @@ layout:
             formats: &dt_formats,
             now: chrono::Local::now(),
         };
-        let png =
-            render_single_label(template, &data, None, &settings, &dt).expect("render homebox-qr");
+        let png = render_single_label(template, &data, &settings, &dt).expect("render homebox-qr");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
         // Missing qr_base_url setting is an error.
-        assert!(render_single_label(template, &data, None, &no_settings(), &dt).is_err());
+        assert!(render_single_label(template, &data, &no_settings(), &dt).is_err());
     }
 
     #[test]
@@ -5945,8 +5851,7 @@ layout:
         let template = sheet_template_10x5_on_100x100();
         let data = HashMap::new();
         let settings = BTreeMap::new();
-        let png =
-            render_thumbnail_png(&template, &data, None, &settings, &no_datetime()).expect("png");
+        let png = render_thumbnail_png(&template, &data, &settings, &no_datetime()).expect("png");
         let img = image::load_from_memory(&png).expect("decode png");
         // label 10x5 mm at 96 dpi ≈ 37.8 x 18.9 px; paper would be ~378 px. Assert it is the label box.
         assert!(
@@ -6244,10 +6149,12 @@ layout:
                 }
             }
             let variants: Vec<(String, HashMap<String, serde_json::Value>)> = match template
-                .options()
-                .as_ref()
-                .and_then(|o| o.allowed().get("orientation").cloned())
-            {
+                .params
+                .get("orientation")
+                .and_then(|spec| match &spec.param_type {
+                    crate::models::ParamType::Enum { values } => Some(values.clone()),
+                    _ => None,
+                }) {
                 Some(orientations) => orientations
                     .into_iter()
                     .map(|o| {
@@ -6262,7 +6169,7 @@ layout:
                 None => vec![(summary.id.clone(), base_data.clone())],
             };
             for (name, data) in variants {
-                let png = render_thumbnail_png(template, &data, None, &settings, &datetime)
+                let png = render_thumbnail_png(template, &data, &settings, &datetime)
                     .unwrap_or_else(|e| panic!("render {name}: {e:?}"));
                 std::fs::write(dir.join(format!("{name}.png")), png).expect("write png");
             }
@@ -6754,7 +6661,7 @@ layout:
         let template = dynamic_label_with_line(Position([-20.0, 8.0]), Position([-0.0, 8.0]));
         assert_eq!(template.validate(), Ok(()));
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let png = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let png = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect("a right-anchored line must render beside auto-width text");
         let width_px = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
         // 20mm at 180dpi is ~142px; the ~10mm of text alone would be about half that.
@@ -6809,7 +6716,7 @@ layout:
         };
         assert_eq!(template.validate(), Ok(()), "not comparable at load time");
         let data: HashMap<String, super::JsonValue> = HashMap::new();
-        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let err = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect_err("a zero-length line must not render");
         assert_eq!(
             err.reason(),
@@ -6831,7 +6738,7 @@ layout:
             let mut data: HashMap<String, super::JsonValue> = HashMap::new();
             data.insert("line1".to_string(), json!(l1));
             data.insert("line2".to_string(), json!(l2));
-            let png = render_single_label(template, &data, None, &no_settings(), &no_datetime())
+            let png = render_single_label(template, &data, &no_settings(), &no_datetime())
                 .expect("render");
             u32::from_be_bytes([png[16], png[17], png[18], png[19]])
         };
@@ -6865,8 +6772,8 @@ layout:
             settings: &no_settings(),
             datetime: &dt,
         };
-        let compiled1 = super::compile_label_source(printed_on, &data1, None, &env1)
-            .expect("compile printed_on");
+        let compiled1 =
+            super::compile_label_source(printed_on, &data1, &env1).expect("compile printed_on");
         let size1 = fitted_pt(&compiled1.source);
         assert_eq!(
             size1, 18.5,
@@ -6884,7 +6791,7 @@ layout:
             settings: &no_settings(),
             datetime: &no_datetime(),
         };
-        let compiled2 = super::compile_label_source(lines_divider, &data2, None, &env2)
+        let compiled2 = super::compile_label_source(lines_divider, &data2, &env2)
             .expect("compile lines_divider");
         let size2 = fitted_pt(&compiled2.source);
         assert_eq!(
@@ -6906,7 +6813,7 @@ layout:
             datetime: &no_datetime(),
         };
         let compiled3 =
-            super::compile_label_source(multiline, &data3, None, &env3).expect("compile multiline");
+            super::compile_label_source(multiline, &data3, &env3).expect("compile multiline");
         let size3 = fitted_pt(&compiled3.source);
         assert_eq!(
             size3, 18.5,
@@ -6935,8 +6842,8 @@ layout:
             settings: &no_settings(),
             datetime: &no_datetime(),
         };
-        let compiled4 = super::compile_label_source(avery, &data4, Some(&opt4), &env4)
-            .expect("compile avery5163");
+        let compiled4 =
+            super::compile_label_source(avery, &data4, &env4).expect("compile avery5163");
         let src4 = &compiled4.source;
 
         // {id} in horizontal orientation (0.35in box, max 22pt) fits at 20.5pt (down from 22.0pt)
@@ -7017,10 +6924,9 @@ layout:
         for value in ["hello", ""] {
             let mut data: HashMap<String, super::JsonValue> = HashMap::new();
             data.insert("v".to_string(), json!(value));
-            render_single_label(&template, &data, None, &no_settings(), &no_datetime())
-                .unwrap_or_else(|err| {
-                    panic!("value {value:?} must render, got: {}", err.message_text())
-                });
+            render_single_label(&template, &data, &no_settings(), &no_datetime()).unwrap_or_else(
+                |err| panic!("value {value:?} must render, got: {}", err.message_text()),
+            );
         }
     }
 
@@ -7076,13 +6982,13 @@ layout:
 
         let flush_left = qr_at(0.0);
         assert_eq!(flush_left.validate(), Ok(()));
-        render_single_label(&flush_left, &data, None, &no_settings(), &no_datetime())
+        render_single_label(&flush_left, &data, &no_settings(), &no_datetime())
             .expect("from x=0 the fallback width is the whole box");
 
         let template = qr_at(30.0);
         assert_eq!(template.validate(), Ok(()), "valid against the 100mm max");
         data.insert("target_width".to_string(), json!(20.0));
-        let err = render_single_label(&template, &data, None, &no_settings(), &no_datetime())
+        let err = render_single_label(&template, &data, &no_settings(), &no_datetime())
             .expect_err("a 30mm anchor on a 20mm label leaves no box");
         assert_eq!(
             err.reason(),
@@ -7170,8 +7076,7 @@ layout:
         );
         data.insert("target_width".to_string(), json!(90.0));
 
-        let png =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap();
+        let png = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap();
         let img = image::load_from_memory(&png).unwrap();
         let expected_px = (90.0_f32 / 25.4 * template.dpi as f32).round() as u32;
         let min_px = (25.0_f32 / 25.4 * template.dpi as f32).round() as u32;
@@ -7211,8 +7116,7 @@ layout:
         data.insert("message".to_string(), json!("Bold Text"));
         data.insert("weight".to_string(), json!(700));
 
-        let png =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap();
+        let png = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap();
         assert!(!png.is_empty());
     }
 
@@ -7257,7 +7161,7 @@ layout:
         data.insert("h_text".to_string(), json!("Horizontal only"));
         // v_text is omitted; must succeed without MissingField
 
-        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(
             res.is_ok(),
             "should succeed because v_text is in inactive branch"
@@ -7287,7 +7191,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let data = HashMap::new(); // message omitted
 
-        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(matches!(res, Err(err) if err.code() == "MissingField"));
     }
 
@@ -7318,7 +7222,7 @@ layout:
         let mut data = HashMap::new();
         data.insert("target_width".to_string(), json!(1500.0)); // exceeds default 1000mm
 
-        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(matches!(res, Err(err) if err.code() == "UnsupportedLayoutItem"));
     }
 
@@ -7355,7 +7259,7 @@ layout:
         // target_width shrinks to 15mm, but container padding is left 10 + right 10 = 20mm.
         data.insert("target_width".to_string(), json!(15.0));
 
-        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(
             res.is_err(),
             "expected render to fail due to padding overflow"
@@ -7402,7 +7306,7 @@ layout:
         data.insert("target_width".to_string(), json!(15.0));
         data.insert("show_extra".to_string(), json!(false));
 
-        let res = render_single_label(&template, &data, None, &BTreeMap::new(), &resolver());
+        let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(
             res.is_ok(),
             "inactive child item should not trigger container_padding_no_room"
@@ -7459,7 +7363,7 @@ layout:
 
         // 3. The same template still compiles all the way to a PNG.
         assert!(
-            !render_single_label(&template, &data, None, &BTreeMap::new(), &resolver)
+            !render_single_label(&template, &data, &BTreeMap::new(), &resolver)
                 .unwrap()
                 .is_empty()
         );
@@ -7544,14 +7448,8 @@ layout:
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.code(), "MissingField");
         assert!(err.message_text().contains("printed_on:no_such_format"));
     }
@@ -7592,14 +7490,8 @@ layout:
             now,
         };
 
-        let doc = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver,
-        )
-        .unwrap();
+        let doc =
+            render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver).unwrap();
         assert!(!doc.is_empty());
     }
 
@@ -7759,7 +7651,7 @@ layout:
         );
 
         assert!(
-            !render_thumbnail_png(&template, &data, None, &BTreeMap::new(), &resolver)
+            !render_thumbnail_png(&template, &data, &BTreeMap::new(), &resolver)
                 .unwrap()
                 .is_empty()
         );
@@ -7839,7 +7731,7 @@ layout:
                 settings: &empty_settings,
                 datetime: &resolver,
             };
-            super::RenderContext::new("mm", 180, &resolved.data, None, &env, &images)
+            super::RenderContext::new("mm", 180, &resolved.data, &env, &images)
                 .with_instants(&resolved.instants)
                 .is_item_active(&items[0])
         };
@@ -7894,15 +7786,9 @@ layout:
             settings: &settings,
             datetime: &dt_resolved,
         };
-        let ctx = super::RenderContext::new(
-            &template.unit,
-            template.dpi,
-            &resolved.data,
-            None,
-            &env,
-            &images,
-        )
-        .with_instants(&resolved.instants);
+        let ctx =
+            super::RenderContext::new(&template.unit, template.dpi, &resolved.data, &env, &images)
+                .with_instants(&resolved.instants);
         let Layout::Items(items) = &template.layout;
         assert!(
             !ctx.is_item_active(&items[0]),
@@ -7916,7 +7802,7 @@ layout:
             !ctx.is_item_active(&items[2]),
             "vertical container must be inactive"
         );
-        let png = render_thumbnail_png(template, &data, None, &settings, &dt_resolved)
+        let png = render_thumbnail_png(template, &data, &settings, &dt_resolved)
             .expect("render thumbnail");
         assert!(!png.is_empty());
     }
@@ -7942,14 +7828,8 @@ layout:
         font_size: { min: 8, max: 24 }
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let png = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap();
+        let png =
+            render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap();
         assert!(!png.is_empty());
     }
 
@@ -7969,14 +7849,8 @@ layout:
     font_size: 14
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("text_does_not_fit"));
     }
 
@@ -8000,8 +7874,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let mut data = HashMap::new();
         data.insert("w".to_string(), json!(0.0));
-        let err =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        let err = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap_err();
         assert_eq!(err.reason(), Some("size_invalid"));
     }
 
@@ -8030,8 +7903,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let mut data = HashMap::new();
         data.insert("w".to_string(), json!(0.0));
-        let err =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        let err = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap_err();
         assert_eq!(err.reason(), Some("size_invalid"));
     }
 
@@ -8060,8 +7932,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let mut data = HashMap::new();
         data.insert("target_width".to_string(), json!(20.0));
-        let err =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        let err = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap_err();
         assert_eq!(err.reason(), Some("edge_rect_inverted"));
     }
 
@@ -8095,8 +7966,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let mut data = HashMap::new();
         data.insert("target_width".to_string(), json!(20.0));
-        let err =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        let err = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap_err();
         assert_eq!(err.reason(), Some("edge_rect_inverted"));
     }
 
@@ -8373,15 +8243,13 @@ layout:
         // When w=12, square -> success
         let mut data_ok = HashMap::new();
         data_ok.insert("w".to_string(), serde_json::json!(12.0));
-        assert!(
-            render_single_label(&template, &data_ok, None, &no_settings(), &no_datetime()).is_ok()
-        );
+        assert!(render_single_label(&template, &data_ok, &no_settings(), &no_datetime()).is_ok());
 
         // When w=14, not square -> 422 circle_box_not_square
         let mut data_bad = HashMap::new();
         data_bad.insert("w".to_string(), serde_json::json!(14.0));
-        let err = render_single_label(&template, &data_bad, None, &no_settings(), &no_datetime())
-            .unwrap_err();
+        let err =
+            render_single_label(&template, &data_bad, &no_settings(), &no_datetime()).unwrap_err();
         assert_eq!(err.reason(), Some("circle_box_not_square"));
         assert_eq!(err.status(), 422);
         assert!(err.message_text().contains("layout[0]"));
@@ -8415,7 +8283,6 @@ layout:
         assert!(render_single_label(
             &template_when,
             &data_inactive,
-            None,
             &no_settings(),
             &no_datetime()
         )
@@ -8443,7 +8310,6 @@ layout:
         let err = render_single_label(
             &template_content,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -8510,25 +8376,15 @@ layout:
 
         let mut data_eps_ok = HashMap::new();
         data_eps_ok.insert("w".to_string(), serde_json::json!(10.00009));
-        assert!(render_single_label(
-            &template_eps,
-            &data_eps_ok,
-            None,
-            &no_settings(),
-            &no_datetime()
-        )
-        .is_ok());
+        assert!(
+            render_single_label(&template_eps, &data_eps_ok, &no_settings(), &no_datetime())
+                .is_ok()
+        );
 
         let mut data_eps_bad = HashMap::new();
         data_eps_bad.insert("w".to_string(), serde_json::json!(10.00011));
-        let err = render_single_label(
-            &template_eps,
-            &data_eps_bad,
-            None,
-            &no_settings(),
-            &no_datetime(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template_eps, &data_eps_bad, &no_settings(), &no_datetime())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("circle_box_not_square"));
         assert!(err.message_text().contains("layout[0]"));
     }
@@ -8678,7 +8534,6 @@ layout:
         let png = render_single_label_image(
             &template_nested,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
             super::ImageRenderOptions::default(),
@@ -8699,8 +8554,7 @@ layout:
                 settings: &settings,
                 datetime: &datetime,
             };
-            let compiled =
-                super::compile_label_source(&template, &data, None, &env).expect("compile");
+            let compiled = super::compile_label_source(&template, &data, &env).expect("compile");
             compiled.source
         }
         fn assert_source_contains(yaml: &str, needle: &str) {
@@ -8717,7 +8571,6 @@ layout:
         let png = render_single_label_image(
             &template_padded,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
             super::ImageRenderOptions::default(),
@@ -8727,7 +8580,6 @@ layout:
         let pdf = render_single_label_pdf(
             &template_padded,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -8743,7 +8595,6 @@ layout:
         let pdf2 = render_single_label_pdf(
             &template_square,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -8811,7 +8662,6 @@ layout:
         let err = render_single_label_image(
             &template_oval,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
             super::ImageRenderOptions::default(),
@@ -8846,7 +8696,6 @@ layout:
         let png = render_single_label_image(
             &template_circle,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
             super::ImageRenderOptions::default(),
@@ -8856,7 +8705,6 @@ layout:
         let pdf = render_single_label_pdf(
             &template_circle,
             &HashMap::new(),
-            None,
             &no_settings(),
             &no_datetime(),
         )
@@ -8904,7 +8752,6 @@ layout:
         let png = render_single_label_image(
             &template,
             &data,
-            None,
             &settings,
             &datetime,
             super::ImageRenderOptions::default(),
@@ -8913,8 +8760,8 @@ layout:
         assert!(!png.is_empty());
         assert_eq!(&png[1..4], b"PNG");
 
-        let pdf = render_single_label_pdf(&template, &data, None, &settings, &datetime)
-            .expect("render pdf");
+        let pdf =
+            render_single_label_pdf(&template, &data, &settings, &datetime).expect("render pdf");
         assert!(!pdf.is_empty());
         assert_eq!(&pdf[0..4], b"%PDF");
     }
@@ -8960,13 +8807,7 @@ layout:
     items: []
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let source = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        );
+        let source = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver());
         assert!(source.is_ok());
     }
 
@@ -8991,14 +8832,8 @@ layout:
         font_size: 14
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("text_does_not_fit"));
     }
 
@@ -9023,8 +8858,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let mut data = HashMap::new();
         data.insert("msg".to_string(), serde_json::json!(""));
-        let png =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap();
+        let png = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap();
         assert!(!png.is_empty());
     }
 
@@ -9064,14 +8898,8 @@ layout:
         font_size: 8
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("item_out_of_frame"));
         assert!(
             err.message_text().contains("items[1]"),
@@ -9103,14 +8931,8 @@ layout:
         font_size: 8
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("item_out_of_frame"));
         assert!(
             err.message_text().contains("items[1]"),
@@ -9144,8 +8966,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let mut data = HashMap::new();
         data.insert("h".to_string(), serde_json::json!(25));
-        let err =
-            render_single_label(&template, &data, None, &BTreeMap::new(), &resolver()).unwrap_err();
+        let err = render_single_label(&template, &data, &BTreeMap::new(), &resolver()).unwrap_err();
         assert_eq!(err.reason(), Some("item_out_of_frame"));
     }
 
@@ -9182,14 +9003,8 @@ layout:
         font_size: 8
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("item_out_of_frame"));
         assert!(
             err.message_text().contains("items[2]"),
@@ -9237,16 +9052,9 @@ layout:
         let t_abs = parse_and_validate(yaml_abs).unwrap();
         let t_flow = parse_and_validate(yaml_flow).unwrap();
         let src_abs =
-            render_single_label(&t_abs, &HashMap::new(), None, &BTreeMap::new(), &resolver())
-                .unwrap();
-        let src_flow = render_single_label(
-            &t_flow,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap();
+            render_single_label(&t_abs, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap();
+        let src_flow =
+            render_single_label(&t_flow, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap();
         assert_eq!(src_abs, src_flow);
     }
 
@@ -9270,13 +9078,8 @@ layout:
         font_size: 8
 "#;
         let t_alone = parse_and_validate(yaml_alone).unwrap();
-        let res_alone = render_single_label(
-            &t_alone,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        );
+        let res_alone =
+            render_single_label(&t_alone, &HashMap::new(), &BTreeMap::new(), &resolver());
         assert!(res_alone.is_ok());
 
         // Uncapped fill child beside sibling: overruns because fill claims full 80mm
@@ -9301,14 +9104,9 @@ layout:
         font_size: 8
 "#;
         let t_overrun = parse_and_validate(yaml_overrun).unwrap();
-        let err_overrun = render_single_label(
-            &t_overrun,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err_overrun =
+            render_single_label(&t_overrun, &HashMap::new(), &BTreeMap::new(), &resolver())
+                .unwrap_err();
         assert_eq!(err_overrun.reason(), Some("item_out_of_frame"));
 
         // Capped fill child sharing line: fits within 80mm
@@ -9334,13 +9132,8 @@ layout:
         font_size: 8
 "#;
         let t_capped = parse_and_validate(yaml_capped).unwrap();
-        let res_capped = render_single_label(
-            &t_capped,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        );
+        let res_capped =
+            render_single_label(&t_capped, &HashMap::new(), &BTreeMap::new(), &resolver());
         assert!(res_capped.is_ok());
     }
 
@@ -9451,14 +9244,8 @@ layout:
         font_size: 8
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let png = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap();
+        let png =
+            render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap();
         let img = image::load_from_memory(&png).unwrap();
         // Sized to sum of content + gap, not min (10mm) or max (100mm)
         let min_px = (10.0_f32 / 25.4 * 200.0).round() as u32;
@@ -9498,14 +9285,8 @@ layout:
         size: [20, 20]
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let png = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap();
+        let png =
+            render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap();
         assert!(!png.is_empty());
     }
 
@@ -9599,14 +9380,8 @@ layout:
       vertical: center
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let png = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap();
+        let png =
+            render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap();
         let img = image::load_from_memory(&png).expect("decode").to_luma8();
         let (w, h) = (img.width(), img.height());
         let last_row = h - 1;
@@ -9637,7 +9412,7 @@ layout:
             let template = registry.get(tape_id).expect("catalog template");
             let mut data = HashMap::new();
             data.insert("message".to_string(), json!("BOX.073 - Floor Grinder"));
-            let png = render_single_label(template, &data, None, &no_settings(), &no_datetime())
+            let png = render_single_label(template, &data, &no_settings(), &no_datetime())
                 .unwrap_or_else(|e| panic!("render {tape_id}: {e:?}"));
 
             let baseline_path = archive_dir.join(format!("{tape_id}.png"));
@@ -9700,7 +9475,7 @@ layout:
         // When bold and mode are omitted (no defaults), neither branch selects (both are inactive)
         let resolved_omitted =
             super::resolve_parameters(&template, &HashMap::new(), None, Some(&res_dt)).unwrap();
-        let ctx = super::RenderContext::new("mm", 200, &resolved_omitted.data, None, &env, &images)
+        let ctx = super::RenderContext::new("mm", 200, &resolved_omitted.data, &env, &images)
             .with_instants(&resolved_omitted.instants);
         assert!(
             !ctx.is_item_active(&items[0]),
@@ -9716,7 +9491,7 @@ layout:
         with_bold_false.insert("bold".to_string(), json!(false));
         let resolved_bf =
             super::resolve_parameters(&template, &with_bold_false, None, Some(&res_dt)).unwrap();
-        let ctx_bf = super::RenderContext::new("mm", 200, &resolved_bf.data, None, &env, &images)
+        let ctx_bf = super::RenderContext::new("mm", 200, &resolved_bf.data, &env, &images)
             .with_instants(&resolved_bf.instants);
         assert!(ctx_bf.is_item_active(&items[0]));
         assert!(!ctx_bf.is_item_active(&items[1]));
@@ -9759,7 +9534,7 @@ layout:
         };
         let resolved1 =
             super::resolve_parameters(&template1, &HashMap::new(), None, Some(&res_dt)).unwrap();
-        let ctx1 = super::RenderContext::new("mm", 200, &resolved1.data, None, &env, &images)
+        let ctx1 = super::RenderContext::new("mm", 200, &resolved1.data, &env, &images)
             .with_instants(&resolved1.instants);
         assert!(
             ctx1.is_item_active(&items1[0]),
@@ -9791,14 +9566,8 @@ layout:
         font_size: 10
 "#;
         let template2 = parse_and_validate(yaml2).unwrap();
-        let err = render_single_label(
-            &template2,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template2, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("param_default_unresolvable"));
     }
 
@@ -9821,14 +9590,8 @@ layout:
     font_size: 10
 "#;
         let template = parse_and_validate(yaml).unwrap();
-        let err = render_single_label(
-            &template,
-            &HashMap::new(),
-            None,
-            &BTreeMap::new(),
-            &resolver(),
-        )
-        .unwrap_err();
+        let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
+            .unwrap_err();
         assert_eq!(err.reason(), Some("param_default_unresolvable"));
     }
 
@@ -9914,7 +9677,7 @@ layout:
             datetime: &res_dt,
         };
         let resolved = super::resolve_parameters(template, &data, None, Some(&res_dt)).unwrap();
-        let ctx = super::RenderContext::new("in", 300, &resolved.data, None, &env, &images)
+        let ctx = super::RenderContext::new("in", 300, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(
             !ctx.is_item_active(&items[0]),
@@ -10024,16 +9787,15 @@ layout:
             datetime: &datetime,
         };
         let data = HashMap::new();
-        let compiled_null = super::compile_label_source(&template_null, &data, None, &env).unwrap();
+        let compiled_null = super::compile_label_source(&template_null, &data, &env).unwrap();
         assert!(
             !compiled_null.source.contains("fill:"),
             "explicit color: null must emit no fill: in Typst, got: {}",
             compiled_null.source
         );
 
-        let png_null =
-            super::render_single_label(&template_null, &data, None, &settings, &datetime)
-                .expect("render template with color: null");
+        let png_null = super::render_single_label(&template_null, &data, &settings, &datetime)
+            .expect("render template with color: null");
         let img_null = image::load_from_memory(&png_null)
             .expect("decode png")
             .to_rgba8();
@@ -10059,17 +9821,15 @@ layout:
     font_size: 14
 "#;
         let template_absent = crate::parse::parse_template(yaml_absent).unwrap();
-        let compiled_absent =
-            super::compile_label_source(&template_absent, &data, None, &env).unwrap();
+        let compiled_absent = super::compile_label_source(&template_absent, &data, &env).unwrap();
         assert!(
             !compiled_absent.source.contains("fill:"),
             "absent color must emit no fill: in Typst, got: {}",
             compiled_absent.source
         );
 
-        let png_absent =
-            super::render_single_label(&template_absent, &data, None, &settings, &datetime)
-                .expect("render template with absent color");
+        let png_absent = super::render_single_label(&template_absent, &data, &settings, &datetime)
+            .expect("render template with absent color");
         let img_absent = image::load_from_memory(&png_absent)
             .expect("decode png")
             .to_rgba8();
@@ -10157,7 +9917,7 @@ layout:
         data.insert("brand".to_string(), serde_json::json!("red"));
         let settings = no_settings();
         let datetime = no_datetime();
-        let res = super::render_single_label(&template, &data, None, &settings, &datetime);
+        let res = super::render_single_label(&template, &data, &settings, &datetime);
         assert!(res.is_ok(), "padded reference must render successfully");
     }
 
@@ -10189,13 +9949,13 @@ layout:
             settings: &settings,
             datetime: &datetime,
         };
-        let compiled = super::compile_label_source(&template, &data, None, &env).unwrap();
+        let compiled = super::compile_label_source(&template, &data, &env).unwrap();
         assert!(
             compiled.source.contains("fill: rgb(\"#000080ff\")"),
             "resolved ' navy ' must emit rgb(\"#000080ff\"), got: {}",
             compiled.source
         );
-        let rendered = super::render_single_label(&template, &data, None, &settings, &datetime)
+        let rendered = super::render_single_label(&template, &data, &settings, &datetime)
             .expect("padded brand must render");
         let img = image::load_from_memory(&rendered)
             .expect("valid png")
@@ -10234,8 +9994,7 @@ layout:
 
         let mut data = HashMap::new();
         data.insert("brand".to_string(), serde_json::json!(" {other} "));
-        let err =
-            super::render_single_label(&template, &data, None, &settings, &datetime).unwrap_err();
+        let err = super::render_single_label(&template, &data, &settings, &datetime).unwrap_err();
         assert_eq!(err.reason(), Some(Reason::ColorParamInvalid.as_slug()));
         assert!(
             err.message_text().contains("references cannot be chained"),
@@ -10274,7 +10033,7 @@ layout:
             datetime: &datetime,
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
         let geometry_values = HashMap::new();
 
         let item_no_color = make_item(None);
@@ -10384,7 +10143,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(items, (60.0, 40.0), [true, true], &HashMap::new(), "layout")
             .unwrap();
@@ -10446,7 +10205,7 @@ layout:
             .unwrap();
             let images_enum = std::cell::RefCell::new(super::ImageCollector::default());
             let ctx_enum =
-                super::RenderContext::new("mm", 200, &resolved_enum.data, None, &env, &images_enum);
+                super::RenderContext::new("mm", 200, &resolved_enum.data, &env, &images_enum);
             let (meas_enum, _) = ctx_enum
                 .measure_items(
                     items_enum,
@@ -10505,7 +10264,7 @@ layout:
         let images = std::cell::RefCell::new(super::ImageCollector::default());
         let data = HashMap::new();
         let geometry = HashMap::new();
-        let ctx = super::RenderContext::new("mm", 200, &data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &data, &env, &images);
         let (meas, _) = ctx
             .measure_items(items, (50.0, 30.0), [true, true], &geometry, "layout")
             .unwrap();
@@ -10616,7 +10375,7 @@ layout:
                 .unwrap();
         let images_slot0 = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx_slot0 =
-            super::RenderContext::new("mm", 200, &resolved_slot0.data, None, &env, &images_slot0);
+            super::RenderContext::new("mm", 200, &resolved_slot0.data, &env, &images_slot0);
         let (meas_slot0, _) = ctx_slot0
             .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
             .unwrap();
@@ -10642,7 +10401,7 @@ layout:
                 .unwrap();
         let images_slot1 = std::cell::RefCell::new(super::ImageCollector::default());
         let ctx_slot1 =
-            super::RenderContext::new("mm", 200, &resolved_slot1.data, None, &env, &images_slot1);
+            super::RenderContext::new("mm", 200, &resolved_slot1.data, &env, &images_slot1);
         let (meas_slot1, _) = ctx_slot1
             .measure_items(items, (20.0, 20.0), [true, true], &HashMap::new(), "layout")
             .unwrap();
@@ -10723,7 +10482,7 @@ layout:
             datetime: &datetime,
         };
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 180, &data, &env, &images);
         let items = vec![text_item];
         let geometry_values = HashMap::new();
         let (measured, _) = ctx
@@ -11124,7 +10883,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11215,7 +10974,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11313,7 +11072,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11419,7 +11178,7 @@ layout:
             super::resolve_parameters(&template, &data_empty, Some(&settings), Some(&datetime))
                 .unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved_empty.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved_empty.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11451,8 +11210,7 @@ layout:
             super::resolve_parameters(&template, &data_omitted, Some(&settings), Some(&datetime))
                 .unwrap();
         let images_def = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx_def =
-            super::RenderContext::new("mm", 200, &resolved_def.data, None, &env, &images_def);
+        let ctx_def = super::RenderContext::new("mm", 200, &resolved_def.data, &env, &images_def);
         let (meas_def, _) = ctx_def
             .measure_items(
                 items,
@@ -11522,7 +11280,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11594,7 +11352,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(items, (50.0, 25.0), [true, true], &HashMap::new(), "layout")
             .unwrap();
@@ -11664,7 +11422,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -11735,7 +11493,7 @@ layout:
         let resolved =
             super::resolve_parameters(&template, &data, Some(&settings), Some(&datetime)).unwrap();
         let images = std::cell::RefCell::new(super::ImageCollector::default());
-        let ctx = super::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = super::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(items, (25.0, 50.0), [true, true], &HashMap::new(), "layout")
             .unwrap();
@@ -11791,7 +11549,7 @@ layout:
         data.insert("alpha".to_string(), serde_json::json!("also_not_an_int"));
         let dt = no_datetime();
         let settings = no_settings();
-        let err = render_single_label(&template, &data, None, &settings, &dt).unwrap_err();
+        let err = render_single_label(&template, &data, &settings, &dt).unwrap_err();
         assert!(
             err.message_text().contains("zebra"),
             "expected render coercion error to surface zebra first in declaration order, got: {}",

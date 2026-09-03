@@ -1251,7 +1251,7 @@ pub async fn thumbnail(
     let variables = state.store().all_variables().await?;
     let resolved_defaults = crate::render::resolve_declared_defaults(template, &variables, &dt);
     let data = template.placeholder_data(&resolved_defaults, now);
-    let png = crate::render::render_thumbnail_png(template, &data, None, &variables, &dt)?;
+    let png = crate::render::render_thumbnail_png(template, &data, &variables, &dt)?;
 
     // #129: key the ETag on the rendered bytes, not the template YAML. The image depends on the
     // template AND the renderer AND the variables it interpolates AND the datetime formats, so a key
@@ -2668,11 +2668,11 @@ pub async fn render_label(
 
     let (bytes, content_type) = match format {
         RenderFormat::Png => (
-            render_single_label_image(template, &req.data, None, &variables, &dt, img_opts)?,
+            render_single_label_image(template, &req.data, &variables, &dt, img_opts)?,
             "image/png",
         ),
         RenderFormat::Pdf => (
-            render_single_label_pdf(template, &req.data, None, &variables, &dt)?,
+            render_single_label_pdf(template, &req.data, &variables, &dt)?,
             "application/pdf",
         ),
     };

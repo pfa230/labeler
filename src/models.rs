@@ -394,25 +394,6 @@ where
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
-#[serde(transparent)]
-pub struct Options(pub BTreeMap<String, Vec<String>>);
-
-impl Options {
-    pub fn is_valid_selection(&self, selection: &BTreeMap<String, String>) -> bool {
-        selection.iter().all(|(name, choice)| {
-            self.0
-                .get(name)
-                .map(|values| values.iter().any(|entry| entry == choice))
-                .unwrap_or(false)
-        })
-    }
-
-    pub fn allowed(&self) -> &BTreeMap<String, Vec<String>> {
-        &self.0
-    }
-}
-
 #[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
 pub struct Point {
     pub x: f32,

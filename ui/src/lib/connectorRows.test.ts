@@ -77,7 +77,6 @@ describe("connectorRows", () => {
     expect(rows[0].origin).toBe("connector");
     expect(rows[0].source).toEqual({ connector: "homebox", connection: "c1", resource: "entities", key: "e1" });
     expect(rows[0].data).toEqual({ title: "Drill", maker: "Acme", tags: ["KIDS", "CONSUMABLE"], blank: "" });
-    expect(rows[0].option).toEqual({});
   });
 
   it("displayCellText formats absent, string, number, and array correctly", () => {

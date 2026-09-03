@@ -234,7 +234,6 @@ function CsvEditor({
       id: newId(),
       origin: "csv",
       data: { ...r.data },
-      option: {},
       validation: {},
     }));
     commitRows(built);

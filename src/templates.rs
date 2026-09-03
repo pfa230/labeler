@@ -8,9 +8,9 @@ use thiserror::Error;
 use crate::errors::TemplateError;
 use crate::models::{
     resolve_coord, DynamicDimension, DynamicValue, Extent, FlowDirection, FlowOverflow, FontSize,
-    InputControl, InputSpec, Layout, LayoutItem, Options, ParamDefaultReport, ParamEntry,
-    ParamSpec, ParamType, Placement, Point, ResolvedDefaults, Shape, Size, SizeValue, Stroke,
-    TemplateDetail, TemplateFormat, TemplateInputs, TemplateSummary,
+    InputControl, InputSpec, Layout, LayoutItem, ParamDefaultReport, ParamEntry, ParamSpec,
+    ParamType, Placement, Point, ResolvedDefaults, Shape, Size, SizeValue, Stroke, TemplateDetail,
+    TemplateFormat, TemplateInputs, TemplateSummary,
 };
 use crate::parse::parse_template;
 use crate::resolver;
@@ -79,20 +79,6 @@ impl std::ops::DerefMut for TemplateDefinition {
 }
 
 impl TemplateContent {
-    pub fn options(&self) -> Option<Options> {
-        let mut map = std::collections::BTreeMap::new();
-        for (name, spec) in &self.params {
-            if let ParamType::Enum { values } = &spec.param_type {
-                map.insert(name.clone(), values.clone());
-            }
-        }
-        if map.is_empty() {
-            None
-        } else {
-            Some(Options(map))
-        }
-    }
-
     pub fn variables(&self) -> Vec<String> {
         let mut vars = HashSet::new();
         let Layout::Items(items) = &self.layout;
@@ -1110,23 +1096,6 @@ impl TemplateContent {
         self.validate_params()?;
         self.validate_references()?;
 
-        if let Some(options) = &self.options() {
-            if options.0.is_empty() {
-                return Err("options must not be empty".to_string());
-            }
-            for (name, values) in &options.0 {
-                if name.trim().is_empty() {
-                    return Err("options must not contain empty names".to_string());
-                }
-                if values.is_empty() {
-                    return Err(format!("options for '{name}' must not be empty"));
-                }
-                if values.iter().any(|opt| opt.trim().is_empty()) {
-                    return Err("options must not contain empty values".to_string());
-                }
-            }
-        }
-
         let instantiated = self.instantiate_with_defaults();
 
         // Require both bounds on a dynamic-width single before computing layout bounds,
@@ -1171,7 +1140,6 @@ impl TemplateContent {
 
         validate_layout(
             &instantiated.layout,
-            instantiated.options().as_ref(),
             val_frame,
             axes_resolved,
             &geometry_values,
@@ -1968,15 +1936,12 @@ fn validate_dimension(name: &str, dimension: &DynamicDimension) -> Result<(), St
 
 fn validate_layout(
     layout: &Layout,
-    options: Option<&Options>,
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
     geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     match layout {
-        Layout::Items(items) => {
-            validate_layout_items(items, frame, axes_resolved, options, geometry_values)
-        }
+        Layout::Items(items) => validate_layout_items(items, frame, axes_resolved, geometry_values),
     }
 }
 
@@ -1984,7 +1949,6 @@ fn validate_layout_items(
     items: &[LayoutItem],
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
-    options: Option<&Options>,
     geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     let mut seen_names = HashSet::new();
@@ -1997,7 +1961,7 @@ fn validate_layout_items(
                 return Err(format!("duplicate layout item name '{}'", name));
             }
         }
-        validate_layout_item(item, frame, axes_resolved, options, geometry_values)?;
+        validate_layout_item(item, frame, axes_resolved, geometry_values)?;
     }
     Ok(())
 }
@@ -2054,7 +2018,6 @@ fn validate_layout_item(
     item: &LayoutItem,
     frame: Option<(f32, f32)>,
     axes_resolved: [bool; 2],
-    options: Option<&Options>,
     geometry_values: &HashMap<String, f32>,
 ) -> Result<(), String> {
     match item {
@@ -2232,13 +2195,7 @@ fn validate_layout_item(
                 None => None,
             };
 
-            validate_layout_items(
-                items,
-                child_frame,
-                child_axes_resolved,
-                options,
-                geometry_values,
-            )?;
+            validate_layout_items(items, child_frame, child_axes_resolved, geometry_values)?;
         }
     }
     Ok(())
@@ -5641,7 +5598,7 @@ layout:
             formats: &dt_formats,
             now,
         };
-        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+        let png = crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt)
             .expect("thumbnail must render without missing data");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -5700,7 +5657,7 @@ layout:
             formats: &dt_formats,
             now,
         };
-        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+        let png = crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt)
             .expect("thumbnail must render active default branch");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -5763,7 +5720,7 @@ layout:
             formats: &dt_formats,
             now,
         };
-        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+        let png = crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt)
             .expect("render thumbnail with resolved defaults");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -6442,8 +6399,7 @@ layout:
             now,
         };
         let png =
-            crate::render::render_thumbnail_png(&t_dt, &ph_dt, None, &BTreeMap::new(), &dt_res)
-                .unwrap();
+            crate::render::render_thumbnail_png(&t_dt, &ph_dt, &BTreeMap::new(), &dt_res).unwrap();
         assert!(!png.is_empty());
 
         // 2. Reading undefaulted boolean renders via placeholder (false)
@@ -6465,9 +6421,8 @@ layout:
         let t_bool = parse_template_ok(yaml_bool);
         let ph_bool = test_placeholder_data(&t_bool, now);
         assert_eq!(ph_bool.get("flag"), Some(&json!(false)));
-        let png =
-            crate::render::render_thumbnail_png(&t_bool, &ph_bool, None, &BTreeMap::new(), &dt_res)
-                .unwrap();
+        let png = crate::render::render_thumbnail_png(&t_bool, &ph_bool, &BTreeMap::new(), &dt_res)
+            .unwrap();
         assert!(!png.is_empty());
 
         // 3. Enum-gated container renders through option selection
@@ -6509,7 +6464,6 @@ layout:
             "mm",
             200,
             &resolved_enum.data,
-            None,
             &env_enum,
             &images_enum,
         )
@@ -6518,9 +6472,8 @@ layout:
             !ctx_enum.is_item_active(&items_enum[0]),
             "enum container with no default must be inactive in thumbnail"
         );
-        let png =
-            crate::render::render_thumbnail_png(&t_enum, &ph_enum, None, &BTreeMap::new(), &dt_res)
-                .unwrap();
+        let png = crate::render::render_thumbnail_png(&t_enum, &ph_enum, &BTreeMap::new(), &dt_res)
+            .unwrap();
         assert!(!png.is_empty());
 
         // 4. Boolean-gated container with no default does NOT render in thumbnail
@@ -6558,7 +6511,7 @@ layout:
             settings: &empty_settings,
             datetime: &dt_res,
         };
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images)
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(
             !ctx.is_item_active(&items_bg[0]),
@@ -6585,9 +6538,8 @@ layout:
         let t_bad = parse_template_ok(yaml_bad_def);
         let ph_bad = test_placeholder_data(&t_bad, now);
         assert_eq!(ph_bad.get("val"), Some(&json!("val")));
-        let png =
-            crate::render::render_thumbnail_png(&t_bad, &ph_bad, None, &BTreeMap::new(), &dt_res)
-                .unwrap();
+        let png = crate::render::render_thumbnail_png(&t_bad, &ph_bad, &BTreeMap::new(), &dt_res)
+            .unwrap();
         assert!(!png.is_empty());
 
         // 6. List placeholder: required list with no default is invented as [name]
@@ -6616,7 +6568,6 @@ layout:
         let png_ld = crate::render::render_thumbnail_png(
             &t_list_no_def,
             &ph_list_no_def,
-            None,
             &BTreeMap::new(),
             &dt_res,
         )
@@ -6692,7 +6643,6 @@ layout:
         let png_empty = crate::render::render_thumbnail_png(
             &t_list_empty,
             &ph_list_empty,
-            None,
             &BTreeMap::new(),
             &dt_res,
         )
@@ -6732,7 +6682,7 @@ layout:
             now,
         };
         let png_enum =
-            crate::render::render_thumbnail_png(&t_enum, &ph, None, &BTreeMap::new(), &dt).unwrap();
+            crate::render::render_thumbnail_png(&t_enum, &ph, &BTreeMap::new(), &dt).unwrap();
 
         // control templates with literals
         let yaml_vertical = r#"
@@ -6764,16 +6714,11 @@ layout:
         let ph_vert = test_placeholder_data(&t_vertical, now);
         let ph_horiz = test_placeholder_data(&t_horizontal, now);
         let png_vert =
-            crate::render::render_thumbnail_png(&t_vertical, &ph_vert, None, &BTreeMap::new(), &dt)
+            crate::render::render_thumbnail_png(&t_vertical, &ph_vert, &BTreeMap::new(), &dt)
                 .unwrap();
-        let png_horiz = crate::render::render_thumbnail_png(
-            &t_horizontal,
-            &ph_horiz,
-            None,
-            &BTreeMap::new(),
-            &dt,
-        )
-        .unwrap();
+        let png_horiz =
+            crate::render::render_thumbnail_png(&t_horizontal, &ph_horiz, &BTreeMap::new(), &dt)
+                .unwrap();
         assert_eq!(
             png_enum, png_vert,
             "enum thumbnail must match vertical literal control"
@@ -6810,7 +6755,7 @@ layout:
             formats: &BTreeMap::new(),
             now,
         };
-        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
+        let png = crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt)
             .expect("thumbnail with undefaulted printed enum must render");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
@@ -6858,11 +6803,11 @@ layout:
             settings: &BTreeMap::new(),
             datetime: &dt,
         };
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images)
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(!ctx.is_item_active(&items[0]));
-        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
-            .unwrap();
+        let png =
+            crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -6907,11 +6852,11 @@ layout:
             settings: &BTreeMap::new(),
             datetime: &dt,
         };
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images)
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images)
             .with_instants(&resolved.instants);
         assert!(ctx.is_item_active(&items[0]));
-        let png = crate::render::render_thumbnail_png(&template, &ph, None, &BTreeMap::new(), &dt)
-            .unwrap();
+        let png =
+            crate::render::render_thumbnail_png(&template, &ph, &BTreeMap::new(), &dt).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
 
@@ -6950,8 +6895,8 @@ layout:
             crate::render::resolve_declared_defaults(&template, &variables, &dt);
         let ph2 = template.placeholder_data(&resolved_defaults, now);
         assert!(!ph2.contains_key("orientation"));
-        let err = crate::render::render_thumbnail_png(&template, &ph2, None, &variables, &dt)
-            .unwrap_err();
+        let err =
+            crate::render::render_thumbnail_png(&template, &ph2, &variables, &dt).unwrap_err();
         assert_eq!(err.code(), "TemplateInvalid");
         assert_eq!(err.reason(), Some("param_default_unresolvable"));
         assert!(
@@ -6990,8 +6935,7 @@ layout:
             crate::render::resolve_declared_defaults(&template, &variables, &dt);
         let ph = template.placeholder_data(&resolved_defaults, now);
         assert_eq!(ph.get("title"), Some(&json!("title")));
-        let png =
-            crate::render::render_thumbnail_png(&template, &ph, None, &variables, &dt).unwrap();
+        let png = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
         // caller's render omitting title must still fail
@@ -7044,8 +6988,7 @@ layout:
             !ph.contains_key("palette"),
             "colour ref is not interpolated, so placeholder must not contain palette"
         );
-        let err =
-            crate::render::render_thumbnail_png(&template, &ph, None, &variables, &dt).unwrap_err();
+        let err = crate::render::render_thumbnail_png(&template, &ph, &variables, &dt).unwrap_err();
         assert_eq!(err.code(), "InvalidRequest");
         assert_eq!(err.reason(), Some("color_param_invalid"));
         assert!(
@@ -7057,7 +7000,7 @@ layout:
         // Caller's render supplying the enum succeeds.
         let mut data = HashMap::new();
         data.insert("palette".to_string(), json!("red"));
-        let png = crate::render::render_thumbnail_png(&template, &data, None, &variables, &dt)
+        let png = crate::render::render_thumbnail_png(&template, &data, &variables, &dt)
             .expect("caller supplying palette must render");
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     }
@@ -7107,7 +7050,7 @@ layout:
             crate::render::resolve_parameters(&template, &ph, Some(&empty_settings), Some(&dt_res))
                 .unwrap();
         let images = std::cell::RefCell::new(crate::render::ImageCollector::default());
-        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, None, &env, &images);
+        let ctx = crate::render::RenderContext::new("mm", 200, &resolved.data, &env, &images);
         let (meas, _) = ctx
             .measure_items(
                 items,
@@ -8377,7 +8320,6 @@ layout:
         let png = crate::render::render_single_label_image(
             &template,
             &data,
-            None,
             &BTreeMap::new(),
             &dt,
             crate::render::ImageRenderOptions::default(),
@@ -8389,7 +8331,6 @@ layout:
         let err = crate::render::render_single_label_image(
             &template,
             &empty_data,
-            None,
             &BTreeMap::new(),
             &dt,
             crate::render::ImageRenderOptions::default(),

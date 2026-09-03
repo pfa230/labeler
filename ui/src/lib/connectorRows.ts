@@ -98,7 +98,6 @@ export function rowsFromMaterialized(
       origin: "connector",
       source: { connector, connection, resource: result.source.resource, key: result.source.key },
       data,
-      option: {},
       validation: {},
     };
   });
