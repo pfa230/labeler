@@ -36,8 +36,8 @@ is not the render instant.
 **Two things that look like a third source and are not.** A CSV import's `option.<name>` column is
 folded into the row's `data` map before the label is built, and an empty cell is folded nowhere, so it
 reaches this rule as a plain omission from `data`. And the renderer's internal option-selection argument
-is populated by nothing but a preview, and is specified by the preview requirement below; no request
-model carries it, so no caller can reach it.
+is populated by nothing at all: no request model carries it, so no caller can reach it, and the preview
+requirement below supplies none either. No token takes a value through it.
 
 **What this rule does not reach, stated here rather than in a footnote.** A numeric parameter named by a
 container's `width`/`height` `ref:` is resolved by *different* mechanisms, which do derive a value when
@@ -434,37 +434,43 @@ batch stays all-or-nothing: no PDF, no ZIP and no print job SHALL be produced.
 A thumbnail or preview render has no request behind it, so every value it prints is one the service
 chose. This is placeholder substitution, it is preview-only, and it never reaches a render a caller
 asked for. Every placeholder stands in for a parameter the template declares, and exactly
-three rules govern it.
+two rules govern it.
 
-1. **Every declared parameter that a token reads and that the service has no value
-   of its own for** gets a placeholder, chosen to be legal for the kind of control it is.
-   `template-inputs` owns that table and this capability does not restate it; what matters here is that
-   a parameter this change makes required — an undefaulted `boolean` or `datetime` — now falls inside it,
-   where before the service's own fallback covered it. An undefaulted `enum` does not: rule 2 covers it. A parameter that declares a `default:`
-   is **not** in it: the service has a value for that one, so it resolves rather than being stood in for,
-   which is why a thumbnail of a template declaring `title: { default: Untitled }` prints `Untitled` and
-   not the placeholder `title`.
-2. **Every declared `enum` parameter** additionally gets the first of its `values` as a preview-only
-   selection, whether or not a token reads it, as `docs/SPEC.md` §2.0 documents ("The default option
-   selection (first allowed value per option key) is used automatically"). That sentence is not
-   superseded and its behavior is not changed: a preview that dropped it would render a template's gated
-   branches away and show an operator a label nobody will print.
-3. **Nothing else is invented.** A parameter that neither rule supplies is resolved exactly as a render
+1. **Every declared parameter that a token reads and that the service has no *usable* value of its
+   own for** gets a placeholder, chosen to be legal for the kind of control it is. `template-inputs`
+   owns both the table of placeholders and the eligibility rule, and this capability does not restate
+   either; what matters here is which parameters fall inside it. Eligibility is that a token reads the
+   name and that the parameter is **required**, and a parameter is required when it declares no
+   `default:` *or* when the default it declares cannot be resolved. A `select` carries one further
+   condition and is the only control that does: it is stood in for only where its parameter declares
+   no `default:` at all. So an undefaulted `boolean`, `datetime` or `enum` falls inside the rule, where
+   the service's own fallback once covered the first two and a preview-only option selection covered
+   the third; an undefaulted `enum`'s placeholder is the first of its `values`, which is what makes it
+   legal. A parameter whose declared default **resolves** is outside the rule on every control: the
+   service has a value for that one, which is why a thumbnail of a template declaring
+   `title: { default: Untitled }` prints `Untitled` and not the placeholder `title`. A parameter whose
+   declared default **cannot** be resolved is inside it on every control but `select`, so a broken
+   default is masked by a placeholder there and propagates as `param_default_unresolvable` on a
+   `select`. Whether that split is the right behavior is #344; that it is the behavior is stated here
+   and in `template-inputs` alike.
+2. **Nothing else is invented.** A parameter rule 1 does not supply is resolved exactly as a render
    resolves it: its declared `default:` if it has one, and absent if it has none. A `boolean` named only
    by a `when:` predicate is the case that changes — with no declared default it is now absent, so that
    predicate is false in a preview where it was previously true against `false`; with one, it resolves
-   to it, as it always did.
+   to it, as it always did. An `enum` named only by a `when:` predicate is the same case and takes the
+   same answer.
 
-Rule 2 outranks a declared `default:`, and that is the one place a preview and a render disagree. The
-option selection is merged into the request data before any default is consulted, so a preview of a
-template declaring `orientation: { values: [horizontal, vertical], default: vertical }` shows
-`horizontal`. A declared `enum` default is therefore never resolved in a preview, and a broken one never
-fails there, while a render of the same template fails. This is the behaviour the frozen §2.0 sentence
-already produces and this capability does not change it; it is written down because rule 3 would
-otherwise be read as covering every type.
+**Nothing outranks a declared `enum` default.** A preview resolves one exactly as a render does, so a
+preview of a template declaring `orientation: { values: [horizontal, vertical], default: vertical }`
+shows `vertical`, and one whose
+`enum` default cannot be resolved fails there as a render of it fails. The sentence in the frozen
+`docs/SPEC.md` §2.0 reading "The default option selection (first allowed value per option key) is used
+automatically" is superseded, with the rest of that thumbnail bullet, by `template-inputs`: no
+selection is applied, automatically or otherwise, and an `enum` a preview shows is one the template
+declared or one rule 1 stood in for.
 
-Rule 3 covers every type rule 2 does not. A preview resolves a declared default for such a parameter
-whether a token reads it, a `when:` predicate names it, or **nothing reads it at all**, because
+Rule 2 covers every parameter rule 1 does not stand in for. A preview resolves such a parameter's
+declared default whether a `when:` predicate names it or **nothing reads it at all**, because
 resolution walks a template's declared parameters rather than the set some layout reads. So a stale
 parameter carrying a broken default fails every render and every preview of its template, and it does so
 even though no branch would have used it. That is eager where `docs/SPEC.md` §5 and `layout-sizing` are
@@ -473,7 +479,7 @@ renderer can decide from the active layout, while this is about what the templat
 would need the read-set the input derivation computes and this path does not have. A parameter nothing
 reads is dead weight an author should delete; this capability makes a broken one say so.
 
-These three rules govern the **server's** preview, which is the thumbnail: the service knows no caller
+These two rules govern the **server's** preview, which is the thumbnail: the service knows no caller
 supplied data and substitutes its own. A client's live preview is a different thing wearing the same
 name — it builds placeholder data itself and POSTs an ordinary render, which the service cannot
 distinguish from a real one. Such a client SHALL supply a legal value for every input its
@@ -485,15 +491,17 @@ name-as-placeholder is not a parseable instant, and an undefaulted `enum`, whose
 
 A placeholder SHALL be legal for the parameter it stands in for, so that making a parameter required does
 not turn a preview into a coercion failure. That binds the `enum` case rather than deferring it: a
-`select` input's placeholder SHALL be one of its `values`. On the server this is already so, because the
-thumbnail's option selection supplies every declared `enum` and the invention table never reaches one. A
-client building its own preview has no option map to send — no request model carries one — so it SHALL
-put the first allowed value in the request `data` instead. That is preview data, not a form control and
+`select` input's placeholder SHALL be one of its `values`. On the server this is so because the
+invention table gives a `select` the first of the entry's `values`. A client building its own preview
+sends ordinary request data and no preview-only channel, so it SHALL put the first allowed value in the
+request `data`, for the entries `template-inputs` names. That is preview data, not a form control and
 not a default, and it is not the client-side inference this capability forbids: it is what the service's
 own preview does, spelled the only way a request can carry it.
 
-#215 remains the question of whether a preview's placeholders are *good* ones. What this capability
-settles is that they must at least be values the parameter accepts.
+Whether a preview's placeholders are *good* ones is a separate question: #215 asked it and is closed,
+and what remains of it is #343, for what a client fills, and #344, for whether a broken default should
+be masked. What this capability settles is that a placeholder must at least be a value the parameter
+accepts.
 
 #### Scenario: A thumbnail of a template with an undefaulted datetime renders
 
@@ -504,8 +512,37 @@ settles is that they must at least be values the parameter accepts.
 #### Scenario: A thumbnail still shows an enum-gated branch
 
 - **WHEN** a thumbnail is rendered for a template whose outline container carries
-  `when: { outline: yes }` and `outline` declares `values: [yes]` and no `default`
-- **THEN** the thumbnail renders with that container, through the preview-only option selection
+  `when: { outline: yes }` and `outline` declares `values: [yes]` and `default: yes`
+- **THEN** the thumbnail renders with that container, through the declared default
+
+#### Scenario: A thumbnail drops an enum-gated branch whose parameter declares no default
+
+- **WHEN** a thumbnail is rendered for a template whose outline container carries
+  `when: { outline: yes }`, `outline` declares `values: [yes]` and no `default`, and no active item
+  prints `outline`
+- **THEN** the thumbnail renders without that container, because `outline` is absent and an absent
+  parameter makes its predicate false
+
+#### Scenario: A thumbnail shows an enum's declared default
+
+- **WHEN** a thumbnail is rendered for a template printing `{orientation}` where `orientation` declares
+  `values: [horizontal, vertical]` and `default: vertical`
+- **THEN** the thumbnail prints `vertical`, and no placeholder is invented for `orientation`
+
+#### Scenario: A thumbnail stands in for an enum declaring no default
+
+- **WHEN** a thumbnail is rendered for a template printing `{orientation}` where `orientation` declares
+  `values: [horizontal, vertical]` and no `default`
+- **THEN** the thumbnail prints `horizontal`, the first of its `values`, and does not fail
+
+#### Scenario: A thumbnail stands in for a broken default on a control that is not `select`
+
+- **WHEN** a thumbnail is rendered for a template declaring
+  `title: { type: string, default: "{vars.base}" }` whose active `text` item reads `{title}`, and the
+  store holds no `base`
+- **THEN** the entry is `required`, the thumbnail fills `title` with its own name and renders, while a
+  caller's render of the same template omitting `title` is still `422` with
+  `param_default_unresolvable`
 
 #### Scenario: A thumbnail drops a boolean-gated branch
 
@@ -515,10 +552,11 @@ settles is that they must at least be values the parameter accepts.
 
 #### Scenario: A thumbnail fails on a broken default a token reads
 
-- **WHEN** a thumbnail is rendered for a template declaring `url: { type: string, default: "{vars.base}" }`
-  whose active `qr` item reads `{url}`, and the store holds no `base`
-- **THEN** the thumbnail fails with `param_default_unresolvable` naming `url`, because a parameter that
-  declares a default is not stood in for and its default is resolved instead
+- **WHEN** a thumbnail is rendered for a template declaring
+  `orientation: { type: enum, values: [horizontal, vertical], default: "{vars.orient}" }` whose active
+  `text` item reads `{orientation}`, and the store holds no `orient`
+- **THEN** the thumbnail fails with `param_default_unresolvable` naming `orientation`, because a
+  `select` whose parameter declares a default is not stood in for and its default is resolved instead
 
 #### Scenario: A thumbnail of a template reading an undefaulted boolean renders
 

@@ -1,0 +1,35 @@
+# Diff review
+
+AUTHORS: opencode
+REVIEWER: claude
+VERDICT: APPROVE
+ROUNDS: 5
+TREE_SHA256: 00d170a219f08b06f5b88e25f15f0874357a281e4945ba72bc67fb6ddf99cbf2
+SPECS_SHA256: f95902798420c0f5b145f2ff062c874362bec6f7f46a03997a0d4ff3375c4048
+
+# Diff review — issue-335-a-thumbnail-ignores-an-enum-s-declared-d
+
+Reviewed `src/api.rs`, `src/lib.rs`, `src/render/mod.rs`, `src/templates.rs` against `proposal.md`, `design.md`, both spec deltas, `tasks.md`, `AGENTS.md`, and the four prior rounds. No files edited.
+
+## What I verified independently
+
+Gates green here: `cargo fmt --check` exit 0, `cargo clippy --all-targets --all-features` exit 0, `cargo test` exit 0 (816 lib passed / 0 failed / 2 ignored, plus integration and doc targets), `openspec validate --all --strict` 24/24. `specs-digest.sh` recomputes `f95902798420c0f5…`, matching `review.md`, so `specs/` is untouched since the approving plan verdict. [verified]
+
+The mechanism is correct. The new `Select` arm (`src/templates.rs:183-194`) sits under the `interpolated && required` guard at `:163`; `derive_inputs_internal` maps `resolved_defaults` to `(default, default_error, required)` at `:416-421`, so under that guard `default_error.is_none()` is exactly "declares no `default:`" — D1. [verified] Both `panic!`s are unreachable: `InputControl::Select` is produced only for `ParamType::Enum` and only when not `image_bound` (`:387-391`), `values` is `Some` for exactly that type (`:423-427`), an empty enum is refused at `:1281-1283`, and the only production caller is the thumbnail handler over a registry-validated template (`src/api.rs:1253`). They match the existing panic at `:383`. [verified]
+
+The `option` deletion is production-safe: every surviving caller passes `None` (`src/api.rs:1254,2677,2681`), no request model carries an option field, `normalize_option(t, None)` is `Ok(None)` on both branches (`src/render/mod.rs:1133-1156`), and `normalize_option` / `RenderContext.selected_option` are untouched per D2. No reference to `default_option_selection` survives outside the frozen `docs/adr/0023:27`. [verified]
+
+I diffed each delta requirement body against its published counterpart: the four `MODIFIED` names all exist upstream, and the changes are confined to the enum rule, its scenarios, and the three stale sentences D3 names. Surrounding prose is verbatim. [verified] `catalog/` declares no `enum`. [verified] Round 4's blocking finding is closed: `thumbnail_enum_colour_ref_without_default_is_400_via_http` (`src/lib.rs:1512-1567`) is a real HTTP pin, and it does fail pre-change — `TemplateContent::options()` (`src/templates.rs:82-92`) walks every declared enum, so the deleted map supplied `palette` and the endpoint returned 200. All four HTTP tests fail against the base by the same argument. [verified] A 422 thumbnail degrades gracefully in the grid: `ui/src/pages/Templates.tsx:101` has an `onError` placeholder, pinned at `Templates.test.tsx:299`. [verified]
+
+## Findings
+
+**1. Minor — six of the seven new `src/templates.rs` tests are invariant across the change, and three of the names read as pins on the fix.** `render_thumbnail_png(t, data, None, …)` is byte-identical before and after (the merge was gated on `Some(option)`), so a unit test can only detect this change through `placeholder_data`, i.e. only for an entry that is `interpolated && required && default_error.is_none()`. That is exactly one: `thumbnail_printed_enum_without_default_shows_first_value` (`src/templates.rs:6497`). `thumbnail_printed_enum_with_declared_default_shows_default` (`:6413`, `required: false`), `thumbnail_enum_only_gate_without_default_is_absent` (`:6531`), `..._with_default_is_present` (`:6579`) (both `interpolated: false`), `thumbnail_broken_enum_default_fails` (`:6628`, `default_error: Some` → `continue` both ways), `thumbnail_broken_string_default_is_masked` (`:6674`) and `thumbnail_enum_colour_ref_without_default_fails` (`:6719`) all pass against the unfixed code. This is round 4's finding 2, and it is not blocking: the contract is now pinned by four HTTP tests that each fail pre-change, and for `..._with_default_is_present` and `..._string_default_is_masked` invariance is the point. What remains is that `..._fails` in two names promises a red-before-green it does not deliver. Renaming them, or a one-line comment saying they guard the `option=None` path rather than the fix, closes it.
+
+**2. Minor — the colour/dimension `{ref}` BREAKING class has no scenario in the delta.** `proposal.md:22-31` lists it as `**BREAKING**` and `design.md:177-184` describes it, and it now has both a unit and an HTTP test, but neither capability carries a scenario for it. The contract does determine the behavior: condition (1) of the thumbnail requirement is `interpolated`, and the published table defines that as "False for a name present only because it gates an item or **resolves a layout attribute**" (`openspec/specs/template-inputs/spec.md:30`), which is precisely a colour or dimension `ref`. I am not raising this to blocking because adding the scenario means editing `specs/`, which voids the plan verdict for a consequence the requirement text already fixes. Worth knowing at the landing commit rather than acting on here.
+
+**3. Minor — `dump_all_template_renders` special-cases the literal parameter name `outline`** (`src/render/mod.rs:5977-5990`): any template declaring an enum called `outline` whose `values` contain `"yes"` gets that branch forced, in an `#[ignore]`d visual harness. Round 4 raised it; the comment states the intent and the guard is now type-checked, so the cost is bounded, but it is a name-keyed rule in a harness whose whole point is being template-agnostic.
+
+**4. Observation, not this change's.** `http_tests::auth_login_malformed_password_not_in_logs` was reported flaky in round 4. It passed for me on a full run. Nothing in this diff touches auth; noted only because it can trip the gate stage.
+
+Nothing here must be fixed before this lands: the mechanism matches D1 and D2, the deletion is complete, all fourteen `tasks.md` boxes correspond to work actually performed, the four rewritten requirements are coherent with the code and with each other, and the behavior is pinned by four tests that fail against the base.
+
