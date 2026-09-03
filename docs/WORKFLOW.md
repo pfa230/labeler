@@ -167,6 +167,13 @@ CI, judging files rather than which agent produced them. Enable it once per clon
 .workflow/setup-hooks.sh
 ```
 
+The hooks also refuse one shape outright: a change branch merging into itself. Every check that reads
+history reads it through a single base ref, and a merge leaves two previous commits for that one ref
+to explain, so the archive check reports whichever parent it was not pointed at as an unauthorised
+hand-edit. A branch that has fallen behind is rebased onto `main` instead, and integration is a
+fast-forward. That is why the branch you push may be replaced rather than added to: rewriting is
+confined to change branches, which nothing is based on and which are deleted once merged.
+
 ### Checking on a change
 
 ```bash
@@ -279,6 +286,9 @@ branch when you are asked, so what is left is a decision, not an inspection.
 
 - The pre-commit hook is skippable with `git commit --no-verify`. CI runs the identical check on what
   lands, so a skipped hook delays the refusal rather than avoiding it.
+- The refusal of a merge on a change branch is skippable the same way, with `git merge --no-verify`.
+  CI catches it only where both sides changed published specs, which is the case that cannot be read
+  at all; a merge that CI can still read passes, and leaves the graph it leaves.
 - The gates check a change that exists. Whether a given diff *should* have been a change at all is a
   judgement no gate can make, so a commit carrying no change folder is checked by nobody.
 - The one round the implementer gets to fix a failed gate is reviewed like any other edit, but only

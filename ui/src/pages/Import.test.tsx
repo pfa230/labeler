@@ -684,4 +684,133 @@ describe("CSV Import screen: datetime parameters", () => {
     expect(await screen.findByText(/vars\.missing/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /download/i })).toBeDisabled();
   });
+
+  it("skips list inputs when building grid columns and does not break import", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        return json({
+          inputs: [
+            [
+              { name: "sku", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+          ],
+        });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return json({
+          ...detail,
+          inputs: {
+            all: [
+              { name: "sku", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+            default: [
+              { name: "sku", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+          },
+        });
+      }
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) {
+        return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    // Include a list column in the CSV: without the Import.tsx filter it would render as a `--` column
+    // and without the pruneDataForSubmit guard it would be sent as `tags: "red;blue"` and get 400.
+    fireEvent.change(csv, { target: { value: "sku,tags\n123,red;blue\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    // csvFields contains "tags" but displayedFields must filter it out
+    expect(await screen.findByText("123")).toBeInTheDocument();
+    expect(screen.queryByText("tags")).toBeNull();
+    // The grid must not show an inert column for the list field
+    expect(screen.queryByText("red;blue")).toBeNull();
+    const download = await screen.findByRole("button", { name: /download/i });
+    expect(download).toBeEnabled();
+    fireEvent.click(download);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/batch"))).toBe(true));
+    const batchCall = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/batch"))!;
+    const body = JSON.parse((batchCall[1] as RequestInit).body as string);
+    // A list column carried as a CSV string must not reach the batch body (pruneDataForSubmit guard).
+    expect(body.labels).toHaveLength(1);
+    expect(body.labels[0].data.sku).toBe("123");
+    expect(body.labels[0].data.tags).toBeUndefined();
+  });
+
+  it("does not require a value for a required list input when the CSV has no column for it", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        return json({
+          inputs: [
+            [
+              { name: "sku", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+          ],
+        });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return json({
+          ...detail,
+          inputs: {
+            all: [
+              { name: "sku", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+            default: [
+              { name: "sku", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+          },
+        });
+      }
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) {
+        return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    // CSV has no column for the required list — validateRow must skip it (Import.tsx:154)
+    fireEvent.change(csv, { target: { value: "sku\n123\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    expect(await screen.findByText("123")).toBeInTheDocument();
+    const download = await screen.findByRole("button", { name: /download/i });
+    // If the `if (input.control === "list") continue` guard regresses, every row is flagged
+    // as missing `tags` and Download is disabled — ordinary import is blocked.
+    expect(download).toBeEnabled();
+    fireEvent.click(download);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/api/batch"))).toBe(true));
+    const batchCall = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/batch"))!;
+    const body = JSON.parse((batchCall[1] as RequestInit).body as string);
+    expect(body.labels[0].data.sku).toBe("123");
+    expect(body.labels[0].data.tags).toBeUndefined();
+  });
 });

@@ -111,21 +111,33 @@ function CsvEditor({
   const requiredUnion = useMemo(() => {
     const set = new Set<string>();
     if (rows.length === 0 && detail) {
-      for (const input of detail.inputs?.default ?? []) set.add(input.name);
+      for (const input of detail.inputs?.default ?? []) {
+        if (input.control !== "list") set.add(input.name);
+      }
     } else {
       for (const row of rows) {
         const inputs = getRowInputs(row.id) ?? detail?.inputs?.default ?? [];
-        for (const input of inputs) set.add(input.name);
+        for (const input of inputs) {
+          if (input.control !== "list") set.add(input.name);
+        }
       }
     }
     return [...set];
   }, [rows, detail, getRowInputs]);
 
+  const listNames = useMemo(() => {
+    if (!detail) return new Set<string>();
+    const s = new Set<string>();
+    for (const inp of detail.inputs.all ?? []) if (inp.control === "list") s.add(inp.name);
+    for (const inp of detail.inputs.default ?? []) if (inp.control === "list") s.add(inp.name);
+    return s;
+  }, [detail]);
+
   const displayedFields = useMemo(() => {
     const set = new Set(csvFields);
     for (const f of requiredUnion) set.add(f);
-    return [...set];
-  }, [csvFields, requiredUnion]);
+    return [...set].filter((f) => !listNames.has(f));
+  }, [csvFields, requiredUnion, listNames]);
 
   const cellInput = (row: LabelGridRow, field: string): InputSpec | undefined => {
     if (!detail) return { name: field, control: "text" };
@@ -139,6 +151,7 @@ function CsvEditor({
     const field: Record<string, string> = {};
     const inputs = getRowInputs(row.id) ?? detail.inputs?.default ?? [];
     for (const input of inputs) {
+      if (input.control === "list") continue;
       const valStr = row.data[input.name] !== undefined && row.data[input.name] !== null ? String(row.data[input.name]) : "";
       if (input.control === "datetime" || input.control === "date") {
         const dtErr = datetimeCellError(valStr);

@@ -505,4 +505,59 @@ describe("Connect: datetime parameters", () => {
     expect((await screen.findAllByText(/vars\.missing/)).length).toBe(2);
     expect(screen.getByRole("button", { name: /download/i })).toBeDisabled();
   });
+
+  it("skips list inputs in field mapping and grid columns", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "name", control: "text" },
+            { name: "tags", control: "list", required: true },
+          ]),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
+      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+      if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([{ source: { resource: "entities", key: "e1" }, data: { name: "Drill" } }]);
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") {
+        return json({
+          ...templateDetail,
+          inputs: {
+            all: [
+              { name: "name", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+            default: [
+              { name: "name", control: "text" },
+              { name: "tags", control: "list", required: true },
+            ],
+          },
+        });
+      }
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/connection/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+    fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+    expect(screen.queryByLabelText("map tags")).toBeNull();
+    expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
+  });
 });

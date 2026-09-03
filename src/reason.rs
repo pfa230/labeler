@@ -58,6 +58,7 @@ reasons! {
     QrErrorCorrectionInvalid => "qr_error_correction_invalid",
     DimensionExceedsLimit => "dimension_exceeds_limit",
     CircleBoxNotSquare => "circle_box_not_square",
+    FieldValueNotScalar => "field_value_not_scalar",
 
     // InvalidRequest
     JsonMalformed => "json_malformed",

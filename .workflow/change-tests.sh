@@ -25,8 +25,13 @@ STAGE="$here/run-stage.sh"
 APPLY="$here/apply.sh"
 pass=0; fail=0
 
-ok()   { pass=$((pass + 1)); printf 'ok    %s\n' "$1"; }
-bad()  { fail=$((fail + 1)); printf 'FAIL  %s\n' "$1"; }
+# fatal, canary, fixture_built and suite_guard_case: the fixture guard every suite here
+# shares. Read why in the file itself; the short version is that a fixture write that
+# fails silently leaves a case asserting against a file that was never written (#333).
+. "$here/suite-lib.sh"
+
+ok()   { canary; pass=$((pass + 1)); printf 'ok    %s\n' "$1"; }
+bad()  { canary; fail=$((fail + 1)); printf 'FAIL  %s\n' "$1"; }
 
 expect() { # expect <want-exit> <label> -- <args...>
   local want="$1" label="$2"; shift 3
@@ -39,10 +44,17 @@ expect() { # expect <want-exit> <label> -- <args...>
 }
 
 setup() {
-  repo=$(mktemp -d)
-  cd "$repo" || exit 2
-  git init -q .; git config user.email t@t; git config user.name t
-  mkdir -p openspec/changes/archive
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
+  # The branch is named, not inherited. init.defaultBranch is a property of whoever runs
+  # this, and since #341 the hooks answer differently on main than anywhere else, so a
+  # fixture that takes whatever `git init` hands it passes on a machine configured for
+  # `main` and fails on a runner configured for `master`. Four pre-merge-commit cases did
+  # exactly that, green locally and red in CI.
+  git init -q . && git symbolic-ref HEAD refs/heads/main \
+    || fatal "cannot init the fixture repo on a branch named main."
+  git config user.email t@t; git config user.name t
+  mkdir -p openspec/changes/archive || fatal "cannot create the fixture's change directory."
   echo x > openspec/changes/archive/.gitkeep
   cp "$here/../.gitignore" .gitignore
   git add -A; git commit -qm base
@@ -51,6 +63,7 @@ setup() {
   # itself whether a roles file exists, and this one does not until a case writes it.
   export LABELER_ROLES_FILE="$repo/roles.local"
   rm -f "$LABELER_ROLES_FILE"
+  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore
 }
 teardown() { cd "$here" || exit 2; [ -n "${repo:-}" ] && [ -d "$repo" ] && find "$repo" -mindepth 0 -delete 2>/dev/null; repo=""; }
 
@@ -2800,6 +2813,9 @@ else bad "a reviewer was launched with nothing new to judge"; fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
+
+# The guard on this suite's own fixtures.
+suite_guard_case "$here/change-tests.sh"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

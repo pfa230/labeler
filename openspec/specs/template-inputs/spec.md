@@ -18,7 +18,7 @@ complete:
 | Field | Meaning |
 | --- | --- |
 | `name` | The declared parameter the control fills, which is the request `data` key that carries it. |
-| `control` | `text`, `textarea`, `integer`, `number`, `select`, `checkbox`, `date`, `datetime`, or `image`. |
+| `control` | `text`, `textarea`, `integer`, `number`, `select`, `checkbox`, `date`, `datetime`, `image`, or `list`. |
 | `slider` | For `integer` and `number`, whether both bounds are declared so the control is a slider. False otherwise. |
 | `required` | Whether the label is incomplete without a value. |
 | `default` | The value the service would use if the label omitted this name: the parameter's declared default **as it resolves for this request**, after the same coercion a supplied value takes. Absent when the parameter declares no default, and absent when its declared default failed to resolve. |
@@ -51,6 +51,11 @@ parameter today. It follows the declared type: `select` for `enum`; `checkbox` f
 and `number`; `textarea` for a `string` declaring `multiline: true`, and `text` for a `string`
 otherwise. The one override is `image`: a `string` parameter that any active `image` item binds through
 its `name:` gets `image`, since the value it carries is a data URI.
+
+A parameter declared `type: list` gets `list`. It is reported on exactly the terms every other type
+is, and this capability states no exception for it: the entry carries the name, the control, whether
+a value is required, and the resolved `default` when there is one, which for a `list` is an array of
+strings. `values`, `min`, `max` and `unit` are absent, as they are for every type that declares none.
 
 `integer` and `number` are distinct controls, not one numeric control, because they are stepped and
 parsed differently: a client steps an `integer` by 1 and reads a whole number, and steps a `number`
@@ -92,6 +97,18 @@ coercion that rejects the request value `"yes"` rejects that default too.
 Resolution is per request, so an entry's `default`, `default_error` and `required` may differ between two
 requests for the same template when the variables store or the instant differs. The report on the
 template detail is keyed on the same resolution, and the two SHALL agree entry for entry.
+
+**A client SHALL tolerate a `control` it cannot draw.** `list` is that control today: this change
+reports the entry and #318 builds the editor for it, so between the two a screen is told a `list` input
+exists and has no widget for it. Such a screen SHALL omit that entry's control and SHALL NOT fail,
+break its layout, or drop the rest of the form. It is the one UI-visible obligation this change carries,
+and it is stated here rather than left to be discovered because a screen that renders every reported
+entry unconditionally is the shape a new control breaks.
+
+The consequence, stated rather than discovered: until #318 lands a `list` parameter is suppliable only
+by an API caller, so a print screen for a template reading one submits without it and the render is
+`422 MissingField` naming a field it showed no control for. A resolvable `default:`, `default: []`
+included, avoids that.
 
 Entries SHALL be ordered by name, ascending. Ascending rather than "as written" because `params` is an
 ordered map keyed by name and a template's authoring order is not retained. There is no second
@@ -203,6 +220,24 @@ name the spec already has, so the name stays while the behaviour under it does n
   render path resolves it to, and `required: false`
 - **AND** the entry could not have been computed without the formats map, so a derivation lacking one
   cannot produce this list
+
+#### Scenario: A list parameter is reported like any other
+
+- **WHEN** a template declares `tags: { type: list, default: [CONSUMABLE] }` and an active item renders
+  `{tags:join(', ')}`
+- **THEN** the input list holds a `tags` entry with control `list`, `default` equal to the JSON array
+  `["CONSUMABLE"]`, `required: false`, and no `values`, `min`, `max` or `unit`
+
+#### Scenario: An undefaulted list is required
+
+- **WHEN** the same template declares `tags: { type: list }`
+- **THEN** its entry carries `required: true` and no `default`
+
+#### Scenario: A screen skips a control it cannot draw
+
+- **WHEN** the print form renders the inputs for that template before #318 lands
+- **THEN** it renders every other entry, renders no control for `tags`, and does not fail
+- **AND** submitting is `422 MissingField` naming `tags` when the parameter declares no default
 ### Requirement: The service computes an input list for a given label
 
 `POST /api/templates/{id}/inputs` SHALL accept `{ "labels": [ { "data": { ... } }, ... ] }`, the same
@@ -487,7 +522,13 @@ only for an entry satisfying both of
 
 and SHALL invent by the entry's `control`: a 1×1 PNG data URI for `image`, the entry's own name for
 `text` and `textarea`, for `integer` and `number` the entry's `min` when it declares one and `1`
-otherwise, `false` for `checkbox`, and the request's captured instant for `date` and `datetime`.
+otherwise, `false` for `checkbox`, the request's captured instant for `date` and `datetime`, and for
+`list` a one-element list holding the entry's own name.
+
+The `list` fill is the `text` rule applied to the type that has no other sensible one, so
+`{tags:join(', ')}` renders `tags` on a thumbnail exactly as `{title}` renders `title`. It is legal for
+the parameter, it is visibly a placeholder to anyone looking at the image, and like every other fill
+here it never reaches a render a caller asked for.
 
 The numeric case has to be filled and has to be filled with a *number*. A required `length`,
 `number` or `integer` resolves to nothing when omitted — as, after `param-resolution`, does every other
@@ -695,6 +736,23 @@ render or interpolation failures.
 - **THEN** the entry is `required: true`, the thumbnail fills `title` with its own name and renders,
   while a caller's render of the same template omitting `title` is still
   `422 TemplateInvalid` with reason `param_default_unresolvable`
+
+#### Scenario: A joined list is filled with its own name
+
+- **WHEN** a thumbnail is rendered for a template whose active layout prints `{tags:join(', ')}` and
+  `tags` declares `type: list` with no `default:`
+- **THEN** the thumbnail renders and reads `tags`
+
+#### Scenario: A list declaring a resolvable default is not invented for
+
+- **WHEN** the same template declares `tags: { type: list, default: [CONSUMABLE, KIDS] }`
+- **THEN** the thumbnail reads `CONSUMABLE, KIDS`, because the service has a value for that parameter
+
+#### Scenario: An empty list default renders empty
+
+- **WHEN** the same template declares `default: []`
+- **THEN** the thumbnail renders with that text empty, because `[]` is a value the service has and not
+  an absence it stands in for
 ### Requirement: One derivation serves the thumbnail and the catalog index
 
 The placeholder data a thumbnail renders from, and the field list the catalog index publishes, SHALL
