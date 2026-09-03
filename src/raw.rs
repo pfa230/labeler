@@ -175,6 +175,14 @@ pub enum RawTemplateFormat {
     },
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RawParamEntry {
+    pub name: String,
+    #[serde(flatten)]
+    pub spec: RawParamSpec,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TemplateDefinitionRaw {
@@ -185,7 +193,7 @@ pub struct TemplateDefinitionRaw {
     pub dpi: u32,
     pub format: RawTemplateFormat,
     #[serde(default)]
-    pub params: Option<BTreeMap<String, RawParamSpec>>,
+    pub params: Vec<RawParamEntry>,
     pub layout: Vec<LayoutItemRaw>,
     #[serde(default)]
     pub version: Option<String>,

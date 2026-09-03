@@ -38,7 +38,7 @@ name: Gated Column
 unit: mm
 dpi: 200
 params:
-  show_middle:
+  - name: show_middle
     type: enum
     values: ["yes", "no"]
     default: "yes"
@@ -80,7 +80,7 @@ name: Dynamic Text Row
 unit: mm
 dpi: 200
 params:
-  val:
+  - name: val
     type: string
     default: "Short"
 format: { type: single, width: { min: 20, max: 150 }, height: 20 }
@@ -124,7 +124,7 @@ name: Empty Middle
 unit: mm
 dpi: 200
 params:
-  mid:
+  - name: mid
     type: string
     default: ""
 format: { type: single, width: 80, height: 20 }
@@ -405,7 +405,7 @@ name: Gated Row Hole Test
 unit: mm
 dpi: 200
 params:
-  show_mid:
+  - name: show_mid
     type: enum
     values: ["yes", "no"]
     default: "yes"
@@ -452,7 +452,7 @@ name: Empty Value Gap Test
 unit: mm
 dpi: 200
 params:
-  mid:
+  - name: mid
     type: string
     default: ""
 format: { type: single, width: { min: 10, max: 100 }, height: 20 }
@@ -490,7 +490,7 @@ name: Trailing Empty Content
 unit: mm
 dpi: 200
 params:
-  tail:
+  - name: tail
     type: string
     default: ""
 format: { type: single, width: { min: 10, max: 100 }, height: 20 }
@@ -525,7 +525,7 @@ name: Trailing Empty Fixed
 unit: mm
 dpi: 200
 params:
-  tail:
+  - name: tail
     type: string
     default: ""
 format: { type: single, width: 44, height: 20 }
@@ -609,7 +609,7 @@ name: Zero Extent Error
 unit: mm
 dpi: 200
 params:
-  h:
+  - name: h
     type: number
     default: 10
 format: { type: single, width: 40, height: 20 }
@@ -641,7 +641,7 @@ name: Missing Field In Flow
 unit: mm
 dpi: 200
 params:
-  unsupplied_variable:
+  - name: unsupplied_variable
     type: string
 format: { type: single, width: 40, height: 20 }
 layout:
@@ -831,7 +831,7 @@ name: All Gated
 unit: mm
 dpi: 200
 params:
-  show:
+  - name: show
     type: enum
     values: ["yes", "no"]
     default: "no"

@@ -1337,7 +1337,7 @@ name: Enum HTTP
 unit: mm
 dpi: 200
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [horizontal, vertical]
     default: vertical
@@ -1414,7 +1414,7 @@ name: Broken Enum HTTP
 unit: mm
 dpi: 200
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [horizontal, vertical]
     default: "{vars.orient}"
@@ -1462,7 +1462,7 @@ name: Enum Gate HTTP
 unit: mm
 dpi: 200
 params:
-  outline:
+  - name: outline
     type: enum
     values: [yes]
 format: { type: single, width: 50, height: 20 }
@@ -1524,7 +1524,7 @@ name: Enum Colour Ref HTTP
 unit: mm
 dpi: 200
 params:
-  palette:
+  - name: palette
     type: enum
     values: [red, blue]
 format: { type: single, width: 50, height: 20 }
@@ -1706,6 +1706,61 @@ layout:
             .collect();
         assert!(ids.contains(&"avery5163"));
         assert!(ids.contains(&"brother_12mm"));
+    }
+
+    #[tokio::test]
+    async fn template_list_and_detail_params_array_shape_and_empty_broken() {
+        let app = build_app();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_response(response).await;
+
+        // Broken list is empty for clean catalog (omitted when empty by serde skip_serializing_if)
+        assert!(
+            body.get("broken").is_none() || body["broken"].as_array().is_some_and(|b| b.is_empty()),
+            "broken templates list must be empty or omitted: {:?}",
+            body.get("broken")
+        );
+
+        // All templates publish params as an array (never object, never null, never omitted)
+        let templates = body["templates"].as_array().expect("templates array");
+        assert!(!templates.is_empty());
+        for tpl in templates {
+            assert!(
+                tpl["params"].is_array(),
+                "template {} params must be an array, got: {}",
+                tpl["id"],
+                tpl["params"]
+            );
+        }
+
+        // Detail endpoint also returns params as array in declaration order
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/templates/brother_24mm_qr")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let detail = json_response(response).await;
+        let params = detail["params"].as_array().expect("detail params array");
+        let param_names: Vec<&str> = params
+            .iter()
+            .map(|p| p["name"].as_str().expect("param name string"))
+            .collect();
+        assert_eq!(param_names, vec!["code", "message"]);
     }
 
     #[tokio::test]
@@ -1986,9 +2041,11 @@ layout:
             .expect("request");
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_response(response).await;
-        assert_eq!(body["params"]["printed_on"]["type"], "datetime");
+        let params = body["params"].as_array().unwrap();
+        let printed_on = params.iter().find(|p| p["name"] == "printed_on").unwrap();
+        assert_eq!(printed_on["type"], "datetime");
         assert_eq!(
-            body["params"]["printed_on"]["time"], false,
+            printed_on["time"], false,
             "time is always published, so the form never has to guess: {body}"
         );
     }
@@ -2643,7 +2700,7 @@ name: Orientation Label
 unit: mm
 dpi: 200
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [horizontal, vertical]
 format:
@@ -2693,7 +2750,7 @@ name: Orientation Label
 unit: mm
 dpi: 200
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [horizontal, vertical]
 format:
@@ -2771,7 +2828,7 @@ description: d
 unit: mm
 dpi: 300
 params:
-  msg:
+  - name: msg
     type: string
 format:
   type: single
@@ -2926,7 +2983,7 @@ name: Bad Bare Token
 unit: mm
 dpi: 200
 params:
-  val:
+  - name: val
     type: string
     default: "{bare_token}"
 format: { type: single, width: 50, height: 20 }
@@ -2960,7 +3017,7 @@ name: Valid DT Sys
 unit: mm
 dpi: 200
 params:
-  dt:
+  - name: dt
     type: datetime
     default: "{sys.now}"
 format: { type: single, width: 50, height: 20 }
@@ -2988,7 +3045,7 @@ name: Null Default
 unit: mm
 dpi: 200
 params:
-  str_val:
+  - name: str_val
     type: string
     default: null
 format: { type: single, width: 50, height: 20 }
@@ -3016,7 +3073,7 @@ name: Non String DT
 unit: mm
 dpi: 200
 params:
-  dt:
+  - name: dt
     type: datetime
     default: 12345
 format: { type: single, width: 50, height: 20 }
@@ -3050,7 +3107,7 @@ name: Unescaped Brace DT
 unit: mm
 dpi: 200
 params:
-  dt:
+  - name: dt
     type: datetime
     default: "{sys.now"
 format: { type: single, width: 50, height: 20 }
@@ -3252,7 +3309,7 @@ name: ColorReadback
 unit: mm
 dpi: 200
 params:
-  brand:
+  - name: brand
     type: string
 format: { type: single, width: 50, height: 20 }
 layout:
@@ -3630,7 +3687,7 @@ name: Has Container Option
 unit: mm
 dpi: 200
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [vertical, horizontal]
 format:
@@ -5378,6 +5435,67 @@ layout:
             template_yaml("inv"),
             "a rejected edit rewrote the file"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn template_put_params_shape_and_duplicate_refusals() {
+        let dir = temp_templates_dir();
+        std::fs::write(dir.join("test_tpl.yaml"), template_yaml("test_tpl")).unwrap();
+        let app = build_app_in(&dir);
+
+        // 1. params: null is rejected with 422 template_parse_failed
+        let yaml_null = "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 10 }\nparams: null\nlayout: []\n";
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/test_tpl",
+                "PUT",
+                yaml_null.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+
+        // 2. legacy mapping params: is rejected with 422 template_parse_failed
+        let yaml_map = "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 10 }\nparams:\n  a:\n    type: string\nlayout: []\n";
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/test_tpl",
+                "PUT",
+                yaml_map.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+
+        // 3. duplicate parameter name is rejected with 422 template_parse_failed naming duplicate
+        let yaml_dup = "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 10 }\nparams:\n  - name: title\n    type: string\n  - name: title\n    type: string\nlayout: []\n";
+        let resp = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/test_tpl",
+                "PUT",
+                yaml_dup.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("duplicate parameter name 'title'"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -8809,15 +8927,15 @@ description: Flow test
 unit: mm
 dpi: 200
 params:
-  mode:
+  - name: mode
     type: enum
     values: [short, long]
     default: short
-  title:
+  - name: title
     type: string
-  subtitle:
+  - name: subtitle
     type: string
-  code:
+  - name: code
     type: string
 format:
   type: single
@@ -8967,7 +9085,8 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags: { type: list }
+  - name: tags
+    type: list
 layout:
   - type: text
     value: "Hello"
@@ -8986,7 +9105,8 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags: { type: list }
+  - name: tags
+    type: list
 layout:
   - type: image
     name: tags
@@ -9003,7 +9123,8 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags: { type: list }
+  - name: tags
+    type: list
 layout:
   - type: text
     value: "{tags}"
@@ -9021,7 +9142,8 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags: { type: list }
+  - name: tags
+    type: list
 layout:
   - type: text
     value: "{tags:short_date}"
@@ -9039,7 +9161,8 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  title: { type: string }
+  - name: title
+    type: string
 layout:
   - type: text
     value: "{title:join(', ')}"
@@ -9089,7 +9212,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags:
+  - name: tags
     type: list
     default: [KIDS, CONSUMABLE]
 layout:
@@ -9136,8 +9259,7 @@ layout:
         // Directly verify resolve does not replace [] with the default
         {
             use crate::models::{ParamSpec, ParamType};
-            use std::collections::BTreeMap;
-            let mut params = BTreeMap::new();
+            let mut params = indexmap::IndexMap::new();
             params.insert(
                 "tags".to_string(),
                 ParamSpec {
@@ -9240,7 +9362,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: text
@@ -9403,7 +9525,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  title:
+  - name: title
     type: string
 layout:
   - type: text
@@ -9454,7 +9576,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: text
@@ -9509,7 +9631,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags:
+  - name: tags
     type: list
     default: [KIDS, CONSUMABLE]
 layout:
@@ -9546,7 +9668,9 @@ layout:
         let body = json_response(res).await;
 
         // Check params
-        assert_eq!(body["params"]["tags"]["type"], "list");
+        let params = body["params"].as_array().unwrap();
+        let tags_param = params.iter().find(|p| p["name"] == "tags").unwrap();
+        assert_eq!(tags_param["type"], "list");
         assert_eq!(
             body["param_defaults"]["tags"]["resolved"],
             json!(["KIDS", "CONSUMABLE"])
@@ -9581,7 +9705,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: text
@@ -9621,7 +9745,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  tags:
+  - name: tags
     type: list
     default: []
 layout:
@@ -9683,7 +9807,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 20 }
 params:
-  body:
+  - name: body
     type: string
 layout:
   - type: text
@@ -9749,7 +9873,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -9820,7 +9944,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  tags:
+  - name: tags
     type: list
     default: ["DefA", "DefB"]
 layout:
@@ -9869,7 +9993,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  tags:
+  - name: tags
     type: list
     default: []
 layout:
@@ -9939,7 +10063,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -9995,9 +10119,9 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  cats:
+  - name: cats
     type: list
-  items:
+  - name: items
     type: list
 layout:
   - type: container
@@ -10073,11 +10197,11 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  show_tags:
+  - name: show_tags
     type: enum
     values: [yes, no]
     default: yes
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -10154,7 +10278,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 25 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -10213,7 +10337,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 25 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -10261,7 +10385,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 25, height: 50 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -10317,7 +10441,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -10393,7 +10517,7 @@ format:
   width: 50
   height: 50
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -10517,7 +10641,7 @@ layout:
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
-params: { tags: { type: list } }
+params: [{ name: tags, type: list }]
 layout:
   - type: container
     at: [0, 0]
@@ -10538,7 +10662,7 @@ layout:
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
-params: { tags: { type: list } }
+params: [{ name: tags, type: list }]
 layout:
   - type: container
     repeat: tags
@@ -10555,7 +10679,7 @@ layout:
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
-params: { tags: { type: list } }
+params: [{ name: tags, type: list }]
 layout:
   - type: text
     repeat: tags
@@ -10593,7 +10717,7 @@ layout:
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
-params: { title: { type: string } }
+params: [{ name: title, type: string }]
 layout:
   - type: container
     at: [0, 0]
@@ -10614,7 +10738,7 @@ layout:
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
-params: { tags: { type: list } }
+params: [{ name: tags, type: list }]
 layout:
   - type: container
     at: [0, 0]
@@ -10640,7 +10764,7 @@ layout:
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
-params: { tags: { type: list } }
+params: [{ name: tags, type: list }]
 layout:
   - type: container
     at: [0, 0]
@@ -10666,7 +10790,7 @@ layout:
 unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
-params: { tags: { type: list } }
+params: [{ name: tags, type: list }]
 layout:
   - type: container
     at: [0, 0]
@@ -10779,9 +10903,9 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  tags:
+  - name: tags
     type: list
-  extra:
+  - name: extra
     type: string
 layout:
   - type: container
@@ -10950,13 +11074,13 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 30 }
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [horizontal, vertical]
     default: horizontal
-  title:
+  - name: title
     type: string
-  subtitle:
+  - name: subtitle
     type: string
 layout:
   - type: text
@@ -11166,8 +11290,11 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 30 }
 params:
-  title: { type: string }
-  count: { type: integer, default: 1 }
+  - name: title
+    type: string
+  - name: count
+    type: integer
+    default: 1
 layout:
   - type: text
     value: "{title}"
@@ -13007,9 +13134,9 @@ name: Test Missing Param
 unit: mm
 dpi: 200
 params:
-  flag:
+  - name: flag
     type: boolean
-  choice:
+  - name: choice
     type: enum
     values: [one, two]
 format:
@@ -13063,7 +13190,7 @@ name: Test Missing DateTime
 unit: mm
 dpi: 200
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
 format:
   type: single
@@ -13081,7 +13208,7 @@ name: Test Default DateTime
 unit: mm
 dpi: 200
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
     default: "{sys.now}"
 format:
@@ -13171,7 +13298,7 @@ name: T1
 unit: mm
 dpi: 200
 params:
-  foo:
+  - name: foo
     type: string
     default: "{vars.missing_key}"
 format:
@@ -13190,7 +13317,7 @@ name: T2
 unit: mm
 dpi: 200
 params:
-  choice:
+  - name: choice
     type: enum
     values: [alpha, beta]
     default: "{vars.bad_enum}"
@@ -13210,7 +13337,7 @@ name: T3
 unit: mm
 dpi: 200
 params:
-  dt:
+  - name: dt
     type: datetime
     default: "{vars.bad_date}"
 format:
@@ -13229,7 +13356,7 @@ name: T4
 unit: mm
 dpi: 200
 params:
-  flag:
+  - name: flag
     type: boolean
     default: "yes"
 format:
@@ -13360,7 +13487,7 @@ name: Attribution Boundary DT
 unit: mm
 dpi: 200
 params:
-  dt:
+  - name: dt
     type: datetime
     default: "{vars.bad_date}"
 format:
@@ -13427,7 +13554,7 @@ name: TBatch
 unit: mm
 dpi: 200
 params:
-  val:
+  - name: val
     type: string
     default: "{vars.missing}"
 format:
@@ -13476,7 +13603,7 @@ name: TInputs
 unit: mm
 dpi: 200
 params:
-  val:
+  - name: val
     type: string
     default: "{vars.missing_var}"
 format:
@@ -13645,7 +13772,7 @@ name: Trim Still Evaluates Text
 unit: mm
 dpi: 200
 params:
-  missing:
+  - name: missing
     type: string
 format: { type: single, width: 20, height: 10 }
 layout:
@@ -13662,7 +13789,7 @@ name: Trim Does Not Draw Image
 unit: mm
 dpi: 200
 params:
-  missing_image:
+  - name: missing_image
     type: string
 format: { type: single, width: 20, height: 10 }
 layout:
@@ -13679,7 +13806,7 @@ name: Trim Does Not Bypass Child Bounds
 unit: mm
 dpi: 200
 params:
-  box_w:
+  - name: box_w
     type: length
     default: 8
 format: { type: single, width: 20, height: 10 }
@@ -13776,7 +13903,7 @@ name: DynamicColor
 unit: mm
 dpi: 200
 params:
-  brand:
+  - name: brand
     type: string
 format:
   type: single
@@ -13795,9 +13922,9 @@ name: DynamicShapeColor
 unit: mm
 dpi: 200
 params:
-  bg_color:
+  - name: bg_color
     type: string
-  stroke_color:
+  - name: stroke_color
     type: string
 format:
   type: single
@@ -14103,9 +14230,9 @@ format:
     - [0, 0]
     - [25, 0]
 params:
-  bg:
+  - name: bg
     type: string
-  txt_col:
+  - name: txt_col
     type: string
 layout:
   - type: container
@@ -14210,11 +14337,11 @@ name: ShapeParamColors
 unit: mm
 dpi: 200
 params:
-  bg_color:
+  - name: bg_color
     type: string
-  stroke_color:
+  - name: stroke_color
     type: string
-  text_color:
+  - name: text_color
     type: string
 format:
   type: single
@@ -14362,7 +14489,7 @@ name: AuthoredColors
 unit: mm
 dpi: 200
 params:
-  brand:
+  - name: brand
     type: string
 format:
   type: single
@@ -14511,26 +14638,26 @@ name: Issue 262 Defaults
 unit: mm
 dpi: 200
 params:
-  s:
+  - name: s
     type: string
     default: hello
-  l:
+  - name: l
     type: length
     default: "80mm"
-  i:
+  - name: i
     type: integer
     default: 42
-  b:
+  - name: b
     type: boolean
     default: true
-  e:
+  - name: e
     type: enum
     values: [opt1, opt2]
     default: opt1
-  d:
+  - name: d
     type: datetime
     default: "{sys.now}"
-  req:
+  - name: req
     type: string
 format: { type: single, width: 100, height: 50 }
 layout:
@@ -14609,13 +14736,13 @@ name: Broken Default Test
 unit: mm
 dpi: 200
 params:
-  broken_var:
+  - name: broken_var
     type: string
     default: "{vars.missing_key}"
-  broken_len:
+  - name: broken_len
     type: length
     default: "not_a_length"
-  good:
+  - name: good
     type: string
     default: ok
 format: { type: single, width: 100, height: 50 }
@@ -14707,16 +14834,16 @@ name: Batch Inputs Test
 unit: mm
 dpi: 200
 params:
-  site_param:
+  - name: site_param
     type: string
     default: "{vars.site}"
-  mode:
+  - name: mode
     type: enum
     values: [a, b]
     default: a
-  field_a:
+  - name: field_a
     type: string
-  field_b:
+  - name: field_b
     type: string
 format: { type: single, width: 50, height: 20 }
 layout:
@@ -14804,7 +14931,7 @@ name: Strict Render Broken Default
 unit: mm
 dpi: 200
 params:
-  val:
+  - name: val
     type: string
     default: "{vars.missing_key}"
 format: { type: single, width: 50, height: 20 }
@@ -14842,7 +14969,7 @@ name: Thumbnail Broken Default
 unit: mm
 dpi: 200
 params:
-  val:
+  - name: val
     type: string
     default: "{vars.missing_key}"
 format: { type: single, width: 50, height: 20 }
@@ -14872,10 +14999,10 @@ name: When Gate Token
 unit: mm
 dpi: 200
 params:
-  site_param:
+  - name: site_param
     type: string
     default: "{vars.site}"
-  prod_secret:
+  - name: prod_secret
     type: string
 format: { type: single, width: 50, height: 20 }
 layout:
@@ -14934,7 +15061,7 @@ name: Custom Format Date
 unit: mm
 dpi: 200
 params:
-  d:
+  - name: d
     type: string
     default: "{sys.now:custom_fmt}"
 format: { type: single, width: 50, height: 20 }
@@ -14974,7 +15101,7 @@ name: Unreferenced Broken Default
 unit: mm
 dpi: 200
 params:
-  unreferenced_broken:
+  - name: unreferenced_broken
     type: string
     default: "{vars.missing_var}"
 format: { type: single, width: 50, height: 20 }
@@ -15038,10 +15165,10 @@ name: Coercion Test
 unit: mm
 dpi: 200
 params:
-  b_bad:
+  - name: b_bad
     type: boolean
     default: "yes"
-  l_ok:
+  - name: l_ok
     type: length
     default: "80mm"
 format: { type: single, width: 100, height: 50 }
@@ -15080,7 +15207,7 @@ name: Put Defaults
 unit: mm
 dpi: 200
 params:
-  greeting:
+  - name: greeting
     type: string
     default: "{vars.hello}"
 format: { type: single, width: 50, height: 20 }
@@ -15167,7 +15294,7 @@ name: Multi Default
 unit: mm
 dpi: 200
 params:
-  msg:
+  - name: msg
     type: string
     default: hello
 format: { type: single, width: 50, height: 20 }
@@ -15226,7 +15353,7 @@ layout:
                 height: crate::models::Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([
+            params: indexmap::IndexMap::from([
                 (
                     "needs_var".to_string(),
                     ParamSpec {
@@ -15295,7 +15422,7 @@ name: Report Match
 unit: mm
 dpi: 200
 params:
-  val:
+  - name: val
     type: string
     default: "{vars.missing_key}"
 format: { type: single, width: 50, height: 20 }

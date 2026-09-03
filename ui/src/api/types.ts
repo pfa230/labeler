@@ -75,7 +75,7 @@ export interface TemplateSummary {
   unit: string;
   dpi: number;
   format: TemplateFormat;
-  params?: Record<string, ParamSpec>;
+  params: Array<{ name: string } & ParamSpec>;
 }
 
 export interface TemplateListResponse {
@@ -91,7 +91,7 @@ export interface TemplateDetail {
   unit: string;
   dpi: number;
   format: TemplateFormat;
-  params?: Record<string, ParamSpec>;
+  params: Array<{ name: string } & ParamSpec>;
   param_defaults?: Record<string, ParamDefaultReport>;
   inputs: TemplateInputs;
   variables: string[];

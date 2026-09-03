@@ -6,10 +6,10 @@ format:
   width: 50
   height: 50
 params:
-  w:
+  - name: w
     type: length
     default: 20
-  enabled:
+  - name: enabled
     type: enum
     values: ["yes", "no"]
     default: "no"

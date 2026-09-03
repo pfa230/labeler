@@ -6,9 +6,9 @@ description: >-
 unit: mm
 dpi: 180
 params:
-  line1:
+  - name: line1
     type: string
-  line2:
+  - name: line2
     type: string
 format:
   type: single

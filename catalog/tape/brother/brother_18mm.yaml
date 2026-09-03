@@ -3,7 +3,7 @@ description: Continuous tape, 18mm nominal (15.8mm printable at 180 dpi), text o
 unit: mm
 dpi: 180
 params:
-  message:
+  - name: message
     type: string
     description: "Label message text"
 format:

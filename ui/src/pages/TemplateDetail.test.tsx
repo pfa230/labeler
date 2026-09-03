@@ -268,20 +268,22 @@ describe("Template detail", () => {
   it("renders parameter specifications with type, default, bounds, and description", async () => {
     const templateWithParams = {
       ...detail,
-      params: {
-        target_width: {
+      params: [
+        {
+          name: "target_width",
           type: "length",
           default: 80,
           min: 25,
           max: 200,
           description: "Target label width in mm",
         },
-        orientation: {
+        {
+          name: "orientation",
           type: "enum",
           values: ["horizontal", "vertical"],
           default: "horizontal",
         },
-      },
+      ],
     };
     vi.stubGlobal(
       "fetch",
@@ -480,11 +482,11 @@ describe("Template detail", () => {
   it("displays declared default alongside resolved value from param_defaults", async () => {
     const detailWithDefaults = {
       ...detail,
-      params: {
-        site: { type: "string", default: "{vars.site}" },
-        broken: { type: "string", default: "{vars.missing}" },
-        nodef: { type: "string" },
-      },
+      params: [
+        { name: "site", type: "string", default: "{vars.site}" },
+        { name: "broken", type: "string", default: "{vars.missing}" },
+        { name: "nodef", type: "string" },
+      ],
       param_defaults: {
         site: { resolved: "prod_site" },
         broken: {

@@ -6,7 +6,7 @@ format:
   width: 50
   height: 50
 params:
-  w:
+  - name: w
     type: length
     default: 20
 layout:

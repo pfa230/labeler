@@ -3,9 +3,9 @@ description: Two stacked text fields, one bold and one at the default weight (#9
 unit: mm
 dpi: 180
 params:
-  title:
+  - name: title
     type: string
-  subtitle:
+  - name: subtitle
     type: string
 format:
   type: single

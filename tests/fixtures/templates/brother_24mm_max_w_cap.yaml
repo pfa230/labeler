@@ -3,9 +3,9 @@ description: Dynamic-width tape with a fixed-size qr and a content-width text ca
 unit: mm
 dpi: 180
 params:
-  code:
+  - name: code
     type: string
-  message:
+  - name: message
     type: string
 format:
   type: single

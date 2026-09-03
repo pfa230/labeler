@@ -740,13 +740,18 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
             items.push(node);
         }
 
-        let mut params = std::collections::BTreeMap::new();
-        if let Some(raw_params) = raw.params {
-            for (key, spec_raw) in raw_params {
-                let spec = ParamSpec::try_from(spec_raw)
-                    .map_err(|err| err.with_prefix(&format!("params.{key}")))?;
-                params.insert(key, spec);
+        let mut params = indexmap::IndexMap::new();
+        for entry in raw.params {
+            let key = entry.name;
+            if params.contains_key(&key) {
+                return Err(TemplateError::Validation {
+                    path: format!("params.{key}"),
+                    msg: format!("duplicate parameter name '{key}'"),
+                });
             }
+            let spec = ParamSpec::try_from(entry.spec)
+                .map_err(|err| err.with_prefix(&format!("params.{key}")))?;
+            params.insert(key, spec);
         }
 
         let format = TemplateFormat::try_from(raw.format)?;
@@ -769,7 +774,7 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
 
 fn validate_repetition_layout(
     items: &[LayoutItem],
-    params: &std::collections::BTreeMap<String, ParamSpec>,
+    params: &indexmap::IndexMap<String, ParamSpec>,
     path_prefix: &str,
     repeated_in_scope: &mut Vec<String>,
 ) -> Result<(), TemplateError> {
@@ -782,7 +787,7 @@ fn validate_repetition_layout(
 
 fn validate_repetition_item(
     item: &LayoutItem,
-    params: &std::collections::BTreeMap<String, ParamSpec>,
+    params: &indexmap::IndexMap<String, ParamSpec>,
     path: &str,
     repeated_in_scope: &mut Vec<String>,
 ) -> Result<(), TemplateError> {
@@ -1214,7 +1219,7 @@ mod tests {
         param_yaml: &str,
     ) -> Result<crate::templates::TemplateContent, String> {
         let yaml = format!(
-            "name: test\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 50\nparams:\n  {param_name}:\n    {}\nlayout: []\n",
+            "name: test\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 50\nparams:\n  - name: {param_name}\n    {}\nlayout: []\n",
             param_yaml.lines().collect::<Vec<_>>().join("\n    ")
         );
         let raw: crate::raw::TemplateDefinitionRaw =
@@ -1591,7 +1596,10 @@ mod tests {
         // 11. shape null is refused
         let err = try_build("  - type: container\n    at: [0,0]\n    shape:\n    items: []\n")
             .unwrap_err();
-        assert!(err.contains("layout[0].shape"), "expected path in {err}");
+        assert!(
+            err.contains("layout[0].shape"),
+            "expected layout[0].shape in {err}"
+        );
         assert!(
             err.contains("shape cannot be null"),
             "expected message in {err}"
@@ -1614,7 +1622,7 @@ mod tests {
     fn repeat_null_and_parent_flow_refusals() {
         // 1.3: repeat: null on a container is refused naming the key and the container's layout path
         let err = try_build_with_params(
-            "  items:\n    type: list\n",
+            "  - name: items\n    type: list\n",
             "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat:\n        items: []\n",
         )
         .unwrap_err();
@@ -1629,7 +1637,7 @@ mod tests {
 
         // 1.4: repeat on a root-level container is refused naming the key and the layout path
         let err = try_build_with_params(
-            "  items:\n    type: list\n",
+            "  - name: items\n    type: list\n",
             "  - type: container\n    repeat: items\n    at: [0, 0]\n    size: [50, 50]\n    items: []\n",
         )
         .unwrap_err();
@@ -1641,7 +1649,7 @@ mod tests {
 
         // 1.4: repeat on a container inside an absolute-positioned container (no flow) is refused
         let err = try_build_with_params(
-            "  items:\n    type: list\n",
+            "  - name: items\n    type: list\n",
             "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    items:\n      - type: container\n        repeat: items\n        at: [0, 0]\n        items: []\n",
         )
         .unwrap_err();
@@ -1659,7 +1667,7 @@ mod tests {
     fn repeat_undeclared_and_type_refusals() {
         // 2.2: repeat naming an undeclared parameter is refused with expected path and message
         let err = try_build_with_params(
-            "  other:\n    type: list\n",
+            "  - name: other\n    type: list\n",
             "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: missing\n        items: []\n",
         )
         .unwrap_err();
@@ -1679,7 +1687,7 @@ mod tests {
             ("printed_on", "type: datetime", "datetime"),
             ("mode", "type: enum\n    values: [a, b]", "enum"),
         ] {
-            let params = format!("  {name}:\n    {param_def}\n");
+            let params = format!("  - name: {name}\n    {param_def}\n");
             let layout = format!(
                 "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: {{ direction: column }}\n    items:\n      - type: container\n        repeat: {name}\n        items: []\n"
             );
@@ -1700,7 +1708,7 @@ mod tests {
     #[test]
     fn repeat_nesting_and_scoped_token_refusals() {
         // 2.4: Nested repeat over the same list is refused at the inner container path
-        let params = "  tags:\n    type: list\n";
+        let params = "  - name: tags\n    type: list\n";
         let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: tags\n            items: []\n";
         let err = try_build_with_params(params, layout).unwrap_err();
         assert!(
@@ -1713,13 +1721,13 @@ mod tests {
         );
 
         // 2.4: Nested repeat over two different lists is accepted
-        let params = "  tags:\n    type: list\n  codes:\n    type: list\n";
+        let params = "  - name: tags\n    type: list\n  - name: codes\n    type: list\n";
         let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        flow: { direction: column }\n        items:\n          - type: container\n            repeat: codes\n            items: []\n";
         assert!(try_build_with_params(params, layout).is_ok());
 
         // 2.5: {p:join(',')} inside a repeat over p is refused
         let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags:join(',')}\"\n            size: [10, 5]\n            font_size: 8\n";
-        let err = try_build_with_params("  tags:\n    type: list\n", layout).unwrap_err();
+        let err = try_build_with_params("  - name: tags\n    type: list\n", layout).unwrap_err();
         assert!(
             err.contains("layout[0].items[0].items[0]"),
             "expected text item path in {err}"
@@ -1731,7 +1739,7 @@ mod tests {
 
         // 2.6: {p:long_date} inside a repeat over p is refused as format on non-instant
         let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags:long_date}\"\n            size: [10, 5]\n            font_size: 8\n";
-        let err = try_build_with_params("  tags:\n    type: list\n", layout).unwrap_err();
+        let err = try_build_with_params("  - name: tags\n    type: list\n", layout).unwrap_err();
         assert!(
             err.contains("layout[0].items[0].items[0]"),
             "expected text item path in {err}"
@@ -1743,6 +1751,58 @@ mod tests {
 
         // Bare {tags} inside repeat over tags is accepted
         let layout = "  - type: container\n    at: [0, 0]\n    size: [50, 50]\n    flow: { direction: column }\n    items:\n      - type: container\n        repeat: tags\n        items:\n          - type: text\n            value: \"{tags}\"\n            size: [10, 5]\n            font_size: 8\n";
-        assert!(try_build_with_params("  tags:\n    type: list\n", layout).is_ok());
+        assert!(try_build_with_params("  - name: tags\n    type: list\n", layout).is_ok());
+    }
+
+    #[test]
+    fn duplicate_parameter_name_refused_in_declaration_order() {
+        let yaml_dup = r#"
+name: Test
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  - name: title
+    type: string
+  - name: title
+    type: string
+layout: []
+"#;
+        let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml_dup).unwrap();
+        let err = crate::templates::TemplateContent::try_from(raw).unwrap_err();
+        match err {
+            crate::errors::TemplateError::Validation { path, msg } => {
+                assert_eq!(path, "params.title");
+                assert_eq!(msg, "duplicate parameter name 'title'");
+            }
+            other => panic!("expected TemplateError::Validation, got {other:?}"),
+        }
+
+        // Reverse-alphabetical multi-duplicate: zebra before alpha
+        let yaml_multi = r#"
+name: Test
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 50 }
+params:
+  - name: zebra
+    type: string
+  - name: zebra
+    type: string
+  - name: alpha
+    type: string
+  - name: alpha
+    type: string
+layout: []
+"#;
+        let raw: crate::raw::TemplateDefinitionRaw = serde_yaml_ng::from_str(yaml_multi).unwrap();
+        let err = crate::templates::TemplateContent::try_from(raw).unwrap_err();
+        match err {
+            crate::errors::TemplateError::Validation { path, msg } => {
+                assert_eq!(path, "params.zebra");
+                assert_eq!(msg, "duplicate parameter name 'zebra'");
+            }
+            other => panic!("expected TemplateError::Validation, got {other:?}"),
+        }
     }
 }

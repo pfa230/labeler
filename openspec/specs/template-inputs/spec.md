@@ -131,10 +131,7 @@ each of those three screens submits through `POST /api/batch`: the response is `
 top-level `MissingField`. A resolvable `default:`, `default: []` included, avoids that. None of this
 describes the print form, which draws the editor and always submits a value, `[]` included.
 
-Entries SHALL be ordered by name, ascending. Ascending rather than "as written" because `params` is an
-ordered map keyed by name and a template's authoring order is not retained. There is no second
-ordering group: every entry names a declared parameter, so nothing is ordered by where the layout first
-reads it, and the layout-order bookkeeping that group needed has no other reader.
+Entries SHALL be ordered by **declaration order**: the order the `params:` sequence declares, from first to last. There is no second ordering group: every entry names a declared parameter, so nothing is ordered by where the layout first reads it, and the layout-order bookkeeping that group needed has no other reader. Where a `params:` entry is not read by the current label, it has no entry; where it is, its position is its declaration position, regardless of name or first use.
 
 #### Scenario: A gated field is absent from the list
 
@@ -204,10 +201,40 @@ name the spec already has, so the name stays while the behaviour under it does n
 
 #### Scenario: Entries are ordered by name, then by first use
 
-- **WHEN** a template declares `zebra`, `alpha` and `mid`, and a `text` item reads `{zebra}` before
-  `{mid}` and `{alpha}`
-- **THEN** the list runs `alpha`, `mid`, `zebra`, ordered by name alone: the second group this
-  scenario's name records is gone, because every entry names a declared parameter
+- **WHEN** a template declares `params:` as `title`, `subtitle`, `code` in that order, and `code` appears first in the layout, then `subtitle`, then `title`
+- **THEN** the list runs `title`, `subtitle`, `code` in declaration order, regardless of alphabetical order or layout first use
+
+*This scenario's name records the rule it replaces. A `MODIFIED` requirement carries every scenario name the spec already has, so the name stays while the behaviour under it does not.*
+
+#### Scenario: The print form preserves input-list order
+
+- **WHEN** a template declares `params:` as `title`, `subtitle`, `code` in that order and `code` appears first in the layout, then `subtitle`, then `title`
+- **THEN** the print form (`ui/src/pages/print/FieldForm.tsx:61`) renders the three controls as `title`, `subtitle`, `code` in declaration order, without re-sorting by name or by layout first use
+
+#### Scenario: The Import grid preserves input-list order
+
+- **WHEN** the same template is loaded in the Import grid (`ui/src/pages/Import.tsx:136`)
+- **THEN** the grid walks the `POST /api/templates/{id}/inputs` result and renders columns or validation in `title`, `subtitle`, `code` order, without re-sorting
+
+#### Scenario: The Connect grid preserves input-list order
+
+- **WHEN** the same template is loaded in the Connect grid (`ui/src/pages/Connect.tsx:153`)
+- **THEN** the grid walks the input list and renders or validates in `title`, `subtitle`, `code` order, without re-sorting
+
+#### Scenario: Conversion errors surface in declaration order
+
+- **WHEN** a template declares `params:` as `zebra: { type: string }` then `alpha: { type: integer, min: "bad" }` (a non-numeric `min` that fails conversion) in that order, so `alpha` sorts before `zebra` alphabetically but `zebra` is declared first and both would be invalid if reached
+- **THEN** a more discriminating template declares `params:` as `zebra` with an invalid `type` and `alpha` with an invalid `type` where `zebra` is the declaration-order first invalid entry, and the error reported names `zebra` rather than the alphabetically first `alpha`
+
+#### Scenario: Template validation errors surface in declaration order
+
+- **WHEN** a template declares `params:` as `zebra` with a `format:` attribute (forbidden on every type) then `alpha` with a `format:` attribute, so `alpha` is alphabetically first but `zebra` is declaration-order first
+- **THEN** the error reported names `zebra`
+
+#### Scenario: Render-time coercion errors surface in declaration order
+
+- **WHEN** a template declares `params:` as `zebra: { type: integer }` then `alpha: { type: integer }`, both read by active items, and a label supplies `zebra: "bad"` and `alpha: "bad"` (both fail integer coercion)
+- **THEN** the first error reported names `zebra`, the declaration-order first failing parameter, not the alphabetically first `alpha`
 
 #### Scenario: A tokened default is published as the value it resolves to
 
@@ -1608,8 +1635,7 @@ SHALL be computed from the template the request published, against the context c
 #### Scenario: The list endpoint is unchanged
 
 - **WHEN** a client reads `GET /api/templates`
-- **THEN** each summary carries the declared `params` exactly as before, with no report and no resolved
-  default
+- **THEN** each summary carries the declared `params` as an array in declaration order, with no report and no resolved default
 
 #### Scenario: A store failure refuses a write rather than following it
 
@@ -1672,3 +1698,70 @@ Adding no slug and withdrawing one is a change to the reason set that `docs/SPEC
 - **WHEN** the reason set is enumerated
 - **THEN** `options_not_supported` is absent
 - **AND** the registry test fails if it is reintroduced without a spec change
+
+### Requirement: Template params are declared as a sequence and published as an array
+
+*This requirement is ADDED and supersedes the opening declaration/container example of
+`docs/SPEC.md` §3.0 ("Parameters (`params:`)") as repartitioned from `datetime-params` and
+`interpolation-tokens` (see those capabilities), and restates the sequence-declaration and wire-array
+publication contract for that portion. The per-entry/type table of §3.0 remains superseded by
+`datetime-params: A datetime parameter names an instant, not a rendering`, the namespace rules by
+`interpolation-tokens: A bare name is a bare name, and no word is reserved`, and the top-level field
+table entry for `params` remains superseded by `template-groups` as modified herein. All other frozen
+sections remain authoritative.*
+
+A template SHALL declare its parameters as a **sequence** under the top-level `params:` key, each entry carrying its name and its declaration:
+
+```yaml
+params:
+  - name: title
+    type: string
+    default: Untitled
+  - name: code
+    type: string
+```
+
+`params:` SHALL be a YAML sequence. Each element SHALL be an object with a required `name` and the parameter attributes for its `type` (`type`, `default`, `values`, `min`, `max`, `multiline`, `time`, `description` as the type permits; see `datetime-params`, `list-params`). `params:` MAY be omitted, which is the same as an empty sequence, but `params: null` (explicit YAML null) SHALL be refused at load as a parse error naming the file and the `params` path, quarantining the file under `template-registry` while the service still starts; the same content arriving through a template write SHALL be refused with `422 TemplateInvalid` and `details.reason` `template_parse_failed`. A mapping-shaped `params:` (keys as names) SHALL be refused at load as a parse error naming the file and the `params` path, quarantining the file; the same content arriving through a template write SHALL be refused with `422 TemplateInvalid` and `details.reason` `template_parse_failed`.
+
+`name` SHALL be required, non-empty, and match `^[a-zA-Z0-9_-]+$`; a value otherwise SHALL be refused at load naming the parameter entry and the file. Two entries sharing a `name` SHALL be refused at load during raw-to-domain conversion with a validation error naming the file and the duplicate name, quarantining the file; the same content arriving through a write SHALL be refused with `422 TemplateInvalid` and `details.reason` `template_parse_failed` naming the duplicate, consistently with the conversion-stage precedent (`list-params`). There SHALL be no second spelling for `params:`.
+
+On the wire, every response carrying a template's `params` SHALL publish them as a **JSON array** of `ParamSpec` entries carrying `name`, in **declaration order** — the order the sequence declares. This applies to `GET /api/templates` (each `TemplateSummary.params`), to `GET /api/templates/{id}` (the `TemplateDetail.params`), and to every other response carrying that body (create/replace/move). An omitted or empty `params:` SHALL be published as an empty array; the field SHALL be present as `[]` and never omitted nor published as an object. The order on summary and detail SHALL be identical for one template.
+
+Where validation or conversion would report an error for more than one parameter declaration, the error SHALL be reported for the declaration-order first such parameter. No path that iterates `params` (including `src/templates.rs:1008`, `src/convert.rs:743`, `src/render/mod.rs:230`) SHALL report errors in name order; declaration order is the only permitted order for surfacing the first error.
+
+A template with no `params:` key, an empty sequence, or any superseded top-level spelling (`id:`, `group:`, `options:`, `container.option:`) remains governed by `template-groups` and `template-registry`; this requirement adds no new top-level key and removes `params:` map alias.
+
+#### Scenario: Params are declared as a sequence
+
+- **WHEN** a template file carries `params:` as `- name: title` then `- name: code`
+- **THEN** the template loads, and both `GET /api/templates` and `GET /api/templates/{id}` publish `params` as `[{name:"title",...},{name:"code",...}]` in that order
+
+#### Scenario: A mapping-shaped params is refused
+
+- **WHEN** a template file carries
+  ```yaml
+  params:
+    title: { type: string }
+    code: { type: string }
+  ```
+- **THEN** the template fails to parse with an error naming the file and `params`, the file is quarantined while the service still starts, and the same content arriving through `PUT /api/templates/{id}` is refused with `422 TemplateInvalid` and `details.reason` `template_parse_failed`
+
+#### Scenario: An explicit null params is refused
+
+- **WHEN** a template file carries `params: null`
+- **THEN** the template fails to parse with an error naming the file and `params`, the file is quarantined while the service still starts, and the same content arriving through `PUT /api/templates/{id}` is refused with `422 TemplateInvalid` and `details.reason` `template_parse_failed`
+
+#### Scenario: A duplicate name is refused
+
+- **WHEN** a template file carries `params:` with two entries both `name: title`
+- **THEN** the template fails validation naming the file and `title`, the file is quarantined, and the same content on write is refused with `422 TemplateInvalid` and `details.reason` `template_parse_failed` naming `title`
+
+#### Scenario: The wire order is declaration order on both endpoints
+
+- **WHEN** a template declares `params:` in order `title`, `subtitle`, `code`
+- **THEN** `GET /api/templates`'s summary for it and `GET /api/templates/{id}`'s detail both carry `params` as `[title, subtitle, code]` in that order
+
+#### Scenario: The Parameters card follows the wire order
+
+- **WHEN** the template of the previous scenario is shown in the UI
+- **THEN** the Parameters card (`ui/src/pages/TemplateDetail.tsx:286`) renders `title`, `subtitle`, `code` in that order
