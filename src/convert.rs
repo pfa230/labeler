@@ -545,6 +545,15 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             Some(val) => Some(val),
         };
 
+        if raw.param_type != crate::raw::RawParamType::List {
+            if let Some(serde_yaml_ng::Value::Sequence(_)) = default_raw {
+                return Err(TemplateError::Validation {
+                    path: "default".to_string(),
+                    msg: "sequence default is only supported on list parameters".to_string(),
+                });
+            }
+        }
+
         if raw.param_type == crate::raw::RawParamType::Datetime {
             if raw.min.is_some() {
                 return Err(TemplateError::Validation {
@@ -593,6 +602,75 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             });
         }
 
+        if raw.param_type == crate::raw::RawParamType::List {
+            if raw.min.is_some() {
+                return Err(TemplateError::Validation {
+                    path: "min".to_string(),
+                    msg: "min is not supported on list parameters".to_string(),
+                });
+            }
+            if raw.max.is_some() {
+                return Err(TemplateError::Validation {
+                    path: "max".to_string(),
+                    msg: "max is not supported on list parameters".to_string(),
+                });
+            }
+            if raw.multiline.is_some() {
+                return Err(TemplateError::Validation {
+                    path: "multiline".to_string(),
+                    msg: "multiline is not supported on list parameters".to_string(),
+                });
+            }
+            if raw.values.is_some() {
+                return Err(TemplateError::Validation {
+                    path: "values".to_string(),
+                    msg: "values is not supported on list parameters".to_string(),
+                });
+            }
+            if raw.time.is_some() {
+                return Err(TemplateError::Validation {
+                    path: "time".to_string(),
+                    msg: "time is only supported on datetime parameters".to_string(),
+                });
+            }
+
+            let default = match default_raw {
+                None => None,
+                Some(serde_yaml_ng::Value::Sequence(seq)) => {
+                    let mut items = Vec::with_capacity(seq.len());
+                    for (idx, elem) in seq.into_iter().enumerate() {
+                        match elem {
+                            serde_yaml_ng::Value::String(s) => items.push(s),
+                            _ => {
+                                return Err(TemplateError::Validation {
+                                    path: format!("default[{idx}]"),
+                                    msg: format!(
+                                        "list default element at position {idx} must be a string"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    Some(ParamValue::List(items))
+                }
+                Some(_) => {
+                    return Err(TemplateError::Validation {
+                        path: "default".to_string(),
+                        msg: "default for a list parameter must be a sequence of strings"
+                            .to_string(),
+                    });
+                }
+            };
+
+            return Ok(ParamSpec {
+                param_type: ParamType::List,
+                default,
+                min: None,
+                max: None,
+                description: raw.description,
+            });
+        }
+
         if raw.time.is_some() {
             return Err(TemplateError::Validation {
                 path: "time".to_string(),
@@ -615,7 +693,7 @@ impl TryFrom<RawParamSpec> for ParamSpec {
             crate::raw::RawParamType::Number => ParamType::Number,
             crate::raw::RawParamType::Boolean => ParamType::Boolean,
             crate::raw::RawParamType::Enum => ParamType::Enum { values },
-            crate::raw::RawParamType::Datetime => unreachable!(),
+            crate::raw::RawParamType::Datetime | crate::raw::RawParamType::List => unreachable!(),
         };
 
         let default = convert_raw_default(default_raw, matches!(param_type, ParamType::Integer));
@@ -863,6 +941,144 @@ mod tests {
                 "expected unknown-field error for {yaml:?}, got: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn list_param_conversions_and_refusals() {
+        let ok = try_build_param(
+            "type: list\ndefault: [CONSUMABLE, KIDS]\ndescription: \"Asset tags\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.param_type, crate::models::ParamType::List);
+        assert_eq!(
+            ok.default,
+            Some(crate::models::ParamValue::List(vec![
+                "CONSUMABLE".to_string(),
+                "KIDS".to_string()
+            ]))
+        );
+        assert_eq!(ok.description, Some("Asset tags".to_string()));
+
+        // Distinguish default: [] from default: (empty/null)
+        let empty_list = try_build_param("type: list\ndefault: []\n").unwrap();
+        assert_eq!(
+            empty_list.default,
+            Some(crate::models::ParamValue::List(vec![]))
+        );
+
+        let absent_default = try_build_param("type: list\ndefault:\n").unwrap();
+        assert_eq!(absent_default.default, None);
+
+        let absent_key = try_build_param("type: list\n").unwrap();
+        assert_eq!(absent_key.default, None);
+
+        // Forbidden attributes refused, including explicit nulls
+        for forbidden in [
+            "min: 0",
+            "min:",
+            "max: 100",
+            "max:",
+            "multiline: true",
+            "multiline:",
+            "values: [a, b]",
+            "values:",
+            "time: true",
+            "time: false",
+            "time:",
+            "format: whatever",
+        ] {
+            let yaml = format!("type: list\n{forbidden}\n");
+            let err =
+                try_build_param(&yaml).expect_err(&format!("expected refusal for {forbidden}"));
+            assert!(!err.is_empty(), "expected error message for {forbidden}");
+        }
+
+        // Scalar default, mapping default, non-string element kinds refused with parameter named
+        let t_scalar = try_build_template_with_param("tags", "type: list\ndefault: \"CONSUMABLE\"")
+            .unwrap_err();
+        assert!(
+            t_scalar.contains("params.tags.default"),
+            "expected param name in error: {t_scalar}"
+        );
+
+        let t_map =
+            try_build_template_with_param("tags", "type: list\ndefault: { a: b }").unwrap_err();
+        assert!(
+            t_map.contains("params.tags.default"),
+            "expected param name in error: {t_map}"
+        );
+
+        let t_num_elem =
+            try_build_template_with_param("codes", "type: list\ndefault: [1, true]").unwrap_err();
+        assert!(
+            t_num_elem.contains("params.codes.default[0]"),
+            "expected element pos 0 in error: {t_num_elem}"
+        );
+
+        let t_bool_elem =
+            try_build_template_with_param("codes", "type: list\ndefault: [\"ok\", true]")
+                .unwrap_err();
+        assert!(
+            t_bool_elem.contains("params.codes.default[1]"),
+            "expected element pos 1 in error: {t_bool_elem}"
+        );
+
+        let t_null_elem =
+            try_build_template_with_param("codes", "type: list\ndefault: [\"ok\", null]")
+                .unwrap_err();
+        assert!(
+            t_null_elem.contains("params.codes.default[1]"),
+            "expected element pos 1 in error: {t_null_elem}"
+        );
+
+        let t_nested =
+            try_build_template_with_param("tags", "type: list\ndefault: [[a, b]]").unwrap_err();
+        assert!(
+            t_nested.contains("params.tags.default[0]"),
+            "expected element pos 0 in error: {t_nested}"
+        );
+
+        // Sequence default on non-list types is refused naming parameter
+        let t_str_seq =
+            try_build_template_with_param("title", "type: string\ndefault: [A, B]").unwrap_err();
+        assert!(
+            t_str_seq.contains("params.title.default"),
+            "expected param name in error: {t_str_seq}"
+        );
+        assert!(
+            t_str_seq.contains("sequence default is only supported on list parameters"),
+            "expected sequence default message: {t_str_seq}"
+        );
+
+        let t_int_seq =
+            try_build_template_with_param("count", "type: integer\ndefault: [1, 2]").unwrap_err();
+        assert!(
+            t_int_seq.contains("params.count.default"),
+            "expected param name in error: {t_int_seq}"
+        );
+
+        let t_dt_seq = try_build_template_with_param(
+            "printed_on",
+            "type: datetime\ndefault: [\"2026-01-01\"]",
+        )
+        .unwrap_err();
+        assert!(
+            t_dt_seq.contains("params.printed_on.default"),
+            "expected param name in error: {t_dt_seq}"
+        );
+    }
+
+    fn try_build_template_with_param(
+        param_name: &str,
+        param_yaml: &str,
+    ) -> Result<crate::templates::TemplateContent, String> {
+        let yaml = format!(
+            "name: test\nunit: mm\ndpi: 200\nformat:\n  type: single\n  width: 50\n  height: 50\nparams:\n  {param_name}:\n    {}\nlayout: []\n",
+            param_yaml.lines().collect::<Vec<_>>().join("\n    ")
+        );
+        let raw: crate::raw::TemplateDefinitionRaw =
+            serde_yaml_ng::from_str(&yaml).map_err(|e| e.to_string())?;
+        crate::templates::TemplateContent::try_from(raw).map_err(|e| e.to_string())
     }
 
     #[test]

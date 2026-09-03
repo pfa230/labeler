@@ -17,9 +17,15 @@ pub enum Source<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reader<'a> {
+    Format(&'a str),
+    Join(&'a str),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Token<'a> {
     pub source: Source<'a>,
-    pub format: Option<&'a str>,
+    pub reader: Option<Reader<'a>>,
     pub raw: &'a str,
 }
 
@@ -95,6 +101,20 @@ pub(crate) fn is_valid_ident(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+fn parse_reader<'a>(s: &'a str, raw_token: &str) -> Result<Reader<'a>, TokenError> {
+    if is_valid_ident(s) {
+        return Ok(Reader::Format(s));
+    }
+    if let Some(rest) = s.strip_prefix("join('") {
+        if let Some((sep, after_sep)) = rest.split_once('\'') {
+            if after_sep == ")" {
+                return Ok(Reader::Join(sep));
+            }
+        }
+    }
+    Err(TokenError::InvalidFormat(raw_token.to_string()))
+}
+
 /// Parse a token string (either with outer `{...}` or the inner content).
 pub fn parse(raw: &str) -> Result<Token<'_>, TokenError> {
     let (inner, raw_token) = if raw.starts_with('{') && raw.ends_with('}') && raw.len() >= 2 {
@@ -107,22 +127,12 @@ pub fn parse(raw: &str) -> Result<Token<'_>, TokenError> {
         return Err(TokenError::EmptySegment(raw_token.to_string()));
     }
 
-    let colon_count = inner.chars().filter(|&c| c == ':').count();
-    if colon_count > 1 {
-        return Err(TokenError::InvalidFormat(raw_token.to_string()));
-    }
-
-    let (val_path, format) = if colon_count == 1 {
-        let (vp, fmt) = inner
-            .split_once(':')
-            .expect("colon_count == 1 guarantees split_once succeeds");
+    let (val_path, reader) = if let Some((vp, reader_str)) = inner.split_once(':') {
         if vp.is_empty() || vp.trim().is_empty() {
             return Err(TokenError::EmptySegment(raw_token.to_string()));
         }
-        if fmt.is_empty() || !is_valid_ident(fmt) {
-            return Err(TokenError::InvalidFormat(raw_token.to_string()));
-        }
-        (vp, Some(fmt))
+        let reader = parse_reader(reader_str, raw_token)?;
+        (vp, Some(reader))
     } else {
         (inner, None)
     };
@@ -134,14 +144,14 @@ pub fn parse(raw: &str) -> Result<Token<'_>, TokenError> {
         match root {
             "vars" => Ok(Token {
                 source: Source::Vars(key),
-                format,
+                reader,
                 raw,
             }),
             "sys" => {
                 if key == "now" {
                     Ok(Token {
                         source: Source::Sys(SysValue::Now),
-                        format,
+                        reader,
                         raw,
                     })
                 } else {
@@ -162,7 +172,7 @@ pub fn parse(raw: &str) -> Result<Token<'_>, TokenError> {
         }
         Ok(Token {
             source: Source::Bare(val_path),
-            format,
+            reader,
             raw,
         })
     }
@@ -270,33 +280,55 @@ mod tests {
         // Bare
         let t = parse("{title}").unwrap();
         assert_eq!(t.source, Source::Bare("title"));
-        assert_eq!(t.format, None);
+        assert_eq!(t.reader, None);
 
         let t = parse("{title:short_date}").unwrap();
         assert_eq!(t.source, Source::Bare("title"));
-        assert_eq!(t.format, Some("short_date"));
+        assert_eq!(t.reader, Some(Reader::Format("short_date")));
+
+        // Join on bare
+        let t = parse("{tags:join(', ')}").unwrap();
+        assert_eq!(t.source, Source::Bare("tags"));
+        assert_eq!(t.reader, Some(Reader::Join(", ")));
+
+        let t = parse("{tags:join('')}").unwrap();
+        assert_eq!(t.source, Source::Bare("tags"));
+        assert_eq!(t.reader, Some(Reader::Join("")));
+
+        let t = parse("{tags:join(' : ')}").unwrap();
+        assert_eq!(t.source, Source::Bare("tags"));
+        assert_eq!(t.reader, Some(Reader::Join(" : ")));
+
+        // Bare reader name is always parsed as format
+        let t = parse("{sys.now:join}").unwrap();
+        assert_eq!(t.source, Source::Sys(SysValue::Now));
+        assert_eq!(t.reader, Some(Reader::Format("join")));
+
+        let t = parse("{tags:join}").unwrap();
+        assert_eq!(t.source, Source::Bare("tags"));
+        assert_eq!(t.reader, Some(Reader::Format("join")));
 
         // Vars
         let t = parse("{vars.qr_base_url}").unwrap();
         assert_eq!(t.source, Source::Vars("qr_base_url"));
-        assert_eq!(t.format, None);
+        assert_eq!(t.reader, None);
 
         let t = parse("{vars.site.eu.url}").unwrap();
         assert_eq!(t.source, Source::Vars("site.eu.url"));
-        assert_eq!(t.format, None);
+        assert_eq!(t.reader, None);
 
         let t = parse("{vars.qr_base_url:long_date}").unwrap();
         assert_eq!(t.source, Source::Vars("qr_base_url"));
-        assert_eq!(t.format, Some("long_date"));
+        assert_eq!(t.reader, Some(Reader::Format("long_date")));
 
         // Sys
         let t = parse("{sys.now}").unwrap();
         assert_eq!(t.source, Source::Sys(SysValue::Now));
-        assert_eq!(t.format, None);
+        assert_eq!(t.reader, None);
 
         let t = parse("{sys.now:iso_date}").unwrap();
         assert_eq!(t.source, Source::Sys(SysValue::Now));
-        assert_eq!(t.format, Some("iso_date"));
+        assert_eq!(t.reader, Some(Reader::Format("iso_date")));
     }
 
     #[test]
@@ -351,6 +383,32 @@ mod tests {
         // {x:a:b}
         assert!(matches!(
             parse("{x:a:b}"),
+            Err(TokenError::InvalidFormat(_))
+        ));
+
+        // Malformed readers and join calls
+        assert!(matches!(
+            parse("{sys.now:long_date(', ')}"),
+            Err(TokenError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            parse("{tags:join(''')}"),
+            Err(TokenError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            parse("{tags:join('it''s')}"),
+            Err(TokenError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            parse("{tags:join( ', ' )}"),
+            Err(TokenError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            parse("{tags:join(a)}"),
+            Err(TokenError::InvalidFormat(_))
+        ));
+        assert!(matches!(
+            parse("{tags:join(', ')x}"),
             Err(TokenError::InvalidFormat(_))
         ));
 
@@ -410,5 +468,19 @@ mod tests {
                 "{token}"
             ]
         );
+
+        // Braces inside join separator behavior (task 2.4)
+        let scanned_closing = scan_tokens("{tags:join('}')}");
+        assert_eq!(scanned_closing.len(), 1);
+        assert_eq!(scanned_closing[0].raw, "{tags:join('}");
+        assert!(parse(scanned_closing[0].raw).is_err());
+
+        let scanned_opening = scan_tokens("{tags:join('{')}");
+        assert_eq!(scanned_opening.len(), 1);
+        assert_eq!(scanned_opening[0].raw, "{')}");
+        assert!(parse(scanned_opening[0].raw).is_err());
+
+        let scanned_double = scan_tokens("{tags:join('{{')}");
+        assert!(scanned_double.is_empty());
     }
 }

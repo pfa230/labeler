@@ -119,6 +119,7 @@ pub enum InputControl {
     Date,
     Datetime,
     Image,
+    List,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
@@ -210,6 +211,7 @@ pub enum ParamType {
     Datetime {
         time: bool,
     },
+    List,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
@@ -218,6 +220,7 @@ pub enum ParamValue {
     Integer(i64),
     Float(f32),
     Boolean(bool),
+    List(Vec<String>),
     String(String),
 }
 

@@ -102,6 +102,16 @@ A `default:` that is a string SHALL be interpolated by the `interpolation-tokens
 used, restricted there to namespaced tokens. A `default:` that is not a string carries no token and
 SHALL be used as written.
 
+"Used as written" governs interpolation and nothing else: it says a non-string default reaches
+resolution unaltered, not that any non-string shape is admissible. A **sequence** `default:` is
+admissible on a `list` parameter and on no other type, and SHALL be refused at load elsewhere, naming
+the parameter. That refusal belongs to this requirement rather than to `list-params` because it is a
+statement about defaults in general, and it follows from the sentence below that a default may not carry
+a value the request could not have carried: a request supplying a JSON array for a `string`, `enum`,
+`boolean`, `integer`, `number` or `datetime` parameter is refused, so a declaration supplying a sequence
+for one must be too. Without it the model would hold that default as the debug text of the sequence it
+could not represent, and a label would print `Sequence [String("a")]`.
+
 A request SHALL capture one instant and read the variables store once, and every default it resolves
 SHALL be resolved against that one snapshot. Resolution itself happens per label, so a batch, sheet or
 ZIP resolves a given default once per label and SHALL get the identical value every time. The
@@ -133,7 +143,11 @@ not absorbed but reported, under `template-inputs`.
 
 
 A default carrying **no interpolation syntax at all** SHALL keep the load-time checks it has today, which
-reject an `enum` default outside `values` and a default that overflows the frame it sizes. A default
+reject an `enum` default outside `values` and a default that overflows the frame it sizes. Two checks
+join that set with the `list` type, and both are decidable from the declaration alone: a sequence
+`default:` on any type but `list`, above, and an element of a `list` default that is not a YAML string
+scalar (`list-params`). A `list` default is never a string, so it can carry no interpolation syntax and
+this paragraph's exemption can never apply to one. A default
 carrying any — a token, or an escape — SHALL NOT have its *value* checked at load.
 
 The test is syntax and not tokens, because an escape changes the value without being one: `{{draft}}`
@@ -243,6 +257,19 @@ not make it a declaration.
 - **WHEN** the variables store changes while a batch is rendering, and its labels omit a parameter
   declaring `default: "{vars.base}"`
 - **THEN** every label resolves the value the store held when the request began
+
+#### Scenario: A sequence default on a type that is not a list is refused
+
+- **WHEN** a template declares `title: { type: string, default: [A, B] }`
+- **THEN** the template fails validation naming `title`, and the file is quarantined, rather than
+  loading with a default holding the sequence's debug text
+
+#### Scenario: A sequence default on a list is used as written
+
+- **WHEN** a template declares `tags: { type: list, default: [CONSUMABLE, KIDS] }` and a request omits
+  `tags`
+- **THEN** the default resolves to `["CONSUMABLE", "KIDS"]` with no interpolation applied to any element,
+  and `{tags:join(', ')}` prints `CONSUMABLE, KIDS`
 
 ### Requirement: A default that cannot be resolved is the template's fault, not the caller's
 

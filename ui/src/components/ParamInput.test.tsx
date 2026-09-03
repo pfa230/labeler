@@ -280,4 +280,19 @@ describe("ParamInput", () => {
     expect(select.value).toBe("");
     expect(screen.getByText("Select...")).toBeInTheDocument();
   });
+
+  it("renders no control when control is list or ParamSpec type is list", () => {
+    const onChange = vi.fn();
+    const inputSpec = { name: "tags", control: "list", description: "Asset Tags" } as unknown as ParamSpec;
+    const { container, rerender } = render(
+      <ParamInput name="tags" spec={inputSpec} value={undefined} onChange={onChange} />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    const paramSpec: ParamSpec = { type: "list", description: "Tags" };
+    rerender(<ParamInput name="tags" spec={paramSpec} value={undefined} onChange={onChange} />);
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByRole("textbox")).toBeNull();
+  });
 });

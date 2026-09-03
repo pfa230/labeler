@@ -325,4 +325,28 @@ describe("LabelGrid", () => {
     expect(updated[0].option.style).toBe("fancy");
     expect(updated[0].data.style).toBe("fancy");
   });
+
+  it("renders inert cell with '—' and disables editing when cellInput control is 'list'", () => {
+    const cellInput = (_row: LabelGridRow, field: string) => {
+      if (field === "notes") return { name: "notes", control: "list" as const };
+      return { name: field, control: "text" as const };
+    };
+
+    render(
+      <LabelGrid
+        rows={rows()}
+        {...props}
+        cellInput={cellInput}
+        onRowsChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByText("—")).toHaveLength(2);
+    expect(screen.getByText("1")).toBeInTheDocument();
+
+    fireEvent.doubleClick(screen.getAllByText("—")[0]);
+    expect(screen.queryByLabelText("edit notes")).toBeNull();
+  });
 });

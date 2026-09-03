@@ -8182,6 +8182,792 @@ layout:
         assert_eq!(resp_put.status(), StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn template_put_rejects_invalid_list_templates() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let cases = [
+            // List in when condition
+            (
+                "put_when_list",
+                r#"
+name: WhenList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    when: { tags: KIDS }
+"#,
+            ),
+            // Image binding list
+            (
+                "put_img_list",
+                r#"
+name: ImageList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: image
+    name: tags
+    at: [0, 0]
+    size: [50, 20]
+"#,
+            ),
+            // Bare token on list
+            (
+                "put_bare_list",
+                r#"
+name: BareList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    value: "{tags}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#,
+            ),
+            // Format on list
+            (
+                "put_format_list",
+                r#"
+name: FormatList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    value: "{tags:short_date}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#,
+            ),
+            // Join on non-list
+            (
+                "put_join_non_list",
+                r#"
+name: JoinNonList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  title: { type: string }
+layout:
+  - type: text
+    value: "{title:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#,
+            ),
+        ];
+
+        for (id, yaml) in cases {
+            let response = app
+                .clone()
+                .oneshot(yaml_post(
+                    &format!("/api/templates/{id}"),
+                    "PUT",
+                    yaml.to_string(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "template {id} must be rejected with 422"
+            );
+            let body = json_response(response).await;
+            assert_eq!(body["error"]["code"], "TemplateInvalid");
+            assert_eq!(
+                body["error"]["details"]["reason"],
+                "template_validation_failed"
+            );
+            assert!(
+                !dir.join(format!("{id}.yaml")).exists(),
+                "nothing should be stored for {id}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn render_label_list_param_joining_and_refusals() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let list_tpl = r#"
+name: ListTemplate
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags:
+    type: list
+    default: [KIDS, CONSUMABLE]
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/list_tpl",
+                "PUT",
+                list_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        // 1. Valid list overrides default
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_tpl", "data": { "tags": ["A", "B"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // 2. Empty list [] joins to empty string rather than the declared default
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_tpl", "data": { "tags": [] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // Directly verify resolve does not replace [] with the default
+        {
+            use crate::models::{ParamSpec, ParamType};
+            use std::collections::BTreeMap;
+            let mut params = BTreeMap::new();
+            params.insert(
+                "tags".to_string(),
+                ParamSpec {
+                    param_type: ParamType::List,
+                    default: Some(crate::models::ParamValue::List(vec![
+                        "KIDS".to_string(),
+                        "CONSUMABLE".to_string(),
+                    ])),
+                    description: None,
+                    min: None,
+                    max: None,
+                },
+            );
+            let tpl = crate::templates::TemplateContent {
+                name: "x".to_string(),
+                version: None,
+                description: String::new(),
+                unit: "mm".to_string(),
+                dpi: 200,
+                format: crate::models::TemplateFormat::Single {
+                    width: crate::models::Dimension::Fixed(50.0).into(),
+                    height: crate::models::Dimension::Fixed(20.0).into(),
+                    media_width: None,
+                },
+                params,
+                layout: crate::models::Layout::Items(vec![]),
+            };
+            let mut data = std::collections::HashMap::new();
+            data.insert("tags".to_string(), serde_json::json!([]));
+            let resolved =
+                crate::render::resolve_parameters(&tpl, &data, None, None, None).unwrap();
+            assert_eq!(resolved.data.get("tags"), Some(&serde_json::json!([])));
+        }
+
+        // 3. Null list uses default
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_tpl", "data": { "tags": null } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // 4. Omitted tags uses default
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_tpl", "data": {} }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // 5. Non-array string is refused with 400 InvalidRequest, request_body_invalid
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_tpl", "data": { "tags": "A, B" } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        assert!(body["error"]["message"].as_str().unwrap().contains("tags"));
+
+        // 6. Non-string element is refused with 400 InvalidRequest, request_body_invalid with position
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_tpl", "data": { "tags": ["A", 123] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("tags") && msg.contains("1"));
+    }
+
+    #[tokio::test]
+    async fn render_label_list_param_without_default_and_missing_field() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let list_tpl = r#"
+name: ListRequired
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags:
+    type: list
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/list_req",
+                "PUT",
+                list_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        // Omitted -> 422 MissingField
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_req", "data": {} }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "tags");
+
+        // Null -> 422 MissingField
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_req", "data": { "tags": null } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["details"]["field"], "tags");
+
+        // Provided -> 200 OK
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "list_req", "data": { "tags": ["Item1"] } }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn render_label_undeclared_array_scalar_slot_refusal() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let scalar_tpl = r#"
+name: ScalarTemplate
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Title: {title}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/scalar_tpl",
+                "PUT",
+                scalar_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        // Under Issue 322, undeclared template parameters are rejected at template write (PUT)
+        assert_eq!(put_res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(put_res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
+
+        // Image template binding undeclared name
+        let img_tpl = r#"
+name: ImageTemplate
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: image
+    name: logo
+    at: [0, 0]
+    size: [50, 20]
+"#;
+        let put_img = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/img_tpl",
+                "PUT",
+                img_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_img.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(put_img).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
+
+        // Image with content sizing binding undeclared name
+        let img_content_tpl = r#"
+name: ImageContentTemplate
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: image
+    name: logo
+    at: [0, 0]
+    size: [content, content]
+"#;
+        let put_img_content = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/img_content_tpl",
+                "PUT",
+                img_content_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_img_content.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(put_img_content).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
+
+        // Declared string parameter refusing an array value -> 400 InvalidRequest, request_body_invalid
+        let string_param_tpl = r#"
+name: StringParamTemplate
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  title:
+    type: string
+layout:
+  - type: text
+    value: "{title}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_str = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/string_param_tpl",
+                "PUT",
+                string_param_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_str.status(), StatusCode::CREATED);
+
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "string_param_tpl", "data": { "title": ["A", "B"] } })
+                    .to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        assert_eq!(
+            body["error"]["message"],
+            "parameter 'title' is not a valid string"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_batch_list_param_refusal() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let list_tpl = r#"
+name: BatchList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags:
+    type: list
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/batch_list_tpl",
+                "PUT",
+                list_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        // Batch with one invalid item fails the batch with 422 BatchInvalid
+        let batch_payload = json!({
+            "template": "batch_list_tpl",
+            "mode": "download",
+            "labels": [
+                { "data": { "tags": ["Valid1", "Valid2"] } },
+                { "data": { "tags": "invalid-string" } }
+            ]
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", batch_payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["index"], 1);
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(failures[0]["reason"], "request_body_invalid");
+    }
+
+    #[tokio::test]
+    async fn template_detail_inputs_and_thumbnail_list_param() {
+        let dir = temp_templates_dir();
+        let app = build_app_in(&dir);
+
+        let list_tpl = r#"
+name: DetailList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags:
+    type: list
+    default: [KIDS, CONSUMABLE]
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_res = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/detail_list",
+                "PUT",
+                list_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_res.status(), StatusCode::CREATED);
+
+        // GET /api/templates/detail_list
+        let res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/detail_list")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_response(res).await;
+
+        // Check params
+        assert_eq!(body["params"]["tags"]["type"], "list");
+        assert_eq!(
+            body["param_defaults"]["tags"]["resolved"],
+            json!(["KIDS", "CONSUMABLE"])
+        );
+
+        // Check inputs
+        let inputs = body["inputs"]["all"].as_array().unwrap();
+        let tags_input = inputs.iter().find(|i| i["name"] == "tags").unwrap();
+        assert_eq!(tags_input["control"], "list");
+        assert_eq!(tags_input["default"], json!(["KIDS", "CONSUMABLE"]));
+        assert_eq!(tags_input["required"], false);
+
+        // Thumbnail renders successfully
+        let thumb_res = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/detail_list/thumbnail")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(thumb_res.status(), StatusCode::OK);
+        assert_eq!(thumb_res.headers()["content-type"], "image/png");
+
+        // Thumbnail for template without default renders parameter's own name
+        let no_def_tpl = r#"
+name: NoDefList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags:
+    type: list
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_no_def = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/no_def_list",
+                "PUT",
+                no_def_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_no_def.status(), StatusCode::CREATED);
+
+        let thumb_no_def = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/no_def_list/thumbnail")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(thumb_no_def.status(), StatusCode::OK);
+
+        // Thumbnail for template with default: [] renders empty list
+        let empty_def_tpl = r#"
+name: EmptyDefList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags:
+    type: list
+    default: []
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_empty_def = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/empty_def_list",
+                "PUT",
+                empty_def_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_empty_def.status(), StatusCode::CREATED);
+
+        let thumb_empty_def = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/empty_def_list/thumbnail")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(thumb_empty_def.status(), StatusCode::OK);
+
+        // Verify input list claims for task 5.5: required without default + never list for undeclared
+        // 1. No-default list is required:true with no default
+        let res_no_def = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/no_def_list")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_no_def.status(), StatusCode::OK);
+        let body_no_def = json_response(res_no_def).await;
+        let inputs_no_def = body_no_def["inputs"]["all"].as_array().unwrap();
+        let tags_no_def = inputs_no_def.iter().find(|i| i["name"] == "tags").unwrap();
+        assert_eq!(tags_no_def["control"], "list");
+        assert_eq!(tags_no_def["required"], true);
+        assert!(tags_no_def.get("default").is_none() || tags_no_def["default"].is_null());
+
+        // 2. Declared string parameter is not list control
+        let str_tpl = r#"
+name: StrNotList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  body:
+    type: string
+layout:
+  - type: text
+    value: "Title: {body}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let put_str = app
+            .clone()
+            .oneshot(yaml_post(
+                "/api/templates/str_not_list",
+                "PUT",
+                str_tpl.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(put_str.status(), StatusCode::CREATED);
+        let res_str = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/templates/str_not_list")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_str.status(), StatusCode::OK);
+        let body_str = json_response(res_str).await;
+        let inputs_str = body_str["inputs"]["all"].as_array().unwrap();
+        let body_input = inputs_str.iter().find(|i| i["name"] == "body").unwrap();
+        assert_ne!(body_input["control"], "list");
+        assert_eq!(body_input["control"], "text");
+
+        // 3. Empty list default renders without 422 when omitted (not an omission)
+        let res_empty_render = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                json!({ "template": "empty_def_list", "data": {} }).to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res_empty_render.status(),
+            StatusCode::OK,
+            "default: [] must render without MissingField"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Issue #324 tests: refusing unrecognized data keys on render/batch/print/csv
     // -----------------------------------------------------------------------
