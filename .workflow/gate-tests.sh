@@ -654,6 +654,65 @@ expect_says 1 "on a detached HEAD" \
   .workflow/merge-shape-check.sh
 teardown
 
+# --- and the hook actually calls the gates (#356) ----------------------------------
+# The four lines that connect git to the gates were untested. gate-tests.sh proved both
+# scripts thoroughly and change-tests.sh drove the hooks, but no case ever reached
+# pre-commit:56-57, because no fixture had a .workflow/ for $root to point at and every
+# hook case exited at the apply-lock or the merge shape first. Deleting both lines left
+# all 410 assertions passing.
+#
+# That is this suite's own signature arriving through the wiring instead of the script: a
+# gate that has stopped firing, looking exactly like one that passes. So these drive
+# `git commit` itself, never the hook and never the scripts, because what is in doubt is
+# only whether git reaches them.
+#
+# setup_hooked already copies the real hooks and the real scripts and sets core.hooksPath;
+# what it lacks is a change folder for the gate to have an opinion about. This adds one
+# whose plan review fails, which is the cheapest refusal review-gate-check.sh has.
+setup_gated() { # setup_gated <verdict-line...> - a live change, reviewed as given
+  setup_hooked
+  mkdir -p "openspec/changes/issue-1-thing/specs/thing" \
+    || fatal "cannot create the fixture's live change directory."
+  printf '# Proposal\n' > openspec/changes/issue-1-thing/proposal.md
+  printf '## ADDED Requirements\n\n### Requirement: A thing\n\nIt SHALL happen.\n' \
+    > openspec/changes/issue-1-thing/specs/thing/spec.md
+  [ "$#" -gt 0 ] && printf '%s\n' "$@" > openspec/changes/issue-1-thing/review.md
+  fixture_built "$repo" openspec/changes/issue-1-thing/proposal.md \
+                openspec/changes/issue-1-thing/specs/thing/spec.md
+}
+
+# The refusal, through git. A commit touching src/ while the live change has no passing
+# plan review is what the in-flight half of review-gate-check.sh exists to stop.
+setup_gated
+printf 'fn added() {}\n' > src/added.rs
+git add -A || fatal "cannot stage the fixture's code change."
+expect_says 1 "review" \
+  "hook: git commit is refused when the gate refuses, so the hook does reach it" \
+  git commit -qm "code while the plan is unreviewed"
+teardown
+
+# And it is refused for the RIGHT reason. A hook that fails on its own error - a missing
+# script, a bad path - also refuses the commit, and would satisfy the case above while
+# proving the opposite of what it claims.
+setup_gated
+printf 'fn added() {}\n' > src/added.rs
+git add -A || fatal "cannot stage the fixture's code change."
+expect_says 1 "has no review.md" \
+  "hook: and the refusal is the gate's own words, not a hook that broke on its way there" \
+  git commit -qm "code while the plan is unreviewed"
+teardown
+
+# The other side of the same wire: a gate with no objection must let the commit through.
+# Without this, a hook that refused everything would pass the two cases above.
+setup_gated "AUTHOR: claude" "REVIEWER: codex" "VERDICT: APPROVE"
+.workflow/specs-digest.sh openspec/changes/issue-1-thing --write > /dev/null \
+  || fatal "cannot write the fixture's specs digest."
+printf 'fn added() {}\n' > src/added.rs
+git add -A || fatal "cannot stage the fixture's code change."
+expect 0 "hook: an approved plan lets the same commit through" \
+  git commit -qm "code with the plan approved"
+teardown
+
 # The guard on this suite's own fixtures.
 suite_guard_case "$here/gate-tests.sh"
 

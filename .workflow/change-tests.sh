@@ -1792,9 +1792,9 @@ other_event='{"type":"error","timestamp":1,"sessionID":"s-o","error":{"name":"Un
 out=$(cd "$repo" && env -u OPENCODE_MODEL LAUNCH_SINK="$sbin/sink" STAGE_MARK=q.txt \
       PATH="$sbin:$PATH" STUB_EVENT="$quota_event" \
       "$STAGE" implement opencode issue-97-stall 2>&1); rc=$?
-if [ "$rc" != "0" ] && [ "$(wc -l < "$sbin/sink")" = "1" ]; then
+if [ "$rc" != "0" ] && [ "$(wc -l < "$sbin/sink" | tr -d ' ')" = "1" ]; then
   ok "a spent allowance stops the stage after one launch, having switched to nothing"
-else bad "the quota stage exited $rc after $(wc -l < "$sbin/sink") launches"; fi
+else bad "the quota stage exited $rc after $(wc -l < "$sbin/sink" | tr -d ' ') launches"; fi
 if printf '%s' "$out" | grep -qiF 'allowance' \
    && printf '%s' "$out" | grep -qF 'OPENCODE_MODEL=meta/muse-spark-1.2-contributor'; then
   ok "and the stage output says so and gives the line that would move off it"
@@ -1806,10 +1806,10 @@ out=$(cd "$repo" && env -u OPENCODE_MODEL LAUNCH_SINK="$sbin/sink" STAGE_MARK=o.
       "$STAGE" implement opencode issue-97-stall 2>&1); rc=$?
 # The guard that makes the assertions above mean anything: an unrelated failure must
 # reach the same stop with a different sentence, never a claim about quota.
-if [ "$rc" != "0" ] && [ "$(wc -l < "$sbin/sink")" = "1" ] \
+if [ "$rc" != "0" ] && [ "$(wc -l < "$sbin/sink" | tr -d ' ')" = "1" ] \
    && ! printf '%s' "$out" | grep -qiE 'allowance|out of quota'; then
   ok "an unrelated failure stops the same way without claiming an allowance ran out"
-else bad "the non-quota stage exited $rc after $(wc -l < "$sbin/sink") launches: $(printf '%s' "$out" | tail -12)"; fi
+else bad "the non-quota stage exited $rc after $(wc -l < "$sbin/sink" | tr -d ' ') launches: $(printf '%s' "$out" | tail -12)"; fi
 if printf '%s' "$out" | grep -q 'status: AGENT_ERROR' && printf '%s' "$out" | grep -qF 'err_zz9'; then
   ok "and is still reported as the error the tool itself gave"
 else bad "the error envelope was not named: $(printf '%s' "$out" | grep '^role:')"; fi

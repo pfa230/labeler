@@ -32,9 +32,20 @@ fatal() { # fatal <what went wrong>
 # why the setup functions check their own output too.
 canary() {
   local c
+  # The injection the guard below uses. TMPDIR cannot serve: macOS mktemp resolves its
+  # directory through confstr(_CS_DARWIN_USER_TEMP_DIR) and ignores TMPDIR entirely, so
+  # the guard's unwritable root was silently ignored, the inner run ran to completion,
+  # reached its own copy of the guard, and recursed until the machine was out of
+  # processes (#356).
+  [ -n "${SUITE_FIXTURE_FAIL:-}" ] && fatal "the fixture filesystem is failing writes (injected by SUITE_FIXTURE_FAIL)."
   c=$(mktemp 2>/dev/null) || fatal "the fixture filesystem will not create a file at all (TMPDIR=${TMPDIR:-/tmp})."
   dd if=/dev/zero of="$c" bs=1024 count=64 2>/dev/null
-  if [ "$(wc -c < "$c" 2>/dev/null || echo 0)" != "65536" ]; then
+  # Arithmetic, not string equality: BSD `wc` pads its count to a column width, so
+  # `wc -c` returns "   65536" on macOS and "65536" on the GNU coreutils CI runs. Compared
+  # as strings the two never match, and this guard then aborted every local run on a
+  # filesystem with hundreds of gigabytes free, which is the inverse of the failure it was
+  # written for and hid it just as thoroughly (#356).
+  if [ "$(( $(wc -c < "$c" 2>/dev/null || echo 0) ))" -ne 65536 ]; then
     rm -f "$c"
     fatal "the fixture filesystem stopped accepting a 64KiB write under $(dirname "$c"). Fixtures are being truncated or lost."
   fi
@@ -52,17 +63,29 @@ fixture_built() { # fixture_built <repo> <file>...
   for f in "$@"; do
     [ -s "$f" ] || fatal "the fixture is incomplete: $f was not written, or was written empty."
   done
+  # Checked after the real ones, so an injected run still exercises them first.
+  [ -n "${SUITE_FIXTURE_FAIL:-}" ] && fatal "the fixture filesystem is failing writes (injected by SUITE_FIXTURE_FAIL)."
+  return 0
 }
 
-# The guard on the guard. What it asserts is the stop and what the stop says, through the
-# one condition a test can create portably: a TMPDIR nothing can be made under. The
-# condition that actually caused #333 - a filesystem that takes the directory and then
-# loses the writes - needs a full disk to reproduce and no test here can make one, so
-# canary() and fixture_built() are covered by this only as far as the exit they share.
-# The inner run stops in its own first setup(), well before reaching its copy of this.
+# The guard on the guard. What it asserts is the stop and what the stop says. The condition
+# that actually caused #333 - a filesystem that takes the directory and then loses the
+# writes - needs a full disk to reproduce and no test here can make one, so canary() and
+# fixture_built() are covered by this only as far as the exit they share. Since that was
+# already true, the failure is injected and says so, rather than being staged through an
+# environment variable whose effect turns out to be per-platform.
+#
+# It was staged that way: TMPDIR=/nonexistent-fixture-root, on the assumption that the
+# inner run would stop in its own first setup(). macOS mktemp ignores TMPDIR, so on a Mac
+# the inner run instead completed, reached its own copy of this function, and recursed
+# without bound. A guard that hangs the machine it is meant to protect is worse than the
+# phantom pass it was written to catch (#356).
+#
+# SUITE_FIXTURE_FAIL is unset for the inner run's own descendants because the inner run
+# stops before it launches any, and the stop is what is under test.
 suite_guard_case() { # suite_guard_case <suite-path>
   local out rc
-  out=$(TMPDIR=/nonexistent-fixture-root "$1" 2>&1); rc=$?
+  out=$(SUITE_FIXTURE_FAIL=1 "$1" 2>&1); rc=$?
   if [ "$rc" = "3" ] && printf '%s\n' "$out" | grep -qF 'are not a verdict'; then
     pass=$((pass + 1)); printf 'ok    %s\n' "suite: a fixture filesystem that will not take a write ends the run"
   else
