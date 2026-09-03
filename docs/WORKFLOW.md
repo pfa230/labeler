@@ -240,7 +240,12 @@ is whether the change solves the right problem, whether its scope is right, and 
 doing at all.
 
 **A gate fails twice.** The implementer gets one round to fix what `fmt`, `clippy` or the tests
-reported. A second failure is a defect rather than a lint, and it stops.
+reported. A second failure is a defect rather than a lint, and it stops. A test that fails identically
+at the commit the branch forked from is neither: the suite is run there too, the failures present in
+both are named and set aside, and only a failure the base does not have stops anything. Formatting and
+lints are never set aside that way. Where the comparison cannot be made at all, every failure counts
+against the change and it stops, because a change waved through on an attribution nobody could make is
+worse than a stop.
 
 **The merge.** Nothing reaches `main` unattended. The work is committed, pushed and green on its
 branch when you are asked, so what is left is a decision, not an inspection.
@@ -254,6 +259,9 @@ branch when you are asked, so what is left is a decision, not an inspection.
 - The one round the implementer gets to fix a failed gate produces a diff that no reviewer sees. It is
   bounded to what the gate reported and the gate itself re-runs over the result, but a lint fix that
   quietly changed behavior would land unreviewed.
+- A failure set aside as pre-existing was measured once, on the machine running the change. A test
+  that fails for the machine rather than for the code is set aside with it, which is the point; a test
+  that fails intermittently can be set aside by happening to fail at both ends of one comparison.
 - Whether a rendered label looks right is checked by nobody either. It is a visual judgement made
   against a running server, no artifact of it reaches the repository, and the process says so rather
   than carrying a checkbox that cannot fail.
