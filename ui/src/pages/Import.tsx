@@ -177,7 +177,7 @@ function CsvEditor({
 
   const rowInvalid = (row: LabelGridRow): boolean => {
     const v = validateRow(row);
-    return !!v.field || !!v.option;
+    return !!v.field;
   };
 
   const viewRows: LabelGridRow[] = rows.map((row) => ({ ...row, validation: validateRow(row) }));
@@ -233,8 +233,8 @@ function CsvEditor({
     const built = parsed.rows.map<LabelGridRow>((r) => ({
       id: newId(),
       origin: "csv",
-      data: { ...r.option, ...r.data },
-      option: { ...r.option },
+      data: { ...r.data },
+      option: {},
       validation: {},
     }));
     commitRows(built);

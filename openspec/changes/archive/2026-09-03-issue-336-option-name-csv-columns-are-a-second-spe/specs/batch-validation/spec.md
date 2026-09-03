@@ -1,11 +1,4 @@
-# batch-validation Specification
-
-## Purpose
-Defines what a request rendering many labels checks before it produces or prints anything: that every
-label is judged, that a request with any failing label produces nothing, and that the response lists
-every label that failed rather than the first one.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Every label is judged before any label is executed
 
@@ -142,3 +135,4 @@ already does; no behaviour of it changes here beyond what `request-data-keys` ad
   column
 - **THEN** the response is `400 InvalidRequest` with reason `csv_data_column_unknown`, because the
   file's columns are judged before any label exists to count
+

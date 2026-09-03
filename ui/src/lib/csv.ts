@@ -3,25 +3,22 @@
 import { parse } from "papaparse";
 
 export const MAX_CSV_BYTES = 2_000_000; // ~2 MB guard; label CSVs are small (<= 500 rows after expansion).
-const OPTION_PREFIX = "option.";
 
 export interface CsvRow {
   data: Record<string, string>;
-  option: Record<string, string>;
 }
 
 export interface CsvParseResult {
-  fields: string[]; // data column names (headers without the option. prefix)
-  optionColumns: string[]; // option names (from `option.<name>` headers)
+  fields: string[]; // data column names
   rows: CsvRow[];
   issues: string[]; // human-readable structural problems
   fatal: boolean; // papaparse reported a malformed-CSV error; the result must not be submitted
 }
 
 // Parse a CSV STRING (already read from the file) into labelable rows. papaparse strips a leading
-// BOM and handles quoted fields; we add header/raggedness validation and the option.<name> split.
+// BOM and handles quoted fields; we add header/raggedness validation.
 export function parseCsv(text: string): CsvParseResult {
-  const empty: CsvParseResult = { fields: [], optionColumns: [], rows: [], issues: [], fatal: false };
+  const empty: CsvParseResult = { fields: [], rows: [], issues: [], fatal: false };
   if (new Blob([text]).size > MAX_CSV_BYTES) {
     // Blob size is the true UTF-8 byte length (text.length counts UTF-16 code units, not bytes).
     return { ...empty, issues: [`CSV is too large (over ${Math.round(MAX_CSV_BYTES / 1_000_000)} MB).`] };
@@ -41,7 +38,7 @@ export function parseCsv(text: string): CsvParseResult {
   const issues: string[] = parseErrors.map((e) => `CSV parse error${e.row !== undefined ? ` (row ${e.row})` : ""}: ${e.message}`);
   const header = grid[0].map((h) => h.trim());
   const seen = new Set<string>();
-  // columns[i] = { name, kind } describing how to route cell i; null = skip (empty header).
+  // columns[i] = header name describing how to route cell i; null = skip (empty header).
   const columns = header.map((name) => {
     if (name === "") {
       issues.push("A column has an empty header and is ignored.");
@@ -52,15 +49,10 @@ export function parseCsv(text: string): CsvParseResult {
       return null;
     }
     seen.add(name);
-    return name.startsWith(OPTION_PREFIX)
-      ? { name: name.slice(OPTION_PREFIX.length), kind: "option" as const }
-      : { name, kind: "field" as const };
+    return name;
   });
 
-  const fields = columns.filter((c): c is { name: string; kind: "field" } => c?.kind === "field").map((c) => c.name);
-  const optionColumns = columns
-    .filter((c): c is { name: string; kind: "option" } => c?.kind === "option")
-    .map((c) => c.name);
+  const fields = columns.filter((c): c is string => c !== null);
 
   if (grid.length < 2) issues.push("CSV has no data rows.");
 
@@ -71,15 +63,12 @@ export function parseCsv(text: string): CsvParseResult {
       issues.push(`Row ${r} has ${cells.length} cells but the header has ${header.length}.`);
     }
     const data: Record<string, string> = {};
-    const option: Record<string, string> = {};
     columns.forEach((col, i) => {
       if (!col) return;
-      const value = cells[i] ?? "";
-      if (col.kind === "field") data[col.name] = value;
-      else option[col.name] = value;
+      data[col] = cells[i] ?? "";
     });
-    rows.push({ data, option });
+    rows.push({ data });
   }
 
-  return { fields, optionColumns, rows, issues, fatal: parseErrors.length > 0 };
+  return { fields, rows, issues, fatal: parseErrors.length > 0 };
 }

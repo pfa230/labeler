@@ -2221,7 +2221,6 @@ pub async fn connection_materialize(
 
 struct ParsedCsvRow {
     data: std::collections::HashMap<String, serde_json::Value>,
-    option: std::collections::BTreeMap<String, String>,
 }
 
 fn parse_csv_rows(body: &str) -> Result<Vec<ParsedCsvRow>, AppError> {
@@ -2255,15 +2254,10 @@ fn parse_csv_rows(body: &str) -> Result<Vec<ParsedCsvRow>, AppError> {
             AppError::invalid_request(Reason::CsvRowInvalid, format!("invalid CSV row: {err}"))
         })?;
         let mut data = std::collections::HashMap::new();
-        let mut option = std::collections::BTreeMap::new();
         for (key, val) in headers.iter().zip(record.iter()) {
-            if let Some(name) = key.strip_prefix("option.") {
-                option.insert(name.to_string(), val.to_string());
-            } else {
-                data.insert(key.to_string(), serde_json::Value::String(val.to_string()));
-            }
+            data.insert(key.to_string(), serde_json::Value::String(val.to_string()));
         }
-        rows.push(ParsedCsvRow { data, option });
+        rows.push(ParsedCsvRow { data });
     }
     if rows.is_empty() {
         return Err(AppError::invalid_request(
@@ -2722,20 +2716,6 @@ pub async fn import_csv(
         .ok_or_else(|| AppError::template_not_found(params.template.clone()))?;
     let mode = parse_batch_mode(params.mode.as_deref().unwrap_or("download"))?;
     let parsed_rows = parse_csv_rows(&body)?;
-    // Per SPEC section E, an unknown option.<name> column is an error, not silently ignored.
-    for row in &parsed_rows {
-        for name in row.option.keys() {
-            if !template.params.contains_key(name) {
-                return Err(AppError::invalid_request(
-                    Reason::CsvOptionColumnUnknown,
-                    format!(
-                        "CSV column 'option.{name}' is not a declared option of template '{}'",
-                        template.id
-                    ),
-                ));
-            }
-        }
-    }
     if let Some(first_row) = parsed_rows.first() {
         let unknown =
             crate::render::unknown_param_names(template, first_row.data.keys().map(|k| k.as_str()));
@@ -2763,14 +2743,7 @@ pub async fn import_csv(
     }
     let labels: Vec<crate::models::LabelInput> = parsed_rows
         .into_iter()
-        .map(|mut row| {
-            for (name, v) in row.option {
-                if !v.is_empty() {
-                    row.data.insert(name, serde_json::Value::String(v));
-                }
-            }
-            crate::models::LabelInput { data: row.data }
-        })
+        .map(|row| crate::models::LabelInput { data: row.data })
         .collect();
     run_batch(
         &state,
