@@ -6333,14 +6333,8 @@ layout:
                 }]),
                 version: None,
             };
-            render_single_label(
-                &template,
-                &HashMap::new(),
-                None,
-                &no_settings(),
-                &no_datetime(),
-            )
-            .expect("render hxy")
+            render_single_label(&template, &HashMap::new(), &no_settings(), &no_datetime())
+                .expect("render hxy")
         };
 
         // 1. Absent line_spacing renders byte-identically to explicit 1.2
@@ -6412,13 +6406,13 @@ layout:
             datetime: &no_datetime(),
         };
         let tpl_tight = make_range_template(Some(0.8));
-        let compiled_tight = super::compile_label_source(&tpl_tight, &HashMap::new(), None, &env)
-            .expect("compile tight");
+        let compiled_tight =
+            super::compile_label_source(&tpl_tight, &HashMap::new(), &env).expect("compile tight");
         let size_tight = fitted_pt(&compiled_tight.source);
 
         let tpl_loose = make_range_template(Some(1.5));
-        let compiled_loose = super::compile_label_source(&tpl_loose, &HashMap::new(), None, &env)
-            .expect("compile loose");
+        let compiled_loose =
+            super::compile_label_source(&tpl_loose, &HashMap::new(), &env).expect("compile loose");
         let size_loose = fitted_pt(&compiled_loose.source);
 
         assert!(
@@ -6456,14 +6450,8 @@ layout:
                 }]),
                 version: None,
             };
-            render_single_label(
-                &template,
-                &HashMap::new(),
-                None,
-                &no_settings(),
-                &no_datetime(),
-            )
-            .expect("render single line")
+            render_single_label(&template, &HashMap::new(), &no_settings(), &no_datetime())
+                .expect("render single line")
         };
 
         let png_absent = make_single_line(None);
