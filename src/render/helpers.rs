@@ -111,10 +111,18 @@ pub(super) fn interpolate(
 
         let resolved = match token.source {
             crate::interpolation::Source::Sys(crate::interpolation::SysValue::Now) => {
-                datetime.format(datetime.now, token.format, inner)?
+                match token.reader {
+                    Some(crate::interpolation::Reader::Format(fmt)) => {
+                        datetime.format(datetime.now, Some(fmt), inner)?
+                    }
+                    Some(crate::interpolation::Reader::Join(_)) => {
+                        return Err(AppError::field_value_not_scalar(inner));
+                    }
+                    None => datetime.format(datetime.now, None, inner)?,
+                }
             }
             crate::interpolation::Source::Vars(key) => {
-                if token.format.is_some() {
+                if token.reader.is_some() {
                     return Err(AppError::missing_field(inner));
                 }
                 variables
@@ -124,14 +132,46 @@ pub(super) fn interpolate(
             }
             crate::interpolation::Source::Bare(name) => {
                 if let Some(instant) = instants.and_then(|inst| inst.get(name)) {
-                    datetime.format(*instant, token.format, inner)?
-                } else if token.format.is_some() {
-                    return Err(AppError::missing_field(name));
+                    match token.reader {
+                        Some(crate::interpolation::Reader::Format(fmt)) => {
+                            datetime.format(*instant, Some(fmt), inner)?
+                        }
+                        Some(crate::interpolation::Reader::Join(_)) => {
+                            return Err(AppError::missing_field(name));
+                        }
+                        None => datetime.format(*instant, None, inner)?,
+                    }
                 } else {
-                    value_to_string(
-                        data.get(name)
-                            .ok_or_else(|| AppError::missing_field(name))?,
-                    )
+                    let val = data
+                        .get(name)
+                        .ok_or_else(|| AppError::missing_field(name))?;
+                    match token.reader {
+                        Some(crate::interpolation::Reader::Join(sep)) => match val {
+                            JsonValue::Array(arr) => {
+                                let mut joined = String::new();
+                                for (i, elem) in arr.iter().enumerate() {
+                                    if i > 0 {
+                                        joined.push_str(sep);
+                                    }
+                                    match elem {
+                                        JsonValue::String(s) => joined.push_str(s),
+                                        _ => return Err(AppError::field_value_not_scalar(name)),
+                                    }
+                                }
+                                joined
+                            }
+                            _ => return Err(AppError::field_value_not_scalar(name)),
+                        },
+                        Some(crate::interpolation::Reader::Format(_)) => {
+                            return Err(AppError::missing_field(name));
+                        }
+                        None => match val {
+                            JsonValue::Array(_) => {
+                                return Err(AppError::field_value_not_scalar(name));
+                            }
+                            other => value_to_string(other),
+                        },
+                    }
                 }
             }
         };
@@ -1982,6 +2022,75 @@ mod interpolate_tests {
         assert!(interpolate("a{id", &data(), &variables(), &no_datetime(), None).is_err());
         assert!(interpolate("a}id", &data(), &variables(), &no_datetime(), None).is_err());
         assert!(interpolate("{bad{token}", &data(), &variables(), &no_datetime(), None).is_err());
+    }
+
+    #[test]
+    fn interpolate_join_renders_exact_strings() {
+        let mut d = data();
+        d.insert("tags".to_string(), serde_json::json!(["A", "B"]));
+        d.insert("codes".to_string(), serde_json::json!(["1", "true"]));
+        d.insert("single".to_string(), serde_json::json!(["ONLY"]));
+        d.insert("empty".to_string(), serde_json::json!([]));
+        d.insert("bad_elem".to_string(), serde_json::json!(["A", 123]));
+
+        // Multiple elements with separator
+        let out = interpolate("{tags:join(', ')}", &d, &variables(), &no_datetime(), None).unwrap();
+        assert_eq!(out, "A, B");
+
+        // Pipe separator
+        let out = interpolate("{codes:join('|')}", &d, &variables(), &no_datetime(), None).unwrap();
+        assert_eq!(out, "1|true");
+
+        // Empty separator
+        let out = interpolate("{tags:join('')}", &d, &variables(), &no_datetime(), None).unwrap();
+        assert_eq!(out, "AB");
+
+        // Separator containing colons and spaces
+        let out =
+            interpolate("{tags:join(' : ')}", &d, &variables(), &no_datetime(), None).unwrap();
+        assert_eq!(out, "A : B");
+
+        // Single element (separator not added)
+        let out = interpolate(
+            "{single:join(', ')}",
+            &d,
+            &variables(),
+            &no_datetime(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, "ONLY");
+
+        // Zero elements
+        let out =
+            interpolate("{empty:join(', ')}", &d, &variables(), &no_datetime(), None).unwrap();
+        assert_eq!(out, "");
+
+        // Text around join token
+        let out = interpolate(
+            "Tags: [{tags:join(', ')}]",
+            &d,
+            &variables(),
+            &no_datetime(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(out, "Tags: [A, B]");
+
+        // Non-string element in array fails with field_value_not_scalar
+        let err = interpolate(
+            "{bad_elem:join(', ')}",
+            &d,
+            &variables(),
+            &no_datetime(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), "UnsupportedLayoutItem");
+
+        // Array reaching scalar token slot fails with field_value_not_scalar
+        let err = interpolate("{tags}", &d, &variables(), &no_datetime(), None).unwrap_err();
+        assert_eq!(err.code(), "UnsupportedLayoutItem");
     }
 }
 

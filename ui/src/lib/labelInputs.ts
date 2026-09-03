@@ -248,9 +248,15 @@ export function pruneDataForSubmit(
     if (deferred && getOwnKey(deferred, k)) continue;
     const input = activeMap.get(k);
     if (!input) continue;
+    if (input.control === "list") {
+      if (Array.isArray(v)) {
+        setOwnKey(result, k, v as ParamValue);
+      }
+      continue;
+    }
     if (v === "" && input.control !== "text" && input.control !== "textarea" && input.control !== "image") continue;
     if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") {
-      setOwnKey(result, k, v);
+      setOwnKey(result, k, v as ParamValue);
     }
   }
   return result;

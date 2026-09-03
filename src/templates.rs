@@ -181,6 +181,11 @@ impl TemplateContent {
                     InputControl::Date | InputControl::Datetime => {
                         serde_json::Value::String(now.format("%Y-%m-%dT%H:%M:%S").to_string())
                     }
+                    InputControl::List => {
+                        serde_json::Value::Array(vec![serde_json::Value::String(
+                            input.name.clone(),
+                        )])
+                    }
                     InputControl::Select => continue,
                 };
                 data.insert(input.name, val);
@@ -396,6 +401,7 @@ impl TemplateContent {
                             InputControl::Text
                         }
                     }
+                    ParamType::List => InputControl::List,
                 }
             };
             let slider = matches!(
@@ -1011,8 +1017,8 @@ impl TemplateContent {
 
         match &self.layout {
             Layout::Items(items) => {
-                for item in items {
-                    validate_item_references(item, &self.params)?;
+                for (idx, item) in items.iter().enumerate() {
+                    validate_item_references(item, &self.params, &format!("layout[{idx}]"))?;
                 }
             }
         }
@@ -1330,6 +1336,7 @@ fn check_param_ref(
         ParamType::Boolean => allowed_types.contains(&"boolean"),
         ParamType::Enum { .. } => allowed_types.contains(&"enum"),
         ParamType::Datetime { .. } => allowed_types.contains(&"datetime"),
+        ParamType::List => allowed_types.contains(&"list"),
     };
     if !matches_type {
         return Err(format!(
@@ -1343,12 +1350,18 @@ fn check_param_ref(
 fn validate_when_references(
     when: Option<&std::collections::BTreeMap<String, String>>,
     params: &std::collections::BTreeMap<String, ParamSpec>,
+    path: &str,
 ) -> Result<(), String> {
     if let Some(when) = when {
         for (name, val) in when {
             let spec = params.get(name).ok_or_else(|| {
                 format!("undeclared parameter '{name}' referenced in when condition")
             })?;
+            if matches!(spec.param_type, ParamType::List) {
+                return Err(format!(
+                    "when condition at {path} references list parameter '{name}'; list parameters cannot be used in when conditions"
+                ));
+            }
             if let ParamType::Enum { values } = &spec.param_type {
                 if !values.iter().any(|v| v == val) {
                     return Err(format!(
@@ -1409,19 +1422,70 @@ fn validate_interpolated_string(
                 ));
             }
         }
-        if let Some(fmt) = token.format {
-            let is_instant = match token.source {
-                crate::interpolation::Source::Sys(crate::interpolation::SysValue::Now) => true,
-                crate::interpolation::Source::Bare(name) => params.get(name).is_some_and(|spec| {
-                    matches!(spec.param_type, crate::models::ParamType::Datetime { .. })
-                }),
-                _ => false,
-            };
-            if !is_instant {
-                return Err(format!(
-                    "template contains '{}': format '{}' can only be applied to an instant (sys.now or type: datetime parameter)",
-                    scanned.raw, fmt
-                ));
+
+        match token.reader {
+            Some(crate::interpolation::Reader::Join(_)) => {
+                let is_declared_list = match token.source {
+                    crate::interpolation::Source::Bare(name) => {
+                        params.get(name).is_some_and(|spec| {
+                            matches!(spec.param_type, crate::models::ParamType::List)
+                        })
+                    }
+                    _ => false,
+                };
+                if !is_declared_list {
+                    return Err(format!(
+                        "template contains '{}': join can only be applied to a parameter declared as type: list",
+                        scanned.raw
+                    ));
+                }
+            }
+            Some(crate::interpolation::Reader::Format(fmt)) => {
+                let is_declared_list = match token.source {
+                    crate::interpolation::Source::Bare(name) => {
+                        params.get(name).is_some_and(|spec| {
+                            matches!(spec.param_type, crate::models::ParamType::List)
+                        })
+                    }
+                    _ => false,
+                };
+                if is_declared_list {
+                    return Err(format!(
+                        "template contains '{}': a list parameter is read through join('<separator>')",
+                        scanned.raw
+                    ));
+                }
+                let is_instant = match token.source {
+                    crate::interpolation::Source::Sys(crate::interpolation::SysValue::Now) => true,
+                    crate::interpolation::Source::Bare(name) => {
+                        params.get(name).is_some_and(|spec| {
+                            matches!(spec.param_type, crate::models::ParamType::Datetime { .. })
+                        })
+                    }
+                    _ => false,
+                };
+                if !is_instant {
+                    return Err(format!(
+                        "template contains '{}': format '{}' can only be applied to an instant (sys.now or type: datetime parameter)",
+                        scanned.raw, fmt
+                    ));
+                }
+            }
+            None => {
+                let is_declared_list = match token.source {
+                    crate::interpolation::Source::Bare(name) => {
+                        params.get(name).is_some_and(|spec| {
+                            matches!(spec.param_type, crate::models::ParamType::List)
+                        })
+                    }
+                    _ => false,
+                };
+                if is_declared_list {
+                    return Err(format!(
+                        "template contains '{}': list parameter cannot be used as a bare token; a list is read through join('<separator>')",
+                        scanned.raw
+                    ));
+                }
             }
         }
     }
@@ -1431,6 +1495,7 @@ fn validate_interpolated_string(
 fn validate_item_references(
     item: &LayoutItem,
     params: &std::collections::BTreeMap<String, ParamSpec>,
+    path: &str,
 ) -> Result<(), String> {
     match item {
         LayoutItem::Text {
@@ -1441,7 +1506,7 @@ fn validate_item_references(
             when,
             ..
         } => {
-            validate_when_references(when.as_ref(), params)?;
+            validate_when_references(when.as_ref(), params, path)?;
             validate_interpolated_string(value, params)?;
             if let Some(DynamicValue::Ref(ref_name)) = font_weight {
                 check_param_ref(params, ref_name, "font_weight", &["integer"])?;
@@ -1468,7 +1533,7 @@ fn validate_item_references(
             when,
             ..
         } => {
-            validate_when_references(when.as_ref(), params)?;
+            validate_when_references(when.as_ref(), params, path)?;
             validate_interpolated_string(value, params)?;
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
@@ -1490,7 +1555,7 @@ fn validate_item_references(
             when,
             ..
         } => {
-            validate_when_references(when.as_ref(), params)?;
+            validate_when_references(when.as_ref(), params, path)?;
             if let Some(n) = name {
                 if n.is_empty()
                     || !n
@@ -1520,7 +1585,7 @@ fn validate_item_references(
             }
         }
         LayoutItem::Line { stroke, when, .. } => {
-            validate_when_references(when.as_ref(), params)?;
+            validate_when_references(when.as_ref(), params, path)?;
             if let Some(Stroke {
                 color: DynamicValue::Ref(ref_name),
                 ..
@@ -1537,7 +1602,7 @@ fn validate_item_references(
             items,
             ..
         } => {
-            validate_when_references(when.as_ref(), params)?;
+            validate_when_references(when.as_ref(), params, path)?;
             if let Some(Stroke {
                 color: DynamicValue::Ref(ref_name),
                 ..
@@ -1560,8 +1625,8 @@ fn validate_item_references(
                     }
                 }
             }
-            for child in items {
-                validate_item_references(child, params)?;
+            for (child_idx, child) in items.iter().enumerate() {
+                validate_item_references(child, params, &format!("{path}.items[{child_idx}]"))?;
             }
         }
     }
@@ -6406,6 +6471,117 @@ layout:
             crate::render::render_thumbnail_png(&t_bad, &ph_bad, None, &BTreeMap::new(), &dt_res)
                 .unwrap();
         assert!(!png.is_empty());
+
+        // 6. List placeholder: required list with no default is invented as [name]
+        let yaml_list_no_def = r#"
+name: Thumbnail List NoDef
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_list_no_def = parse_template_ok(yaml_list_no_def);
+        let ph_list_no_def = test_placeholder_data(&t_list_no_def, now);
+        assert_eq!(
+            ph_list_no_def.get("tags"),
+            Some(&json!(["tags"])),
+            "required list with no default must be invented as [name]"
+        );
+        let png_ld = crate::render::render_thumbnail_png(
+            &t_list_no_def,
+            &ph_list_no_def,
+            None,
+            &BTreeMap::new(),
+            &dt_res,
+        )
+        .unwrap();
+        assert!(!png_ld.is_empty());
+
+        // 7. List with declared default is NOT invented
+        let yaml_list_with_def = r#"
+name: Thumbnail List WithDef
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+    default: [CONSUMABLE, KIDS]
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_list_def = parse_template_ok(yaml_list_with_def);
+        let ph_list_def = test_placeholder_data(&t_list_def, now);
+        assert!(
+            !ph_list_def.contains_key("tags"),
+            "list with resolvable default must not be invented"
+        );
+        let resolved_def = crate::render::resolve_parameters(
+            &t_list_def,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            Some(&dt_res),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved_def.data.get("tags"),
+            Some(&json!(["CONSUMABLE", "KIDS"]))
+        );
+
+        // 8. List with default: [] is present and not invented (renders empty)
+        let yaml_list_empty_def = r#"
+name: Thumbnail List EmptyDef
+unit: mm
+dpi: 200
+params:
+  tags:
+    type: list
+    default: []
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Tags: {tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        let t_list_empty = parse_template_ok(yaml_list_empty_def);
+        let ph_list_empty = test_placeholder_data(&t_list_empty, now);
+        assert!(
+            !ph_list_empty.contains_key("tags"),
+            "list with default [] must not be invented"
+        );
+        let resolved_empty = crate::render::resolve_parameters(
+            &t_list_empty,
+            &std::collections::HashMap::new(),
+            None,
+            None,
+            Some(&dt_res),
+        )
+        .unwrap();
+        assert_eq!(resolved_empty.data.get("tags"), Some(&json!([])));
+        let png_empty = crate::render::render_thumbnail_png(
+            &t_list_empty,
+            &ph_list_empty,
+            None,
+            &BTreeMap::new(),
+            &dt_res,
+        )
+        .unwrap();
+        assert!(!png_empty.is_empty());
     }
 
     #[test]
@@ -7045,6 +7221,356 @@ layout:
             "expected layout path and field in error: {}",
             item.error
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn list_parameter_load_refusals_quarantine_files() {
+        let dir = temp_dir("list_load_refusals");
+        let valid_yaml = sample_yaml("valid");
+        write_template(&dir, "valid.yaml", &valid_yaml);
+
+        // 1. Declared list in when condition
+        let when_list_yaml = r#"
+name: WhenList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    when: { tags: KIDS }
+"#;
+        write_template(&dir, "when_list.yaml", when_list_yaml);
+
+        // 2. Image binding declared list
+        let image_list_yaml = r#"
+name: ImageList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: image
+    name: tags
+    at: [0, 0]
+    size: [50, 20]
+"#;
+        write_template(&dir, "image_list.yaml", image_list_yaml);
+
+        // 3. Bare token on declared list
+        let bare_list_yaml = r#"
+name: BareList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    value: "{tags}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "bare_list.yaml", bare_list_yaml);
+
+        // 4. Format on declared list
+        let format_list_yaml = r#"
+name: FormatList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    value: "{tags:short_date}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "format_list.yaml", format_list_yaml);
+
+        // 5. Bare reader on declared list {tags:join}
+        let bare_join_yaml = r#"
+name: BareJoin
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list }
+layout:
+  - type: text
+    value: "{tags:join}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "bare_join.yaml", bare_join_yaml);
+
+        // 6. Join on non-list string
+        let join_string_yaml = r#"
+name: JoinString
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  title: { type: string }
+layout:
+  - type: text
+    value: "{title:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "join_string.yaml", join_string_yaml);
+
+        // 7. Join on undeclared
+        let join_undeclared_yaml = r#"
+name: JoinUndeclared
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{items:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "join_undeclared.yaml", join_undeclared_yaml);
+
+        // 8. Join on sys.now
+        let join_sys_yaml = r#"
+name: JoinSys
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "{sys.now:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "join_sys.yaml", join_sys_yaml);
+
+        // 9. Valid list with join parses and loads cleanly
+        let valid_list_yaml = r#"
+name: ValidList
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  tags: { type: list, default: [CONSUMABLE, KIDS] }
+layout:
+  - type: text
+    value: "{tags:join(', ')}"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "valid_list.yaml", valid_list_yaml);
+
+        // 10. Explicit null when: null loads cleanly as unconditional
+        let when_null_yaml = r#"
+name: WhenNull
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Unconditional"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    when: null
+"#;
+        write_template(&dir, "when_null.yaml", when_null_yaml);
+
+        // 11. Undeclared when: key keeps existing message without layout path
+        let when_undeclared_yaml = r#"
+name: WhenUndeclared
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    when: { undeclared_key: KIDS }
+"#;
+        write_template(&dir, "when_undeclared.yaml", when_undeclared_yaml);
+
+        // 12. when: {} is refused
+        let when_empty_yaml = r#"
+name: WhenEmpty
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    when: {}
+"#;
+        write_template(&dir, "when_empty.yaml", when_empty_yaml);
+
+        // 13. Blank when: key is refused
+        let when_blank_key_yaml = r#"
+name: WhenBlankKey
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    when: { " ": "KIDS" }
+"#;
+        write_template(&dir, "when_blank_key.yaml", when_blank_key_yaml);
+
+        // 14. Blank when: value is refused
+        let when_blank_val_yaml = r#"
+name: WhenBlankVal
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  category: { type: string }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    when: { category: " " }
+"#;
+        write_template(&dir, "when_blank_val.yaml", when_blank_val_yaml);
+
+        // 15. List driving dimension is refused
+        let dim_list_yaml = r#"
+name: DimList
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: "{tags}"
+  height: 20
+params:
+  tags:
+    type: list
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+"#;
+        write_template(&dir, "dim_list.yaml", dim_list_yaml);
+
+        // 16. List driving color is refused
+        let color_list_yaml = r#"
+name: ColorList
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 20
+params:
+  tags:
+    type: list
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    color: "{tags}"
+"#;
+        write_template(&dir, "color_list.yaml", color_list_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+        assert_eq!(registry.len(), 3); // valid, valid_list, when_null
+        assert!(registry.get("valid").is_some());
+        assert!(registry.get("valid_list").is_some());
+        assert!(registry.get("when_null").is_some());
+
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 14);
+
+        // Verify specific error messages
+        let find_broken = |path: &str| broken.iter().find(|b| b.path == path).unwrap();
+
+        let b_when = find_broken("when_list.yaml");
+        assert!(b_when.error.contains("tags") && b_when.error.contains("layout[0]"));
+
+        let b_img = find_broken("image_list.yaml");
+        assert!(b_img.error.contains("tags") && b_img.error.contains("image name"));
+
+        let b_bare = find_broken("bare_list.yaml");
+        assert!(b_bare.error.contains("{tags}"));
+
+        let b_fmt = find_broken("format_list.yaml");
+        assert!(b_fmt.error.contains("{tags:short_date}"));
+
+        let b_join_bare = find_broken("bare_join.yaml");
+        assert!(
+            b_join_bare.error.contains("{tags:join}")
+                && b_join_bare.error.contains("join('<separator>')")
+        );
+
+        let b_join_str = find_broken("join_string.yaml");
+        assert!(b_join_str.error.contains("{title:join(', ')}"));
+
+        let b_join_und = find_broken("join_undeclared.yaml");
+        assert!(b_join_und.error.contains("{items:join(', ')}"));
+
+        let b_join_sys = find_broken("join_sys.yaml");
+        assert!(b_join_sys.error.contains("{sys.now:join(', ')}"));
+
+        let b_when_und = find_broken("when_undeclared.yaml");
+        assert!(b_when_und
+            .error
+            .contains("undeclared parameter 'undeclared_key' referenced in when condition"));
+
+        let b_when_empty = find_broken("when_empty.yaml");
+        assert!(b_when_empty.error.contains("when must not be empty"));
+
+        let b_when_blank_key = find_broken("when_blank_key.yaml");
+        assert!(b_when_blank_key
+            .error
+            .contains("undeclared parameter ' ' referenced in when condition"));
+
+        let b_when_blank_val = find_broken("when_blank_val.yaml");
+        assert!(b_when_blank_val
+            .error
+            .contains("when must not contain empty values"));
+
+        let b_dim_list = find_broken("dim_list.yaml");
+        assert!(b_dim_list
+            .error
+            .contains("parameter 'tags' of type List cannot be used in format width"));
+
+        let b_color_list = find_broken("color_list.yaml");
+        assert!(b_color_list
+            .error
+            .contains("parameter 'tags' of type List cannot be used in color"));
+
         fs::remove_dir_all(&dir).ok();
     }
 

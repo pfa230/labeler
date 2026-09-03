@@ -353,11 +353,37 @@ decision that changes the contract. Anything a stage can decide, it decides and 
 asks instead of deciding has traded an hour of yours for a minute of its own; a stage that guesses at
 the contract has buried something a later reader will trust.
 
+`ANSWERS.md` is also the one place a person can steer a run that is already going, and it is worth
+knowing what that costs. **Every stage reads it, the reviewer included**, and `worktree_digest` hashes
+it into the tree (`run-stage.sh:374-382`), so editing it makes the next round a new round even when no
+source moved: `apply.sh`'s exit-10 identical-bytes guard will not fire, and a fix round that wrote
+nothing gets reviewed anyway.
+
+So an instruction written there sets the reviewer's work as much as the author's, and the trap is
+asking the author for **evidence the reviewer can only check by reproducing it**. During #213 five
+rounds had each found one uncovered guard, so `ANSWERS.md` asked the implementer to sweep every guard
+the diff added and report a table: `file:line`, the mutation, the test that fails under it. The author
+did that for 232,937 tokens on a free model. The reviewer, whose fixed prompt says to verify each
+finding against the actual code and not to rubber-stamp, then copied the UI tree to `/tmp` and re-ran
+the whole matrix, one full `vitest` run per row, because a coverage claim is the one kind of claim
+reading cannot check.
+
+Ask for the work, not for a claim about the work: "write the missing tests and prove them by mutation"
+lands the same code and leaves the reviewer a diff to read. If a claim table really is wanted, bound
+the check in the same file, which the reviewer also reads, or get the evidence from a tool
+(`cargo-mutants`, Stryker) whose output a reviewer can read instead of reproduce.
+
 ## What the gates check
 
 Two scripts, run by `.githooks/pre-commit` and by CI, so no agent is judged differently from another.
 They inspect files, never which tool produced them. Enable them once per clone with
 `.workflow/setup-hooks.sh`.
+
+A third, `.workflow/merge-shape-check.sh`, judges the commit's shape rather than its files and runs
+only locally, from `pre-commit` and `pre-merge-commit` (#341). It refuses a merge anywhere but `main`,
+because the two below read history through one base ref and a merge gives them two previous commits.
+CI has no counterpart to it: `archive-merge-check.sh` exits 2 on the merge it cannot read, which
+covers what lands, and a merge it *can* read is not something CI refuses.
 
 They read file contents from the working tree rather than the index, so the hook first refuses a
 commit whose `openspec/`, `src/` or `ui/src/` files differ between disk and what is staged. Otherwise
@@ -416,8 +442,26 @@ to.
 
 `.workflow/gate-tests.sh` asserts both scripts against a throwaway repo, mostly on the refusals: a
 gate that stops firing looks exactly like a gate that passes, and both of these did that once during
-development. `.workflow/apply-tests.sh` does the same for `apply.sh`'s change resolution, through
+development. It asserts the merge refusal through the real hooks, on both paths git splits a merge
+commit across, because a hook asserted through a copy of its logic asserts the copy. `.workflow/apply-tests.sh` does the same for `apply.sh`'s change resolution, through
 `--dry-run`, so no agent is launched. CI runs both. Change any of those scripts and run them.
+
+**Exit 2 means the commit could not be judged**, and both gate scripts now have it (#333). A base ref
+that does not resolve, a `git show` that fails on a path that is present, a commit naming a change
+while `openspec/changes/` is absent: each used to reach the permissive branch, because a failure
+nobody could see produced an empty requirement index, and an empty index reads exactly like a
+capability that had nothing to displace. Every requirement then compared against nothing and the check
+passed saying nothing at all. Existence is now asked of `git cat-file -e`, never inferred from `show`
+failing, and every working file the check writes is checked.
+
+The suites carry the other half, in `.workflow/suite-lib.sh`: around 250 fixture writes across the
+three of them, not one of which was checked. A write that fails leaves a case asserting against a file
+that was never written, and for a refusal case that reads as a gate which stopped firing, which is the
+one signature `gate-tests.sh` exists to detect. So each `setup()` proves the fixture it just built is
+on disk, and every assertion first proves the filesystem still takes a fixture-sized write. Either
+failing ends the run with **exit 3** and no verdict, because a suite that cannot build what it asserts
+against has nothing to report. `/tmp` here carries a per-user quota that `df` does not show, and under
+it `gate-tests.sh` once returned 40 passed, 13 failed with two refusals that never fired.
 
 The gates bound what they can see. A commit that skips OpenSpec entirely has no change folder, so
 nothing is checked; `--no-verify` skips the hook. Both are recorded in `docs/WORKFLOW.md` under what
@@ -486,15 +530,40 @@ Commit and push without prompting; do not wait to be asked. There are no pull re
 branch is the only place a change can be checked before it reaches `main`:
 
 ```bash
+git rebase origin/main                  # only if main moved; never `git merge main`
 git push -u origin issue-<N>-<slug>     # runs the checks; publishing stays bound to main
 # once that run is green, from the repo root:
-git merge issue-<N>-<slug> && git push
+git merge --ff-only issue-<N>-<slug> && git push
 git push origin --delete issue-<N>-<slug>
 git worktree remove .worktrees/issue-<N> && git branch -d issue-<N>-<slug>
 ```
 
 Do not merge on a red or absent branch run. CI on `main` is not a gate, it is a post-mortem: by the
-time it fails, the commit is already integrated. Never rewrite history that has been pushed.
+time it fails, the commit is already integrated.
+
+**A change branch rebases onto `main`; it never merges `main` into itself** (#341). A back-merge
+records that a branch outlived `main` and nothing else: of the 163 merges on `main`, 35 bring `main`
+into a branch, and 21 of those carry no message beyond `Merge remote-tracking branch 'origin/main'`.
+It also breaks the one
+check that reads history: `archive-merge-check.sh` asks whether `openspec/specs/` is the delta applied
+to *the* previous commit, and a merge has two, so it reports one parent's correctly archived work as a
+hand-edit. The hooks refuse the shape rather than leaving this to memory, and it takes two of them:
+git runs `pre-merge-commit` for a merge it resolved itself and never `pre-commit`, and `pre-commit` for
+one that conflicted and is committed by hand. `.workflow/merge-shape-check.sh` is the one spelling
+both call.
+
+Integration is `--ff-only`, which after a rebase always succeeds and leaves no bubble. Of the last 30
+issue branches merged, 24 held one commit and 6 held two, so the bubble was wrapping a single commit.
+`--no-ff` stays for a branch whose boundary says something, which is what the milestone merges did.
+
+**Never rewrite `main`, or any ref another session consumes.** That is the whole scope of the rule, and
+a change branch is outside it: it is pushed to earn one run, nothing is based on it, and it is deleted
+at integration. Rebase it and push with `--force-with-lease --force-if-includes`, never a bare
+`--force`, so a push that would discard something you have not seen fails instead.
+
+Rebase *before* the diff review wherever `main` has already moved, so the tree the reviewer approved is
+the tree that lands. A rebase after that review is a post-review write to `src/` with an author and no
+reviewer, and is measured as one (#342).
 
 ## Commands
 

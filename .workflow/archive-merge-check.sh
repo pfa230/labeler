@@ -19,6 +19,13 @@
 #
 # New content is read from the working tree, old content from the ref. Trailing
 # whitespace and trailing blank lines are normalised away; nothing else is.
+#
+# Exit 0 = the archive is faithful. Exit 1 = it is not, reason on stderr. Exit 2 = this
+# could not be checked at all, which is never a pass: see cannot().
+#
+# One base ref means one previous commit, so a merge whose parents both changed published
+# specs is exit 2 and not exit 1 (#341). The shape is refused where it is made, by
+# .githooks/pre-commit; this is the same rule read from what lands.
 set -uo pipefail
 
 root="${1:?repo root required}"; shift || true
@@ -28,13 +35,21 @@ base_ref="${GATE_BASE_REF:-HEAD}"
 fail() { printf 'archive-merge: %s\n' "$1" >&2; failed=1; }
 failed=0
 
+# A refusal says the archive is wrong. This says the archive could not be read, which is
+# a different answer and must never arrive as the permissive one. Every place below that
+# reads the base ref or writes a working file goes through it, because both failures
+# produce an EMPTY requirement index, and an empty index is indistinguishable from a
+# capability that had nothing to displace: every requirement then compares against
+# nothing and the check passes saying nothing at all (#333).
+cannot() { printf 'archive-merge: %s\n' "$1" >&2; exit 2; }
+
 tmp=$(mktemp -d) || exit 2
 trap 'rm -rf "$tmp"' EXIT
 
 # Split a spec into one file per requirement, printing "op<TAB>name<TAB>index".
 # op is ADDED/MODIFIED/REMOVED in a delta, PLAIN in a published spec.
 extract() {
-  mkdir -p "$2"
+  mkdir -p "$2" || return 1
   awk -v out="$2" '
     /^##[[:space:]]+(ADDED|MODIFIED|REMOVED)[[:space:]]+Requirements[[:space:]]*$/ { op = $2; if (f) { close(f); f = "" } next }
     /^###[[:space:]]+Requirement:/ {
@@ -101,6 +116,54 @@ for f in "$@"; do
 done
 [ -n "${caps// /}" ] || exit "$failed"
 
+# Checked once, here rather than at the top, because everything above this line answers
+# without reading the ref: a commit naming no capability is none of this script's
+# business whatever state the repository is in.
+git -C "$root" rev-parse -q --verify "$base_ref^{commit}" >/dev/null 2>&1 \
+  || cannot "$base_ref does not resolve to a commit in $root, so there is nothing to compare the archive against."
+
+# A merge has two previous commits and this has one base ref, so where both sides changed
+# published specs neither reading is right about the other's: with the base at the branch,
+# the other parent's correctly archived work reads as a hand-edit, and with the base at
+# main, this branch's does. Both are internally consistent and both are wrong about the
+# merge (#340). That is the absence of an answer rather than a refusal, so it leaves
+# through cannot(), and it is asked here for the reason the line above is: a commit naming
+# no capability never gets this far.
+#
+# Only both-sides counts, which is what keeps the legitimate shape silent: a merge whose
+# first parent is already its own merge base contributed nothing of its own, and that is a
+# branch rebased onto what it merges into, which the model does handle. The answer to the
+# refused shape is to rebase the change branch onto main, which .githooks/pre-commit
+# demands where the merge is made; this is the same rule read from what lands (#341).
+# The pathspec is :(glob) and ** on purpose. A capability name is the whole path between
+# the specs root and the trailing /spec.md, so `identity/user-auth` is one name (#329), and
+# a bare * in a git pathspec matches / only because pathspecs default to fnmatch without
+# FNM_PATHNAME. Spelling the intent removes a nested capability's dependence on that.
+both_sides_wrote_specs() { # <a> <b> -> 0 when both changed published specs since diverging
+  local a="$1" b="$2" base
+  base=$(git -C "$root" merge-base "$a" "$b" 2>/dev/null) || return 1
+  [ -n "$(git -C "$root" diff --name-only "$base" "$a" -- ':(glob)openspec/specs/**/spec.md' 2>/dev/null)" ] || return 1
+  [ -n "$(git -C "$root" diff --name-only "$base" "$b" -- ':(glob)openspec/specs/**/spec.md' 2>/dev/null)" ] || return 1
+}
+short() { git -C "$root" rev-parse --short "$1" 2>/dev/null || printf '%s' "$1"; }
+
+git_dir=$(git -C "$root" rev-parse --path-format=absolute --git-dir 2>/dev/null) \
+  || cannot "cannot locate the git directory of $root, so whether this commit is a merge cannot be read."
+if [ -f "$git_dir/MERGE_HEAD" ]; then
+  while read -r other; do
+    [ -n "$other" ] || continue
+    both_sides_wrote_specs "$base_ref" "$other" && cannot \
+      "this commit merges $(short "$other") into $base_ref and both changed published specs since they diverged, so which requirement each parent wrote cannot be read from one base ref. Abort the merge and rebase onto main (#341)."
+  done < "$git_dir/MERGE_HEAD"
+fi
+
+merges=$(git -C "$root" rev-list --merges "$base_ref..HEAD" 2>/dev/null) \
+  || cannot "cannot list the commits $base_ref..HEAD names, so whether any of them is a merge cannot be read."
+for m in $merges; do
+  both_sides_wrote_specs "$m^1" "$m^2" && cannot \
+    "$(short "$m") is a merge whose parents both changed published specs since they diverged, so which requirement each wrote cannot be read from one base ref. A change branch rebases onto main rather than merging it (#341)."
+done
+
 for cap in $caps; do
   new="$root/openspec/specs/$cap/spec.md"
 
@@ -114,18 +177,24 @@ for cap in $caps; do
     esac
   done
 
-  d="$tmp/$cap"; mkdir -p "$d/delta" "$d/new" "$d/old"
-  if git -C "$root" show "$base_ref:openspec/specs/$cap/spec.md" > "$d/old.spec" 2>/dev/null; then
-    extract "$d/old.spec" "$d/old" > "$d/old.idx"
+  d="$tmp/$cap"; mkdir -p "$d/delta" "$d/new" "$d/old" || cannot "cannot create the working directory $d."
+  # Existence is asked of cat-file and never inferred from show failing. With the ref
+  # already known to resolve, cat-file answers the one question here - was this
+  # capability published at the base - so a show that then fails is a real error and is
+  # refused rather than read as a capability that did not exist yet.
+  if git -C "$root" cat-file -e "$base_ref:openspec/specs/$cap/spec.md" 2>/dev/null; then
+    git -C "$root" show "$base_ref:openspec/specs/$cap/spec.md" > "$d/old.spec" 2>/dev/null \
+      || cannot "'$cap': openspec/specs/$cap/spec.md exists at $base_ref but could not be read."
+    extract "$d/old.spec" "$d/old" > "$d/old.idx" || cannot "'$cap': cannot write the base requirement index."
     old_existed=1
   else
-    : > "$d/old.idx"   # new capability: nothing existed to displace
+    : > "$d/old.idx" || cannot "'$cap': cannot write the base requirement index."   # new capability: nothing existed to displace
     old_existed=0
   fi
   if [ -n "$delta" ] && [ -f "$delta" ]; then
-    extract "$delta" "$d/delta" > "$d/delta.idx"
+    extract "$delta" "$d/delta" > "$d/delta.idx" || cannot "'$cap': cannot write the delta requirement index."
   else
-    : > "$d/delta.idx"
+    : > "$d/delta.idx" || cannot "'$cap': cannot write the delta requirement index."
   fi
 
   # The published spec is gone. That is a capability retired, which is legitimate only
@@ -162,7 +231,7 @@ for cap in $caps; do
     *) fail "'$cap': a delta for it is being archived, but openspec/specs/$cap/spec.md is not in this commit. Archive syncs every delta; this one was not synced."; continue ;;
   esac
 
-  extract "$new" "$d/new" > "$d/new.idx"
+  extract "$new" "$d/new" > "$d/new.idx" || cannot "'$cap': cannot write the published requirement index."
 
   # 1. Every requirement the delta names landed as the delta wrote it, or is gone.
   while IFS=$'\t' read -r op name idx; do

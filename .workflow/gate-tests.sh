@@ -16,9 +16,15 @@ GATE="$here/review-gate-check.sh"
 MERGE="$here/archive-merge-check.sh"
 pass=0; fail=0
 
+# fatal, canary, fixture_built and suite_guard_case: the fixture guard every suite here
+# shares. Read why in the file itself; the short version is that a fixture write that
+# fails silently turns a refusal case into a gate that appears to have stopped firing.
+. "$here/suite-lib.sh"
+
 expect() { # expect <want-exit> <label> <script> <args...>
   local want="$1" label="$2"; shift 2
   local out rc
+  canary
   out=$("$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ]; then
     pass=$((pass + 1)); printf 'ok    %s\n' "$label"
@@ -33,6 +39,7 @@ expect() { # expect <want-exit> <label> <script> <args...>
 expect_says() { # expect_says <want-exit> <pattern> <label> <script> <args...>
   local want="$1" pat="$2" label="$3"; shift 3
   local out rc
+  canary
   out=$("$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ] && printf '%s\n' "$out" | grep -qF -- "$pat"; then
     pass=$((pass + 1)); printf 'ok    %s\n' "$label"
@@ -52,10 +59,10 @@ TREE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 # tree where a change is landing: one requirement modified, one added, the untouched
 # one left alone. Every case starts from that shape and breaks one thing.
 setup() {
-  repo=$(mktemp -d)
-  cd "$repo" || exit 2
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
-  mkdir -p openspec/specs/thing
+  mkdir -p openspec/specs/thing || fatal "cannot create the fixture's spec directory."
   cat > openspec/specs/thing/spec.md <<'EOF'
 # thing
 
@@ -75,7 +82,7 @@ The second thing SHALL happen.
 EOF
   git add -A; git commit -qm base
 
-  mkdir -p "$CDIR/specs/thing"
+  mkdir -p "$CDIR/specs/thing" || fatal "cannot create the fixture's change directory."
   printf '# Proposal\n' > "$CDIR/proposal.md"
   printf 'Design prose.\n' > "$CDIR/design.md"
   cat > "$CDIR/specs/thing/spec.md" <<'EOF'
@@ -116,6 +123,10 @@ EOF
   "$here/specs-digest.sh" "$CDIR" --write > /dev/null
   printf 'AUTHORS: agy, opencode\nREVIEWER: codex\nVERDICT: APPROVE\nTREE_SHA256: %s\n' "$TREE" > "$CDIR/diff-review.md"
   FILES=(openspec/specs/thing/spec.md "$CDIR/proposal.md" "$CDIR/specs/thing/spec.md" src/main.rs)
+  fixture_built "$repo" openspec/specs/thing/spec.md "$CDIR/proposal.md" "$CDIR/design.md" \
+                "$CDIR/specs/thing/spec.md" "$CDIR/review.md" "$CDIR/diff-review.md"
+  grep -q '^SPECS_SHA256:' "$CDIR/review.md" \
+    || fatal "specs-digest.sh recorded no digest in the fixture's review.md, so every staleness case below would pass for the wrong reason."
 }
 
 teardown() {
@@ -248,11 +259,11 @@ teardown
 # that matters: the name has to round-trip, or a delta is checked against the wrong
 # published spec (#329).
 setup_nested() {
-  repo=$(mktemp -d)
-  cd "$repo" || exit 2
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
   for cap in identity/user-auth billing/user-auth; do
-    mkdir -p "openspec/specs/$cap"
+    mkdir -p "openspec/specs/$cap" || fatal "cannot create the fixture's spec directory."
     cat > "openspec/specs/$cap/spec.md" <<EOF
 # $cap
 
@@ -279,6 +290,8 @@ EOF
 
 Another identity thing SHALL happen.
 EOF
+  fixture_built "$repo" openspec/specs/identity/user-auth/spec.md openspec/specs/billing/user-auth/spec.md \
+                "$CDIR/specs/identity/user-auth/spec.md"
 }
 
 setup_nested
@@ -436,6 +449,213 @@ expect 0 "gate: an approved live change lets code through" "$GATE" "$repo" src/m
 printf '\nAnd more.\n' >> "$LIVE/specs/thing/spec.md"
 expect 1 "gate: a live change whose specs moved after the verdict" "$GATE" "$repo" src/main.rs
 teardown
+
+# --- what could not be read is not what was found to be right (#333) --------------
+# Both scripts used to reach their permissive branch through a failure they could not
+# see. A base ref that does not resolve is the shape a fixture takes when its commit
+# failed to write, and it is what turned three merge cases and a block of gate cases
+# green while saying nothing at all: every capability read as new, so nothing had a
+# predecessor to be compared against.
+setup_uncommitted() {
+  setup
+  rm -rf .git
+  git init -q . && git config user.email t@t && git config user.name t \
+    || fatal "cannot re-init the fixture repo without a commit."
+  # A violation only the base ref can catch: this requirement is in no delta, so it is
+  # checked against its published predecessor and nothing else.
+  sed -i.bak 's/^The first thing SHALL happen./The first thing SHALL NOT happen./' openspec/specs/thing/spec.md
+  rm -f openspec/specs/thing/spec.md.bak
+}
+setup_uncommitted
+expect_says 2 "does not resolve to a commit" \
+  "merge: an unresolvable base ref is refused, not read as a capability with nothing to displace" \
+  "$MERGE" "$repo" "${FILES[@]}"
+expect_says 2 "does not resolve to a commit" \
+  "gate: an unresolvable base ref is refused, not read as a change that is already archived" \
+  "$GATE" "$repo" "${FILES[@]}"
+teardown
+
+# The gate's own version of the same hole: a commit naming a change while the directory
+# that would hold it is absent. That is a tree nothing can be read out of, and it used to
+# exit 0 before a single file was opened.
+setup
+find openspec/changes -mindepth 0 -delete 2>/dev/null
+expect_says 2 "does not exist" \
+  "gate: a commit naming a change with no openspec/changes to hold it is refused" \
+  "$GATE" "$repo" "${FILES[@]}"
+teardown
+
+# --- a merge has two previous commits, and one base ref cannot read them (#341) ----
+# The shape that breaks the check is the back-merge: main into a change branch that has
+# already archived work of its own, so both parents changed published specs and neither
+# reading of the base is right about the other's. The two shapes beside it must stay
+# silent or the refusal costs more than it buys, so both are asserted here too.
+CDIR2=openspec/changes/archive/2026-01-02-issue-2-other
+
+# Leaves the fixture mid-merge on a change branch, where the pre-commit caller stands.
+# The argument says what main's line changed: its own published spec, or only code.
+setup_back_merge() { # setup_back_merge <specs|src>
+  setup
+  local base; base=$(git rev-parse HEAD)
+  git checkout -q -b issue-1-thing || fatal "cannot create the fixture's change branch."
+  git add -A && git commit -qm "the branch archives a change of its own" \
+    || fatal "cannot commit the branch's change in the fixture."
+  git checkout -q -b mainline "$base" || fatal "cannot branch main's line in the fixture."
+  if [ "$1" = specs ]; then
+    mkdir -p "$CDIR2/specs/thing" || fatal "cannot create the second change's directory."
+    printf '# Proposal\n' > "$CDIR2/proposal.md"
+    cat > "$CDIR2/specs/thing/spec.md" <<'EOF'
+## MODIFIED Requirements
+
+### Requirement: The first thing
+
+The first thing SHALL happen, once.
+EOF
+    sed -i.bak 's/^The first thing SHALL happen./The first thing SHALL happen, once./' openspec/specs/thing/spec.md
+    rm -f openspec/specs/thing/spec.md.bak
+    fixture_built "$repo" "$CDIR2/specs/thing/spec.md"
+  else
+    mkdir -p src || fatal "cannot create the fixture's src directory."
+    printf 'fn main() {}\n' > src/main.rs
+    fixture_built "$repo" src/main.rs
+  fi
+  git add -A && git commit -qm "main's line lands a change of its own" \
+    || fatal "cannot commit main's change in the fixture."
+  git checkout -q issue-1-thing || fatal "cannot return to the fixture's change branch."
+  git merge --no-commit --no-ff mainline > /dev/null 2>&1
+  [ -f .git/MERGE_HEAD ] || fatal "the fixture is not mid-merge: git merge left no MERGE_HEAD."
+  fixture_built "$repo" openspec/specs/thing/spec.md
+}
+
+setup_back_merge specs
+expect_says 2 "rebase onto main" \
+  "merge: a back-merge whose parents both changed published specs has no answer, which is not a refusal" \
+  "$MERGE" "$repo" "${FILES[@]}"
+teardown
+
+setup_back_merge src
+expect 0 "merge: a merge whose other side changed no published spec is judged as any commit is" \
+  "$MERGE" "$repo" "${FILES[@]}"
+teardown
+
+# The legitimate merge: a branch already rebased onto what it merges into, so the first
+# parent is its own merge base and contributed nothing the base ref cannot see.
+setup
+base=$(git rev-parse HEAD)
+git checkout -q -b issue-1-thing || fatal "cannot create the fixture's change branch."
+git add -A && git commit -qm "the branch archives a change of its own" \
+  || fatal "cannot commit the branch's change in the fixture."
+git checkout -q -b mainline "$base" || fatal "cannot branch main's line in the fixture."
+git merge --no-commit --no-ff issue-1-thing > /dev/null 2>&1
+[ -f .git/MERGE_HEAD ] || fatal "the fixture is not mid-merge: git merge left no MERGE_HEAD."
+expect 0 "merge: a branch rebased onto what it merges into is the merge shape the model handles" \
+  "$MERGE" "$repo" "${FILES[@]}"
+teardown
+
+# A capability name is the whole path under the specs root, so `identity/user-auth` is one
+# name (#329). The predicate's pathspec has to see that file, and this is the case that
+# says so: it fails the moment the pathspec stops crossing a slash. No delta and no review
+# artifacts, because the refusal happens before any of them is read.
+setup_nested_back_merge() {
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
+  git init -q .; git config user.email t@t; git config user.name t
+  mkdir -p openspec/specs/identity/user-auth || fatal "cannot create the nested capability."
+  printf '# user-auth\n\n## Requirements\n\n### Requirement: A\n\nA SHALL happen.\n\n### Requirement: B\n\nB SHALL happen.\n' \
+    > openspec/specs/identity/user-auth/spec.md
+  git add -A && git commit -qm base || fatal "cannot write the nested fixture's base commit."
+  local base; base=$(git rev-parse HEAD)
+  git checkout -q -b issue-1-thing || fatal "cannot create the nested fixture's change branch."
+  sed -i.bak 's/^A SHALL happen./A SHALL happen, twice./' openspec/specs/identity/user-auth/spec.md
+  rm -f openspec/specs/identity/user-auth/spec.md.bak
+  git add -A && git commit -qm "the branch changes the nested capability" \
+    || fatal "cannot commit the nested fixture's branch change."
+  git checkout -q -b mainline "$base" || fatal "cannot branch main's line in the nested fixture."
+  sed -i.bak 's/^B SHALL happen./B SHALL happen, twice./' openspec/specs/identity/user-auth/spec.md
+  rm -f openspec/specs/identity/user-auth/spec.md.bak
+  git add -A && git commit -qm "main's line changes it too" \
+    || fatal "cannot commit the nested fixture's main change."
+  git checkout -q issue-1-thing || fatal "cannot return to the nested fixture's change branch."
+  git merge --no-commit --no-ff mainline > /dev/null 2>&1
+  [ -f .git/MERGE_HEAD ] || fatal "the nested fixture is not mid-merge: git merge left no MERGE_HEAD."
+  fixture_built "$repo" openspec/specs/identity/user-auth/spec.md
+}
+setup_nested_back_merge
+expect_says 2 "rebase onto main" \
+  "merge: a back-merge over a nested capability is seen, not read as no published spec at all" \
+  "$MERGE" "$repo" openspec/specs/identity/user-auth/spec.md
+teardown
+
+# --- and the hook refuses that merge where it is made (#341) ----------------------
+# Against the real hooks with the real scripts beside them: a hook asserted through a copy
+# of its logic asserts the copy. git splits the merge commit between two hooks, running
+# pre-merge-commit for a merge it resolved itself and pre-commit for one that conflicted,
+# so both paths are here, and so is the merge that must still go through.
+setup_hooked() {
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
+  git init -q . && git symbolic-ref HEAD refs/heads/main \
+    || fatal "cannot init the fixture repo on a branch named main."
+  git config user.email t@t; git config user.name t
+  mkdir -p .workflow .githooks src || fatal "cannot create the fixture's harness directories."
+  cp "$here"/*.sh .workflow/ || fatal "cannot copy the workflow scripts into the fixture."
+  cp "$here/../.githooks/pre-commit" "$here/../.githooks/pre-merge-commit" .githooks/ \
+    || fatal "cannot copy the hooks into the fixture."
+  chmod +x .githooks/pre-commit .githooks/pre-merge-commit .workflow/*.sh
+  printf 'fn main() {}\n' > src/main.rs
+  git add -A && git commit -qm base || fatal "cannot write the fixture's base commit."
+  git config core.hooksPath .githooks
+  git checkout -q -b other && printf 'fn other() {}\n' > src/other.rs \
+    && git add -A && git commit -qm "the other side" --no-verify \
+    || fatal "cannot build the fixture's other branch."
+  git checkout -q main || fatal "cannot return to the fixture's main."
+  fixture_built "$repo" .githooks/pre-commit .githooks/pre-merge-commit \
+                .workflow/merge-shape-check.sh src/main.rs
+}
+
+# The path pre-commit never sees: git resolves the merge itself and runs no pre-commit
+# hook at all, which is why this rule needs a second caller.
+setup_hooked
+git checkout -q -b issue-1-thing && printf 'fn thing() {}\n' > src/thing.rs \
+  && git add -A && git commit -qm "the branch" --no-verify \
+  || fatal "cannot build the fixture's change branch."
+expect_says 1 "does not merge into itself" \
+  "hook: a clean merge on a change branch is refused, and pre-commit never runs for it" \
+  git merge --no-ff --no-edit other
+teardown
+
+# The other path: git could not resolve it, so no pre-merge-commit ran, and the hand
+# commit is where the rule has to be. It is also what a refused clean merge leaves behind,
+# since git keeps that merge in progress and tells you to finish it with git commit.
+setup_hooked
+git checkout -q -b issue-1-thing && printf 'fn other() { /* branch */ }\n' > src/other.rs \
+  && git add -A && git commit -qm "the branch" --no-verify \
+  || fatal "cannot build the fixture's change branch."
+git merge --no-ff --no-edit other > /dev/null 2>&1
+[ -f .git/MERGE_HEAD ] || fatal "the fixture's merge did not conflict, so this case would assert nothing."
+printf 'fn other() { /* resolved */ }\n' > src/other.rs
+git add src/other.rs || fatal "cannot stage the fixture's resolution."
+expect_says 1 "does not merge into itself" \
+  "hook: a conflicted merge committed by hand on a change branch is refused" \
+  git commit -qm "resolve the merge"
+teardown
+
+setup_hooked
+expect 0 "hook: a merge on main is what integration is, and still goes through" \
+  git merge --no-ff --no-edit other
+teardown
+
+# A detached HEAD is not main either, and is told something else: rebasing is not the
+# advice for a HEAD that is on no branch.
+setup_hooked
+git checkout -q --detach || fatal "cannot detach the fixture's HEAD."
+expect_says 1 "on a detached HEAD" \
+  "hook: a merge on a detached HEAD is refused, and not told to rebase a branch it has not got" \
+  .workflow/merge-shape-check.sh
+teardown
+
+# The guard on this suite's own fixtures.
+suite_guard_case "$here/gate-tests.sh"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

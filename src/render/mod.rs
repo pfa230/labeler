@@ -137,13 +137,26 @@ fn coerce_param_value(
                 Err(()) => Err(value_to_string(val)),
             }
         }
-        crate::models::ParamType::String { .. } => {
-            let s = match val {
-                JsonValue::String(s) => s.clone(),
-                other => value_to_string(other),
-            };
-            Ok(CoercedParam::Value(JsonValue::String(s)))
-        }
+        crate::models::ParamType::String { .. } => match val {
+            JsonValue::String(s) => Ok(CoercedParam::Value(JsonValue::String(s.clone()))),
+            JsonValue::Array(_) => Err("an array is not a valid string".to_string()),
+            other => Ok(CoercedParam::Value(JsonValue::String(value_to_string(
+                other,
+            )))),
+        },
+        crate::models::ParamType::List => match val {
+            JsonValue::Array(arr) => {
+                let mut strings = Vec::with_capacity(arr.len());
+                for (idx, elem) in arr.iter().enumerate() {
+                    match elem {
+                        JsonValue::String(s) => strings.push(JsonValue::String(s.clone())),
+                        _ => return Err(format!("position {idx}")),
+                    }
+                }
+                Ok(CoercedParam::Value(JsonValue::Array(strings)))
+            }
+            _ => Err("not an array".to_string()),
+        },
     }
 }
 
@@ -287,6 +300,51 @@ pub fn resolve_parameters_mode(
                     },
                 }
             }
+            crate::models::ParamType::List => {
+                let raw_val = resolved.get(name);
+                match raw_val {
+                    None | Some(JsonValue::Null) => {
+                        resolve_and_coerce_default(
+                            name,
+                            spec,
+                            variables,
+                            datetime,
+                            &mut instants,
+                            &mut resolved,
+                            mode,
+                        )?;
+                    }
+                    Some(val) => match coerce_param_value(val, &spec.param_type) {
+                        Ok(CoercedParam::Value(coerced)) => {
+                            resolved.insert(name.clone(), coerced);
+                        }
+                        Ok(CoercedParam::Datetime(..)) => unreachable!(),
+                        Err(bad_str) => {
+                            if mode == ResolveMode::Lenient {
+                                resolve_and_coerce_default(
+                                    name,
+                                    spec,
+                                    variables,
+                                    datetime,
+                                    &mut instants,
+                                    &mut resolved,
+                                    mode,
+                                )?;
+                            } else if let Some(pos) = bad_str.strip_prefix("position ") {
+                                return Err(AppError::invalid_request(
+                                    Reason::RequestBodyInvalid,
+                                    format!("element at position {pos} of parameter '{name}' must be a string"),
+                                ));
+                            } else {
+                                return Err(AppError::invalid_request(
+                                    Reason::RequestBodyInvalid,
+                                    format!("parameter '{name}' is not a valid list"),
+                                ));
+                            }
+                        }
+                    },
+                }
+            }
             _ => {
                 if let Some(val) = resolved.get(name) {
                     match coerce_param_value(val, &spec.param_type) {
@@ -335,7 +393,14 @@ pub fn resolve_parameters_mode(
                                             format!("parameter '{name}' is not a valid number"),
                                         ));
                                     }
-                                    _ => {}
+                                    crate::models::ParamType::String { .. } => {
+                                        return Err(AppError::invalid_request(
+                                            Reason::RequestBodyInvalid,
+                                            format!("parameter '{name}' is not a valid string"),
+                                        ));
+                                    }
+                                    crate::models::ParamType::Datetime { .. }
+                                    | crate::models::ParamType::List => unreachable!(),
                                 }
                             }
                         }
@@ -420,6 +485,18 @@ pub fn json_to_param_value(val: &serde_json::Value) -> crate::models::ParamValue
             }
         }
         serde_json::Value::Bool(b) => crate::models::ParamValue::Boolean(*b),
+        serde_json::Value::Array(arr) => {
+            let mut list = Vec::with_capacity(arr.len());
+            for v in arr {
+                match v {
+                    serde_json::Value::String(s) => list.push(s.clone()),
+                    other => panic!(
+                        "json_to_param_value: non-string list element after coercion: {other:?}"
+                    ),
+                }
+            }
+            crate::models::ParamValue::List(list)
+        }
         serde_json::Value::String(s) => crate::models::ParamValue::String(s.clone()),
         other => crate::models::ParamValue::String(other.to_string()),
     }
@@ -471,6 +548,7 @@ fn resolve_parameter_default_candidate(
         crate::models::ParamValue::Float(f) => serde_json::json!(f),
         crate::models::ParamValue::Integer(i) => serde_json::json!(i),
         crate::models::ParamValue::Boolean(b) => JsonValue::Bool(*b),
+        crate::models::ParamValue::List(l) => serde_json::json!(l),
     };
 
     match coerce_param_value(&candidate, &spec.param_type) {
@@ -1695,6 +1773,9 @@ impl<'a> RenderContext<'a> {
                             .data
                             .get(name_str)
                             .ok_or_else(|| AppError::missing_field(name_str))?;
+                        if matches!(value, JsonValue::Array(_)) {
+                            return Err(AppError::field_value_not_scalar(name_str));
+                        }
                         helpers::parse_image_data_uri(&helpers::value_to_string(value))?
                     }
                     (None, None) => {
@@ -2179,6 +2260,9 @@ impl<'a> RenderContext<'a> {
                     .data
                     .get(name)
                     .ok_or_else(|| AppError::missing_field(name))?;
+                if matches!(value, JsonValue::Array(_)) {
+                    return Err(AppError::field_value_not_scalar(name));
+                }
                 parse_image_data_uri(&value_to_string(value))?
             }
             (None, None) => {
@@ -10297,6 +10381,229 @@ layout:
         ];
         let pdf = super::render_sheet_pages(&template, &labels, 0, &settings, &datetime).unwrap();
         assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn list_join_emits_joined_text_in_typst_source() {
+        let text_item = LayoutItem::Text {
+            value: "{tags:join(', ')}".to_string(),
+            placement: Placement::sized(
+                Position([0.0, 0.0]),
+                Size([SizeValue::fixed(50.0), SizeValue::fixed(20.0)]),
+            ),
+            font_size: FontSize::Fixed(12.0),
+            font_weight: None,
+            color: None,
+            wrap: false,
+            alignment: crate::models::Alignment {
+                horizontal: crate::models::HorizontalAlign::Left,
+                vertical: crate::models::VerticalAlign::Top,
+            },
+            overflow: Overflow::Ellipsis,
+            when: None,
+        };
+        let mut data: HashMap<String, super::JsonValue> = HashMap::new();
+        data.insert("tags".to_string(), serde_json::json!(["A", "B"]));
+        let settings = no_settings();
+        let datetime = no_datetime();
+        let env = super::RenderEnv {
+            settings: &settings,
+            datetime: &datetime,
+        };
+        let images = std::cell::RefCell::new(super::ImageCollector::default());
+        let ctx = super::RenderContext::new("mm", 180, &data, None, &env, &images);
+        let items = vec![text_item];
+        let geometry_values = HashMap::new();
+        let (measured, _) = ctx
+            .measure_items(
+                &items,
+                (100.0, 50.0),
+                [true, true],
+                &geometry_values,
+                "layout",
+            )
+            .expect("measure items");
+        let src = ctx
+            .render_items(
+                &items,
+                &measured,
+                (100.0, 50.0),
+                &geometry_values,
+                None,
+                "layout",
+            )
+            .expect("render items");
+        assert!(
+            src.contains("A,\u{a0}B") || src.contains("A, B"),
+            "rendered Typst source should contain joined list text 'A, B': {src}"
+        );
+    }
+
+    #[test]
+    fn param_types_refuse_array_values_with_exact_codes_and_reasons() {
+        let array_val = serde_json::json!(["foo", "bar"]);
+        let variables = BTreeMap::new();
+        let datetime_ctx = no_datetime();
+
+        let tpl_with_param =
+            |name: &str, param_type: crate::models::ParamType| -> TemplateContent {
+                let mut params = BTreeMap::new();
+                params.insert(
+                    name.to_string(),
+                    crate::models::ParamSpec {
+                        param_type,
+                        description: None,
+                        default: None,
+                        min: None,
+                        max: None,
+                    },
+                );
+                TemplateContent {
+                    name: "Test".to_string(),
+                    version: None,
+                    description: String::new(),
+                    unit: "mm".to_string(),
+                    dpi: 200,
+                    format: crate::models::TemplateFormat::Single {
+                        width: crate::models::Dimension::Fixed(50.0).into(),
+                        height: crate::models::Dimension::Fixed(20.0).into(),
+                        media_width: None,
+                    },
+                    params,
+                    layout: crate::models::Layout::Items(vec![]),
+                }
+            };
+
+        let run_strict = |name: &str,
+                          param_type: crate::models::ParamType|
+         -> Result<super::ResolvedParams, AppError> {
+            let tpl = tpl_with_param(name, param_type);
+            let mut submitted = HashMap::new();
+            submitted.insert(name.to_string(), array_val.clone());
+            super::resolve_parameters_mode(
+                &tpl,
+                &submitted,
+                None,
+                Some(&variables),
+                Some(&datetime_ctx),
+                super::ResolveMode::Strict,
+            )
+        };
+
+        // 1. String
+        let err = run_strict(
+            "title",
+            crate::models::ParamType::String { multiline: false },
+        )
+        .unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(
+            err.message_text(),
+            "parameter 'title' is not a valid string"
+        );
+
+        // 2. Boolean
+        let err = run_strict("flag", crate::models::ParamType::Boolean).unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(
+            err.message_text(),
+            "parameter 'flag' is not a valid boolean"
+        );
+
+        // 3. Integer
+        let err = run_strict("count", crate::models::ParamType::Integer).unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(
+            err.message_text(),
+            "parameter 'count' is not a valid integer"
+        );
+
+        // 4. Number & Length
+        let err = run_strict("ratio", crate::models::ParamType::Number).unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(
+            err.message_text(),
+            "parameter 'ratio' is not a valid number"
+        );
+
+        let err = run_strict("size", crate::models::ParamType::Length).unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.message_text(), "parameter 'size' is not a valid number");
+
+        // 5. Enum (422 Unprocessable Entity, InvalidOptionValue)
+        let err = run_strict(
+            "tier",
+            crate::models::ParamType::Enum {
+                values: vec!["A".to_string(), "B".to_string()],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err.status().as_u16(), 422);
+        assert_eq!(err.code(), "InvalidOptionValue");
+        assert_eq!(err.reason(), None); // invalid_option_value uses unreasoned new()
+        assert_eq!(err.message_text(), "Invalid option selection");
+
+        // 6. Datetime
+        let err = run_strict(
+            "created_at",
+            crate::models::ParamType::Datetime { time: false },
+        )
+        .unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("datetime_param_invalid"));
+        assert_eq!(
+            err.message_text(),
+            "Invalid value for datetime parameter 'created_at': [\"foo\",\"bar\"]"
+        );
+
+        // 7. List with non-array value
+        let tpl_list = tpl_with_param("tags", crate::models::ParamType::List);
+        let mut submitted_str = HashMap::new();
+        submitted_str.insert("tags".to_string(), serde_json::json!("not_an_array"));
+        let err = super::resolve_parameters_mode(
+            &tpl_list,
+            &submitted_str,
+            None,
+            Some(&variables),
+            Some(&datetime_ctx),
+            super::ResolveMode::Strict,
+        )
+        .unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.message_text(), "parameter 'tags' is not a valid list");
+
+        // 8. List with non-string element
+        let mut submitted_bad_elem = HashMap::new();
+        submitted_bad_elem.insert("tags".to_string(), serde_json::json!(["ok", 42]));
+        let err = super::resolve_parameters_mode(
+            &tpl_list,
+            &submitted_bad_elem,
+            None,
+            Some(&variables),
+            Some(&datetime_ctx),
+            super::ResolveMode::Strict,
+        )
+        .unwrap_err();
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(
+            err.message_text(),
+            "element at position 1 of parameter 'tags' must be a string"
+        );
     }
 
     #[test]

@@ -13,9 +13,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 APPLY="$here/apply.sh"
 pass=0; fail=0
 
+# fatal, canary, fixture_built and suite_guard_case: the fixture guard every suite here
+# shares. Read why in the file itself; the short version is that a fixture write that
+# fails silently leaves a case asserting against a file that was never written (#333).
+. "$here/suite-lib.sh"
+
 expect() { # expect <want-exit> <label> -- <args...>
   local want="$1" label="$2"; shift 3
   local out rc
+  canary
   out=$(cd "$cwd" && "$APPLY" "$@" 2>&1); rc=$?
   if [ "$rc" = "$want" ]; then
     pass=$((pass + 1)); printf 'ok    %s\n' "$label"
@@ -28,6 +34,7 @@ expect() { # expect <want-exit> <label> -- <args...>
 expect_change() { # expect_change <want-change> <label> -- <args...>
   local want="$1" label="$2"; shift 3
   local out rc got
+  canary
   out=$(cd "$cwd" && "$APPLY" "$@" 2>&1); rc=$?
   got=$(printf '%s\n' "$out" | sed -n 's/^change: \([^ ]*\).*/\1/p' | tail -1)
   if [ "$rc" = "0" ] && [ "$got" = "$want" ]; then
@@ -39,10 +46,10 @@ expect_change() { # expect_change <want-change> <label> -- <args...>
 }
 
 setup() {
-  repo=$(mktemp -d)
-  cd "$repo" || exit 2
+  repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
+  cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
-  mkdir -p openspec/changes/archive
+  mkdir -p openspec/changes/archive || fatal "cannot create the fixture's change directory."
   echo x > openspec/changes/archive/.gitkeep
   # The real ignore file, so the artifact test below judges the rule that ships.
   cp "$here/../.gitignore" .gitignore
@@ -52,6 +59,7 @@ setup() {
   # itself whether a roles file exists, and this one does not until a case writes it.
   export LABELER_ROLES_FILE="$repo/roles.local"
   rm -f "$LABELER_ROLES_FILE"
+  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore
 }
 teardown() { cd "$here" || exit 2; [ -n "${repo:-}" ] && [ -d "$repo" ] && find "$repo" -mindepth 0 -delete 2>/dev/null; repo=""; }
 
@@ -327,6 +335,9 @@ if ! agent_apply_prompt nosuchagent issue-3-c >/dev/null 2>&1; then
 else
   fail=$((fail + 1)); printf 'FAIL  an unknown agent got an apply prompt\n'
 fi
+
+# The guard on this suite's own fixtures.
+suite_guard_case "$here/apply-tests.sh"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

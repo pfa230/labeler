@@ -112,6 +112,7 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const valid =
     !inputsPending &&
     inputs.every((input) => {
+      if (input.control === "list") return true;
       if (!input.required) return true;
       const current = getOwnKey(form.data, input.name);
       return current !== undefined && current !== "" && current !== null;
