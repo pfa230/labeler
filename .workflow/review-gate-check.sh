@@ -118,7 +118,7 @@ check_plan_review() { # check_plan_review <change-dir> <name>
     APPROVE) ;;
     APPROVE_WITH_CHANGES)
       applied=$(field "$review" CHANGES_APPLIED)
-      [ "$applied" = "yes" ] || fail "change '$name': verdict is APPROVE_WITH_CHANGES but CHANGES_APPLIED is '${applied}'. Apply the Required Changes and have the reviewer re-check them." ;;
+      [ "$applied" = "yes" ] || fail "change '$name': verdict is APPROVE_WITH_CHANGES but CHANGES_APPLIED is '${applied}'. Apply the Required Changes and record CHANGES_APPLIED: yes." ;;
     REVISE)
       fail "change '$name': verdict is REVISE. Fix the artifacts and re-run the full review in a fresh context."; return ;;
     *)
