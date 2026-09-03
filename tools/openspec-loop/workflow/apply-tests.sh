@@ -51,6 +51,9 @@ setup() {
   repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
   cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
+  # The gate reads impl_paths from here; without it it refuses to judge rather than guess,
+  # and every stage that probes the plan gate would read that refusal as a failed plan.
+  printf 'impl_paths: [src, ui/src]\nfrozen_paths: []\n' > .openspec-loop.yml
   mkdir -p openspec/changes/archive || fatal "cannot create the fixture's change directory."
   echo x > openspec/changes/archive/.gitkeep
   # The real ignore file, so the artifact test below judges the rule that ships.
@@ -61,7 +64,7 @@ setup() {
   # itself whether a roles file exists, and this one does not until a case writes it.
   export OPENSPEC_LOOP_ROLES_FILE="$repo/roles.local"
   rm -f "$OPENSPEC_LOOP_ROLES_FILE"
-  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore
+  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore .openspec-loop.yml
 }
 teardown() { cd "$here" || exit 2; [ -n "${repo:-}" ] && [ -d "$repo" ] && find "$repo" -mindepth 0 -delete 2>/dev/null; repo=""; }
 
