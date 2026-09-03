@@ -824,3 +824,99 @@ describe("PrintForm empty template", () => {
     expect(body.fields).toBeUndefined();
   });
 });
+
+describe("PrintForm list parameter tolerance", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("does not deadlock on a required list input and submits without it", async () => {
+    const listTemplate: TemplateDetail = {
+      id: "list_tpl",
+      name: "List Template",
+      description: "",
+      unit: "mm",
+      dpi: 300,
+      format: { type: "single", width: 80, height: 24 },
+      inputs: {
+        all: [
+          { name: "title", control: "text", required: true },
+          { name: "tags", control: "list", required: true },
+        ],
+        default: [
+          { name: "title", control: "text", required: true },
+          { name: "tags", control: "list", required: true },
+        ],
+      },
+      variables: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.startsWith("/api/printers")) {
+        return new Response(JSON.stringify(printers), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
+        return new Response(
+          JSON.stringify({
+            inputs: [
+              [
+                { name: "title", control: "text", required: true },
+                { name: "tags", control: "list", required: true },
+              ],
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      if (url.startsWith("/api/print")) {
+        return new Response(JSON.stringify(summary), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("/api/render/label")) {
+        return new Response(new Blob(["img"]), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderForm(listTemplate);
+    const titleInput = (await screen.findByLabelText("title")) as HTMLInputElement;
+    expect(screen.queryByLabelText("tags")).toBeNull();
+
+    // With title empty, Print is disabled because title is required
+    const printBtn = screen.getByRole("button", { name: /^print$/i });
+    expect(printBtn).toBeDisabled();
+
+    // Fill title
+    fireEvent.change(titleInput, { target: { value: "Item Title" } });
+    fireEvent.change(await screen.findByLabelText("printer"), { target: { value: "p1" } });
+
+    // Now Print and Download are enabled (tags does not block validity)
+    await waitFor(() => expect(printBtn).not.toBeDisabled());
+    const downloadBtn = screen.getByRole("button", { name: /^download$/i });
+    expect(downloadBtn).not.toBeDisabled();
+
+    // Submitting posts data without tags
+    fireEvent.click(printBtn);
+    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
+    const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
+    expect(body.data).toEqual({ title: "Item Title" });
+  });
+});

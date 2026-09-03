@@ -231,6 +231,21 @@ impl AppError {
         )
     }
 
+    pub fn field_value_not_scalar(field: impl Into<String>) -> Self {
+        let f = field.into();
+        let mut extra = serde_json::Map::new();
+        extra.insert("field".to_string(), Value::from(f.clone()));
+        Self::reasoned(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            CODE_UNSUPPORTED_LAYOUT,
+            Reason::FieldValueNotScalar,
+            format!(
+                "field '{f}' is an array; only scalar values can be rendered in this layout item"
+            ),
+            Some(extra),
+        )
+    }
+
     pub fn unsupported_format(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::UNPROCESSABLE_ENTITY,

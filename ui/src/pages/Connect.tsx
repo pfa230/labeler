@@ -122,7 +122,7 @@ function Composer({
 }) {
   const { push } = useToast();
   const connectorKeys = useMemo(() => [...new Set(schema.resources.flatMap((r) => r.columns.map((c) => c.key)))], [schema]);
-  const templateFields = useMemo(() => detail.inputs.all.map((i) => i.name), [detail]);
+  const templateFields = useMemo(() => detail.inputs.all.filter((i) => i.control !== "list").map((i) => i.name), [detail]);
   const [mapping, setMapping] = useState<FieldMapping>(() => defaultMapping(templateFields, connectorKeys));
 
   const [rows, setRows] = useState<LabelGridRow[]>([]);
@@ -148,11 +148,15 @@ function Composer({
   const requiredUnion = useMemo(() => {
     const set = new Set<string>();
     if (rows.length === 0) {
-      for (const input of detail.inputs.default) set.add(input.name);
+      for (const input of detail.inputs.default) {
+        if (input.control !== "list") set.add(input.name);
+      }
     } else {
       for (const row of rows) {
         const inputs = getRowInputs(row.id) ?? detail.inputs.default;
-        for (const input of inputs) set.add(input.name);
+        for (const input of inputs) {
+          if (input.control !== "list") set.add(input.name);
+        }
       }
     }
     return [...set];
@@ -170,6 +174,7 @@ function Composer({
     const field: Record<string, string> = {};
     const inputs = getRowInputs(row.id) ?? detail.inputs.default;
     for (const input of inputs) {
+      if (input.control === "list") continue;
       const valStr = row.data[input.name] !== undefined && row.data[input.name] !== null ? String(row.data[input.name]) : "";
       if (input.control === "datetime" || input.control === "date") {
         const dtErr = datetimeCellError(valStr);

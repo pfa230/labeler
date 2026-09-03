@@ -147,11 +147,12 @@ export function LabelGrid({
       editable: (row: LabelGridRow) => {
         if (disabled) return false;
         if (!cellInput) return true;
-        return cellInput(row, field) !== undefined;
+        const spec = cellInput(row, field);
+        return spec !== undefined && spec.control !== "list";
       },
       renderCell: ({ row }: RenderCellProps<LabelGridRow>) => {
         const spec = cellInput ? cellInput(row, field) : { name: field, control: "text" as const };
-        if (!spec) {
+        if (!spec || spec.control === "list") {
           return <span style={{ color: "var(--muted)", opacity: 0.35 }}>—</span>;
         }
         const err = row.validation.field?.[field];
@@ -192,7 +193,7 @@ export function LabelGrid({
       renderEditCell: (p: RenderEditCellProps<LabelGridRow>) => {
         if (disabled) return null;
         const spec = cellInput ? cellInput(p.row, field) : { name: field, control: "text" as const };
-        if (!spec) return null;
+        if (!spec || spec.control === "list") return null;
         return <DataEditCell {...p} control={spec.control} />;
       },
     })),

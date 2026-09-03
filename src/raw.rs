@@ -62,6 +62,7 @@ pub enum RawParamType {
     Boolean,
     Enum,
     Datetime,
+    List,
 }
 
 /// Every attribute a `datetime` parameter forbids is `Option<Option<T>>`: the outer layer is

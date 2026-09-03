@@ -4,7 +4,7 @@ export type TemplateFormat =
   | { type: "single"; width: Dimension; height: Dimension }
   | { type: "sheet"; paper_width: number; paper_height: number; label_width: number; label_height: number; positions: [number, number][] };
 
-export type ParamValue = string | number | boolean;
+export type ParamValue = string | number | boolean | string[];
 
 export interface ParamDefaultError {
   reason: string;
@@ -18,7 +18,7 @@ export type ParamDefaultReport =
   | { error: ParamDefaultError };
 
 export interface ParamSpec {
-  type: "string" | "number" | "integer" | "boolean" | "enum" | "length" | "datetime";
+  type: "string" | "number" | "integer" | "boolean" | "enum" | "length" | "datetime" | "list";
   default?: ParamValue;
   values?: string[];
   min?: number;
@@ -37,7 +37,8 @@ export type InputControl =
   | "integer"
   | "image"
   | "date"
-  | "datetime";
+  | "datetime"
+  | "list";
 
 export interface InputSpec {
   name: string;

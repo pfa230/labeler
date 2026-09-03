@@ -249,6 +249,10 @@ export function ParamInput({
     );
   }
 
+  if (control === "list" || paramSpec.type === "list") {
+    return null;
+  }
+
   return (
     <input
       type="text"

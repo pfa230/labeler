@@ -294,6 +294,11 @@ A rejected declaration quarantines the template file under the existing rules of
 The post-change set of parameter types is below. Every row's omission behavior is one rule, owned by the
 `param-resolution` capability, and no row names a value the service picks:
 
+The `list` row is added by the change that introduces that type. Its own rules, meaning which attributes
+it refuses, what its `default:` may hold, what a request may send, and where a list may not be used, are
+the `list-params` capability's and are not restated here; this table stays the single place the complete
+set of types is published.
+
 | Type | YAML attributes | Request value | Behavior when omitted from the request | UI form control |
 | --- | --- | --- | --- | --- |
 | `string` | `default`, `multiline` (bool), `description` | String scalar | If `default` set: uses `default`. If no `default`: `422 MissingField` when rendered in active layout. | Text input (`multiline: false`) or textarea (`multiline: true`) |
@@ -303,6 +308,7 @@ The post-change set of parameter types is below. Every row's omission behavior i
 | `boolean` | `default`, `description` | `true` / `false` | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Toggle switch / checkbox |
 | `enum` | `values` (required list), `default`, `description` | String matching `values` | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Dropdown / segmented button group |
 | `datetime` | `default`, `time` (bool, default `false`), `description` | `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM[:SS]`, or an RFC 3339 timestamp | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | Date picker (`time: false`) or date-and-time picker (`time: true`) |
+| `list` | `default` (a YAML sequence of strings), `description` | JSON array of strings | If `default` set: uses `default`. If no `default`: `422 MissingField` when active. | `list` control (#318 builds the editor; until it lands a screen reports the entry and draws nothing) |
 
 Parameter naming is governed by the `interpolation-tokens` capability, which owns that rule. This
 requirement adds nothing to it and restates none of it.
@@ -393,6 +399,12 @@ colon, no two parameters can claim the same token.
 - **WHEN** a container declares `when: { printed_on: "2026-08-19" }` and the request sets
   `printed_on` to `2026-08-19T14:30`
 - **THEN** the container is rendered, because the comparison uses the parameter's `%Y-%m-%d` rendering
+
+#### Scenario: The published set of types carries the list row
+
+- **WHEN** a client reads the set of parameter types this table publishes
+- **THEN** it carries `list` alongside `string`, `length`, `integer`, `number`, `boolean`, `enum` and
+  `datetime`, each row naming the form control its type is reported with
 
 ### Requirement: A datetime parameter is resolved like every other parameter
 
