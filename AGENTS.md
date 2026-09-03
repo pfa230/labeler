@@ -164,8 +164,19 @@ The steps below are what those stages mean. Read them to understand the loop or 
 
    A zero exit with no verdict is the failure to watch for: `codex exec` given an empty stdin prints
    nothing and exits 0, which is indistinguishable from a clean pass unless you look. `run-stage.sh`
-   refuses a review it could not extract (exit 7) and `run-change.sh` refuses a log with no readable
-   `VERDICT:` line (exit 4), so that failure now has a name rather than a silent pass.
+   refuses any stage whose answer it could not extract (exit 7) and `run-change.sh` refuses a log with
+   no readable `VERDICT:` line (exit 4), so that failure now has a name rather than a silent pass.
+
+   That refusal covers **every role and every agent exit status** (#315). It once covered the two
+   review roles alone, and on the implement stage of #287 opencode returned no result and exit 0,
+   which reads exactly like a stage that ran: the driver went on to review code it had not written.
+   agy hit the same extraction failure the same day and only stopped the run because it happened to
+   exit 2, so which of the two failures stopped anything was the agent's choice and not the driver's.
+   `run-stage.sh` reports the two shapes apart: `NO_ANSWER_IN_OUTPUT` when the capture is a console
+   transcript with no answer in it, which becomes the stage log, and `NO_OUTPUT` when the agent
+   printed nothing, where the log records that absence and says whether the tree changed anyway. It
+   never copies an empty capture over the log, which is how a 21-minute agy run that wrote 1193 lines
+   came back as a 0-byte record of itself.
 
 4. **Apply and review the diff**, as a named pair:
    `.workflow/apply.sh <implementer> <reviewer> [change]`, or `/apply` with the same arguments. The

@@ -133,7 +133,7 @@ fi
 if [ "$pty_available" = "1" ]; then
 # --- run-stage.sh reads each agent's own result envelope (#274) ---------------------
 # Every CLI wraps its answer differently, and reading one shape for all of them left
-# claude and codex reporting NO_STRUCTURED_RESULT on every run, unresumable, and
+# claude and codex yielding no answer on every run, unresumable, and
 # unable to review at all. Stand-ins print the shapes those CLIs really emit, so the
 # assertion is that the log holds the ANSWER rather than the console capture, and
 # that the id a later --resume would need was recorded.
@@ -192,7 +192,7 @@ find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 
 # --- run-stage.sh refuses a review it could not extract -----------------------------
-# A stand-in that prints console noise and no envelope at all: the NO_STRUCTURED_RESULT
+# A stand-in that prints console noise and no envelope at all: the NO_ANSWER_IN_OUTPUT
 # shape that used to hand a transcript back as a review (#264). Checked for both agents
 # whose answer is an envelope, because the guard used to key on agy's shape alone, so
 # these two could not pass a review even when they had written one (#274).

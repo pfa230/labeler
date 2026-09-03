@@ -9,8 +9,9 @@
 # check), and the blocking-question protocol. Those are the parts whose failure is
 # silent. Everything that can run through --dry-run does, so no agent is launched there.
 #
-# Not covered, and worth knowing: the plan-review gate preflight and the
-# no-structured-result refusal are asserted by apply-tests.sh; the driver's own top -
+# Not covered, and worth knowing: the plan-review gate preflight is asserted by
+# apply-tests.sh, along with the unreadable-review refusal it shares with the section
+# below on a stage that gives no account of itself; the driver's own top -
 # the scope file, the parking of an unattributed review.md, and the gates-reached
 # assertion - is not, because reaching it means stubbing gh and then every agent in turn.
 #
@@ -550,9 +551,13 @@ mkdir -p "$repo/.worktrees/issue-24/.agent-runs"
 printf 'agy\n' > "$repo/.worktrees/issue-24/.agent-runs/implement.last"
 dirty_tree issue-24-noopswap
 sbin2=$(mktemp -d)
+# opencode's real shape: one event per line, the answer in the text parts (#286). The
+# shape it used to print here was nobody's, so extraction failed and the stage passed
+# only because a writing role's unreadable result was ignored; it is refused now (#315).
 cat > "$sbin2/opencode" <<'FAKE'
 #!/usr/bin/env bash
-echo '{"type":"result","sessionID":"s-1","parts":[{"type":"text","text":"the inherited work is already correct"}]}'
+echo '{"type":"text","sessionID":"s-1","part":{"type":"text","text":"the inherited work is already correct"}}'
+echo '{"type":"step_finish","sessionID":"s-1","part":{"type":"step-finish","reason":"stop"}}'
 FAKE
 cat > "$sbin2/codex" <<'FAKE'
 #!/usr/bin/env bash
@@ -702,10 +707,80 @@ add_passing_review issue-29-unwritable
 mkdir -p "$repo/.worktrees/issue-29/.agent-runs/implement.last"
 out=$(cd "$repo" && PATH="$rbin:$PATH" "$STAGE" implement agy issue-29-unwritable 2>&1); rc=$?
 find "$repo/.worktrees/issue-29/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
-if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'cannot record the implementer'; then
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "cannot record 'agy' as the implementer"; then
   ok "a run that cannot record who is writing does not run"
 else bad "an unrecordable run exited $rc"; fi
 find "$rbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- recording the implementer survives a vanished .agent-runs (#296) ---------------
+# note_implementer's mkdir and its write are two statements, and during the #235 run the
+# directory went away between them: the write failed with "No such file or directory" on
+# the line after its own mkdir -p had succeeded, in a worktree whose .agent-runs was there
+# before the stage and after it. What stepped into that window is not established, so what
+# is asserted here is the window itself and not a cause.
+setup
+add_change issue-35-vanish
+wt35="$repo/.worktrees/issue-35"
+mkdir -p "$wt35/.agent-runs"
+# The injection point sourcing agents.sh gives: a shell function named mkdir shadows the
+# command for the call inside note_implementer, so the directory can be created and then
+# taken away again before the write - exactly the window, which no amount of timing
+# reproduces. It steps aside after the first call, so the retry meets a normal mkdir.
+vanish=1
+mkdir() {
+  command mkdir "$@" || return 1
+  [ "$vanish" = "1" ] || return 0
+  vanish=0
+  find "$wt35/.agent-runs" -mindepth 0 -delete 2>/dev/null
+  return 0
+}
+note_implementer "$wt35" agy; rc=$?
+unset -f mkdir
+if [ "$rc" = "0" ] && [ "$(last_implementer "$wt35")" = "agy" ]; then
+  ok "a .agent-runs that vanishes under the write is retried rather than fatal"
+else bad "a vanished .agent-runs gave exit $rc and the record '$(last_implementer "$wt35")'"; fi
+
+# A write that returns 0 and records nothing, which the same window also produces: unlink
+# the directory once the file is open and printf writes into an orphaned inode, exits 0
+# and leaves no marker. /dev/null stands in for it, being the one path that accepts every
+# byte and keeps none. No retry can help here, so success has to mean the record reads
+# back rather than that the write returned 0.
+find "$wt35/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+ln -s /dev/null "$wt35/.agent-runs/implement.last"
+note_implementer "$wt35" opencode; rc=$?
+find "$wt35/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+if [ "$rc" != "0" ]; then ok "a write that lands nowhere is a failure, not a record"
+else bad "a write that recorded nothing returned 0"; fi
+teardown
+
+# And the stage stops on it, before launching anything. A run whose record did not land is
+# the one #292 forbids: an agent editing a tree the marker still attributes to somebody
+# else. The unwritable case above proves the refusal; this proves it also fires when the
+# write itself reports success.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-36-unlanded
+add_passing_review issue-36-unlanded
+vbin=$(mktemp -d)
+cat > "$vbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo ran >> ran.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$vbin/agy"
+mkdir -p "$repo/.worktrees/issue-36/.agent-runs"
+ln -s /dev/null "$repo/.worktrees/issue-36/.agent-runs/implement.last"
+out=$(cd "$repo" && PATH="$vbin:$PATH" "$STAGE" implement agy issue-36-unlanded 2>&1); rc=$?
+find "$repo/.worktrees/issue-36/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "cannot record 'agy' as the implementer"; then
+  ok "a stage whose record does not land refuses to run"
+else bad "a stage with an unlanded record exited $rc"; fi
+if [ ! -f "$repo/.worktrees/issue-36/ran.txt" ]; then
+  ok "and the agent never launched"
+else bad "the agent ran without a record of who was writing"; fi
+find "$vbin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
@@ -1240,7 +1315,8 @@ rbin=$(mktemp -d)
 cat > "$rbin/opencode" <<'FAKE'
 #!/usr/bin/env bash
 echo worked >> worked.txt
-echo '{"type":"result","sessionID":"s-33","parts":[{"type":"text","text":"done"}]}'
+echo '{"type":"text","sessionID":"s-33","part":{"type":"text","text":"done"}}'
+echo '{"type":"step_finish","sessionID":"s-33","part":{"type":"step-finish","reason":"stop"}}'
 FAKE
 cat > "$rbin/codex" <<'FAKE'
 #!/usr/bin/env bash
@@ -1742,6 +1818,198 @@ else
     | sed 's/^/        /' | head -3
 fi
 find "$ebin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- a stage that gives no account of itself (#315) ---------------------------------
+# One run of #287 hit both shapes of this in an afternoon. agy printed nothing at all
+# across 21 minutes while writing 1193 lines, and the line that copied its empty capture
+# over the log left a 0-byte record of a finished run. opencode printed a transcript with
+# no answer in it and exited 0, which no caller can tell from a stage that ran, so the
+# driver went on to review a diff opencode had not written. Both are refused now, by one
+# rule that does not consult the role or the status the agent chose to exit with.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-40-silent
+add_passing_review issue-40-silent
+bin=$(mktemp -d)
+
+# An agent that does the work and says nothing, exiting 0: opencode's status, agy's
+# silence. The work is on the tree and nothing accounts for it.
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "1193 lines of it" >> implemented.txt
+exit 0
+FAKE
+chmod +x "$bin/agy"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-40-silent 2>&1); rc=$?
+log="$repo/.worktrees/issue-40/.agent-runs/implement-agy.log"
+if [ "$rc" = "7" ]; then ok "an implement stage that printed nothing is refused"
+else
+  bad "an implement stage that printed nothing exited $rc, not 7"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -6
+fi
+if printf '%s\n' "$out" | grep -q 'status: NO_OUTPUT'; then
+  ok "and is reported as NO_OUTPUT, not as an answer nobody could read"
+else bad "the status word does not distinguish an empty capture from an unreadable one"; fi
+if [ -s "$log" ] && grep -q 'wrote nothing' "$log"; then
+  ok "and the log says the agent wrote nothing, rather than being 0 bytes"
+else bad "implement-agy.log is $(wc -c < "$log" 2>/dev/null | tr -d ' ') bytes: $(head -1 "$log" 2>/dev/null)"; fi
+if printf '%s\n' "$out" | grep -q 'the work is here, the account of it is not'; then
+  ok "and says the tree changed while the agent said nothing"
+else bad "a silent stage that changed the tree does not say so"; fi
+# Not "implemented.txt still exists": the refusal reverts nothing, so that holds whatever
+# this script does and would advertise coverage it has none of. What is new is that the
+# log sends a person to the work the agent never described.
+if grep -q '\.worktrees/issue-40' "$log" 2>/dev/null && grep -q 'git diff' "$log" 2>/dev/null; then
+  ok "and points at the worktree holding the work nothing accounts for"
+else bad "the log does not say where the unaccounted work is: $(head -c 120 "$log" 2>/dev/null)"; fi
+
+# The same silence, exiting 2 as agy did. The refusal must not be the agent's choice:
+# before this, agy's 2 stopped the run and opencode's 0 did not, on identical failures.
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "more of it" >> implemented.txt
+exit 2
+FAKE
+chmod +x "$bin/agy"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-40-silent 2>&1); rc=$?
+if [ "$rc" = "7" ]; then ok "the same silence exiting 2 is the same refusal, not the agent's status"
+else bad "a silent implement exiting 2 came back as $rc, not 7"; fi
+
+# The other shape: console noise, no answer in it, exit 0. This is what opencode did on
+# the implement stage of #287, and the transcript is the only lead a person has, so it
+# must survive as the log.
+cat > "$bin/opencode" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"tool_use","name":"edit","input":{"path":"src/lib.rs"}}'
+echo "console noise with no answer anywhere in it"
+echo "written by an agent that never said so" >> implemented.txt
+exit 0
+FAKE
+chmod +x "$bin/opencode"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement opencode issue-40-silent 2>&1); rc=$?
+olog="$repo/.worktrees/issue-40/.agent-runs/implement-opencode.log"
+if [ "$rc" = "7" ]; then ok "an implement stage whose output carries no answer is refused"
+else
+  bad "an implement stage with no answer in its output exited $rc, not 7"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -6
+fi
+# One assertion over both facts, because keeping a non-empty capture as the log is not new:
+# the old line copied every capture over the log regardless. Only the status word tells the
+# two failures apart, so the transcript check rides with it rather than passing on its own.
+got=$(printf '%s\n' "$out" | sed -n 's/^role:.*status: \([A-Z_]*\).*/\1/p' | head -1)
+if [ "$got" = "NO_ANSWER_IN_OUTPUT" ] && grep -q 'console noise with no answer' "$olog" 2>/dev/null; then
+  ok "and is reported as NO_ANSWER_IN_OUTPUT, with the transcript kept as its log"
+else bad "an unreadable transcript reported '$got' over $(wc -c < "$olog" 2>/dev/null | tr -d ' ') bytes of log"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# A silent run must not leave the PREVIOUS run's answer standing as its own record, and
+# must not leave an empty file where that answer was. Both are the same fallback: a
+# destination overwritten with something known to be worse, or knowingly left stale.
+setup
+add_change issue-42-record
+add_passing_review issue-42-record
+bin=$(mktemp -d)
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "first round" >> implemented.txt
+echo '{"conversation_id":"conv-42","status":"COMPLETED","response":"PREVIOUS-ANSWER"}'
+FAKE
+chmod +x "$bin/agy"
+(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-42-record >/dev/null 2>&1)
+log="$repo/.worktrees/issue-42/.agent-runs/implement-agy.log"
+if grep -q 'PREVIOUS-ANSWER' "$log" 2>/dev/null; then
+  ok "precondition: the first run leaves an answer for the silent one to overwrite"
+else bad "the first run left no answer to overwrite; the case below proves nothing"; fi
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "second round" >> implemented.txt
+exit 0
+FAKE
+chmod +x "$bin/agy"
+(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-42-record >/dev/null 2>&1)
+# All three conditions in one, because two of them pass on a 0-byte log: an empty file
+# holds no previous answer either. Only "non-empty AND this run's own account AND not the
+# previous one" separates the fix from the destruction it replaced.
+if [ -s "$log" ] && grep -q 'wrote nothing' "$log" && ! grep -q 'PREVIOUS-ANSWER' "$log"; then
+  ok "a silent run records its own silence: neither empty nor the previous run's answer"
+else bad "the silent run's log is $(wc -c < "$log" 2>/dev/null | tr -d ' ') bytes: $(head -1 "$log" 2>/dev/null)"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# A review was always refused with 7, so exit 7 alone says nothing about this change and
+# is asserted together with what is new: which of the two failures the run reports, and
+# what it leaves behind to read. apply-tests.sh covers the refusal itself for a review.
+setup
+add_change issue-43-quiet
+bin=$(mktemp -d)
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" review codex issue-43-quiet 2>&1); rc=$?
+rlog="$repo/.worktrees/issue-43/.agent-runs/review-codex.log"
+got=$(printf '%s\n' "$out" | sed -n 's/^role:.*status: \([A-Z_]*\).*/\1/p' | head -1)
+if [ "$rc" = "7" ] && [ "$got" = "NO_OUTPUT" ]; then
+  ok "a silent review is refused as NO_OUTPUT, not as an answer nobody could read"
+else bad "a silent review exited $rc reporting '$got'"; fi
+if [ -s "$rlog" ] && grep -q 'wrote nothing' "$rlog"; then
+  ok "and its log records the silence rather than being 0 bytes"
+else bad "review-codex.log is $(wc -c < "$rlog" 2>/dev/null | tr -d ' ') bytes after a silent review"; fi
+
+# The other half of the same role: a transcript with no answer in it. The review-specific
+# refusal must still be the one that fires, and it is asserted with the status word, since
+# that sentence is what the old code said too.
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo "reading the diff"
+echo "no envelope anywhere in this"
+FAKE
+chmod +x "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" review codex issue-43-quiet 2>&1); rc=$?
+got=$(printf '%s\n' "$out" | sed -n 's/^role:.*status: \([A-Z_]*\).*/\1/p' | head -1)
+if [ "$rc" = "7" ] && [ "$got" = "NO_ANSWER_IN_OUTPUT" ] \
+   && printf '%s\n' "$out" | grep -q 'Refusing to treat a transcript as a review'; then
+  ok "and an unreadable one is NO_ANSWER_IN_OUTPUT, still refused as a review"
+else bad "an unreadable review exited $rc reporting '$got'"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# What #287 actually cost: the driver read a refused implement stage as a finished one and
+# launched the diff review on a tree that implementer never wrote. apply.sh stops instead,
+# and stops BEFORE the reviewer, because there is nothing yet to review.
+setup
+add_change issue-44-driver
+add_passing_review issue-44-driver
+bin=$(mktemp -d)
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "unaccounted for" >> implemented.txt
+exit 0
+FAKE
+cat > "$bin/codex" <<FAKE
+#!/usr/bin/env bash
+echo ran >> "$bin/.reviewer-ran"
+echo '{"type":"thread.started","thread_id":"t-44"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$bin/agy" "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$APPLY" agy codex issue-44-driver 2>&1); rc=$?
+if [ "$rc" = "7" ]; then ok "apply.sh stops when the implementer gives no account of itself"
+else
+  bad "apply.sh carried on past an unaccounted implement stage (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -6
+fi
+if [ ! -f "$bin/.reviewer-ran" ]; then
+  ok "and never launches the reviewer on a diff nobody claims"
+else bad "the reviewer was launched on work the implement stage did not report"; fi
+if [ ! -f "$repo/.worktrees/issue-44/openspec/changes/issue-44-driver/diff-review.md" ]; then
+  ok "and records no diff review from it"
+else bad "a diff review was recorded for an unreported implement stage"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 

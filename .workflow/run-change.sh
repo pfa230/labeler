@@ -343,7 +343,9 @@ if [ "$run_plan" = "1" ]; then
     ask_stop "plan review $round ($plan_reviewer)" plan-review
     review_log="$wt/.agent-runs/plan-review-$plan_reviewer.log"
     [ "$prc" -eq 5 ] && { echo "the plan reviewer edited files; its verdict cannot be trusted." >&2; exit 5; }
-    [ "$prc" -eq 7 ] && { echo "the plan reviewer produced a transcript, not a review; stopping." >&2; exit 7; }
+    # 7 covers both shapes of an unreadable stage (#315): a transcript with no answer in
+    # it, and an agent that printed nothing at all. plan-review-$plan_reviewer.log says which.
+    [ "$prc" -eq 7 ] && { echo "the plan reviewer produced no readable review; stopping." >&2; exit 7; }
     # Any other non-zero exit is a review that did not finish. A CLI can print a verdict
     # and then die, and reading it would record an approval nobody stands behind.
     [ "$prc" -ne 0 ] && { echo "the plan reviewer exited $prc; its verdict cannot be trusted." >&2; exit 1; }
