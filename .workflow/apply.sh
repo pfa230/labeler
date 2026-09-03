@@ -18,6 +18,10 @@
 # Exit 8 = a stage wrote QUESTIONS.md and stopped rather than guess (#283). Answer them
 # in ANSWERS.md at the worktree root and re-run; every stage reads that file.
 #
+# Exit 2 also covers a reviewer the change's author ledger already names: that pairing is
+# refused here rather than at the landing gate, which sees it only after every agent has
+# run (#313).
+#
 # Exit 10 = the fix round changed nothing, so the next review would judge bytes a previous
 # round already judged (#299). Nothing is launched. Either the implementer answered every
 # finding in prose, or it acted on none of them, and no round of review can tell those
@@ -147,6 +151,24 @@ last_round_file() { # last_round_file -> basename of the newest round artifact, 
   while [ -e "$dir/diff-review-$i.md" ]; do last="diff-review-$i.md"; i=$((i + 1)); done
   printf '%s' "$last"
 }
+
+# The reviewer must not be one of the authors, and the ledger is the only place that is
+# knowable before the fact. The landing gate refuses a diff-review.md whose REVIEWER appears
+# among its AUTHORS, so left to that gate this surfaces at the commit, after every agent has
+# been paid for. It is reachable without an implementer swap: on a change whose delta is the
+# whole deliverable the planner is the only author, so the code reviewer named at launch can
+# turn out to be the one agent that cannot review it (#313).
+# Lowercased on both sides, because review-gate-check.sh:88 compares that way and the two
+# must agree: a name this matched case-sensitively would pass here, launch both agents, and
+# be refused at the commit, which is the worst place to learn it.
+ledger="$wt/openspec/changes/$change/authors"
+if [ -f "$ledger" ] && tr '[:upper:]' '[:lower:]' < "$ledger" \
+     | grep -qxF "$(printf '%s' "$reviewer" | tr '[:upper:]' '[:lower:]')"; then
+  echo "$reviewer wrote part of $change: the author ledger at $ledger names it." >&2
+  echo "Nobody reviews their own work, and the landing gate refuses a diff-review.md whose" >&2
+  echo "REVIEWER is among its AUTHORS. Name a reviewer that wrote none of this." >&2
+  exit 2
+fi
 
 if [ "$dry_run" = "1" ]; then
   printf 'implementer: %s\nreviewer: %s\nchange: %s\nworktree: %s\nrounds: %s\n' \
