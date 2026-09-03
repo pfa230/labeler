@@ -4,7 +4,7 @@ argument-hint: [<implementer> <reviewer>] [change]
 allowed-tools: Bash
 ---
 
-Run `.workflow/apply.sh $ARGUMENTS` in the background; it takes many minutes.
+Run `.workflow/loop apply $ARGUMENTS` in the background; it takes many minutes.
 
 The pair is named first because that is the guarantee: the model writing the code is never the model
 judging it. It is also optional: left out, both roles come from the gitignored

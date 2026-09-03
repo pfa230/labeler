@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# The one path from this repository into the vendored loop (#357).
+#
+# The loop lives at tools/openspec-loop/, a git subtree of
+# https://github.com/pfa230/openspec-loop. A subtree rather than a submodule because
+# run-change.sh creates a worktree per change and `git worktree add` does not populate a
+# submodule: the gates would be absent from exactly where the loop runs. A subtree is
+# ordinary files, so a bare clone and every worktree have them.
+#
+# Everything addresses the loop through this file and never by script path: the git hooks,
+# CI, the Claude commands and the edit-time hook. That buys two things. The prefix above
+# becomes a one-file change rather than a sweep through hooks and workflows. And the
+# Claude surface ships as a plugin, from a repository that cannot know where a given
+# project put its subtree, so it needs a fixed name to call; this is that name.
+#
+# Arguments pass through unmodified and the exit status is the script's own, because
+# callers read specific codes: run-stage.sh 7, run-change.sh 4 and 8, apply.sh 10.
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "loop: not inside a git repository." >&2; exit 2; }
+kit="$root/tools/openspec-loop/workflow"
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: .workflow/loop <command> [args...]
+
+  change         run one accepted issue end to end on four named agents
+  apply          implement on one agent, review on another
+  stage          run a single stage
+  review-gate    the plan and diff review gate (--probe, --plan-only pass through)
+  archive-check  the archive-is-the-delta gate
+  merge-shape    refuse a merge anywhere but main
+  digest         write or print a change's specs digest
+  detach         launch a long run in its own session
+  setup          point git at the vendored hooks
+  test           run the three suites
+USAGE
+}
+
+[ "$#" -gt 0 ] || { usage; exit 2; }
+cmd="$1"; shift
+
+case "$cmd" in
+  change)        script=run-change.sh ;;
+  apply)         script=apply.sh ;;
+  stage)         script=run-stage.sh ;;
+  review-gate)   script=review-gate-check.sh ;;
+  archive-check) script=archive-merge-check.sh ;;
+  merge-shape)   script=merge-shape-check.sh ;;
+  digest)        script=specs-digest.sh ;;
+  detach)        script=detach.sh ;;
+  setup)         script=setup-hooks.sh ;;
+  # The suites are the only check on the review process, so they are reachable by name
+  # rather than only from a CI file that could quietly stop naming them.
+  test)
+    rc=0
+    for s in gate-tests.sh apply-tests.sh change-tests.sh; do
+      [ -x "$kit/$s" ] || { echo "loop: $kit/$s is missing." >&2; exit 2; }
+      "$kit/$s" || rc=1
+    done
+    exit "$rc" ;;
+  -h|--help)     usage; exit 0 ;;
+  *)             echo "loop: unknown command '$cmd'" >&2; usage; exit 2 ;;
+esac
+
+# The subtree is checked in, so its absence is a broken checkout rather than a step
+# someone forgot: say which, because "no such file or directory" from four call sites in
+# two git hooks is not a diagnosis.
+[ -d "$kit" ] || {
+  echo "loop: $kit is missing. The loop is a git subtree at tools/openspec-loop/;" >&2
+  echo "loop: a checkout without it is incomplete, not un-installed." >&2
+  exit 2; }
+[ -x "$kit/$script" ] || { echo "loop: $kit/$script is missing or not executable." >&2; exit 2; }
+
+exec "$kit/$script" "$@"

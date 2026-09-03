@@ -4,7 +4,7 @@ argument-hint: <issue#> [<planner> <plan-reviewer> <implementer> <code-reviewer>
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
-Scope the issue with the user, then hand it to `.workflow/run-change.sh` and relay what it asks.
+Scope the issue with the user, then hand it to `.workflow/loop change` and relay what it asks.
 
 ## 1. Scope it
 
@@ -30,8 +30,8 @@ Detached, never as a background task this session holds: one such run was killed
 its turn ended, taking 15,127 lines of review with it (#275).
 
 ```bash
-run=$(.workflow/detach.sh /tmp/run-change-$1 .workflow/run-change.sh $ARGUMENTS)
-.workflow/detach.sh --wait "$run"
+run=$(.workflow/loop detach /tmp/run-change-$1 .workflow/loop change $ARGUMENTS)
+.workflow/loop detach --wait "$run"
 ```
 
 The four agents are optional. Given the issue number alone, the driver reads them from
