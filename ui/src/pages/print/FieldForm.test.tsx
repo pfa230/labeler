@@ -274,7 +274,7 @@ describe("FieldForm", () => {
     expect(screen.getByRole("textbox", { name: "site" })).toBeEnabled();
   });
 
-  it("skips rendering a control for a list input and renders other inputs normally", async () => {
+  it("renders an editor for a list input and renders other inputs normally", async () => {
     const inputs: InputSpec[] = [
       { name: "title", control: "text", description: "Label Title" },
       { name: "tags", control: "list", description: "Asset Tags", required: true },
@@ -282,7 +282,7 @@ describe("FieldForm", () => {
     renderForm(single, singleValue, inputs);
 
     expect(await screen.findByLabelText("Label Title")).toBeInTheDocument();
-    expect(screen.getByText("Asset Tags")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Asset Tags")).toBeNull();
+    expect(screen.getByRole("group", { name: "Asset Tags" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "add tags" })).toBeInTheDocument();
   });
 });

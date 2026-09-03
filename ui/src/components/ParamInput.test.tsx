@@ -1,7 +1,10 @@
+import { useState } from "react";
+import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ParamInput } from "./ParamInput";
-import type { ParamSpec } from "../api/types";
+import type { InputSpec, ParamSpec, ParamValue } from "../api/types";
 
 describe("ParamInput", () => {
   it("renders a text input for single-line string parameter", () => {
@@ -281,18 +284,452 @@ describe("ParamInput", () => {
     expect(screen.getByText("Select...")).toBeInTheDocument();
   });
 
-  it("renders no control when control is list or ParamSpec type is list", () => {
+  it("renders editor for control 'list' and ParamSpec type 'list', and undefined value renders zero rows without crashing", () => {
     const onChange = vi.fn();
-    const inputSpec = { name: "tags", control: "list", description: "Asset Tags" } as unknown as ParamSpec;
-    const { container, rerender } = render(
+    const inputSpec: InputSpec = { name: "tags", control: "list", description: "Asset Tags", required: true };
+    const { rerender } = render(
       <ParamInput name="tags" spec={inputSpec} value={undefined} onChange={onChange} />,
     );
-    expect(container.firstChild).toBeNull();
+    expect(screen.getByRole("group", { name: "Asset Tags" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "add tags" })).toBeInTheDocument();
 
     const paramSpec: ParamSpec = { type: "list", description: "Tags" };
     rerender(<ParamInput name="tags" spec={paramSpec} value={undefined} onChange={onChange} />);
-    expect(container.firstChild).toBeNull();
+    expect(screen.getByRole("group", { name: "Tags" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "add tags" })).toBeInTheDocument();
+  });
+
+  it("appending twice and typing A and B calls onChange with ['A', 'B']; appending one row and typing nothing yields ['']", () => {
+    function Stateful(props: { onChange: (v: ParamValue) => void }) {
+      const [val, setVal] = useState<ParamValue | undefined>([]);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          value={val}
+          onChange={(v) => {
+            setVal(v);
+            props.onChange(v);
+          }}
+        />
+      );
+    }
+
+    const onChange = vi.fn();
+    const { unmount } = render(<Stateful onChange={onChange} />);
+
+    const addBtn = screen.getByRole("button", { name: "add tags" });
+    fireEvent.click(addBtn);
+    expect(onChange).toHaveBeenLastCalledWith([""]);
+
+    const input1 = screen.getByRole("textbox", { name: "tags 1" });
+    fireEvent.change(input1, { target: { value: "A" } });
+    expect(onChange).toHaveBeenLastCalledWith(["A"]);
+
+    fireEvent.click(addBtn);
+    expect(onChange).toHaveBeenLastCalledWith(["A", ""]);
+
+    const input2 = screen.getByRole("textbox", { name: "tags 2" });
+    fireEvent.change(input2, { target: { value: "B" } });
+    expect(onChange).toHaveBeenLastCalledWith(["A", "B"]);
+
+    unmount();
+
+    // Appending one row and typing nothing yields [""]
+    const onChangeSingle = vi.fn();
+    render(<Stateful onChange={onChangeSingle} />);
+    const addBtnSingle = screen.getByRole("button", { name: "add tags" });
+    fireEvent.click(addBtnSingle);
+    expect(onChangeSingle).toHaveBeenCalledWith([""]);
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect((screen.getByRole("textbox", { name: "tags 1" }) as HTMLInputElement).value).toBe("");
+  });
+
+  it("moves and removes elements in row order", () => {
+    function Stateful(props: { initial: string[]; onChange: (v: ParamValue) => void }) {
+      const [val, setVal] = useState<ParamValue | undefined>(props.initial);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          value={val}
+          onChange={(v) => {
+            setVal(v);
+            props.onChange(v);
+          }}
+        />
+      );
+    }
+
+    const onChangeMove = vi.fn();
+    const { unmount } = render(<Stateful initial={["A", "B", "C"]} onChange={onChangeMove} />);
+
+    // Move C (position 3) one position earlier -> ["A", "C", "B"]
+    fireEvent.click(screen.getByRole("button", { name: "move tags 3 earlier" }));
+    expect(onChangeMove).toHaveBeenLastCalledWith(["A", "C", "B"]);
+
+    // Move A (now position 1) one position later -> ["C", "A", "B"]
+    fireEvent.click(screen.getByRole("button", { name: "move tags 1 later" }));
+    expect(onChangeMove).toHaveBeenLastCalledWith(["C", "A", "B"]);
+
+    unmount();
+
+    // With A, B, C: removing B (position 2) yields ["A", "C"]
+    const onChangeRemove = vi.fn();
+    render(<Stateful initial={["A", "B", "C"]} onChange={onChangeRemove} />);
+    fireEvent.click(screen.getByRole("button", { name: "remove tags 2" }));
+    expect(onChangeRemove).toHaveBeenLastCalledWith(["A", "C"]);
+  });
+
+  it("inert move controls at boundaries report unavailable, do not call onChange, and remain reachable by keyboard", () => {
+    const onChange = vi.fn();
+    render(
+      <ParamInput
+        name="tags"
+        spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+        value={["A", "B", "C"]}
+        onChange={onChange}
+      />,
+    );
+
+    const firstEarlier = screen.getByRole("button", { name: "move tags 1 earlier" });
+    const lastLater = screen.getByRole("button", { name: "move tags 3 later" });
+
+    // Report themselves unavailable
+    expect(firstEarlier).toHaveAttribute("aria-disabled", "true");
+    expect(lastLater).toHaveAttribute("aria-disabled", "true");
+
+    // Reachable by keyboard (not natively disabled and focusable)
+    expect(firstEarlier).not.toBeDisabled();
+    expect(lastLater).not.toBeDisabled();
+    firstEarlier.focus();
+    expect(document.activeElement).toBe(firstEarlier);
+    lastLater.focus();
+    expect(document.activeElement).toBe(lastLater);
+
+    // Activating either calls no onChange
+    fireEvent.click(firstEarlier);
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(lastLater);
+    expect(onChange).not.toHaveBeenCalled();
+
+    // The other four move controls each move an element
+    const firstLater = screen.getByRole("button", { name: "move tags 1 later" });
+    expect(firstLater).not.toHaveAttribute("aria-disabled");
+    expect(firstLater).not.toBeDisabled();
+    fireEvent.click(firstLater);
+    expect(onChange).toHaveBeenLastCalledWith(["B", "A", "C"]);
+
+    onChange.mockClear();
+    const secondEarlier = screen.getByRole("button", { name: "move tags 2 earlier" });
+    expect(secondEarlier).not.toHaveAttribute("aria-disabled");
+    expect(secondEarlier).not.toBeDisabled();
+    fireEvent.click(secondEarlier);
+    expect(onChange).toHaveBeenLastCalledWith(["B", "A", "C"]);
+
+    onChange.mockClear();
+    const secondLater = screen.getByRole("button", { name: "move tags 2 later" });
+    expect(secondLater).not.toHaveAttribute("aria-disabled");
+    expect(secondLater).not.toBeDisabled();
+    fireEvent.click(secondLater);
+    expect(onChange).toHaveBeenLastCalledWith(["A", "C", "B"]);
+
+    onChange.mockClear();
+    const thirdEarlier = screen.getByRole("button", { name: "move tags 3 earlier" });
+    expect(thirdEarlier).not.toHaveAttribute("aria-disabled");
+    expect(thirdEarlier).not.toBeDisabled();
+    fireEvent.click(thirdEarlier);
+    expect(onChange).toHaveBeenLastCalledWith(["A", "C", "B"]);
+  });
+
+  it("with a single element, both move controls report aria-disabled and activating either calls no onChange", () => {
+    const onChange = vi.fn();
+    render(
+      <ParamInput
+        name="tags"
+        spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+        value={["A"]}
+        onChange={onChange}
+      />,
+    );
+
+    const upBtn = screen.getByRole("button", { name: "move tags 1 earlier" });
+    const downBtn = screen.getByRole("button", { name: "move tags 1 later" });
+
+    expect(upBtn).toHaveAttribute("aria-disabled", "true");
+    expect(upBtn).not.toBeDisabled();
+    expect(downBtn).toHaveAttribute("aria-disabled", "true");
+    expect(downBtn).not.toBeDisabled();
+
+    upBtn.focus();
+    expect(document.activeElement).toBe(upBtn);
+    downBtn.focus();
+    expect(document.activeElement).toBe(downBtn);
+
+    fireEvent.click(upBtn);
+    fireEvent.click(downBtn);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("leaves focus on the first row's inert move-earlier control after moving second element earlier, and activating it again calls no onChange", () => {
+    function Stateful(props: { onChange: (v: ParamValue) => void }) {
+      const [val, setVal] = useState<ParamValue | undefined>(["A", "B", "C"]);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          value={val}
+          onChange={(v) => {
+            setVal(v);
+            props.onChange(v);
+          }}
+        />
+      );
+    }
+
+    const onChange = vi.fn();
+    render(<Stateful onChange={onChange} />);
+
+    const secondEarlier = screen.getByRole("button", { name: "move tags 2 earlier" });
+    secondEarlier.focus();
+    expect(document.activeElement).toBe(secondEarlier);
+
+    fireEvent.click(secondEarlier);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenLastCalledWith(["B", "A", "C"]);
+
+    const firstEarlier = screen.getByRole("button", { name: "move tags 1 earlier" });
+    expect(document.activeElement).toBe(firstEarlier);
+    expect(firstEarlier).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.click(firstEarlier);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("places focus correctly after removals", () => {
+    function Stateful(props: { initial: string[]; onChange: (v: ParamValue) => void }) {
+      const [val, setVal] = useState<ParamValue | undefined>(props.initial);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          value={val}
+          onChange={(v) => {
+            setVal(v);
+            props.onChange(v);
+          }}
+        />
+      );
+    }
+
+    // Case 1: Removing middle of three rows leaves focus on removing control of row that took its place
+    const onChange1 = vi.fn();
+    const { unmount: unmount1 } = render(<Stateful initial={["A", "B", "C"]} onChange={onChange1} />);
+    fireEvent.click(screen.getByRole("button", { name: "remove tags 2" }));
+    expect(onChange1).toHaveBeenCalledWith(["A", "C"]);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "remove tags 2" }));
+    unmount1();
+
+    // Case 2: Removing last of two leaves focus on preceding row's removing control
+    const onChange2 = vi.fn();
+    const { unmount: unmount2 } = render(<Stateful initial={["A", "B"]} onChange={onChange2} />);
+    fireEvent.click(screen.getByRole("button", { name: "remove tags 2" }));
+    expect(onChange2).toHaveBeenCalledWith(["A"]);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "remove tags 1" }));
+    unmount2();
+
+    // Case 3: Removing the only row leaves focus on appending control
+    const onChange3 = vi.fn();
+    render(<Stateful initial={["A"]} onChange={onChange3} />);
+    fireEvent.click(screen.getByRole("button", { name: "remove tags 1" }));
+    expect(onChange3).toHaveBeenCalledWith([]);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "add tags" }));
+  });
+
+  it("gives every control an accessible name containing entry name and element position", () => {
+    render(
+      <div>
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Values", required: true, name: "tags" }}
+          value={["T1", "T2"]}
+          onChange={() => {}}
+        />
+        <ParamInput
+          name="codes"
+          spec={{ control: "list", description: "Values", required: true, name: "codes" }}
+          value={["C1", "C2"]}
+          onChange={() => {}}
+        />
+      </div>,
+    );
+
+    // tags controls
+    expect(screen.getByRole("textbox", { name: "tags 1" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "tags 2" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move tags 1 earlier" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move tags 1 later" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move tags 2 earlier" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move tags 2 later" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "remove tags 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "remove tags 2" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "add tags" })).toBeInTheDocument();
+
+    // codes controls
+    expect(screen.getByRole("textbox", { name: "codes 1" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "codes 2" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move codes 1 earlier" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move codes 1 later" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move codes 2 earlier" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "move codes 2 later" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "remove codes 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "remove codes 2" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "add codes" })).toBeInTheDocument();
+  });
+
+  it("disables every control in the editor when disabled is true, while showing row values", () => {
+    render(
+      <ParamInput
+        name="tags"
+        spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+        value={["ALPHA", "BETA"]}
+        disabled={true}
+        onChange={() => {}}
+      />,
+    );
+
+    const input1 = screen.getByRole("textbox", { name: "tags 1" }) as HTMLInputElement;
+    const input2 = screen.getByRole("textbox", { name: "tags 2" }) as HTMLInputElement;
+    expect(input1.value).toBe("ALPHA");
+    expect(input2.value).toBe("BETA");
+    expect(input1).toBeDisabled();
+    expect(input2).toBeDisabled();
+
+    expect(screen.getByRole("button", { name: "move tags 1 earlier" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "move tags 1 later" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "move tags 2 earlier" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "move tags 2 later" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "remove tags 1" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "remove tags 2" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "add tags" })).toBeDisabled();
+  });
+
+  it("places focus on the moved element's new row under native event dispatch", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    function Stateful() {
+      const [val, setVal] = useState<ParamValue | undefined>(["A", "B", "C"]);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          value={val}
+          onChange={(v) => setVal(v)}
+        />
+      );
+    }
+
+    try {
+      flushSync(() => {
+        root.render(<Stateful />);
+      });
+
+      const move2Earlier = container.querySelector('button[aria-label="move tags 2 earlier"]') as HTMLButtonElement;
+      expect(move2Earlier).not.toBeNull();
+      move2Earlier.focus();
+      move2Earlier.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+      await Promise.resolve();
+
+      const activeBtn = document.activeElement as HTMLButtonElement;
+      expect(activeBtn?.getAttribute("aria-label")).toBe("move tags 1 earlier");
+    } finally {
+      flushSync(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it("places focus on the removing control of the row taking its place under native event dispatch", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    function Stateful() {
+      const [val, setVal] = useState<ParamValue | undefined>(["A", "B", "C"]);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          value={val}
+          onChange={(v) => setVal(v)}
+        />
+      );
+    }
+
+    try {
+      flushSync(() => {
+        root.render(<Stateful />);
+      });
+
+      const remove2 = container.querySelector('button[aria-label="remove tags 2"]') as HTMLButtonElement;
+      expect(remove2).not.toBeNull();
+      remove2.focus();
+      remove2.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+      await Promise.resolve();
+
+      const activeBtn = document.activeElement as HTMLButtonElement;
+      expect(activeBtn?.getAttribute("aria-label")).toBe("remove tags 2");
+    } finally {
+      flushSync(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
+  });
+
+  it("places focus on the append button when removing the only row under native event dispatch", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    function Stateful() {
+      const [val, setVal] = useState<ParamValue | undefined>(["A"]);
+      return (
+        <ParamInput
+          name="tags"
+          spec={{ control: "list", description: "Tags", required: true, name: "tags" }}
+          value={val}
+          onChange={(v) => setVal(v)}
+        />
+      );
+    }
+
+    try {
+      flushSync(() => {
+        root.render(<Stateful />);
+      });
+
+      const remove1 = container.querySelector('button[aria-label="remove tags 1"]') as HTMLButtonElement;
+      expect(remove1).not.toBeNull();
+      remove1.focus();
+      remove1.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+
+      await Promise.resolve();
+
+      const activeBtn = document.activeElement as HTMLButtonElement;
+      expect(activeBtn?.getAttribute("aria-label")).toBe("add tags");
+    } finally {
+      flushSync(() => {
+        root.unmount();
+      });
+      container.remove();
+    }
   });
 });

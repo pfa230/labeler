@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import type { InputSpec, ParamSpec, ParamValue } from "../api/types";
 
 export interface ParamInputProps {
@@ -52,6 +52,32 @@ export function ParamInput({
       fileInputRef.current.value = "";
     }
   }, [value, disabled]);
+
+  const pendingFocusRef = useRef<
+    | { type: "move-earlier" | "move-later" | "remove"; index: number }
+    | { type: "append" }
+    | null
+  >(null);
+  const moveEarlierRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const moveLaterRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const removeRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const appendRef = useRef<HTMLButtonElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (!pendingFocusRef.current) return;
+    const target = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+
+    if (target.type === "append") {
+      appendRef.current?.focus();
+    } else if (target.type === "move-earlier") {
+      moveEarlierRefs.current[target.index]?.focus();
+    } else if (target.type === "move-later") {
+      moveLaterRefs.current[target.index]?.focus();
+    } else if (target.type === "remove") {
+      removeRefs.current[target.index]?.focus();
+    }
+  });
 
   const label = spec.description || name;
   const inputSpec = spec as InputSpec;
@@ -250,7 +276,131 @@ export function ParamInput({
   }
 
   if (control === "list" || paramSpec.type === "list") {
-    return null;
+    const items: string[] = Array.isArray(value) ? (value as string[]) : [];
+
+    return (
+      <div
+        role="group"
+        aria-label={label}
+        aria-describedby={noteId}
+        className="flex flex-col gap-2"
+      >
+        {items.map((item, idx) => {
+          const pos = idx + 1;
+          const isFirst = idx === 0;
+          const isLast = idx === items.length - 1;
+          const isEarlierInert = !disabled && isFirst;
+          const isLaterInert = !disabled && isLast;
+
+          return (
+            <div key={idx} className="flex items-center gap-2">
+              <input
+                type="text"
+                aria-label={`${name} ${pos}`}
+                aria-invalid={invalid}
+                disabled={disabled}
+                value={item}
+                onChange={(e) => {
+                  const next = [...items];
+                  next[idx] = e.target.value;
+                  onChange(next);
+                }}
+                className={inputClass}
+                style={inputStyle}
+              />
+              <button
+                ref={(el) => {
+                  moveEarlierRefs.current[idx] = el;
+                }}
+                type="button"
+                aria-label={`move ${name} ${pos} earlier`}
+                aria-disabled={isEarlierInert ? "true" : undefined}
+                disabled={disabled}
+                onClick={() => {
+                  if (isEarlierInert || isFirst) return;
+                  pendingFocusRef.current = { type: "move-earlier", index: idx - 1 };
+                  const next = [...items];
+                  const tmp = next[idx];
+                  next[idx] = next[idx - 1];
+                  next[idx - 1] = tmp;
+                  onChange(next);
+                }}
+                className="rounded-md border p-1.5 text-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                style={{
+                  borderColor: "var(--border)",
+                  color: "var(--ink)",
+                  opacity: isEarlierInert ? 0.4 : undefined,
+                }}
+              >
+                ↑
+              </button>
+              <button
+                ref={(el) => {
+                  moveLaterRefs.current[idx] = el;
+                }}
+                type="button"
+                aria-label={`move ${name} ${pos} later`}
+                aria-disabled={isLaterInert ? "true" : undefined}
+                disabled={disabled}
+                onClick={() => {
+                  if (isLaterInert || isLast) return;
+                  pendingFocusRef.current = { type: "move-later", index: idx + 1 };
+                  const next = [...items];
+                  const tmp = next[idx];
+                  next[idx] = next[idx + 1];
+                  next[idx + 1] = tmp;
+                  onChange(next);
+                }}
+                className="rounded-md border p-1.5 text-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                style={{
+                  borderColor: "var(--border)",
+                  color: "var(--ink)",
+                  opacity: isLaterInert ? 0.4 : undefined,
+                }}
+              >
+                ↓
+              </button>
+              <button
+                ref={(el) => {
+                  removeRefs.current[idx] = el;
+                }}
+                type="button"
+                aria-label={`remove ${name} ${pos}`}
+                disabled={disabled}
+                onClick={() => {
+                  if (items.length === 1) {
+                    pendingFocusRef.current = { type: "append" };
+                  } else if (idx === items.length - 1) {
+                    pendingFocusRef.current = { type: "remove", index: idx - 1 };
+                  } else {
+                    pendingFocusRef.current = { type: "remove", index: idx };
+                  }
+                  const next = items.filter((_, i) => i !== idx);
+                  onChange(next);
+                }}
+                className="rounded-md border p-1.5 text-xs disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+                style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
+        <button
+          ref={appendRef}
+          type="button"
+          aria-label={`add ${name}`}
+          disabled={disabled}
+          onClick={() => {
+            onChange([...items, ""]);
+          }}
+          className="self-start rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2"
+          style={{ borderColor: "var(--border)", color: "var(--ink)" }}
+        >
+          + Add
+        </button>
+      </div>
+    );
   }
 
   return (
