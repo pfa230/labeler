@@ -541,8 +541,9 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
   template content is fatal. Nothing is seeded into a fresh config dir. Templates are immutable,
   shared via `Arc`.
 - **Layout model** (`models.rs`). `layout` is a tree of `LayoutItem`s: `Text`, `Qr`, `Image`, `Line`,
-  `Container`. `Container` nests `items` recursively and may carry `frame` and `padding`. Any item may
-  carry `when:`, the universal conditional-visibility predicate over `params` (ADR-0056, #162).
+  `Container`. `Container` nests `items` recursively and may carry `shape`, `stroke`, `background`,
+  `rounded`, `padding` and `flow`. Any item may carry `when:`, the universal conditional-visibility
+  predicate over `params` (ADR-0056, #162).
 - **Coordinates.** Bottom-left origin, y-up, in the template `unit` (`mm` or `in`). Typst is top-left,
   so the renderer flips with `frame_height_units - top`. A `Container` re-bases children into its
   padded inner box via a fresh `RenderContext`. *Watch this when touching placement math.*
