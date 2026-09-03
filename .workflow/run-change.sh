@@ -519,10 +519,15 @@ fi
 # failing path.
 gates_log="$wt/.agent-runs/gates.log"
 gates_base_log="$wt/.agent-runs/gates-base.log"
+# Every command here is read-only, and fmt is the one that had to be made so: it ran in
+# rewrite mode, after the diff review had approved the tree and before the commit, so a
+# formatter change landed having been reviewed by nobody (#326). Check mode reports
+# instead, which is also what CI runs, so a pass here and a pass there compare the same
+# bytes. Repairing it is the gate-fix round's job, which is what that round is for.
 run_gates() {
   (
     cd "$wt" || exit 1
-    cargo fmt || exit "$GATE_FMT_FAILED"
+    cargo fmt --check || exit "$GATE_FMT_FAILED"
     cargo clippy --all-targets --all-features -- -D warnings || exit "$GATE_CLIPPY_FAILED"
     # --no-fail-fast because a partial failure set is worse than none here: cargo stops
     # after the first failing test binary, so a regression in a later one would sit behind
