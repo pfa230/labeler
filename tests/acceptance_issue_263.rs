@@ -67,11 +67,11 @@ layout:
     let t_gated = parse_and_validate(yaml_gated).unwrap();
     let mut data_on = HashMap::new();
     data_on.insert("show_middle".to_string(), serde_json::json!("yes"));
-    let png_on = render_single_label_image(&t_gated, &data_on, None, &vars, &dt, opts).unwrap();
+    let png_on = render_single_label_image(&t_gated, &data_on, &vars, &dt, opts).unwrap();
 
     let mut data_off = HashMap::new();
     data_off.insert("show_middle".to_string(), serde_json::json!("no"));
-    let png_off = render_single_label_image(&t_gated, &data_off, None, &vars, &dt, opts).unwrap();
+    let png_off = render_single_label_image(&t_gated, &data_off, &vars, &dt, opts).unwrap();
     assert_ne!(png_on, png_off);
 
     // 2. A row whose children are content-sized text, rendered with a short and a long value
@@ -103,16 +103,14 @@ layout:
     let t_dyn_row = parse_and_validate(yaml_dynamic_row).unwrap();
     let mut data_short = HashMap::new();
     data_short.insert("val".to_string(), serde_json::json!("A"));
-    let png_short =
-        render_single_label_image(&t_dyn_row, &data_short, None, &vars, &dt, opts).unwrap();
+    let png_short = render_single_label_image(&t_dyn_row, &data_short, &vars, &dt, opts).unwrap();
 
     let mut data_long = HashMap::new();
     data_long.insert(
         "val".to_string(),
         serde_json::json!("A very long value expanding the row"),
     );
-    let png_long =
-        render_single_label_image(&t_dyn_row, &data_long, None, &vars, &dt, opts).unwrap();
+    let png_long = render_single_label_image(&t_dyn_row, &data_long, &vars, &dt, opts).unwrap();
 
     let img_short = image::load_from_memory(&png_short).unwrap();
     let img_long = image::load_from_memory(&png_long).unwrap();
@@ -151,7 +149,7 @@ layout:
     let mut data_empty = HashMap::new();
     data_empty.insert("mid".to_string(), serde_json::json!(""));
     let _png_empty =
-        render_single_label_image(&t_empty_mid, &data_empty, None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_empty_mid, &data_empty, &vars, &dt, opts).unwrap();
 
     // 4. Both nesting directions: flow inside absolute, absolute inside flow, flow inside flow
     let yaml_nesting = r#"
@@ -189,7 +187,7 @@ layout:
 "#;
     let t_nesting = parse_and_validate(yaml_nesting).unwrap();
     let _png_nesting =
-        render_single_label_image(&t_nesting, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_nesting, &HashMap::new(), &vars, &dt, opts).unwrap();
 
     // 5. A dynamic-width label sized by a flow container, beside a non-flow content-width text item
     let yaml_dyn_flow = r#"
@@ -214,7 +212,7 @@ layout:
 "#;
     let t_dyn_flow = parse_and_validate(yaml_dyn_flow).unwrap();
     let _png_dyn_flow =
-        render_single_label_image(&t_dyn_flow, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_dyn_flow, &HashMap::new(), &vars, &dt, opts).unwrap();
 
     // 6. A rotated flow container, confirming it packs in author space
     let yaml_rotated = r#"
@@ -241,7 +239,7 @@ layout:
 "#;
     let t_rotated = parse_and_validate(yaml_rotated).unwrap();
     let _png_rotated =
-        render_single_label_image(&t_rotated, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_rotated, &HashMap::new(), &vars, &dt, opts).unwrap();
 
     // 6a. A column whose children overrun the padded inner box: fails item_out_of_frame, not coord_out_of_frame
     let yaml_col_overrun = r#"
@@ -266,8 +264,7 @@ layout:
 "#;
     let t_col_overrun = parse_and_validate(yaml_col_overrun).unwrap();
     let err_col_overrun =
-        render_single_label_image(&t_col_overrun, &HashMap::new(), None, &vars, &dt, opts)
-            .unwrap_err();
+        render_single_label_image(&t_col_overrun, &HashMap::new(), &vars, &dt, opts).unwrap_err();
     assert_eq!(err_col_overrun.reason(), Some("item_out_of_frame"));
     assert!(err_col_overrun.message_text().contains("items[1]"));
 
@@ -290,7 +287,7 @@ layout:
 "#;
     let t_fill_alone = parse_and_validate(yaml_fill_alone).unwrap();
     let _png_fill_alone =
-        render_single_label_image(&t_fill_alone, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_fill_alone, &HashMap::new(), &vars, &dt, opts).unwrap();
 
     let yaml_fill_sibling = r#"
 name: Fill Sibling
@@ -314,8 +311,7 @@ layout:
 "#;
     let t_fill_sibling = parse_and_validate(yaml_fill_sibling).unwrap();
     let err_fill_sibling =
-        render_single_label_image(&t_fill_sibling, &HashMap::new(), None, &vars, &dt, opts)
-            .unwrap_err();
+        render_single_label_image(&t_fill_sibling, &HashMap::new(), &vars, &dt, opts).unwrap_err();
     assert_eq!(err_fill_sibling.reason(), Some("item_out_of_frame"));
     assert!(err_fill_sibling.message_text().contains("items[1]"));
 
@@ -383,7 +379,7 @@ layout:
 "#;
     let t_multiline = parse_and_validate(yaml_multiline_packed).unwrap();
     let _png_multiline =
-        render_single_label_image(&t_multiline, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_multiline, &HashMap::new(), &vars, &dt, opts).unwrap();
 }
 
 /// Proves headline flow layout contract rules: hole closure on gated children, single gaps
@@ -436,8 +432,8 @@ layout:
     let mut data_off = HashMap::new();
     data_off.insert("show_mid".to_string(), serde_json::json!("no"));
 
-    let png_on = render_single_label_image(&t_gated, &data_on, None, &vars, &dt, opts).unwrap();
-    let png_off = render_single_label_image(&t_gated, &data_off, None, &vars, &dt, opts).unwrap();
+    let png_on = render_single_label_image(&t_gated, &data_on, &vars, &dt, opts).unwrap();
+    let png_off = render_single_label_image(&t_gated, &data_off, &vars, &dt, opts).unwrap();
     let img_on = image::load_from_memory(&png_on).unwrap();
     let img_off = image::load_from_memory(&png_off).unwrap();
     // Gate on: 20 + 20 + 20 + 4 + 4 = 68mm; Gate off: 20 + 20 + 4 = 44mm
@@ -479,7 +475,7 @@ layout:
     let mut data_mid_empty = HashMap::new();
     data_mid_empty.insert("mid".to_string(), serde_json::json!(""));
     let png_empty_gap =
-        render_single_label_image(&t_empty_gap, &data_mid_empty, None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_empty_gap, &data_mid_empty, &vars, &dt, opts).unwrap();
     let img_empty_gap = image::load_from_memory(&png_empty_gap).unwrap();
     // Sized to exactly 20 + 20 + 4 = 44mm (one gap)
     assert_eq!(img_empty_gap.width(), px_44mm);
@@ -515,7 +511,7 @@ layout:
 "#;
     let t_trailing = parse_and_validate(yaml_trailing_empty).unwrap();
     let png_trailing =
-        render_single_label_image(&t_trailing, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_trailing, &HashMap::new(), &vars, &dt, opts).unwrap();
     let img_trailing = image::load_from_memory(&png_trailing).unwrap();
     assert_eq!(img_trailing.width(), px_44mm);
 
@@ -550,8 +546,7 @@ layout:
 "#;
     let t_trailing_fixed = parse_and_validate(yaml_trailing_fixed).unwrap();
     let png_trailing_fixed =
-        render_single_label_image(&t_trailing_fixed, &HashMap::new(), None, &vars, &dt, opts)
-            .unwrap();
+        render_single_label_image(&t_trailing_fixed, &HashMap::new(), &vars, &dt, opts).unwrap();
     let img_trailing_fixed = image::load_from_memory(&png_trailing_fixed).unwrap();
     assert_eq!(img_trailing_fixed.width(), px_44mm);
 
@@ -598,10 +593,9 @@ layout:
     let t_zero_frame = parse_and_validate(yaml_zero_frame).unwrap();
     let t_zero_no_frame = parse_and_validate(yaml_zero_no_frame).unwrap();
     let png_zero_frame =
-        render_single_label_image(&t_zero_frame, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_zero_frame, &HashMap::new(), &vars, &dt, opts).unwrap();
     let png_zero_no_frame =
-        render_single_label_image(&t_zero_no_frame, &HashMap::new(), None, &vars, &dt, opts)
-            .unwrap();
+        render_single_label_image(&t_zero_no_frame, &HashMap::new(), &vars, &dt, opts).unwrap();
     assert_ne!(png_zero_frame, png_zero_no_frame);
 
     let yaml_zero_err = r#"
@@ -631,7 +625,7 @@ layout:
     let mut data_zero_err = HashMap::new();
     data_zero_err.insert("h".to_string(), serde_json::json!(25));
     let err_zero =
-        render_single_label_image(&t_zero_err, &data_zero_err, None, &vars, &dt, opts).unwrap_err();
+        render_single_label_image(&t_zero_err, &data_zero_err, &vars, &dt, opts).unwrap_err();
     assert_eq!(err_zero.reason(), Some("item_out_of_frame"));
     assert!(err_zero.message_text().contains("items[0]"));
 
@@ -657,7 +651,7 @@ layout:
 "#;
     let t_missing = parse_and_validate(yaml_missing_param).unwrap();
     let err_missing =
-        render_single_label_image(&t_missing, &HashMap::new(), None, &vars, &dt, opts).unwrap_err();
+        render_single_label_image(&t_missing, &HashMap::new(), &vars, &dt, opts).unwrap_err();
     assert_eq!(err_missing.code(), "MissingField");
 
     // 4. A quarter turn packs in author space
@@ -709,9 +703,9 @@ layout:
     let t_turn_flow = parse_and_validate(yaml_turn_flow).unwrap();
     let t_turn_abs = parse_and_validate(yaml_turn_abs).unwrap();
     let png_turn_flow =
-        render_single_label_image(&t_turn_flow, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_turn_flow, &HashMap::new(), &vars, &dt, opts).unwrap();
     let png_turn_abs =
-        render_single_label_image(&t_turn_abs, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_turn_abs, &HashMap::new(), &vars, &dt, opts).unwrap();
     assert_eq!(png_turn_flow, png_turn_abs);
 
     // 5. Reordering packed children reorders the label
@@ -757,8 +751,8 @@ layout:
 "#;
     let t_ab = parse_and_validate(yaml_order_ab).unwrap();
     let t_ba = parse_and_validate(yaml_order_ba).unwrap();
-    let png_ab = render_single_label_image(&t_ab, &HashMap::new(), None, &vars, &dt, opts).unwrap();
-    let png_ba = render_single_label_image(&t_ba, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+    let png_ab = render_single_label_image(&t_ab, &HashMap::new(), &vars, &dt, opts).unwrap();
+    let png_ba = render_single_label_image(&t_ba, &HashMap::new(), &vars, &dt, opts).unwrap();
     assert_ne!(png_ab, png_ba);
 
     // 6. A packed container with no size fills, and two of them collide
@@ -788,8 +782,7 @@ layout:
 "#;
     let t_fill_collide = parse_and_validate(yaml_fill_collide).unwrap();
     let err_collide =
-        render_single_label_image(&t_fill_collide, &HashMap::new(), None, &vars, &dt, opts)
-            .unwrap_err();
+        render_single_label_image(&t_fill_collide, &HashMap::new(), &vars, &dt, opts).unwrap_err();
     assert_eq!(err_collide.reason(), Some("item_out_of_frame"));
     assert!(err_collide.message_text().contains("items[1]"));
 
@@ -822,8 +815,7 @@ layout:
 "#;
     let t_side_by_side = parse_and_validate(yaml_content_side_by_side).unwrap();
     let _png_side_by_side =
-        render_single_label_image(&t_side_by_side, &HashMap::new(), None, &vars, &dt, opts)
-            .unwrap();
+        render_single_label_image(&t_side_by_side, &HashMap::new(), &vars, &dt, opts).unwrap();
 
     // 7. Every child gated off leaves a padding-sized container
     let yaml_all_gated = r#"
@@ -851,7 +843,7 @@ layout:
 "#;
     let t_all_gated = parse_and_validate(yaml_all_gated).unwrap();
     let png_all_gated =
-        render_single_label_image(&t_all_gated, &HashMap::new(), None, &vars, &dt, opts).unwrap();
+        render_single_label_image(&t_all_gated, &HashMap::new(), &vars, &dt, opts).unwrap();
     let img_all_gated = image::load_from_memory(&png_all_gated).unwrap();
     // width clamped to format.width.min (10mm)
     let px_10mm = (10.0_f32 / 25.4 * 200.0).round() as u32;
@@ -879,15 +871,9 @@ layout:
         font_size: 8
 "#;
     let t_multiline_overrun = parse_and_validate(yaml_multiline_after_qr).unwrap();
-    let err_multiline = render_single_label_image(
-        &t_multiline_overrun,
-        &HashMap::new(),
-        None,
-        &vars,
-        &dt,
-        opts,
-    )
-    .unwrap_err();
+    let err_multiline =
+        render_single_label_image(&t_multiline_overrun, &HashMap::new(), &vars, &dt, opts)
+            .unwrap_err();
     assert_eq!(err_multiline.reason(), Some("item_out_of_frame"));
     assert!(err_multiline.message_text().contains("items[1]"));
 }

@@ -6,12 +6,11 @@ import {
   sourceRowForExpandedIndex,
   duplicateRow,
   removeRow,
-  validateOptionCell,
   type LabelGridRow,
 } from "./labelGrid";
 
-function row(id: string, data: Record<string, string>, option: Record<string, string> = {}): LabelGridRow {
-  return { id, origin: "csv", data, option, validation: {} };
+function row(id: string, data: Record<string, string>): LabelGridRow {
+  return { id, origin: "csv", data, validation: {} };
 }
 
 describe("labelGrid logic", () => {
@@ -56,12 +55,5 @@ describe("labelGrid logic", () => {
   it("removeRow drops the row by id", () => {
     const rows = [row("a", { sku: "1" }), row("b", { sku: "2" })];
     expect(removeRow(rows, "a")).toEqual([rows[1]]);
-  });
-
-  it("validateOptionCell returns an error for a value not in the allowed set", () => {
-    expect(validateOptionCell("red", ["red", "blue"])).toBeUndefined();
-    expect(validateOptionCell("green", ["red", "blue"])).toMatch(/not allowed/i);
-    // an undeclared option (no allowed list) is flagged
-    expect(validateOptionCell("x", undefined)).toMatch(/not a declared option/i);
   });
 });

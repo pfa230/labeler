@@ -14,9 +14,8 @@ export interface LabelGridRow {
   origin: "csv" | "manual" | "connector";
   source?: RowSource; // set by M7; absent for csv/manual
   data: Record<string, ParamValue>; // editable fields
-  option: Record<string, string>; // per-row template options
   copyGroup?: string; // links rows produced by a duplicate
-  validation: { field?: Record<string, string>; option?: Record<string, string> };
+  validation: { field?: Record<string, string> };
   annotation?: { status: "ok" | "failed"; message?: string }; // from a print summary
 }
 
@@ -61,7 +60,6 @@ export function duplicateRow(rows: LabelGridRow[], id: string): LabelGridRow[] {
     ...src,
     id: newId(),
     data: { ...src.data },
-    option: { ...src.option },
     validation: {},
     annotation: undefined,
     copyGroup: group,
@@ -76,10 +74,3 @@ export function removeRow(rows: LabelGridRow[], id: string): LabelGridRow[] {
   return rows.filter((r) => r.id !== id);
 }
 
-// Validate one option cell against the template's allowed values. `allowed` undefined => the column
-// is not a declared option of this template.
-export function validateOptionCell(value: string, allowed: string[] | undefined): string | undefined {
-  if (allowed === undefined) return "not a declared option";
-  if (!allowed.includes(value)) return `value not allowed (expected one of: ${allowed.join(", ")})`;
-  return undefined;
-}

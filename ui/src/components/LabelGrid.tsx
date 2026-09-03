@@ -10,8 +10,6 @@ const rowKeyGetter = (r: LabelGridRow) => r.id; // stable module-level identity 
 export interface LabelGridProps {
   rows: LabelGridRow[];
   fields: string[];
-  optionNames?: string[];
-  optionValues?: Record<string, string[]>; // allowed values per declared option
   cellInput?: (row: LabelGridRow, field: string) => InputSpec | undefined;
   // RDG passes the full updated rows plus which indexes changed, so the caller can normalize edited rows.
   onRowsChange: (rows: LabelGridRow[], data: RowsChangeData<LabelGridRow>) => void;
@@ -24,9 +22,8 @@ export interface LabelGridProps {
 
 const cellErrorStyle = { color: "var(--bad)" } as const;
 // Namespaced column keys so a CSV/template field literally named "actions"/"annotation"/"data:x"/"__preview"
-// cannot collide with the grid's own columns. Keys are decoded back to field/option names in the cells.
+// cannot collide with the grid's own columns. Keys are decoded back to field names in the cells.
 const DATA_PREFIX = "data:";
-const OPTION_PREFIX = "option:";
 
 interface DataEditCellProps extends RenderEditCellProps<LabelGridRow> {
   control?: InputControl;
@@ -70,45 +67,9 @@ function DataEditCell({ row, column, onRowChange, onClose, control = "text" }: D
   );
 }
 
-function OptionEditCell(
-  { row, column, onRowChange }: RenderEditCellProps<LabelGridRow>,
-  allowed: string[],
-) {
-  const name = column.key.slice(OPTION_PREFIX.length);
-  const value = row.option[name] ?? (typeof row.data[name] === "string" ? String(row.data[name]) : "");
-  // Render the current value even if it is not allowed, so an invalid CSV value stays selectable/visible.
-  const options = allowed.includes(value) ? allowed : [value, ...allowed];
-  return (
-    <select
-      autoFocus
-      aria-label={`edit ${name}`}
-      className="w-full bg-transparent px-2"
-      value={value}
-      onChange={(e) =>
-        onRowChange(
-          {
-            ...row,
-            option: { ...row.option, [name]: e.target.value },
-            data: { ...row.data, [name]: e.target.value },
-          },
-          true,
-        )
-      }
-    >
-      {options.map((v) => (
-        <option key={v} value={v}>
-          {v === "" ? "(none)" : v}
-        </option>
-      ))}
-    </select>
-  );
-}
-
 export function LabelGrid({
   rows,
   fields,
-  optionNames = [],
-  optionValues = {},
   cellInput,
   onRowsChange,
   onDuplicate,
@@ -205,15 +166,6 @@ export function LabelGrid({
         return <DataEditCell {...p} control={spec.control} />;
       },
     })),
-    ...optionNames.map<Column<LabelGridRow>>((name) => ({
-      key: `${OPTION_PREFIX}${name}`,
-      name: `option.${name}`,
-      renderCell: ({ row }: RenderCellProps<LabelGridRow>) => {
-        const err = row.validation.option?.[name];
-        return <span style={err ? cellErrorStyle : undefined} title={err}>{row.option[name] ?? ""}</span>;
-      },
-      renderEditCell: disabled || (optionValues[name]?.length ?? 0) <= 1 ? undefined : (p: RenderEditCellProps<LabelGridRow>) => OptionEditCell(p, optionValues[name] ?? []),
-    })),
     {
       key: "__annotation",
       name: "Status",
@@ -243,7 +195,7 @@ export function LabelGrid({
       ),
     },
     ];
-  }, [fields, optionNames, optionValues, cellInput, onDuplicate, onRemove, disabled, rows, selectedRowId, onSelectRow]);
+  }, [fields, cellInput, onDuplicate, onRemove, disabled, rows, selectedRowId, onSelectRow]);
 
   return (
     <DataGrid

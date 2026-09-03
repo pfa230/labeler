@@ -102,11 +102,10 @@ fn render_single_batch(
             continue;
         }
         let res = match ext {
-            "pdf" => render_single_label_pdf(template, &lbl.data, None, env.settings, env.datetime),
+            "pdf" => render_single_label_pdf(template, &lbl.data, env.settings, env.datetime),
             _ => render_single_label_image(
                 template,
                 &lbl.data,
-                None,
                 env.settings,
                 env.datetime,
                 env.render_opts,

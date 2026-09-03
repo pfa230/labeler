@@ -5,8 +5,8 @@ import type { LabelGridRow } from "../lib/labelGrid";
 
 const selectionBaseProps = {
   rows: [
-    { id: "r1", origin: "csv" as const, data: { title: "a" }, option: {}, validation: {} },
-    { id: "r2", origin: "csv" as const, data: { title: "b" }, option: {}, validation: {} },
+    { id: "r1", origin: "csv" as const, data: { title: "a" }, validation: {} },
+    { id: "r2", origin: "csv" as const, data: { title: "b" }, validation: {} },
   ] satisfies LabelGridRow[],
   fields: ["title"],
   onRowsChange: vi.fn(),
@@ -30,12 +30,11 @@ describe("LabelGrid selection", () => {
 
 function rows(): LabelGridRow[] {
   return [
-    { id: "a", origin: "csv", data: { sku: "1", notes: "first" }, option: {}, validation: {} },
+    { id: "a", origin: "csv", data: { sku: "1", notes: "first" }, validation: {} },
     {
       id: "b",
       origin: "csv",
       data: { sku: "2", notes: "second" },
-      option: {},
       validation: {},
       annotation: { status: "failed", message: "boom" },
     },
@@ -60,7 +59,7 @@ describe("LabelGrid", () => {
 
   it("shows validation errors: an empty required field", () => {
     const rs: LabelGridRow[] = [
-      { id: "a", origin: "csv", data: { sku: "", notes: "ok" }, option: {}, validation: { field: { sku: "required" } } },
+      { id: "a", origin: "csv", data: { sku: "", notes: "ok" }, validation: { field: { sku: "required" } } },
     ];
     render(<LabelGrid rows={rs} {...props} onRowsChange={() => {}} onDuplicate={() => {}} onRemove={() => {}} />);
     expect(screen.getByLabelText(/sku required/i)).toBeInTheDocument();
@@ -241,9 +240,9 @@ describe("LabelGrid", () => {
 
   it("renders a multiline cell differently from a single-line cell with a line count marker, splitting on CRLF and LF alike", () => {
     const multilineRows: LabelGridRow[] = [
-      { id: "a", origin: "csv", data: { sku: "1", notes: "line one\nline two" }, option: {}, validation: {} },
-      { id: "b", origin: "csv", data: { sku: "2", notes: "line one line two" }, option: {}, validation: {} },
-      { id: "c", origin: "csv", data: { sku: "3", notes: "crlf one\r\ncrlf two" }, option: {}, validation: {} },
+      { id: "a", origin: "csv", data: { sku: "1", notes: "line one\nline two" }, validation: {} },
+      { id: "b", origin: "csv", data: { sku: "2", notes: "line one line two" }, validation: {} },
+      { id: "c", origin: "csv", data: { sku: "3", notes: "crlf one\r\ncrlf two" }, validation: {} },
     ];
 
     render(
@@ -268,7 +267,6 @@ describe("LabelGrid", () => {
         id: "a",
         origin: "csv",
         data: { sku: "1", notes: "line one\nline two" },
-        option: {},
         validation: { field: { notes: "invalid format" } },
       },
     ];
@@ -289,41 +287,6 @@ describe("LabelGrid", () => {
     const cellSpan = screen.getByText("line one").parentElement;
     expect(cellSpan).toHaveAttribute("title", "invalid format\n\nline one\nline two");
     expect(cellSpan).toHaveStyle({ color: "var(--bad)" });
-  });
-
-  it("commits an option edit to row.data and row.option through onRowsChange", async () => {
-    const onRowsChange = vi.fn();
-    const rowsWithOption: LabelGridRow[] = [
-      {
-        id: "a",
-        origin: "csv",
-        data: { sku: "1", style: "plain" },
-        option: { style: "plain" },
-        validation: {},
-      },
-    ];
-
-    render(
-      <LabelGrid
-        rows={rowsWithOption}
-        fields={["sku"]}
-        optionNames={["style"]}
-        optionValues={{ style: ["plain", "fancy"] }}
-        onRowsChange={onRowsChange}
-        onDuplicate={() => {}}
-        onRemove={() => {}}
-      />,
-    );
-
-    fireEvent.doubleClick(screen.getByText("plain"));
-    const select = (await screen.findByLabelText("edit style")) as HTMLSelectElement;
-    expect(select.tagName).toBe("SELECT");
-    fireEvent.change(select, { target: { value: "fancy" } });
-
-    await waitFor(() => expect(onRowsChange).toHaveBeenCalled());
-    const updated = onRowsChange.mock.calls.at(-1)![0] as LabelGridRow[];
-    expect(updated[0].option.style).toBe("fancy");
-    expect(updated[0].data.style).toBe("fancy");
   });
 
   it("renders inert cell with '—' and disables editing when cellInput control is 'list' and cell is not an array", () => {
@@ -356,21 +319,18 @@ describe("LabelGrid", () => {
         id: "r1",
         origin: "connector",
         data: { sku: "100", tags: ["KIDS", "CONSUMABLE"] },
-        option: {},
         validation: {},
       },
       {
         id: "r2",
         origin: "connector",
         data: { sku: "101", tags: [] },
-        option: {},
         validation: {},
       },
       {
         id: "r3",
         origin: "connector",
         data: { sku: "102" },
-        option: {},
         validation: {},
       },
     ];
