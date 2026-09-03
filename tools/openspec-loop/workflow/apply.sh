@@ -32,7 +32,9 @@
 # Exit 10 = the fix round changed nothing, so the next review would judge bytes a previous
 # round already judged (#299). Nothing is launched. Either the implementer answered every
 # finding in prose, or it acted on none of them, and no round of review can tell those
-# apart; that is a person's call, which is why this stops for one.
+# apart; that is a person's call, which is why this stops for one. "Nothing" is measured
+# as the tree and the delta specs together, because a finding answered in the delta moves
+# only the second of them (#362).
 set -uo pipefail
 
 usage='usage: apply.sh [<implementer> <reviewer>] [change] [--rounds N] [--dry-run]'
@@ -181,6 +183,15 @@ last_round_tree() { # last_round_tree -> digest, or empty when no round has run
   [ -n "$last" ] || return 0
   grep -E '^TREE_SHA256: [0-9a-f]{64}$' "$last" 2>/dev/null | head -1 | sed 's/^TREE_SHA256:[[:space:]]*//'
 }
+# The contract that round judged the tree against. Empty when no round has run, and empty
+# for a round artifact written before review-round.sh recorded one, which is the case the
+# caller reads as "cannot be established" (#362).
+last_round_specs() { # last_round_specs -> digest, or empty
+  local dir="$wt/openspec/changes/$change" i=1 last=""
+  while [ -e "$dir/diff-review-$i.md" ]; do last="$dir/diff-review-$i.md"; i=$((i + 1)); done
+  [ -n "$last" ] || return 0
+  grep -E '^SPECS_SHA256: [0-9a-f]{64}$' "$last" 2>/dev/null | head -1 | sed 's/^SPECS_SHA256:[[:space:]]*//'
+}
 last_round_file() { # last_round_file -> basename of the newest round artifact, or empty
   local dir="$wt/openspec/changes/$change" i=1 last=""
   while [ -e "$dir/diff-review-$i.md" ]; do last="diff-review-$i.md"; i=$((i + 1)); done
@@ -252,12 +263,28 @@ while :; do
   # verdicts on an identical tree, and the second one shipped. run-stage.sh already warns
   # that a handover fix round changed nothing; that warning is what this flapped past, so
   # this stops instead, and stops BEFORE the launch, because the waste is the review.
+  #
+  # "Already judged" is the tree AND the contract, never the tree alone. A review measures
+  # code against the delta specs, and tree_excl keeps openspec/changes out of the tree
+  # digest on purpose, so a round whose finding was answered in the delta leaves the tree
+  # byte-identical while judging something else entirely. Keyed on the tree alone this
+  # refused the first review of a moved contract, with no override and nothing that could
+  # ever move the digest, and #338 deadlocked (#362). The pairing is write_diff_review's
+  # already, and run-change.sh retires an approval on the same comparison.
   prev=$(last_round_tree)
-  if [ -n "$prev" ] && [ "$prev" = "$tree" ]; then
+  prev_specs=$(last_round_specs)
+  specs=$("$here/specs-digest.sh" "$wt/openspec/changes/$change" 2>/dev/null)
+  # A round artifact with no recorded contract cannot be shown to have judged this one.
+  # diff_verdict answers that the same way and for the same reason: the safe answer to
+  # "does this verdict still apply?" is another review, not an assumption. It is also the
+  # cheap direction. A false launch costs one review; a false stop costs the change.
+  if [ -n "$prev" ] && [ "$prev" = "$tree" ] \
+     && [ -n "$prev_specs" ] && [ "$prev_specs" = "$specs" ]; then
     prev_file=$(last_round_file)
     next_file=$(next_round_file "$wt/openspec/changes/$change" diff-review)
-    say "the tree has not moved since $prev_file"
-    echo "$prev_file recorded TREE_SHA256: $tree, and that is still the tree." >&2
+    say "neither the tree nor the delta has moved since $prev_file"
+    echo "$prev_file recorded TREE_SHA256: $tree and SPECS_SHA256: $specs," >&2
+    echo "and both are still current." >&2
     echo "So $next_file would be a second verdict on bytes already judged; not launching one." >&2
     echo "Read $prev_file: either every finding was answered in prose, which a person must" >&2
     echo "accept, or none was acted on, which is a fix round to re-run." >&2
