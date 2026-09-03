@@ -420,7 +420,7 @@ The post-change set of top-level template fields is:
 | `unit` | `"mm"` \| `"in"` | Length unit for all coordinates/sizes in the template. |
 | `dpi` | integer > 0 | Raster resolution for PNG output. |
 | `format` | object | See `docs/SPEC.md` §3.1. |
-| `params` | map | Optional. Map of parameter name → `ParamSpec`. See `docs/SPEC.md` §3.0. |
+| `params` | sequence | Optional. Sequence of parameter entries each carrying `name` plus its `ParamSpec` fields. See `docs/SPEC.md` §3.0 as superseded by `template-inputs`. |
 | `layout` | list | Tree of layout items. See `docs/SPEC.md` §4. |
 | `version` | string | Optional, free-form. |
 
@@ -446,7 +446,12 @@ leaves its stored file byte-for-byte unchanged, and a create-only write (`If-Non
 no file.
 
 This requirement supersedes the `docs/SPEC.md` §3 top-level field table, and only that table. Every
-other rule in §3, and the frozen §3.0 and §3.1 subsections, stay authoritative.
+other rule in §3 stays authoritative. The frozen §3.0 subsections are partitioned and stay
+authoritative as follows: its opening declaration/container example is governed by `template-inputs:
+Template params are declared as a sequence and published as an array`, its per-entry/type table by
+`datetime-params: A datetime parameter names an instant, not a rendering`, and its "Namespace rules
+and reserved names" list by `interpolation-tokens: A bare name is a bare name, and no word is
+reserved`; §3.1 stays authoritative.
 
 #### Scenario: A top-level `options:` key is refused
 
@@ -466,7 +471,7 @@ other rule in §3, and the frozen §3.0 and §3.1 subsections, stay authoritativ
 
 #### Scenario: The same choices declared as a parameter load
 
-- **WHEN** the same template instead declares `params: { orientation: { type: enum, values: [...] } }`
+- **WHEN** the same template instead declares `params: [{ name: orientation, type: enum, values: [...] }]`
 - **THEN** the template loads, and `orientation` is a declared `enum` parameter on every path that
   reports one
 
@@ -569,8 +574,8 @@ other rule in §3, and the frozen §3.0 and §3.1 subsections, stay authoritativ
 
 #### Scenario: An ASCII case clash is caught
 
-- **WHEN** the filesystem folds case, the group `Warehouse` exists, and the service is asked to
-  create `WAREHOUSE`
+- **WHEN** the filesystem folds case, the group `Warehouse` exists, and the service is asked
+  to create `WAREHOUSE`
 - **THEN** the response is `422` with `details.reason` `template_group_case_conflict`
 - **AND** the message names the existing group `Warehouse`
 

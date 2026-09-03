@@ -1987,6 +1987,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "image",
+ "indexmap",
  "ipp",
  "qrcode",
  "rand 0.10.2",

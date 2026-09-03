@@ -215,7 +215,7 @@ mod tests {
                     height: Dimension::Fixed(10.0).into(),
                     media_width: None,
                 },
-                params: std::collections::BTreeMap::from([(
+                params: indexmap::IndexMap::from([(
                     "message".to_string(),
                     crate::models::ParamSpec {
                         param_type: crate::models::ParamType::String { multiline: false },

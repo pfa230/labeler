@@ -59,7 +59,7 @@ pub struct TemplateSummary {
     pub group: Option<String>,
     pub unit: String,
     pub dpi: u32,
-    pub params: BTreeMap<String, ParamSpec>,
+    pub params: Vec<ParamEntry>,
     pub format: TemplateFormat,
 }
 
@@ -98,7 +98,7 @@ pub struct TemplateDetail {
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
-    pub params: BTreeMap<String, ParamSpec>,
+    pub params: Vec<ParamEntry>,
     pub layout: Layout,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
@@ -251,6 +251,13 @@ pub struct ParamSpec {
     pub max: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+pub struct ParamEntry {
+    pub name: String,
+    #[serde(flatten)]
+    pub spec: ParamSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, ToSchema)]

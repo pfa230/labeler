@@ -279,62 +279,62 @@ export function TemplateDetail() {
         </dl>
       </section>
 
-      {detail.params && Object.keys(detail.params).length > 0 && (
+      {detail.params && detail.params.length > 0 && (
         <section className="flex flex-col gap-2">
           <h2 className="text-lg font-semibold">Parameters</h2>
           <div className="flex flex-col gap-2">
-            {Object.entries(detail.params).map(([name, spec]) => (
+            {detail.params.map((param) => (
               <div
-                key={name}
+                key={param.name}
                 className="flex flex-col gap-1 rounded-md border p-3 text-sm"
                 style={{ borderColor: "var(--border)", background: "var(--surface)" }}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <span className="font-mono font-medium">{name}</span>
+                    <span className="font-mono font-medium">{param.name}</span>
                     <span
                       className="rounded-full px-2 py-0.5 text-xs font-medium"
                       style={{ background: "var(--accent-soft)", color: "var(--accent)" }}
                     >
-                      {spec.type}
-                      {spec.multiline ? " (multiline)" : ""}
+                      {param.type}
+                      {param.multiline ? " (multiline)" : ""}
                     </span>
                   </div>
-                  {spec.default !== undefined && (
+                  {param.default !== undefined && (
                     <div className="flex flex-wrap items-center gap-2 text-xs" style={{ color: "var(--muted)" }}>
                       <span>
-                        default: <code className="font-mono">{String(spec.default)}</code>
+                        default: <code className="font-mono">{String(param.default)}</code>
                       </span>
-                      {detail.param_defaults?.[name] && (
-                        "resolved" in detail.param_defaults[name] ? (
+                      {detail.param_defaults?.[param.name] && (
+                        "resolved" in detail.param_defaults[param.name] ? (
                           <span>
-                            (resolved: <code className="font-mono">{String(detail.param_defaults[name].resolved)}</code>)
+                            (resolved: <code className="font-mono">{String(detail.param_defaults[param.name].resolved)}</code>)
                           </span>
                         ) : (
                           <span style={{ color: "var(--bad, #dc2626)" }}>
-                            ({detail.param_defaults[name].error.message})
+                            ({detail.param_defaults[param.name].error.message})
                           </span>
                         )
                       )}
                     </div>
                   )}
                 </div>
-                {spec.description && (
+                {param.description && (
                   <p className="text-xs" style={{ color: "var(--muted)" }}>
-                    {spec.description}
+                    {param.description}
                   </p>
                 )}
-                {(spec.min !== undefined || spec.max !== undefined) && (
+                {(param.min !== undefined || param.max !== undefined) && (
                   <div className="text-xs" style={{ color: "var(--muted)" }}>
-                    bounds: {spec.min ?? "-∞"} to {spec.max ?? "+∞"}
+                    bounds: {param.min ?? "-∞"} to {param.max ?? "+∞"}
                   </div>
                 )}
-                {spec.values && spec.values.length > 0 && (
+                {param.values && param.values.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
                     <span className="text-xs" style={{ color: "var(--muted)" }}>
                       allowed values:
                     </span>
-                    {spec.values.map((v: string) => (
+                    {param.values.map((v: string) => (
                       <Chip key={v}>{v}</Chip>
                     ))}
                   </div>

@@ -77,7 +77,7 @@ edge. Those are the failures a 200 hides.
 name: My Label        # shown in the UI
 unit: mm              # mm | in — every coordinate and size below is in this unit
 dpi: 180              # raster resolution for PNG output
-params: { ... }       # typed inputs, defaults, bounds, and UI hints (see §9)
+params: [ ... ]       # typed inputs, defaults, bounds, and UI hints (see §9)
 format: { ... }       # the physical shape of the label (below)
 layout: [ ... ]       # the tree of items to draw
 ```
@@ -140,7 +140,7 @@ name: Avery 5163 2" x 4" Shipping Label
 unit: in
 dpi: 300
 params:
-  message:
+  - name: message
     type: string
     description: "Label message text"
 format:
@@ -204,7 +204,7 @@ name: Brother 24mm Continuous Label (text only)
 unit: mm
 dpi: 180
 params:
-  message:
+  - name: message
     type: string
     description: "Label message text"
 format:
@@ -322,9 +322,9 @@ stretched width to at most 30mm even if 80mm remains in the parent frame.
 
 ```yaml
 params:
-  code:
+  - name: code
     type: string
-  message:
+  - name: message
     type: string
 format: { type: single, width: { min: 10.0, max: 150.0 }, height: 18.1 }
 layout:
@@ -394,7 +394,7 @@ Text layout items support an optional `wrap: bool` flag (default: `false`):
 - **Hard newlines always survive:** Any newline (`\n`) in input data creates a new line box, whether `wrap` is `true` or `false`.
 - **Soft wrapping (`wrap: true`):** When a line exceeds the width of its box, it is softly wrapped to subsequent lines at word boundaries (or character boundaries for words wider than the box).
 - **No soft wrapping (`wrap: false`):** Lines are not broken beyond authored newlines. If an individual line exceeds the box width, `overflow` handles it.
-- **Form inputs in the web UI:** Whether the print form displays a multi-line `<textarea>` or a single-line `<input>` is controlled entirely by `params.<field>.multiline: true`. Every field referenced by the layout must be declared in `params:`, and a `wrap: true` layout item reading a `multiline: false` parameter keeps a single-line `<input>`.
+- **Form inputs in the web UI:** Whether the print form displays a multi-line `<textarea>` or a single-line `<input>` is controlled entirely by declaring `multiline: true` on the parameter in `params:`. Every field referenced by the layout must be declared in `params:`, and a `wrap: true` layout item reading a `multiline: false` parameter keeps a single-line `<input>`.
 
 ## 8. Edge-relative coordinates and `to:`
 
@@ -423,9 +423,9 @@ know. `tests/fixtures/templates/brother_24mm_lines_divider.yaml`:
 
 ```yaml
 params:
-  line1:
+  - name: line1
     type: string
-  line2:
+  - name: line2
     type: string
 layout:
   - type: container
@@ -532,11 +532,11 @@ using `when:` conditions. This is how one template serves several layouts or opt
 
 ```yaml
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [horizontal, vertical]
     default: horizontal
-  outline:
+  - name: outline
     type: enum
     values: [yes]
 ```
@@ -588,11 +588,11 @@ A template can access the render clock via `{sys.now}` or declare parameters of 
 
 ```yaml
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
     default: "{sys.now}"
     description: "Print Date"
-  expiry_timestamp:
+  - name: expiry_timestamp
     type: datetime
     time: true
     description: "Expiration Timestamp"

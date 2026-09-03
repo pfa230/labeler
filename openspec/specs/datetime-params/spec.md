@@ -235,11 +235,13 @@ carries a `422 BatchInvalid` failure back to its row in both grids.
 
 ### Requirement: A datetime parameter names an instant, not a rendering
 
-*This requirement supersedes `docs/SPEC.md` §3.0 ("Parameters (`params:`)") except its "Namespace rules
-and reserved names" list, which the `interpolation-tokens` capability supersedes, and restates its
-complete post-change contract. All other frozen sections remain authoritative. It replaces the
-requirement "A template declares a datetime parameter as an instant, not a rendering", which this change
-removes.*
+*This requirement supersedes `docs/SPEC.md` §3.0 ("Parameters (`params:`)") except its opening
+declaration/container example (now governed by `template-inputs: Template params are declared as a
+sequence and published as an array`) and its "Namespace rules and reserved names" list (governed by
+`interpolation-tokens: A bare name is a bare name, and no word is reserved`), and restates the
+per-entry type/attribute contract for that section. All other frozen sections remain authoritative. It
+replaces the requirement "A template declares a datetime parameter as an instant, not a rendering",
+which this change removes.*
 
 A `params:` entry MAY declare `type: datetime`. Such a parameter names one point in time. It carries
 no format of its own: what a label prints is decided by the interpolation token that reads it.

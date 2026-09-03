@@ -3,21 +3,21 @@ description: Standard shipping labels on US Letter sheets
 unit: in
 dpi: 300
 params:
-  id:
+  - name: id
     type: string
-  url:
+  - name: url
     type: string
-  name:
+  - name: name
     type: string
-  tags:
+  - name: tags
     type: string
-  description:
+  - name: description
     type: string
-  orientation:
+  - name: orientation
     type: enum
     values: [horizontal, vertical]
     default: horizontal
-  outline:
+  - name: outline
     type: enum
     values: [yes]
 format:

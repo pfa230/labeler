@@ -3,9 +3,9 @@ description: Continuous tape, 18mm nominal (15.8mm printable at 180 dpi), QR lef
 unit: mm
 dpi: 180
 params:
-  code:
+  - name: code
     type: string
-  message:
+  - name: message
     type: string
 format:
   type: single

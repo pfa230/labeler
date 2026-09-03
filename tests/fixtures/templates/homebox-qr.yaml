@@ -3,9 +3,9 @@ description: Asset label whose QR links a configured base URL to an item id (var
 unit: mm
 dpi: 300
 params:
-  id:
+  - name: id
     type: string
-  message:
+  - name: message
     type: string
 format:
   type: single

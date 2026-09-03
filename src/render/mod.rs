@@ -2578,6 +2578,7 @@ mod tests {
     };
     use crate::reason::Reason;
     use crate::templates::{TemplateContent, TemplateDefinition};
+    use indexmap::IndexMap;
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -2897,7 +2898,7 @@ name: Dynamic Centered E2E
 unit: mm
 dpi: 200
 params:
-  message:
+  - name: message
     type: string
 format:
   type: single
@@ -3498,7 +3499,7 @@ layout:
                 height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "x".to_string(),
                 placement: Placement {
@@ -4234,7 +4235,7 @@ layout:
                 height: Dimension::Fixed(8.0).into(),
                 media_width: None,
             },
-            params: std::collections::BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Some(Position([-10.0, 0.0])),
@@ -4291,7 +4292,7 @@ layout:
                 height: Dimension::Fixed(30.0).into(),
                 media_width: None,
             },
-            params: std::collections::BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Some(Position([0.0, 0.0])),
@@ -4366,7 +4367,7 @@ layout:
                 height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            params: std::collections::BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Container {
                 placement: Placement {
                     at: Some(Position([0.0, 0.0])),
@@ -4589,7 +4590,7 @@ layout:
                 height: Dimension::Fixed(40.0).into(),
                 media_width: None,
             },
-            params: std::collections::BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![outer]),
             version: None,
         };
@@ -4627,7 +4628,7 @@ layout:
                 height: Dimension::Fixed(HEIGHT_MM).into(),
                 media_width: None,
             },
-            params: std::collections::BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: text.to_string(),
                 placement: Placement::sized(
@@ -5110,7 +5111,7 @@ layout:
                     label_height: 10.0,
                     positions: vec![SheetPosition([0.0, 0.0]), SheetPosition([10.0, 0.0])],
                 },
-                params: BTreeMap::from([(
+                params: IndexMap::from([(
                     "message".to_string(),
                     ParamSpec {
                         param_type: crate::models::ParamType::String { multiline: false },
@@ -5206,7 +5207,7 @@ layout:
                 height: Dimension::Fixed(10.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([(
+            params: IndexMap::from([(
                 "variant".to_string(),
                 ParamSpec {
                     param_type: ParamType::Enum {
@@ -5262,7 +5263,7 @@ layout:
                 height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([(
+            params: IndexMap::from([(
                 "variant".to_string(),
                 ParamSpec {
                     param_type: ParamType::Enum {
@@ -5364,7 +5365,7 @@ layout:
                     label_height: 5.0,
                     positions: vec![SheetPosition([0.0, 0.0])],
                 },
-                params: BTreeMap::from([(
+                params: IndexMap::from([(
                     "message".to_string(),
                     ParamSpec {
                         param_type: crate::models::ParamType::String { multiline: false },
@@ -5417,7 +5418,7 @@ layout:
                 height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Image {
                 name: Some("logo".to_string()),
                 src: None,
@@ -5482,7 +5483,7 @@ layout:
                     label_height: 20.0,
                     positions: vec![SheetPosition([0.0, 0.0])],
                 },
-                params: BTreeMap::from([(
+                params: IndexMap::from([(
                     "logo".to_string(),
                     ParamSpec {
                         param_type: crate::models::ParamType::String { multiline: false },
@@ -5631,7 +5632,7 @@ layout:
                 height: Dimension::Fixed(10.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "{message}".to_string(),
                 placement: Placement::sized(
@@ -5803,7 +5804,7 @@ layout:
                 height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     value: "Item {id}".to_string(),
@@ -5855,7 +5856,7 @@ layout:
                 height: Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "{x}".to_string(),
                 placement: Placement::sized(
@@ -5936,7 +5937,7 @@ layout:
                 label_height: 5.0,
                 positions: vec![SheetPosition([0.0, 0.0])],
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "hi".into(),
                 placement: Placement::sized(
@@ -5968,7 +5969,7 @@ layout:
                 height: crate::models::Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([
+            params: IndexMap::from([
                 (
                     "title".into(),
                     crate::models::ParamSpec {
@@ -6061,7 +6062,7 @@ layout:
                 height: crate::models::Dimension::Fixed(20.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([(
+            params: IndexMap::from([(
                 "real".into(),
                 crate::models::ParamSpec {
                     param_type: crate::models::ParamType::String { multiline: false },
@@ -6476,7 +6477,7 @@ layout:
                 height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![
                 LayoutItem::Text {
                     value: "hi".to_string(),
@@ -6748,7 +6749,7 @@ layout:
                 height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([(
+            params: IndexMap::from([(
                 "v".to_string(),
                 crate::models::ParamSpec {
                     param_type: crate::models::ParamType::String { multiline: false },
@@ -6808,7 +6809,7 @@ layout:
                 height: Dimension::Fixed(12.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::from([(
+            params: IndexMap::from([(
                 "target_width".to_string(),
                 ParamSpec {
                     param_type: ParamType::Length,
@@ -6907,9 +6908,9 @@ name: Dynamic Width
 unit: mm
 dpi: 200
 params:
-  message:
+  - name: message
     type: string
-  target_width:
+  - name: target_width
     type: length
     default: 60
 format:
@@ -6952,9 +6953,9 @@ name: Dynamic Weight
 unit: mm
 dpi: 200
 params:
-  message:
+  - name: message
     type: string
-  weight:
+  - name: weight
     type: integer
     default: 400
 format:
@@ -6986,13 +6987,13 @@ name: When Lazy Test
 unit: mm
 dpi: 200
 params:
-  orientation:
+  - name: orientation
     type: enum
     values: [h, v]
     default: h
-  h_text:
+  - name: h_text
     type: string
-  v_text:
+  - name: v_text
     type: string
 format:
   type: single
@@ -7034,7 +7035,7 @@ name: Active Missing Test
 unit: mm
 dpi: 200
 params:
-  message:
+  - name: message
     type: string
 format:
   type: single
@@ -7061,7 +7062,7 @@ name: Dim Limit Test
 unit: mm
 dpi: 200
 params:
-  target_width:
+  - name: target_width
     type: length
     default: 60
 format:
@@ -7092,7 +7093,7 @@ name: Dynamic Container Padding Overflow
 unit: mm
 dpi: 200
 params:
-  target_width:
+  - name: target_width
     type: length
     default: 60
 format:
@@ -7135,10 +7136,10 @@ name: Dynamic Container Inactive Padding
 unit: mm
 dpi: 200
 params:
-  target_width:
+  - name: target_width
     type: length
     default: 60
-  show_extra:
+  - name: show_extra
     type: boolean
     default: false
 format:
@@ -7181,7 +7182,7 @@ name: Test DateTime Param
 unit: mm
 dpi: 200
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
     default: "{sys.now}"
 format:
@@ -7292,7 +7293,7 @@ name: Test DateTime Unknown Format
 unit: mm
 dpi: 200
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
     default: "{sys.now}"
 format:
@@ -7328,7 +7329,7 @@ name: Test DateTime Dynamic Width
 unit: mm
 dpi: 200
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
     default: "{sys.now}"
 format:
@@ -7373,9 +7374,9 @@ name: Test DateTime Fields
 unit: mm
 dpi: 200
 params:
-  title:
+  - name: title
     type: string
-  printed_on:
+  - name: printed_on
     type: datetime
 format:
   type: single
@@ -7410,7 +7411,7 @@ name: Test DateTime
 unit: mm
 dpi: 200
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
     default: "{{sys.now}}"
 format:
@@ -7538,11 +7539,11 @@ name: Adv Test
 unit: mm
 dpi: 200
 params:
-  datetime:
+  - name: datetime
     type: string
-  vars:
+  - name: vars
     type: string
-  printed_on:
+  - name: printed_on
     type: datetime
     default: "{sys.now}"
 format:
@@ -7574,7 +7575,7 @@ name: Test DateTime When
 unit: mm
 dpi: 200
 params:
-  printed_on:
+  - name: printed_on
     type: datetime
 format:
   type: single
@@ -7750,7 +7751,7 @@ name: Zero Size
 unit: mm
 dpi: 200
 params:
-  w:
+  - name: w
     type: length
     default: 10
 format: { type: single, width: 100, height: 20 }
@@ -7779,7 +7780,7 @@ name: Zero Size Text
 unit: mm
 dpi: 200
 params:
-  w:
+  - name: w
     type: length
     default: 10
 format: { type: single, width: 100, height: 20 }
@@ -7805,7 +7806,7 @@ name: Inverted To
 unit: mm
 dpi: 200
 params:
-  target_width:
+  - name: target_width
     type: length
     default: 100
 format:
@@ -7839,7 +7840,7 @@ name: Inverted To Text
 unit: mm
 dpi: 200
 params:
-  target_width:
+  - name: target_width
     type: length
     default: 100
 format:
@@ -8119,7 +8120,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  w:
+  - name: w
     type: length
     default: 12
 layout:
@@ -8155,10 +8156,10 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  w:
+  - name: w
     type: length
     default: 14
-  show:
+  - name: show
     type: enum
     values: [yes, no]
     default: no
@@ -8258,7 +8259,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 50 }
 params:
-  w:
+  - name: w
     type: length
     default: 10
 layout:
@@ -8771,7 +8772,7 @@ name: Empty Text Zero Box
 unit: mm
 dpi: 200
 params:
-  msg:
+  - name: msg
     type: string
 format: { type: single, width: 100, height: 20 }
 layout:
@@ -8888,7 +8889,7 @@ name: Too Tall Child
 unit: mm
 dpi: 200
 params:
-  h:
+  - name: h
     type: number
     default: 15
 format: { type: single, width: 50, height: 20 }
@@ -8918,7 +8919,7 @@ name: Measurement Gated Overflow
 unit: mm
 dpi: 200
 params:
-  show_first:
+  - name: show_first
     type: enum
     values: ["yes", "no"]
     default: "no"
@@ -9418,9 +9419,9 @@ name: Test When Omitted
 unit: mm
 dpi: 200
 params:
-  bold:
+  - name: bold
     type: boolean
-  mode:
+  - name: mode
     type: enum
     values: [draft, final]
 format: { type: single, width: 100, height: 20 }
@@ -9491,7 +9492,7 @@ name: Test When Literal Default
 unit: mm
 dpi: 200
 params:
-  mode:
+  - name: mode
     type: enum
     values: [draft, final]
     default: draft
@@ -9533,7 +9534,7 @@ name: Test When Broken Default
 unit: mm
 dpi: 200
 params:
-  mode:
+  - name: mode
     type: enum
     values: [draft, final]
     default: "{vars.missing}"
@@ -9570,7 +9571,7 @@ name: Test Unused Param Broken Default
 unit: mm
 dpi: 200
 params:
-  unused:
+  - name: unused
     type: string
     default: "{vars.missing}"
 format: { type: single, width: 100, height: 20 }
@@ -9600,7 +9601,7 @@ name: Test Length Coercion
 unit: mm
 dpi: 200
 params:
-  w:
+  - name: w
     type: length
     default: "80mm"
 format: { type: single, width: 100, height: 20 }
@@ -9630,7 +9631,7 @@ name: Test String Null
 unit: mm
 dpi: 200
 params:
-  title:
+  - name: title
     type: string
 format: { type: single, width: 100, height: 20 }
 layout:
@@ -9888,7 +9889,7 @@ name: PaddedColorRef
 unit: mm
 dpi: 200
 params:
-  brand:
+  - name: brand
     type: string
 format: { type: single, width: 50, height: 20 }
 layout:
@@ -9926,7 +9927,7 @@ name: WhiteSpaceColorParam
 unit: mm
 dpi: 200
 params:
-  brand:
+  - name: brand
     type: string
 format: { type: single, width: 50, height: 20 }
 layout:
@@ -9975,7 +9976,7 @@ name: ChainedColorParam
 unit: mm
 dpi: 200
 params:
-  brand:
+  - name: brand
     type: string
 format: { type: single, width: 50, height: 20 }
 layout:
@@ -10090,11 +10091,11 @@ name: ParamShapes
 unit: mm
 dpi: 200
 params:
-  brand:
+  - name: brand
     type: string
-  line_color:
+  - name: line_color
     type: string
-  palette:
+  - name: palette
     type: enum
     values: [red, green, blue]
 format:
@@ -10175,7 +10176,7 @@ name: EnumBg
 unit: mm
 dpi: 200
 params:
-  palette:
+  - name: palette
     type: enum
     values: [red, green, blue]
 format: { type: single, width: 50, height: 30 }
@@ -10325,11 +10326,11 @@ format:
     - [0, 0]
     - [25, 0]
 params:
-  bg:
+  - name: bg
     type: string
-  stroke_col:
+  - name: stroke_col
     type: string
-  txt_col:
+  - name: txt_col
     type: string
 layout:
   - type: container
@@ -10514,7 +10515,7 @@ layout:
 
         let tpl_with_param =
             |name: &str, param_type: crate::models::ParamType| -> TemplateContent {
-                let mut params = BTreeMap::new();
+                let mut params = IndexMap::new();
                 params.insert(
                     name.to_string(),
                     crate::models::ParamSpec {
@@ -10684,7 +10685,7 @@ layout:
         let orientation_param = crate::models::ParamType::Enum {
             values: vec!["horizontal".to_string(), "vertical".to_string()],
         };
-        let mut params = BTreeMap::new();
+        let mut params = IndexMap::new();
         params.insert(
             "orientation".to_string(),
             crate::models::ParamSpec {
@@ -10759,9 +10760,9 @@ format:
   width: 50
   height: 30
 params:
-  title:
+  - name: title
     type: string
-  unused_param:
+  - name: unused_param
     type: string
 layout:
   - type: text
@@ -10846,7 +10847,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -10929,7 +10930,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -11015,9 +11016,9 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  cats:
+  - name: cats
     type: list
-  items:
+  - name: items
     type: list
 layout:
   - type: container
@@ -11132,7 +11133,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  tags:
+  - name: tags
     type: list
     default: []
 layout:
@@ -11246,7 +11247,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  tags:
+  - name: tags
     type: list
     default: ["CONSUMABLE", "KIDS"]
 layout:
@@ -11319,7 +11320,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 50, height: 25 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -11381,10 +11382,10 @@ unit: mm
 dpi: 200
 format: { type: single, width: 100, height: 100 }
 params:
-  show_tags:
+  - name: show_tags
     type: enum
     values: ["yes", "no"]
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -11460,7 +11461,7 @@ unit: mm
 dpi: 200
 format: { type: single, width: 25, height: 50 }
 params:
-  tags:
+  - name: tags
     type: list
 layout:
   - type: container
@@ -11519,5 +11520,43 @@ layout:
             .or_else(|| src.find("Tag: C"))
             .expect("Tag: C in Typst");
         assert!(p_a < p_b && p_b < p_c, "instances must be drawn in order");
+    }
+
+    #[test]
+    fn issue_360_render_coercion_multi_error_surfaces_first_declared() {
+        let yaml = r#"
+name: CoercionOrder
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: zebra
+    type: integer
+  - name: alpha
+    type: integer
+layout:
+  - type: text
+    value: "{zebra} {alpha}"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 8
+"#;
+        let template = crate::parse::parse_template(yaml).unwrap();
+        let mut data = HashMap::new();
+        data.insert("zebra".to_string(), serde_json::json!("not_an_int"));
+        data.insert("alpha".to_string(), serde_json::json!("also_not_an_int"));
+        let dt = no_datetime();
+        let settings = no_settings();
+        let err = render_single_label(&template, &data, None, &settings, &dt).unwrap_err();
+        assert!(
+            err.message_text().contains("zebra"),
+            "expected render coercion error to surface zebra first in declaration order, got: {}",
+            err.message_text()
+        );
+        assert!(
+            !err.message_text().contains("alpha"),
+            "alpha should not be reported before zebra: {}",
+            err.message_text()
+        );
     }
 }
