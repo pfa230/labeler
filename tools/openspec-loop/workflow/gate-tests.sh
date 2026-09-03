@@ -62,6 +62,9 @@ setup() {
   repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
   cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
+  # The gate reads which paths hold implementation from here (labeler #357); without it
+  # it refuses to judge rather than guessing, so every case below would come back exit 2.
+  printf 'impl_paths: [src, ui/src]\nfrozen_paths: []\n' > .openspec-loop.yml
   mkdir -p openspec/specs/thing || fatal "cannot create the fixture's spec directory."
   cat > openspec/specs/thing/spec.md <<'EOF'
 # thing
@@ -600,6 +603,8 @@ setup_hooked() {
   # The fixture mirrors the kit's own topology, workflow/ beside .githooks/, because the
   # hooks locate their scripts as $here/../workflow (labeler #357). A fixture laid out any
   # other way tests a path arrangement that does not ship.
+  # The gate reads impl_paths from here; without it it refuses to judge rather than guess.
+  printf 'impl_paths: [src, ui/src]\nfrozen_paths: []\n' > .openspec-loop.yml
   mkdir -p workflow .githooks src || fatal "cannot create the fixture's harness directories."
   cp "$here"/*.sh workflow/ || fatal "cannot copy the workflow scripts into the fixture."
   cp "$here/../.githooks/pre-commit" "$here/../.githooks/pre-merge-commit" .githooks/ \

@@ -235,7 +235,7 @@ agent_step_prompt() {
     opencode) printf '/opsx-%s %s.' "$step" "$change" ;;
     codex)
       case "$step" in
-        propose) printf 'Create the OpenSpec change openspec/changes/%s: write its proposal, its delta specs, its design and its tasks, following openspec/config.yaml and the schema under openspec/schemas/labeler/. Planning only.' "$change" ;;
+        propose) printf 'Create the OpenSpec change openspec/changes/%s: write its proposal, its delta specs, its design and its tasks, following openspec/config.yaml and the schema under openspec/schemas/%s/. Planning only.' "$change" "$(openspec_schema)" ;;
         apply)   printf 'Implement the tasks in openspec/changes/%s, following its proposal, specs, design and tasks.' "$change" ;;
         archive) printf 'Archive the completed change openspec/changes/%s: sync every delta spec into openspec/specs/, then move the change folder to openspec/changes/archive/ prefixed with today'"'"'s date.' "$change" ;;
       esac ;;
@@ -463,11 +463,21 @@ pty_run() {
 # Errors name the file and the key rather than printing a usage line: a value that came
 # from a file is not fixed by reading the command's synopsis, and sending the reader
 # there is sending them to the wrong place.
-# roles_path <workflow-dir> - the lineup file. LABELER_ROLES_FILE overrides it, and that
+# roles_path <workflow-dir> - the lineup file. OPENSPEC_LOOP_ROLES_FILE overrides it, and that
 # override is what keeps change-tests.sh and apply-tests.sh hermetic: both run the real
 # scripts out of .workflow/, so without it whichever lineup a developer happens to have
 # written would decide what the suite asserts.
-roles_path() { printf '%s' "${LABELER_ROLES_FILE:-$1/roles.local}"; }
+# The schema directory a stage is told to follow. openspec/config.yaml already names it,
+# so it is read there rather than restated: a second spelling is one that can disagree.
+openspec_schema() {
+  local root cfg
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || { printf 'spec-driven'; return; }
+  cfg="$root/openspec/config.yaml"
+  [ -f "$cfg" ] || { printf 'spec-driven'; return; }
+  sed -n 's/^schema:[[:space:]]*//p' "$cfg" | head -1 | tr -d " '\"" | grep . || printf 'spec-driven'
+}
+
+roles_path() { printf '%s' "${OPENSPEC_LOOP_ROLES_FILE:-$1/roles.local}"; }
 
 roles_template='planner: claude
 plan-reviewer: codex
