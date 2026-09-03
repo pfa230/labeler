@@ -2648,11 +2648,13 @@ pub async fn render_label(
         formats: &dt_formats,
         now: chrono::Local::now(),
     };
-    let (bytes, content_type) = match query.format.as_deref() {
-        None | Some("") | Some("png") => (
-            render_single_label_image(template, &req.label.data, None, &variables, &dt, img_opts)?,
-            "image/png",
-        ),
+    enum RenderFormat {
+        Png,
+        Pdf,
+    }
+
+    let format = match query.format.as_deref() {
+        None | Some("") | Some("png") => RenderFormat::Png,
         Some("pdf") => {
             if color_mode == ColorMode::BiLevel {
                 return Err(AppError::invalid_request(
@@ -2660,17 +2662,27 @@ pub async fn render_label(
                     "bilevel is only supported for png output",
                 ));
             }
-            (
-                render_single_label_pdf(template, &req.label.data, None, &variables, &dt)?,
-                "application/pdf",
-            )
+            RenderFormat::Pdf
         }
         Some(other) => {
             return Err(AppError::invalid_request(
                 Reason::FormatUnknown,
                 format!("unknown format '{other}'; use png or pdf"),
-            ))
+            ));
         }
+    };
+
+    crate::render::validate_label_data_keys(template, &req.label.data)?;
+
+    let (bytes, content_type) = match format {
+        RenderFormat::Png => (
+            render_single_label_image(template, &req.label.data, None, &variables, &dt, img_opts)?,
+            "image/png",
+        ),
+        RenderFormat::Pdf => (
+            render_single_label_pdf(template, &req.label.data, None, &variables, &dt)?,
+            "application/pdf",
+        ),
     };
 
     Ok((
@@ -2724,6 +2736,31 @@ pub async fn import_csv(
                     ),
                 ));
             }
+        }
+    }
+    if let Some(first_row) = parsed_rows.first() {
+        let unknown =
+            crate::render::unknown_param_names(template, first_row.data.keys().map(|k| k.as_str()));
+        if !unknown.is_empty() {
+            let cols_str = unknown
+                .iter()
+                .map(|c| format!("'{c}'"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let noun = if unknown.len() == 1 {
+                "column"
+            } else {
+                "columns"
+            };
+            let verb = if unknown.len() == 1 {
+                "is not a declared parameter"
+            } else {
+                "are not declared parameters"
+            };
+            return Err(AppError::invalid_request(
+                Reason::CsvDataColumnUnknown,
+                format!("CSV {noun} {cols_str} {verb} of template '{}'", template.id),
+            ));
         }
     }
     let labels: Vec<crate::models::LabelInput> = parsed_rows

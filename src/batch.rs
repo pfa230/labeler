@@ -91,6 +91,16 @@ fn render_single_batch(
     let mut artifacts: Vec<Vec<u8>> = Vec::with_capacity(labels.len());
     let mut failures: Vec<BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
+        if let Err(err) = crate::render::validate_label_data_keys(template, &lbl.data) {
+            failures.push(BatchFailure {
+                index: idx,
+                code: err.code(),
+                reason: err.reason(),
+                message: err.message_text(),
+            });
+            artifacts.push(Vec::new());
+            continue;
+        }
         let res = match ext {
             "pdf" => render_single_label_pdf(template, &lbl.data, None, env.settings, env.datetime),
             _ => render_single_label_image(
@@ -205,7 +215,16 @@ mod tests {
                     height: Dimension::Fixed(10.0).into(),
                     media_width: None,
                 },
-                params: std::collections::BTreeMap::new(),
+                params: std::collections::BTreeMap::from([(
+                    "message".to_string(),
+                    crate::models::ParamSpec {
+                        param_type: crate::models::ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                )]),
                 layout: Layout::Items(vec![LayoutItem::Text {
                     value: "{message}".to_string(),
                     placement: Placement::sized(

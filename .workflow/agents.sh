@@ -56,9 +56,33 @@ agent_resumable() {
 # changed everything. Ordering by mtime therefore names the wrong predecessor exactly when
 # it matters most (#292). Who wrote a tree is not a property any artifact in it carries.
 last_implementer() { tr -d '[:space:]' < "$1/.agent-runs/implement.last" 2>/dev/null; }
-note_implementer() {
-  mkdir -p "$1/.agent-runs" 2>/dev/null || return 1
-  printf '%s\n' "$2" > "$1/.agent-runs/implement.last"
+# ONCE MORE, THEN LOUDLY. The mkdir and the write are two statements and the directory
+# went away between them during the #235 run: the write failed with "No such file or
+# directory" on the line after its own mkdir -p had succeeded, in a worktree whose
+# .agent-runs was there before the stage and after it. Nothing establishes what stepped
+# into that window - the only candidate named is a process outliving the previous stage,
+# whose children run-stage.sh does not wait for, and it was never reproduced - so this
+# closes the window rather than explaining it. A transient loser now has to lose twice; a
+# permanent one fails exactly as it did before (#296).
+#
+# Success means the record READS BACK, not that the write returned 0. The same window
+# produces a write that reports success and records nothing: unlink the directory once the
+# file is open and printf writes into an orphaned inode, exits 0, and leaves no marker and
+# no error. That is the loss this record must never take silently, and no retry can see it.
+#
+# The first attempt is silent, because a failure that is about to be retried is not news.
+# The second is not silenced, so whatever refused the write says so in its own words, and
+# run-stage.sh stops the stage on the non-zero return.
+note_implementer() { # note_implementer <worktree> <agent>
+  local marker="$1/.agent-runs/implement.last"
+  { mkdir -p "$1/.agent-runs" &&
+    printf '%s\n' "$2" > "$marker" &&
+    [ "$(last_implementer "$1")" = "$2" ]; } 2>/dev/null && return 0
+  mkdir -p "$1/.agent-runs" || return 1
+  printf '%s\n' "$2" > "$marker" || return 1
+  [ "$(last_implementer "$1")" = "$2" ] || {
+    printf 'wrote %s to %s and read back "%s"\n' "$2" "$marker" "$(last_implementer "$1")" >&2
+    return 1; }
 }
 
 # handover_plan <worktree> <incoming> — decide how a code-writing run should start here.
@@ -220,11 +244,12 @@ agent_apply_prompt() { agent_step_prompt "$1" apply "$2"; }
 
 # agent_extract <agent> <raw> <log> <conv> -> status word on stdout.
 # Writes the agent's own answer to <log> and its resumable id to <conv>.
-# Returns non-zero when no answer could be found, which is the caller's signal that
-# <raw> is a console transcript rather than a review.
+# Returns non-zero when no answer could be found. That is the caller's signal that <raw>
+# is a console transcript rather than an answer, or that it is empty and the agent said
+# nothing at all; run-stage.sh tells those two apart and reports them differently (#315).
 #
 # One shape was read for every agent before (#274): agy's envelope. So claude and
-# codex reported NO_STRUCTURED_RESULT on every run and neither could ever be
+# codex yielded no answer on every run and neither could ever be
 # resumed. Each rule below was read off that CLI's own output, not off a table.
 #
 # The single-object agents are searched in the LAST FIVE LINES only: an agent that

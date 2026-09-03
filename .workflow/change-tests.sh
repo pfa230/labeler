@@ -9,8 +9,9 @@
 # check), and the blocking-question protocol. Those are the parts whose failure is
 # silent. Everything that can run through --dry-run does, so no agent is launched there.
 #
-# Not covered, and worth knowing: the plan-review gate preflight and the
-# no-structured-result refusal are asserted by apply-tests.sh; the driver's own top -
+# Not covered, and worth knowing: the plan-review gate preflight is asserted by
+# apply-tests.sh, along with the unreadable-review refusal it shares with the section
+# below on a stage that gives no account of itself; the driver's own top -
 # the scope file, the parking of an unattributed review.md, and the gates-reached
 # assertion - is not, because reaching it means stubbing gh and then every agent in turn.
 #
@@ -550,9 +551,13 @@ mkdir -p "$repo/.worktrees/issue-24/.agent-runs"
 printf 'agy\n' > "$repo/.worktrees/issue-24/.agent-runs/implement.last"
 dirty_tree issue-24-noopswap
 sbin2=$(mktemp -d)
+# opencode's real shape: one event per line, the answer in the text parts (#286). The
+# shape it used to print here was nobody's, so extraction failed and the stage passed
+# only because a writing role's unreadable result was ignored; it is refused now (#315).
 cat > "$sbin2/opencode" <<'FAKE'
 #!/usr/bin/env bash
-echo '{"type":"result","sessionID":"s-1","parts":[{"type":"text","text":"the inherited work is already correct"}]}'
+echo '{"type":"text","sessionID":"s-1","part":{"type":"text","text":"the inherited work is already correct"}}'
+echo '{"type":"step_finish","sessionID":"s-1","part":{"type":"step-finish","reason":"stop"}}'
 FAKE
 cat > "$sbin2/codex" <<'FAKE'
 #!/usr/bin/env bash
@@ -702,10 +707,80 @@ add_passing_review issue-29-unwritable
 mkdir -p "$repo/.worktrees/issue-29/.agent-runs/implement.last"
 out=$(cd "$repo" && PATH="$rbin:$PATH" "$STAGE" implement agy issue-29-unwritable 2>&1); rc=$?
 find "$repo/.worktrees/issue-29/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
-if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'cannot record the implementer'; then
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "cannot record 'agy' as the implementer"; then
   ok "a run that cannot record who is writing does not run"
 else bad "an unrecordable run exited $rc"; fi
 find "$rbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- recording the implementer survives a vanished .agent-runs (#296) ---------------
+# note_implementer's mkdir and its write are two statements, and during the #235 run the
+# directory went away between them: the write failed with "No such file or directory" on
+# the line after its own mkdir -p had succeeded, in a worktree whose .agent-runs was there
+# before the stage and after it. What stepped into that window is not established, so what
+# is asserted here is the window itself and not a cause.
+setup
+add_change issue-35-vanish
+wt35="$repo/.worktrees/issue-35"
+mkdir -p "$wt35/.agent-runs"
+# The injection point sourcing agents.sh gives: a shell function named mkdir shadows the
+# command for the call inside note_implementer, so the directory can be created and then
+# taken away again before the write - exactly the window, which no amount of timing
+# reproduces. It steps aside after the first call, so the retry meets a normal mkdir.
+vanish=1
+mkdir() {
+  command mkdir "$@" || return 1
+  [ "$vanish" = "1" ] || return 0
+  vanish=0
+  find "$wt35/.agent-runs" -mindepth 0 -delete 2>/dev/null
+  return 0
+}
+note_implementer "$wt35" agy; rc=$?
+unset -f mkdir
+if [ "$rc" = "0" ] && [ "$(last_implementer "$wt35")" = "agy" ]; then
+  ok "a .agent-runs that vanishes under the write is retried rather than fatal"
+else bad "a vanished .agent-runs gave exit $rc and the record '$(last_implementer "$wt35")'"; fi
+
+# A write that returns 0 and records nothing, which the same window also produces: unlink
+# the directory once the file is open and printf writes into an orphaned inode, exits 0
+# and leaves no marker. /dev/null stands in for it, being the one path that accepts every
+# byte and keeps none. No retry can help here, so success has to mean the record reads
+# back rather than that the write returned 0.
+find "$wt35/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+ln -s /dev/null "$wt35/.agent-runs/implement.last"
+note_implementer "$wt35" opencode; rc=$?
+find "$wt35/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+if [ "$rc" != "0" ]; then ok "a write that lands nowhere is a failure, not a record"
+else bad "a write that recorded nothing returned 0"; fi
+teardown
+
+# And the stage stops on it, before launching anything. A run whose record did not land is
+# the one #292 forbids: an agent editing a tree the marker still attributes to somebody
+# else. The unwritable case above proves the refusal; this proves it also fires when the
+# write itself reports success.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-36-unlanded
+add_passing_review issue-36-unlanded
+vbin=$(mktemp -d)
+cat > "$vbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo ran >> ran.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$vbin/agy"
+mkdir -p "$repo/.worktrees/issue-36/.agent-runs"
+ln -s /dev/null "$repo/.worktrees/issue-36/.agent-runs/implement.last"
+out=$(cd "$repo" && PATH="$vbin:$PATH" "$STAGE" implement agy issue-36-unlanded 2>&1); rc=$?
+find "$repo/.worktrees/issue-36/.agent-runs/implement.last" -mindepth 0 -delete 2>/dev/null
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q "cannot record 'agy' as the implementer"; then
+  ok "a stage whose record does not land refuses to run"
+else bad "a stage with an unlanded record exited $rc"; fi
+if [ ! -f "$repo/.worktrees/issue-36/ran.txt" ]; then
+  ok "and the agent never launched"
+else bad "the agent ran without a record of who was writing"; fi
+find "$vbin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
@@ -1240,7 +1315,8 @@ rbin=$(mktemp -d)
 cat > "$rbin/opencode" <<'FAKE'
 #!/usr/bin/env bash
 echo worked >> worked.txt
-echo '{"type":"result","sessionID":"s-33","parts":[{"type":"text","text":"done"}]}'
+echo '{"type":"text","sessionID":"s-33","part":{"type":"text","text":"done"}}'
+echo '{"type":"step_finish","sessionID":"s-33","part":{"type":"step-finish","reason":"stop"}}'
 FAKE
 cat > "$rbin/codex" <<'FAKE'
 #!/usr/bin/env bash
@@ -1644,6 +1720,786 @@ if printf '%s' "$out" | grep -q 'status: AGENT_ERROR' && printf '%s' "$out" | gr
   ok "and is still reported as the error the tool itself gave"
 else bad "the error envelope was not named: $(printf '%s' "$out" | grep '^role:')"; fi
 find "$sbin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- a failure the base already has is not this change's (#298) ---------------------
+# The driver read every non-zero from the gates as the change's fault, so on a machine
+# whose suite does not pass at HEAD it could never finish. During #235 that threw away a
+# reviewed, approved, archived change over 16 failures that fail identically at the base.
+#
+# No real cargo suite runs here: the parse is asserted against a canned log, and every
+# decision that would launch one is driven through a stand-in cargo that answers from files
+# the test writes. What that stand-in also proves is where the baseline ran - it records its
+# own working directory - because "in a worktree that is not the one being written" is the
+# part a passing exit status would never show.
+source "$here/gates.sh"
+
+# The parse, keyed by target as well as by name. A test name is unique only within one
+# binary; merged on the name alone, the new failure in tests/http_tests.rs below would be
+# cancelled by the passing run of the same name under unittests.
+plog=$(mktemp)
+cat > "$plog" <<'LOG'
+   Compiling labeler v0.1.0 (/repo)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.02s
+     Running unittests src/lib.rs (target/debug/deps/labeler-1111111111111111)
+
+running 3 tests
+test render::tests::flips_y ... ok
+test fs_safe::tests::opens_a_path ... FAILED
+test templates::tests::load_from_dir_handles_non_utf8_paths ... FAILED
+
+failures:
+    fs_safe::tests::opens_a_path
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+     Running tests/http_tests.rs (target/debug/deps/http_tests-2222222222222222)
+
+running 2 tests
+test fs_safe::tests::opens_a_path ... ok
+test template_group_renders ... FAILED
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+   Doc-tests labeler
+
+running 1 test
+test src/lib.rs - render (line 12) ... FAILED
+LOG
+want='Doc-tests labeler :: src/lib.rs - render (line 12)
+tests/http_tests.rs :: template_group_renders
+unittests src/lib.rs :: fs_safe::tests::opens_a_path
+unittests src/lib.rs :: templates::tests::load_from_dir_handles_non_utf8_paths'
+got=$(gate_failed_tests "$plog")
+if [ "$got" = "$want" ]; then ok "every failing test is read off a cargo log under its own target"
+else bad "gate_failed_tests read '$(printf '%s' "$got" | tr '\n' '|')'"; fi
+printf 'running 1 test\ntest a::b ... ok\n\ntest result: ok. 1 passed; 0 failed\n' > "$plog"
+if [ -z "$(gate_failed_tests "$plog")" ]; then ok "and a suite that passed names nothing"
+else bad "a passing log produced failures"; fi
+find "$plog" -mindepth 0 -delete 2>/dev/null
+
+# A cargo that answers from files the test controls, and says where it was run.
+mk_cargo() { # mk_cargo <bindir>
+  cat > "$1/cargo" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in fmt|clippy) exit 0 ;; esac
+printf 'cwd=%s target=%s\n' "$PWD" "${CARGO_TARGET_DIR:-unset}" >> "$CARGO_CALLS"
+cat "$CARGO_OUT"
+exit "${CARGO_RC:-101}"
+FAKE
+  chmod +x "$1/cargo"
+}
+canned() { # canned <file> <test-name>...
+  local f="$1"; shift
+  printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n' > "$f"
+  printf 'running %s tests\n' "$#" >> "$f"
+  for t in "$@"; do printf 'test %s ... FAILED\n' "$t" >> "$f"; done
+  printf '\ntest result: FAILED. 0 passed; %s failed\n' "$#" >> "$f"
+}
+
+setup
+add_change issue-50-attr
+wt50="$repo/.worktrees/issue-50"
+mkdir -p "$wt50/.agent-runs"
+glog="$wt50/.agent-runs/gates.log"
+blog="$wt50/.agent-runs/gates-base.log"
+abin=$(mktemp -d); mk_cargo "$abin"
+export CARGO_CALLS="$abin/calls" CARGO_OUT="$abin/base.log" CARGO_RC=101
+# A target directory in the environment, which the baseline must not take: that is how it
+# would end up sharing one with the tree it is measuring.
+export CARGO_TARGET_DIR="$abin/shared-target"
+: > "$CARGO_CALLS"
+canned "$CARGO_OUT" fs_safe::tests::opens_a_path templates::tests::non_utf8
+
+# The base commit is the fork point, never HEAD: on a re-run after the commit, HEAD carries
+# the change and comparing against it would subtract the change from itself. Nor is it the
+# tip of the default branch, which moves on while a change is in flight. Nor is it reachable
+# by counting parents: the fixture puts TWO commits on the change branch and ONE on the
+# default branch, so the fork point is HEAD~2 here and HEAD~1 nowhere, and the three wrong
+# answers - echo HEAD, the default tip, HEAD~1 - are all distinct commits from it and from
+# each other. Depth matters as much as divergence: against a single-commit repo all four
+# coincide, and against one commit a side the parent-arithmetic answer is right by accident.
+base50=$(git -C "$repo" rev-parse HEAD)
+for c in 1 2; do
+  printf 'the change, part %s\n' "$c" > "$wt50/change-$c.txt"
+  git -C "$wt50" add "change-$c.txt" >/dev/null 2>&1
+  git -C "$wt50" commit -q -m "the change's own commit $c" >/dev/null 2>&1
+done
+printf 'moved on\n' > "$repo/main-moved.txt"
+git -C "$repo" add main-moved.txt >/dev/null 2>&1
+git -C "$repo" commit -q -m "the default branch moves on" >/dev/null 2>&1
+got50=$(gate_base_commit "$wt50")
+if [ "$got50" = "$base50" ] \
+   && [ "$got50" != "$(git -C "$wt50" rev-parse HEAD)" ] \
+   && [ "$got50" != "$(git -C "$wt50" rev-parse HEAD~1)" ] \
+   && [ "$got50" != "$(git -C "$repo" rev-parse HEAD)" ]; then
+  ok "the baseline commit is the fork point, not the branch tip, its parent, or the default one"
+else bad "gate_base_commit gave '$got50', not the fork point $base50 (branch tip $(git -C "$wt50" rev-parse HEAD), its parent $(git -C "$wt50" rev-parse HEAD~1), default tip $(git -C "$repo" rev-parse HEAD))"; fi
+
+# fmt and clippy are deterministic, and a pre-existing lint is not a thing this repo
+# tolerates: they fail outright, and no baseline is run for them at all.
+canned "$glog" fs_safe::tests::opens_a_path
+for pair in "$GATE_FMT_FAILED:fmt" "$GATE_CLIPPY_FAILED:clippy"; do
+  out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "${pair%%:*}" "$glog" "$blog" 2>&1); rc=$?
+  if [ "$rc" = "1" ] && printf '%s' "$out" | grep -qi "${pair#*:}"; then
+    ok "a failing ${pair#*:} is this change's, whatever the base does"
+  else bad "a failing ${pair#*:} gave exit $rc: $out"; fi
+done
+if [ ! -s "$CARGO_CALLS" ]; then ok "and no baseline suite was run for either"
+else bad "a lint failure ran the baseline suite $(grep -c . "$CARGO_CALLS") time(s)"; fi
+
+# A build error names no test, so there is nothing to match against the base. That is the
+# refusal, not a pass: a driver that waved a change through on an attribution it could not
+# make would be worse than the false stop this replaces.
+printf 'error[E0432]: unresolved import `crate::nope`\nerror: could not compile `labeler`\n' > "$glog"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'without naming a single failing test'; then
+  ok "a test gate that named no test is this change's, and says why"
+else bad "an unattributable test failure gave exit $rc: $out"; fi
+if [ ! -s "$CARGO_CALLS" ]; then ok "and it did not pay for a baseline it could not use"
+else bad "the baseline ran with nothing to compare against"; fi
+
+# A result line the parse does not recognise is the other way to end up with an incomplete
+# set, and the dangerous one: a failure dropped here is subtracted away as pre-existing and
+# the change ships broken. So cargo's own count is checked against what was read, and a
+# disagreement stops the run rather than being compared anyway.
+{ printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n'
+  printf 'running 2 tests\n'
+  printf 'test render::tests::flips_y ... FAILED\n'
+  printf 'test fs_safe::tests::opens_a_path ... FAILED (time limit exceeded)\n'
+  printf '\ntest result: FAILED. 0 passed; 2 failed\n'; } > "$glog"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'counted 2 failing test(s) here and this read 1'; then
+  ok "a failure cargo counted but this could not read stops the run, both numbers named"
+else bad "an unreadable result line gave exit $rc: $out"; fi
+if [ ! -s "$CARGO_CALLS" ]; then ok "and no baseline is run against a set that cannot be trusted"
+else bad "the baseline ran on an incomplete failure set"; fi
+
+# The other way to hold an incomplete set, and the one the counts cannot see: a test binary
+# that dies mid-run prints its banner and never prints a result, so what it would have
+# failed on is missing while every failure cargo did count is read. Measured on this repo,
+# not imagined - an abort() in one test file under --no-fail-fast gave 8 banners against 7
+# summaries, 2 failures counted and 2 read - and without this the subtraction would have
+# excused a change that crashed the harness.
+{ printf '     Running tests/zz_broken.rs (target/debug/deps/zz_broken-aaaa)\n\n'
+  printf 'running 1 test\n'
+  printf '     Running tests/zz_failing.rs (target/debug/deps/zz_failing-bbbb)\n\n'
+  printf 'running 2 tests\n'
+  printf 'test zz_first ... FAILED\ntest zz_second ... FAILED\n'
+  printf '\ntest result: FAILED. 0 passed; 2 failed\n'; } > "$glog"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'started 2 test target(s) here and 1 reported'; then
+  ok "a test binary that died mid-run stops the run, however well the counts add up"
+else bad "a target that never reported gave exit $rc: $out"; fi
+if [ ! -s "$CARGO_CALLS" ]; then ok "and no baseline is run against a set missing a whole binary"
+else bad "the baseline ran against a set missing a target"; fi
+
+# The first direction: everything here fails there too.
+before_trees=$(git -C "$repo" worktree list | grep -c .)
+before_status=$(git -C "$wt50" status --porcelain)
+canned "$glog" fs_safe::tests::opens_a_path templates::tests::non_utf8
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "0" ] && printf '%s' "$out" | grep -q '2 failure(s) fail identically'; then
+  ok "failures the base has too predate the change, and are counted and named"
+else bad "a wholly pre-existing failure set gave exit $rc: $out"; fi
+if [ "$(grep -c . "$CARGO_CALLS")" = "1" ]; then ok "at the cost of one extra suite"
+else bad "the baseline ran $(grep -c . "$CARGO_CALLS") time(s)"; fi
+# Where it ran matters as much as that it ran: the change is uncommitted working state, so
+# checking the base out over it would destroy the work being judged.
+if ! grep -q 'cwd=[^ ]*\.worktrees/issue-50' "$CARGO_CALLS"; then
+  ok "in a worktree that is not the one being written"
+else bad "the baseline suite ran inside the change's own worktree"; fi
+# And in a target directory of its own. Cargo does not key this package's artifacts on the
+# tree they were built in, so a shared one lets each tree run the other's binaries: the
+# baseline would measure the change's compiled code, and the change's own re-run would be
+# stopped by a binary built in a scratch tree that has since been deleted. Both were
+# observed while this was written; the second failed as `read SPEC.md: NotFound` in a test
+# that reads through env!("CARGO_MANIFEST_DIR") (src/errors.rs:653).
+if grep -q "target=$wt50/target/baseline" "$CARGO_CALLS"; then
+  ok "and in a target directory that is not the change's, nor the environment's"
+else bad "the baseline built into $(sed -n 's/.*target=//p' "$CARGO_CALLS" | tail -1)"; fi
+if [ "$(git -C "$wt50" status --porcelain)" = "$before_status" ] \
+   && [ "$(git -C "$repo" worktree list | grep -c .)" = "$before_trees" ]; then
+  ok "leaving the change's tree exactly as it was and no scratch worktree behind"
+else bad "the baseline moved the change's tree or left $(git -C "$repo" worktree list | grep -c .) worktree(s)"; fi
+
+# The same base commit, so the fix round's re-run reuses the measurement rather than paying
+# for it again. Announced, because a cache nobody can see is a cache nobody can distrust.
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "0" ] && [ "$(grep -c . "$CARGO_CALLS")" = "1" ] && printf '%s' "$out" | grep -q 'reusing'; then
+  ok "a second attempt at the same base reuses the baseline and says so"
+else bad "the second attempt ran $(grep -c . "$CARGO_CALLS") suite(s), exit $rc"; fi
+
+# The other direction, against that same cached baseline: one failure the base does not
+# have, and the whole set is not excused by the two that it does.
+canned "$glog" fs_safe::tests::opens_a_path templates::tests::non_utf8 render::tests::flips_y
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'render::tests::flips_y'; then
+  ok "a failure the base does not have is this change's, and is named"
+else bad "a new failure among pre-existing ones gave exit $rc: $out"; fi
+if ! printf '%s' "$out" | grep -q 'fs_safe::tests::opens_a_path'; then
+  ok "and the ones that predate it are not put on the implementer"
+else bad "the report blamed the change for a pre-existing failure"; fi
+
+# A baseline that will not build reports nothing to subtract, and cannot be read as "the
+# base is clean, so every failure here is new" either.
+find "$blog.commit" -mindepth 0 -delete 2>/dev/null
+printf 'error: could not compile `labeler` (lib test)\n' > "$CARGO_OUT"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'without naming a failing test'; then
+  ok "a baseline that would not build attributes nothing, and stops"
+else bad "an unreadable baseline gave exit $rc: $out"; fi
+
+# The same count on the base's side, where a dropped failure blames this change for one it
+# did not cause. Not compared, and not cached either: a measurement that cannot be read
+# whole must not be reused by the fix round's re-run.
+canned "$glog" fs_safe::tests::opens_a_path
+{ printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n'
+  printf 'running 2 tests\n'
+  printf 'test fs_safe::tests::opens_a_path ... FAILED\n'
+  printf 'test templates::tests::non_utf8 ... FAILED (time limit exceeded)\n'
+  printf '\ntest result: FAILED. 0 passed; 2 failed\n'; } > "$CARGO_OUT"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'counted 2 failing test(s) at '; then
+  ok "a baseline whose failures cannot all be read is not subtracted from"
+else bad "an incompletely read baseline gave exit $rc: $out"; fi
+if [ ! -f "$blog.commit" ]; then ok "and is not cached as if it had measured something"
+else bad "an incomplete baseline was cached for the next attempt"; fi
+
+# And a baseline whose own harness died. Its missing failures would be read as passing
+# there, which is what turns a failure this change did not cause into one it gets blamed
+# for - or, when the change's set matches what is left, lets a real one through.
+canned "$glog" fs_safe::tests::opens_a_path
+{ printf '     Running tests/zz_broken.rs (target/debug/deps/zz_broken-aaaa)\n\n'
+  printf 'running 1 test\n'
+  printf '     Running unittests src/lib.rs (target/debug/deps/labeler-aaaa)\n\n'
+  printf 'running 1 test\ntest fs_safe::tests::opens_a_path ... FAILED\n'
+  printf '\ntest result: FAILED. 0 passed; 1 failed\n'; } > "$CARGO_OUT"
+out=$(cd "$repo" && PATH="$abin:$PATH" gate_attribute "$wt50" "$GATE_TEST_FAILED" "$glog" "$blog" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'started 2 test target(s) at '; then
+  ok "a baseline whose harness died measures nothing, even where the failures line up"
+else bad "a baseline missing a target gave exit $rc: $out"; fi
+if [ ! -f "$blog.commit" ]; then ok "and that baseline is not cached either"
+else bad "a baseline missing a target was cached for the next attempt"; fi
+
+# A commit that is not there: the scratch worktree cannot be made, which is not the same as
+# a suite that ran and failed, and must not be read as one.
+gate_tests_at "$wt50" 0000000000000000000000000000000000000000 "$blog"; rc=$?
+if [ "$rc" = "125" ] && [ "$(git -C "$repo" worktree list | grep -c .)" = "$before_trees" ]; then
+  ok "a baseline that could not be checked out is a run that never happened"
+else bad "a bad commit gave $rc and left $(git -C "$repo" worktree list | grep -c .) worktree(s)"; fi
+find "$abin" -mindepth 0 -delete 2>/dev/null
+unset CARGO_CALLS CARGO_OUT CARGO_RC CARGO_TARGET_DIR
+teardown
+
+# No default branch anywhere, so there is no fork point and no baseline. Nothing is
+# guessed from it: without a base every failure is the change's.
+setup
+def=$(git -C "$repo" symbolic-ref --short HEAD)
+add_change issue-52-nobase
+git -C "$repo" branch -m "$def" sideline
+wt52="$repo/.worktrees/issue-52"
+mkdir -p "$wt52/.agent-runs"
+if ! gate_base_commit "$wt52" >/dev/null 2>&1; then ok "no default branch means no baseline commit"
+else bad "gate_base_commit invented a base of $(gate_base_commit "$wt52")"; fi
+canned "$wt52/.agent-runs/gates.log" fs_safe::tests::opens_a_path
+out=$(gate_attribute "$wt52" "$GATE_TEST_FAILED" "$wt52/.agent-runs/gates.log" "$wt52/.agent-runs/gates-base.log" 2>&1); rc=$?
+if [ "$rc" = "1" ] && printf '%s' "$out" | grep -q 'no baseline'; then
+  ok "and every failure counts as this change's, said out loud"
+else bad "a missing baseline gave exit $rc: $out"; fi
+teardown
+
+# --- and the driver acts on it (#298) -----------------------------------------------
+# The gates stage end to end, which is reachable without stubbing an agent: an archived
+# change sends next_stage straight to the gates. The stand-in cargo answers differently in
+# the two trees, keyed on the path it was run in.
+drive_gates() { # drive_gates <issue> <change-failures-file> <base-failures-file> -> the run's output
+  local n="$1" cf="$2" bf="$3" bin out
+  bin=$(mktemp -d)
+  cat > "$bin/cargo" <<FAKE
+#!/usr/bin/env bash
+case "\$1" in fmt|clippy) exit 0 ;; esac
+printf '%s\n' "\$*" >> "$ARGS_SINK"
+case "\$PWD" in
+  *.worktrees/issue-$n*) cat "$cf" ;;
+  *) cat "$bf" ;;
+esac
+exit 101
+FAKE
+  # The issue body is read from the cached scope file below; a gh that answers would reach
+  # for a network this suite must not need. The implementer fails its fix round rather than
+  # being stubbed into fixing anything: what is read here is the attribution before it.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$bin/gh"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$bin/agy"
+  chmod +x "$bin/cargo" "$bin/gh" "$bin/agy"
+  out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" "$n" claude codex agy codex 2>&1)
+  printf '%s\n' "$out"
+  find "$bin" -mindepth 0 -delete 2>/dev/null
+}
+stage_gates_repo() { # stage_gates_repo <issue> <slug>
+  local n="$1" name="issue-$1-$2" w="$repo/.worktrees/issue-$1"
+  git -C "$repo" worktree add -q "$w" -b "$name" 2>/dev/null
+  mkdir -p "$w/openspec/changes/archive/2026-01-01-$name" "$w/.agent-runs"
+  printf '# Proposal\n' > "$w/openspec/changes/archive/2026-01-01-$name/proposal.md"
+  printf '# Issue %s\n\nthe scope\n' "$n" > "$w/.agent-runs/issue-$n.md"
+  # Committed, so the gates stage is followed by the push rather than by a commit stage
+  # that would need an agent. What the run does at the gates is what is being read here.
+  git -C "$w" add -A >/dev/null 2>&1
+  git -C "$w" commit -q --no-verify -m "the change" >/dev/null 2>&1
+}
+
+setup
+stage_gates_repo 53 preexisting
+cfail=$(mktemp); bfail=$(mktemp)
+export ARGS_SINK=$(mktemp)
+canned "$cfail" fs_safe::tests::opens_a_path templates::tests::non_utf8
+cp "$cfail" "$bfail"
+out=$(drive_gates 53 "$cfail" "$bfail")
+# Both suites, or the two failure sets are not comparable: cargo stops after the first
+# failing test binary, so a regression in a later one would sit behind a pre-existing
+# failure in an earlier one and be subtracted away unseen.
+if [ "$(grep -c . "$ARGS_SINK")" = "2" ] && [ "$(grep -c -- '--no-fail-fast' "$ARGS_SINK")" = "2" ]; then
+  ok "both the change's suite and the base's run every test binary"
+else bad "the suites ran as: $(tr '\n' '|' < "$ARGS_SINK")"; fi
+if printf '%s' "$out" | grep -q 'predate this change'; then
+  ok "the driver names the failures it is not stopping for"
+else bad "the driver said nothing about a wholly pre-existing failure set"; fi
+if printf '%s' "$out" | grep -q '^== push' && ! printf '%s' "$out" | grep -q 'gets one round'; then
+  ok "and goes on to the push without spending the fix round"
+else bad "a change whose failures all predate it did not get past the gates"; fi
+teardown
+
+setup
+stage_gates_repo 54 regression
+canned "$cfail" fs_safe::tests::opens_a_path render::tests::flips_y
+canned "$bfail" fs_safe::tests::opens_a_path
+out=$(drive_gates 54 "$cfail" "$bfail")
+if printf '%s' "$out" | grep -q 'render::tests::flips_y' && printf '%s' "$out" | grep -q 'do not fail at'; then
+  ok "a test this change broke still stops the driver, by name"
+else bad "a regression alongside a pre-existing failure was not named"; fi
+if ! printf '%s' "$out" | grep -q '^== push'; then ok "and nothing is pushed"
+else bad "a change that broke a test reached the push"; fi
+find "$cfail" "$bfail" "$ARGS_SINK" -mindepth 0 -delete 2>/dev/null
+unset ARGS_SINK
+teardown
+
+# --- a change whose deliverable is the delta spec (#313) ---------------------------
+# run-change.sh could not drive one. implement carries produces=1, so a stage that wrote
+# no code because its plan asked for none exited 3 and the run stopped reporting that it
+# never ran. Two facts tell those apart, and both are artifacts: the plan's own
+# `DELIVERABLE: spec-only` line, read before the agent launches, and the stage still
+# having had to leave something in the change folder.
+
+# This section gates in two places on purpose. What follows is refused before any agent is
+# launched, so it needs no pty and runs on a shell that cannot allocate one; everything
+# under the pty_available guard below launches a stand-in agent through script(1) and
+# cannot. Moving these inside that guard would skip the refusals on exactly the shells
+# where nothing else here runs either.
+#
+# The declaration has one legal value. Anything else is a plan saying something this
+# tooling cannot act on, and reading it as absent is the guess.
+setup
+add_change issue-40-deliverable
+add_passing_review issue-40-deliverable
+dbin=$(mktemp -d)
+cat > "$dbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo launched >> launched.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+chmod +x "$dbin/agy"
+dd40="$repo/.worktrees/issue-40/openspec/changes/issue-40-deliverable"
+printf '# Proposal\n\nDELIVERABLE: whatever\n' > "$dd40/proposal.md"
+out=$(cd "$repo" && PATH="$dbin:$PATH" "$STAGE" implement agy issue-40-deliverable 2>&1); rc=$?
+if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q "not a deliverable this loop knows"; then
+  ok "a deliverable the loop does not know refuses the stage"
+else
+  bad "an unknown DELIVERABLE value gave exit $rc"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -4
+fi
+printf '# Proposal\n\nDELIVERABLE: spec-only\nDELIVERABLE: spec-only\n' > "$dd40/proposal.md"
+out=$(cd "$repo" && PATH="$dbin:$PATH" "$STAGE" implement agy issue-40-deliverable 2>&1); rc=$?
+if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q "which one is the plan is a guess"; then
+  ok "and two of them are a guess, not a declaration"
+else bad "a doubled DELIVERABLE line gave exit $rc"; fi
+# Trimmed at the ends, never through the middle. Deleting every space would read this as
+# the legal value and accept it, which is the reader repairing a malformed declaration
+# instead of refusing it, in the one place a planner types the field by hand.
+printf '# Proposal\n\nDELIVERABLE: spec - only\n' > "$dd40/proposal.md"
+out=$(cd "$repo" && PATH="$dbin:$PATH" "$STAGE" implement agy issue-40-deliverable 2>&1); rc=$?
+if [ "$rc" = "2" ] && printf '%s' "$out" | grep -q "spec - only"; then
+  ok "and a value spelled with spaces inside it is not repaired into the legal one"
+else bad "'DELIVERABLE: spec - only' gave exit $rc"; fi
+if [ ! -f "$repo/.worktrees/issue-40/launched.txt" ]; then
+  ok "with no agent launched on any of them"
+else bad "an agent ran on a plan the loop had already refused"; fi
+find "$dbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-41-specdelta
+add_passing_review issue-41-specdelta
+sbin=$(mktemp -d)
+d41="$repo/.worktrees/issue-41/openspec/changes/issue-41-specdelta"
+# Padded on purpose. Whitespace around the value is not part of it, and this is the fixture
+# that carries a legal declaration through a stage that actually runs.
+printf '# Proposal\n\nDELIVERABLE:   spec-only  \n' > "$d41/proposal.md"
+# What such an implement stage legitimately does: it verifies, ticks its boxes, and writes
+# no code. openspec/changes is excluded from implement's work digest, so this is exactly
+# the shape the guard read as a stage that had not run.
+cat > "$sbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf -- '- [x] 1.1 confirmed against src/convert.rs\n' \
+  > openspec/changes/issue-41-specdelta/tasks.md
+echo '{"conversation_id":"c","status":"COMPLETED","response":"nothing to write"}'
+FAKE
+chmod +x "$sbin/agy"
+out=$(cd "$repo" && PATH="$sbin:$PATH" "$STAGE" implement agy issue-41-specdelta 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "an implement stage that writes no code passes on a spec-only plan"
+else
+  bad "a spec-only change still could not get past implement (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if printf '%s' "$out" | grep -q 'DELIVERABLE: spec-only'; then
+  ok "saying why, rather than passing quietly"
+else bad "nothing in the output says why an empty implement was accepted"; fi
+# The exemption is not from being measured, only from being measured by the code written.
+# A stage that touched nothing anywhere did not run, spec-only plan or not.
+cat > "$sbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"conversation_id":"c","status":"COMPLETED","response":"did nothing"}'
+FAKE
+chmod +x "$sbin/agy"
+out=$(cd "$repo" && PATH="$sbin:$PATH" "$STAGE" implement agy issue-41-specdelta 2>&1); rc=$?
+if [ "$rc" = "3" ]; then ok "and one that touched nothing at all is still refused"
+else bad "a silent implementer passed on a spec-only change (exit $rc)"; fi
+# The declaration is read before the launch, so the stage it would exempt cannot write it.
+# openspec/changes is outside implement's work digest, so writing it costs nothing.
+add_change issue-42-selfdeclared
+add_passing_review issue-42-selfdeclared
+cat > "$sbin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf 'DELIVERABLE: spec-only\n' >> openspec/changes/issue-42-selfdeclared/proposal.md
+echo '{"conversation_id":"c","status":"COMPLETED","response":"declared myself done"}'
+FAKE
+chmod +x "$sbin/agy"
+out=$(cd "$repo" && PATH="$sbin:$PATH" "$STAGE" implement agy issue-42-selfdeclared 2>&1); rc=$?
+if [ "$rc" = "3" ]; then ok "an implement stage cannot declare its own change spec-only"
+else bad "a stage exempted itself by writing the declaration (exit $rc)"; fi
+find "$sbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The author ledger. Nothing else can claim a spec-only change: implement writes no code,
+# and an empty AUTHORS: is what the landing gate refuses, so the field was written by hand.
+setup
+git worktree add -q .worktrees/issue-43 -b issue-43-ledger 2>/dev/null
+pbin=$(mktemp -d)
+cat > "$pbin/claude" <<'FAKE'
+#!/usr/bin/env bash
+mkdir -p "openspec/changes/$CHANGE/specs/thing"
+printf '# Proposal\n\n%s\n' "${DECLARE:-}" > "openspec/changes/$CHANGE/proposal.md"
+printf '## MODIFIED Requirements\n' > "openspec/changes/$CHANGE/specs/thing/spec.md"
+echo '{"type":"result","subtype":"success","result":"proposed","session_id":"sess-43"}'
+FAKE
+chmod +x "$pbin/claude"
+led43="$repo/.worktrees/issue-43/openspec/changes/issue-43-ledger/authors"
+(cd "$repo" && CHANGE=issue-43-ledger DECLARE='DELIVERABLE: spec-only' \
+   PATH="$pbin:$PATH" "$STAGE" propose claude issue-43-ledger) >/dev/null 2>&1
+if [ "$(cat "$led43" 2>/dev/null)" = "claude" ]; then
+  ok "the propose stage of a spec-only change is its author"
+else bad "the ledger reads '$(cat "$led43" 2>/dev/null)', not 'claude'"; fi
+# And only there. On every other change the code is what lands, propose wrote none of it,
+# and naming the planner would refuse a code reviewer that had written nothing.
+git worktree add -q .worktrees/issue-44 -b issue-44-normal 2>/dev/null
+led44="$repo/.worktrees/issue-44/openspec/changes/issue-44-normal/authors"
+(cd "$repo" && CHANGE=issue-44-normal DECLARE='' \
+   PATH="$pbin:$PATH" "$STAGE" propose claude issue-44-normal) >/dev/null 2>&1
+if [ ! -e "$led44" ]; then ok "and a plan that delivers code claims no authorship of it"
+else bad "propose claimed authorship on a change that delivers code"; fi
+find "$pbin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The pairing that becomes unusable. With the planner as the only author, a code reviewer
+# named at launch can turn out to be that author; the landing gate would say so at the
+# commit, after every agent has run.
+setup
+add_change issue-45-pairing
+add_passing_review issue-45-pairing
+abin=$(mktemp -d)
+cat > "$abin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo launched >> launched.txt
+echo '{"conversation_id":"c","status":"COMPLETED","response":"done"}'
+FAKE
+cat > "$abin/claude" <<'FAKE'
+#!/usr/bin/env bash
+echo launched >> launched.txt
+echo '{"type":"result","subtype":"success","result":"done","session_id":"s-45"}'
+FAKE
+chmod +x "$abin/agy" "$abin/claude"
+printf 'claude\n' > "$repo/.worktrees/issue-45/openspec/changes/issue-45-pairing/authors"
+out=$(cd "$repo" && PATH="$abin:$PATH" "$APPLY" agy claude issue-45-pairing 2>&1); rc=$?
+if [ "$rc" = "2" ]; then ok "apply.sh refuses a reviewer the author ledger names"
+else
+  bad "an author was accepted as the reviewer of its own work (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -4
+fi
+if [ ! -f "$repo/.worktrees/issue-45/launched.txt" ]; then
+  ok "before launching either of them"
+else bad "the refusal came after an agent had already run"; fi
+# Compared the way review-gate-check.sh:88 compares, or a name spelled differently in the
+# two files passes here, launches both agents and is refused at the commit.
+printf 'Claude\n' > "$repo/.worktrees/issue-45/openspec/changes/issue-45-pairing/authors"
+out=$(cd "$repo" && PATH="$abin:$PATH" "$APPLY" agy claude issue-45-pairing 2>&1); rc=$?
+if [ "$rc" = "2" ] && [ ! -f "$repo/.worktrees/issue-45/launched.txt" ]; then
+  ok "however the ledger spells the author's name"
+else bad "a differently-cased author was accepted as its own reviewer (exit $rc)"; fi
+find "$abin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# End to end on the shape that could not be driven: propose writes the delta and the
+# declaration, implement ticks its boxes and writes no code, the review approves, and what
+# lands names the planner as the author. That last field is what #266 wrote by hand.
+setup
+git worktree add -q .worktrees/issue-46 -b issue-46-endtoend 2>/dev/null
+ebin=$(mktemp -d)
+cat > "$ebin/claude" <<'FAKE'
+#!/usr/bin/env bash
+mkdir -p openspec/changes/issue-46-endtoend/specs/thing
+printf '# Proposal\n\nDELIVERABLE: spec-only\n' > openspec/changes/issue-46-endtoend/proposal.md
+printf '## MODIFIED Requirements\n' > openspec/changes/issue-46-endtoend/specs/thing/spec.md
+echo '{"type":"result","subtype":"success","result":"proposed","session_id":"sess-46"}'
+FAKE
+cat > "$ebin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf -- '- [x] 1.1 confirmed; the delta is the whole deliverable\n' \
+  > openspec/changes/issue-46-endtoend/tasks.md
+echo '{"conversation_id":"c","status":"COMPLETED","response":"nothing to write"}'
+FAKE
+cat > "$ebin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"t-46"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$ebin/claude" "$ebin/agy" "$ebin/codex"
+(cd "$repo" && PATH="$ebin:$PATH" "$STAGE" propose claude issue-46-endtoend) >/dev/null 2>&1
+add_passing_review issue-46-endtoend
+d46="$repo/.worktrees/issue-46/openspec/changes/issue-46-endtoend"
+out=$(cd "$repo" && PATH="$ebin:$PATH" "$APPLY" agy codex issue-46-endtoend --rounds 1 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "a change whose deliverable is the delta runs through apply.sh"
+else
+  bad "apply.sh could not drive a spec-only change (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -4
+fi
+if grep -qx 'AUTHORS: claude' "$d46/diff-review.md" 2>/dev/null; then
+  ok "naming the stage that wrote the delta, which is what landed"
+else bad "AUTHORS reads '$(grep '^AUTHORS:' "$d46/diff-review.md" 2>/dev/null)'"; fi
+arch46="$repo/.worktrees/issue-46/openspec/changes/archive/2026-01-01-issue-46-endtoend"
+mkdir -p "$repo/.worktrees/issue-46/openspec/changes/archive"
+cp -r "$d46" "$arch46"
+( cd "$repo/.worktrees/issue-46" && "$here/review-gate-check.sh" . \
+    openspec/changes/archive/2026-01-01-issue-46-endtoend/diff-review.md ) >/dev/null 2>&1
+grc=$?
+if [ "$grc" = "0" ]; then ok "and the landing gate accepts it with nobody filling a field in by hand"
+else
+  bad "the landing gate refuses a spec-only change (exit $grc)"
+  ( cd "$repo/.worktrees/issue-46" && "$here/review-gate-check.sh" . \
+      openspec/changes/archive/2026-01-01-issue-46-endtoend/diff-review.md ) 2>&1 \
+    | sed 's/^/        /' | head -3
+fi
+find "$ebin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
+# --- a stage that gives no account of itself (#315) ---------------------------------
+# One run of #287 hit both shapes of this in an afternoon. agy printed nothing at all
+# across 21 minutes while writing 1193 lines, and the line that copied its empty capture
+# over the log left a 0-byte record of a finished run. opencode printed a transcript with
+# no answer in it and exited 0, which no caller can tell from a stage that ran, so the
+# driver went on to review a diff opencode had not written. Both are refused now, by one
+# rule that does not consult the role or the status the agent chose to exit with.
+if [ "$pty_available" = "1" ]; then
+setup
+add_change issue-40-silent
+add_passing_review issue-40-silent
+bin=$(mktemp -d)
+
+# An agent that does the work and says nothing, exiting 0: opencode's status, agy's
+# silence. The work is on the tree and nothing accounts for it.
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "1193 lines of it" >> implemented.txt
+exit 0
+FAKE
+chmod +x "$bin/agy"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-40-silent 2>&1); rc=$?
+log="$repo/.worktrees/issue-40/.agent-runs/implement-agy.log"
+if [ "$rc" = "7" ]; then ok "an implement stage that printed nothing is refused"
+else
+  bad "an implement stage that printed nothing exited $rc, not 7"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -6
+fi
+if printf '%s\n' "$out" | grep -q 'status: NO_OUTPUT'; then
+  ok "and is reported as NO_OUTPUT, not as an answer nobody could read"
+else bad "the status word does not distinguish an empty capture from an unreadable one"; fi
+if [ -s "$log" ] && grep -q 'wrote nothing' "$log"; then
+  ok "and the log says the agent wrote nothing, rather than being 0 bytes"
+else bad "implement-agy.log is $(wc -c < "$log" 2>/dev/null | tr -d ' ') bytes: $(head -1 "$log" 2>/dev/null)"; fi
+if printf '%s\n' "$out" | grep -q 'the work is here, the account of it is not'; then
+  ok "and says the tree changed while the agent said nothing"
+else bad "a silent stage that changed the tree does not say so"; fi
+# Not "implemented.txt still exists": the refusal reverts nothing, so that holds whatever
+# this script does and would advertise coverage it has none of. What is new is that the
+# log sends a person to the work the agent never described.
+if grep -q '\.worktrees/issue-40' "$log" 2>/dev/null && grep -q 'git diff' "$log" 2>/dev/null; then
+  ok "and points at the worktree holding the work nothing accounts for"
+else bad "the log does not say where the unaccounted work is: $(head -c 120 "$log" 2>/dev/null)"; fi
+
+# The same silence, exiting 2 as agy did. The refusal must not be the agent's choice:
+# before this, agy's 2 stopped the run and opencode's 0 did not, on identical failures.
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "more of it" >> implemented.txt
+exit 2
+FAKE
+chmod +x "$bin/agy"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-40-silent 2>&1); rc=$?
+if [ "$rc" = "7" ]; then ok "the same silence exiting 2 is the same refusal, not the agent's status"
+else bad "a silent implement exiting 2 came back as $rc, not 7"; fi
+
+# The other shape: console noise, no answer in it, exit 0. This is what opencode did on
+# the implement stage of #287, and the transcript is the only lead a person has, so it
+# must survive as the log.
+cat > "$bin/opencode" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"tool_use","name":"edit","input":{"path":"src/lib.rs"}}'
+echo "console noise with no answer anywhere in it"
+echo "written by an agent that never said so" >> implemented.txt
+exit 0
+FAKE
+chmod +x "$bin/opencode"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement opencode issue-40-silent 2>&1); rc=$?
+olog="$repo/.worktrees/issue-40/.agent-runs/implement-opencode.log"
+if [ "$rc" = "7" ]; then ok "an implement stage whose output carries no answer is refused"
+else
+  bad "an implement stage with no answer in its output exited $rc, not 7"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -6
+fi
+# One assertion over both facts, because keeping a non-empty capture as the log is not new:
+# the old line copied every capture over the log regardless. Only the status word tells the
+# two failures apart, so the transcript check rides with it rather than passing on its own.
+got=$(printf '%s\n' "$out" | sed -n 's/^role:.*status: \([A-Z_]*\).*/\1/p' | head -1)
+if [ "$got" = "NO_ANSWER_IN_OUTPUT" ] && grep -q 'console noise with no answer' "$olog" 2>/dev/null; then
+  ok "and is reported as NO_ANSWER_IN_OUTPUT, with the transcript kept as its log"
+else bad "an unreadable transcript reported '$got' over $(wc -c < "$olog" 2>/dev/null | tr -d ' ') bytes of log"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# A silent run must not leave the PREVIOUS run's answer standing as its own record, and
+# must not leave an empty file where that answer was. Both are the same fallback: a
+# destination overwritten with something known to be worse, or knowingly left stale.
+setup
+add_change issue-42-record
+add_passing_review issue-42-record
+bin=$(mktemp -d)
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "first round" >> implemented.txt
+echo '{"conversation_id":"conv-42","status":"COMPLETED","response":"PREVIOUS-ANSWER"}'
+FAKE
+chmod +x "$bin/agy"
+(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-42-record >/dev/null 2>&1)
+log="$repo/.worktrees/issue-42/.agent-runs/implement-agy.log"
+if grep -q 'PREVIOUS-ANSWER' "$log" 2>/dev/null; then
+  ok "precondition: the first run leaves an answer for the silent one to overwrite"
+else bad "the first run left no answer to overwrite; the case below proves nothing"; fi
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "second round" >> implemented.txt
+exit 0
+FAKE
+chmod +x "$bin/agy"
+(cd "$repo" && PATH="$bin:$PATH" "$STAGE" implement agy issue-42-record >/dev/null 2>&1)
+# All three conditions in one, because two of them pass on a 0-byte log: an empty file
+# holds no previous answer either. Only "non-empty AND this run's own account AND not the
+# previous one" separates the fix from the destruction it replaced.
+if [ -s "$log" ] && grep -q 'wrote nothing' "$log" && ! grep -q 'PREVIOUS-ANSWER' "$log"; then
+  ok "a silent run records its own silence: neither empty nor the previous run's answer"
+else bad "the silent run's log is $(wc -c < "$log" 2>/dev/null | tr -d ' ') bytes: $(head -1 "$log" 2>/dev/null)"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# A review was always refused with 7, so exit 7 alone says nothing about this change and
+# is asserted together with what is new: which of the two failures the run reports, and
+# what it leaves behind to read. apply-tests.sh covers the refusal itself for a review.
+setup
+add_change issue-43-quiet
+bin=$(mktemp -d)
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" review codex issue-43-quiet 2>&1); rc=$?
+rlog="$repo/.worktrees/issue-43/.agent-runs/review-codex.log"
+got=$(printf '%s\n' "$out" | sed -n 's/^role:.*status: \([A-Z_]*\).*/\1/p' | head -1)
+if [ "$rc" = "7" ] && [ "$got" = "NO_OUTPUT" ]; then
+  ok "a silent review is refused as NO_OUTPUT, not as an answer nobody could read"
+else bad "a silent review exited $rc reporting '$got'"; fi
+if [ -s "$rlog" ] && grep -q 'wrote nothing' "$rlog"; then
+  ok "and its log records the silence rather than being 0 bytes"
+else bad "review-codex.log is $(wc -c < "$rlog" 2>/dev/null | tr -d ' ') bytes after a silent review"; fi
+
+# The other half of the same role: a transcript with no answer in it. The review-specific
+# refusal must still be the one that fires, and it is asserted with the status word, since
+# that sentence is what the old code said too.
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo "reading the diff"
+echo "no envelope anywhere in this"
+FAKE
+chmod +x "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$STAGE" review codex issue-43-quiet 2>&1); rc=$?
+got=$(printf '%s\n' "$out" | sed -n 's/^role:.*status: \([A-Z_]*\).*/\1/p' | head -1)
+if [ "$rc" = "7" ] && [ "$got" = "NO_ANSWER_IN_OUTPUT" ] \
+   && printf '%s\n' "$out" | grep -q 'Refusing to treat a transcript as a review'; then
+  ok "and an unreadable one is NO_ANSWER_IN_OUTPUT, still refused as a review"
+else bad "an unreadable review exited $rc reporting '$got'"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# What #287 actually cost: the driver read a refused implement stage as a finished one and
+# launched the diff review on a tree that implementer never wrote. apply.sh stops instead,
+# and stops BEFORE the reviewer, because there is nothing yet to review.
+setup
+add_change issue-44-driver
+add_passing_review issue-44-driver
+bin=$(mktemp -d)
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+echo "unaccounted for" >> implemented.txt
+exit 0
+FAKE
+cat > "$bin/codex" <<FAKE
+#!/usr/bin/env bash
+echo ran >> "$bin/.reviewer-ran"
+echo '{"type":"thread.started","thread_id":"t-44"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+chmod +x "$bin/agy" "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$APPLY" agy codex issue-44-driver 2>&1); rc=$?
+if [ "$rc" = "7" ]; then ok "apply.sh stops when the implementer gives no account of itself"
+else
+  bad "apply.sh carried on past an unaccounted implement stage (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | head -6
+fi
+if [ ! -f "$bin/.reviewer-ran" ]; then
+  ok "and never launches the reviewer on a diff nobody claims"
+else bad "the reviewer was launched on work the implement stage did not report"; fi
+if [ ! -f "$repo/.worktrees/issue-44/openspec/changes/issue-44-driver/diff-review.md" ]; then
+  ok "and records no diff review from it"
+else bad "a diff review was recorded for an unreported implement stage"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 

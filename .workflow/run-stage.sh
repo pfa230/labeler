@@ -3,8 +3,10 @@
 #
 #   .workflow/run-stage.sh <role> <agent> <change> [--resume] [extra prompt...]
 #
-# Exit 5 = the reviewer edited files. 7 = the review produced no structured result,
-# so its log is a transcript rather than a review. 3 = implement changed nothing.
+# Exit 5 = the reviewer edited files. 7 = no answer could be read out of what the agent
+# printed, whatever role it was running and whatever status it exited with (#315).
+# 3 = implement changed nothing, which a plan declaring `DELIVERABLE: spec-only`
+# answers for its own change (#313).
 #
 #   role   propose | plan-review | tasks | implement | review | gate-fix | archive |
 #          commit-msg
@@ -20,7 +22,9 @@
 #             the gates, so anything it changed would be committed without either.
 #   produces  must leave the worktree DIFFERENT, by the same digest. A stage that was
 #             asked for an artifact and exited cleanly having written nothing did not
-#             run, and the caller would otherwise record the work as done.
+#             run, and the caller would otherwise record the work as done. What "the
+#             worktree" means is per role: for implement it excludes openspec/changes,
+#             so a run that only ticked task boxes has not implemented anything.
 #
 # Both are measured as a delta ACROSS the stage, never as the absolute dirtiness of the
 # tree: by the time a fix round runs, the tree is already dirty with the work being
@@ -103,12 +107,57 @@ fi
 # Where that folder is right now. The author ledger is written into it, and the two stages
 # that write it straddle archive's move: implement runs before it, gate-fix after. Resolved
 # the way the check above resolves it, so the two cannot disagree about where the change is.
-change_dir=""
-if [ -d "$wt/openspec/changes/$change" ]; then
-  change_dir="$wt/openspec/changes/$change"
-else
-  for d in "$wt"/openspec/changes/archive/*"$change"/; do [ -d "$d" ] && change_dir="$d"; done
-fi
+# A function because propose creates the folder DURING its stage, so the answer taken before
+# the run is empty for exactly the role that then has to write into it.
+resolve_change_dir() {
+  local d
+  change_dir=""
+  if [ -d "$wt/openspec/changes/$change" ]; then
+    change_dir="$wt/openspec/changes/$change"
+  else
+    for d in "$wt"/openspec/changes/archive/*"$change"/; do [ -d "$d" ] && change_dir="$d"; done
+  fi
+}
+resolve_change_dir
+
+# What the plan says this change delivers, and empty when the plan says nothing. One legal
+# value, `spec-only`: the delta under specs/ IS the deliverable, so implementing it writes
+# no file outside openspec/changes, which is the shape the produces guard below would
+# otherwise read as a stage that never ran (#313). Absent is the stated
+# default and means the change delivers code, which is every other change.
+#
+# Anything else stops the stage rather than being read as absent. There is no second
+# spelling of the default and no third value: a plan carrying one has said something this
+# tooling cannot act on, and guessing which way it meant is the silent fallback.
+read_deliverable() { # read_deliverable <change-dir> -> the declared value; 1 = malformed
+  local dir="${1:-}" p n v
+  p="$dir/proposal.md"
+  [ -n "$dir" ] && [ -f "$p" ] || return 0
+  n=$(grep -c '^DELIVERABLE:' "$p" 2>/dev/null || true)
+  case "${n:-0}" in
+    0) return 0 ;;
+    1) ;;
+    *) echo "$p carries $n 'DELIVERABLE:' lines, so which one is the plan is a guess." >&2
+       return 1 ;;
+  esac
+  # Trimmed at the ends only. Deleting every space would read `spec - only` as `spec-only`
+  # and accept it, which is this reader normalising a malformed value into the one legal
+  # one while every other malformation above it stops the stage. The field is written by
+  # hand, so what it says is what it must mean (#313).
+  v=$(grep '^DELIVERABLE:' "$p" | sed 's/^DELIVERABLE:[[:space:]]*//; s/[[:space:]]*$//')
+  [ "$v" = "spec-only" ] || {
+    echo "$p declares 'DELIVERABLE: $v', which is not a deliverable this loop knows." >&2
+    echo "The only value is 'spec-only', for a change whose delta under specs/ is the whole" >&2
+    echo "deliverable. Every change that delivers code omits the line." >&2
+    return 1; }
+  printf '%s' "$v"
+}
+# Read HERE, before the agent is launched, and never re-read for the guard below. The
+# exemption it grants is the one thing an implement stage gains by writing the line itself,
+# and openspec/changes is excluded from that stage's work digest, so writing it would cost
+# nothing and buy the exemption. Read before the launch, the stage it exempts cannot have
+# written it.
+deliverable=$(read_deliverable "$change_dir") || exit 2
 
 # Implementing past a failed plan review wastes the run; reviewing is always allowed.
 # --plan-only because this fires before the diff review exists: demanding one here
@@ -353,7 +402,7 @@ before_work=$(worktree_digest "${work_excl[@]}")
 case "$role" in
   implement|gate-fix)
     note_implementer "$wt" "$agent" || {
-      echo "cannot record the implementer at $runs/implement.last; not running." >&2
+      echo "cannot record '$agent' as the implementer at $runs/implement.last; not running." >&2
       exit 1; } ;;
 esac
 
@@ -363,21 +412,53 @@ after_guard=$(worktree_digest "${guard_excl[@]}")
 after_work=$(worktree_digest "${work_excl[@]}")
 after_tree=$(worktree_digest "${tree_excl[@]}")
 
+# Read here rather than below, because the extraction reports it: a stage that emitted
+# nothing while changing the tree is the worse of the two failures below, and saying which
+# one happened needs this answer.
+produced="no"
+[ "$before_work" != "$after_work" ] && produced="yes"
+
 # How an answer is separated from a transcript is per-CLI knowledge, so it lives in
-# agents.sh beside the invocation that produced it. Here only the outcome matters:
-# either the agent's own answer is in $log, or $log is the console capture.
+# agents.sh beside the invocation that produced it. Here only the outcome matters, and
+# there are two outcomes, told apart by whether the agent printed anything at all (#315):
+#
+#   NO_ANSWER_IN_OUTPUT  the capture is a console transcript the extractor found no answer
+#                        in. It becomes $log, because it is the only lead a person has.
+#   NO_OUTPUT            the agent printed nothing, so there is no transcript to fall back
+#                        to. This line used to copy the empty capture over $log anyway,
+#                        which is a fallback to something known to be worse: during #287 it
+#                        left implement-agy.log at 0 bytes for a 21-minute run that wrote
+#                        1193 lines, and an empty log reads as a run with nothing to say
+#                        rather than as one whose account was destroyed. Record the absence
+#                        instead, since the absence is the fact.
 extracted=1
 if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
-  cp "$raw" "$log"
-  # NO_STRUCTURED_RESULT is what this run could not do, not what went wrong. Where the tool
-  # said what went wrong, say that: the failure #297 was filed over reported a parser that
-  # found nothing, and the thing it was hiding was opencode's own error event (#297).
-  if agent_error_msg=$(agent_error "$agent" "$raw"); then
-    agent_status="AGENT_ERROR ($agent_error_msg)"
-  else
-    agent_status="NO_STRUCTURED_RESULT"
-  fi
   extracted=0
+  if [ -s "$raw" ]; then
+    # NO_ANSWER_IN_OUTPUT is what this run could not do, not what went wrong. Where the
+    # tool said what went wrong, say that instead: #297 was filed on a stage whose only
+    # word was that a parser found nothing, and what it hid was opencode's own error
+    # event. A capture carrying no error still reports the shape (#297 into #315).
+    if agent_error_msg=$(agent_error "$agent" "$raw"); then
+      agent_status="AGENT_ERROR ($agent_error_msg)"
+    else
+      agent_status="NO_ANSWER_IN_OUTPUT"
+    fi
+    cp "$raw" "$log"
+  else
+    agent_status="NO_OUTPUT"
+    { printf 'run-stage.sh wrote this file. %s wrote nothing.\n\n' "$agent"
+      printf 'The %s stage of %s ran %s, which exited %s having printed nothing at all:\n' \
+        "$role" "$change" "$agent" "$status"
+      printf 'the console capture at %s is empty, so there is no transcript to keep here.\n' "$raw"
+      if [ "$produced" = "yes" ]; then
+        printf '\nIt changed the worktree while saying nothing, so the work is on disk and this\n'
+        printf 'file is the whole account of it. Read git status and git diff in %s.\n' "$wt"
+      else
+        printf '\nIt changed nothing in the worktree either.\n'
+      fi
+    } > "$log"
+  fi
   # There WAS a truncation here, for a writing role whose extraction failed leaving a
   # stale id behind. It is gone because it became unreachable, not because it stopped
   # mattering: the decision above already clears any session it declined to resume, so by
@@ -387,8 +468,6 @@ if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
   # to it, which is a question about nothing (#292).
 fi
 
-produced="no"
-[ "$before_work" != "$after_work" ] && produced="yes"
 echo "role: $role   agent: $agent   status: $agent_status   exit: $status"
 echo "changed the worktree: $produced"
 echo "tree: $after_tree"
@@ -415,7 +494,26 @@ fi
 #
 # Writing it here cannot make a no-op look like work: implement's own digest excludes
 # openspec/changes, and every digest above was taken before this line runs.
-if { [ "$role" = "implement" ] || [ "$role" = "gate-fix" ]; } && [ "$produced" = "yes" ]; then
+#
+# The propose stage of a spec-only change is an author for the same reason those two are:
+# what lands is the delta, and propose is the stage that wrote it. Nothing else can claim
+# it - implement has no code to write - so without this the ledger is empty, AUTHORS: is
+# empty, and the landing gate refuses a change nobody could have finished but by hand
+# (#313, and review-gate-check.sh:71-75 names this case). Re-read after the run, because the
+# stage being judged is the one that wrote both the delta and the declaration; claiming
+# authorship of what it just wrote is a liability it is telling the truth about, not an
+# exemption it is granting itself.
+authored=no
+if [ "$produced" = "yes" ]; then
+  case "$role" in
+    implement|gate-fix) authored=yes ;;
+    propose)
+      resolve_change_dir
+      proposed_deliverable=$(read_deliverable "$change_dir") || exit 2
+      [ "$proposed_deliverable" = "spec-only" ] && authored=yes ;;
+  esac
+fi
+if [ "$authored" = "yes" ]; then
   [ -n "$change_dir" ] || {
     echo >&2; echo "no folder for '$change' in $wt, so the author cannot be recorded." >&2
     exit 1; }
@@ -429,21 +527,38 @@ fi
 echo "--- last 30 lines ---"
 tail -30 "$log"
 
-# Without a structured result the log is the raw console capture, not the agent's
-# answer. For a review that is not a small problem: the caller would read a verdict
-# out of a transcript, hand the transcript to the implementer, and commit it as the
-# review artifact (#264). Stop instead; a review that cannot be extracted did not
-# happen. Keyed on extraction having failed for THIS agent rather than on one agent's
-# envelope being absent: keyed the latter way, no agent but agy could pass a review it
-# had actually written (#274). Each tool withholds edits its own way, and they are not
-# equally strong: codex enforces it with -s read-only, opencode by denying edit/write/bash
-# to its reviewer agent, which drops those tools from the model's toolset entirely (#286),
-# and agy with --mode plan, which is the agent declining to act without a Proceed rather
-# than a harness refusing it (#290). The digest below is what actually decides.
-if [ "$writes" = "0" ] && [ "$extracted" -eq 0 ]; then
+# A stage whose answer could not be read did not report, and that is refused for EVERY
+# role and whatever the agent's own exit status was (#315). For a review the damage is
+# immediate: the caller would read a verdict out of a transcript, hand the transcript to
+# the implementer, and commit it as the review artifact (#264). For a writing role it is
+# the same failure one step later, and it happened: opencode returned no result and exit 0
+# on the implement stage of #287, which is indistinguishable from a stage that ran, so the
+# driver moved on to review code opencode had not written. agy's exit 2 stopped the same
+# failure the same day, and the difference between the two was the agent's rather than
+# this script's. One rule, so the agent no longer decides.
+# Keyed on extraction having failed for THIS agent rather than on one agent's envelope
+# being absent: keyed the latter way, no agent but agy could pass a review it had actually
+# written (#274). Each tool withholds edits its own way, and they are not equally strong:
+# codex enforces it with -s read-only, opencode by denying edit/write/bash to its reviewer
+# agent, which drops those tools from the model's toolset entirely (#286), and agy with
+# --mode plan, which is the agent declining to act without a Proceed rather than a harness
+# refusing it (#290). The digest below is what actually decides.
+if [ "$extracted" -eq 0 ]; then
   echo >&2
-  echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2
-  echo "Refusing to treat a transcript as a review. The capture is at $raw." >&2
+  if [ "$agent_status" = "NO_OUTPUT" ]; then
+    echo "$agent printed nothing during the $role stage: the capture at $raw is empty, so" >&2
+    echo "$log records that absence rather than anything the agent said." >&2
+    [ "$produced" = "yes" ] && \
+      echo "It changed the worktree while saying nothing: the work is here, the account of it is not." >&2
+    echo "Refusing to report a stage that said nothing as one that ran." >&2
+  elif [ "$writes" = "0" ]; then
+    echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2
+    echo "Refusing to treat a transcript as a review. The capture is at $raw." >&2
+  else
+    echo "no structured result from $agent, so $log is the raw transcript rather than its answer." >&2
+    echo "Refusing to report a stage whose answer could not be read as one that ran." >&2
+    echo "The capture is at $raw." >&2
+  fi
   exit 7
 fi
 # A reviewer that changed files has broken the rule it was told to follow. Judged by
@@ -469,6 +584,20 @@ if [ "$produces" = "1" ] && [ "$status" -eq 0 ] && [ "$produced" = "no" ]; then
     echo >&2
     echo "warning: this fix round changed nothing. Either every finding was answered in" >&2
     echo "prose, or none was acted on. $log is the whole of what it said." >&2
+  # The second case where nothing is the right answer: a change whose plan declares its
+  # delta the whole deliverable has no code for this stage to write, so measuring it by
+  # the code it wrote asks the wrong question. It is not exempt from being measured. The
+  # measurement moves to the folder the work digest excludes: this stage must still have
+  # ticked its task boxes, or left something else behind in the change, and a stage that
+  # touched nothing at all anywhere is refused below exactly as it is today. That is what
+  # keeps a silently failed implementer from passing here, and the declaration is read
+  # before the launch so this stage cannot have written it (#313).
+  elif [ "$role" = "implement" ] && [ "$deliverable" = "spec-only" ] \
+       && [ "$before_guard" != "$after_guard" ]; then
+    echo >&2
+    echo "note: this change declares DELIVERABLE: spec-only, so its delta under specs/ is the" >&2
+    echo "whole deliverable and there is no code for an implement stage to write. It ran: it" >&2
+    echo "changed the change folder and nothing outside it. $log is what it said." >&2
   else
     echo >&2; echo "$role produced no changes despite a clean exit. It did not run. See $raw" >&2
     exit 3
