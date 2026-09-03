@@ -16,6 +16,7 @@ import {
 } from "./connectorColumns";
 import { compareRowsBy, type SortDirection } from "../../lib/connectorSort";
 import { matchesFilters, type ColumnFilters } from "../../lib/connectorFilter";
+import { displayCellText } from "../../lib/connectorRows";
 
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
@@ -49,15 +50,15 @@ interface GridRow {
 function NameCell({ row, column }: ICellProps) {
   const displayRow = row._row as DisplayRow;
   const key = String(column.id);
-  const value = displayRow.cells[key] ?? "";
+  const text = displayCellText(displayRow.cells[key]);
   if (key === "name" && displayRow.url) {
     return (
       <a href={displayRow.url} target="_blank" rel="noopener" className="underline" style={{ color: "var(--ink)" }}>
-        {value}
+        {text}
       </a>
     );
   }
-  return <>{value}</>;
+  return <>{text}</>;
 }
 
 export function ConnectorBrowser({ connectionId, schema, selected, onSelectedChange }: ConnectorBrowserProps) {

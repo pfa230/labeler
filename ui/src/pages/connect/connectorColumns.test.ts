@@ -3,10 +3,10 @@ import type { FieldSpec } from "../../api/connectors";
 import { defaultColumnKeys, loadSavedColumnKeys, saveColumnKeys } from "./connectorColumns";
 
 const mockColumns: FieldSpec[] = [
-  { key: "name", label: "Name", ty: "text", tier: "cheap" },
-  { key: "description", label: "Description", ty: "text", tier: "cheap" },
-  { key: "manufacturer", label: "Manufacturer", ty: "text", tier: "hydrated" },
-  { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived" },
+  { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+  { key: "description", label: "Description", ty: "text", tier: "cheap", multi_valued: false },
+  { key: "manufacturer", label: "Manufacturer", ty: "text", tier: "hydrated", multi_valued: false },
+  { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived", multi_valued: false },
 ];
 
 describe("connectorColumns helpers", () => {
@@ -22,7 +22,7 @@ describe("connectorColumns helpers", () => {
 
     it("returns all columns if no cheap tier columns exist", () => {
       const hydratedOnly: FieldSpec[] = [
-        { key: "mfg", label: "Mfg", ty: "text", tier: "hydrated" },
+        { key: "mfg", label: "Mfg", ty: "text", tier: "hydrated", multi_valued: false },
       ];
       const keys = defaultColumnKeys(hydratedOnly);
       expect(Array.from(keys)).toEqual(["mfg"]);

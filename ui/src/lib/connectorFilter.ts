@@ -1,4 +1,5 @@
 import type { CellValue, DisplayRow } from "../api/connectors";
+import { displayCellText } from "./connectorRows";
 
 // Column key -> filter needle. A needle that's empty, or only whitespace, does not restrict
 // that column (treated the same as no filter).
@@ -8,7 +9,7 @@ export type ColumnFilters = Record<string, string>;
 // disagree with what's on screen. A number becomes its string form, e.g. 10 matches needle "1".
 function displayedCell(row: DisplayRow, key: string): string {
   const value: CellValue | undefined = row.cells[key];
-  return value === undefined ? "" : String(value);
+  return displayCellText(value);
 }
 
 // Trimmed before matching: a stray leading/trailing space typed into the filter box shouldn't

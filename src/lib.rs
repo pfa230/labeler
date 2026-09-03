@@ -6705,6 +6705,399 @@ layout:
     }
 
     #[tokio::test]
+    async fn connection_schema_reports_tags_multi_valued_and_derived_columns() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/fields"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(["sku"])))
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let rules = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &rules,
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/connections/{}/schema", c.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let entities = v["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "entities")
+            .unwrap();
+        let ent_cols = entities["columns"].as_array().unwrap();
+
+        // 4.1: tags column on entities with ty: text, tier: cheap, multi_valued: true
+        let tags_col = ent_cols
+            .iter()
+            .find(|c| c["key"] == "tags")
+            .expect("tags column present");
+        assert_eq!(tags_col["ty"], "text");
+        assert_eq!(tags_col["tier"], "cheap");
+        assert_eq!(tags_col["multi_valued"], true);
+
+        // 4.2: every other FieldSpec in entities has multi_valued: false as a present key
+        for col in ent_cols {
+            if col["key"] != "tags" {
+                assert_eq!(
+                    col.get("multi_valued"),
+                    Some(&serde_json::json!(false)),
+                    "column {} must carry multi_valued: false",
+                    col["key"]
+                );
+            }
+        }
+        let derived_col = ent_cols
+            .iter()
+            .find(|c| c["key"] == "location_id")
+            .expect("location_id present");
+        assert_eq!(derived_col["tier"], "derived");
+        assert_eq!(derived_col["multi_valued"], false);
+
+        // 4.1: no tags column on locations
+        let locations = v["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "locations")
+            .unwrap();
+        let loc_cols = locations["columns"].as_array().unwrap();
+        assert!(!loc_cols.iter().any(|c| c["key"] == "tags"));
+        for col in loc_cols {
+            assert_eq!(
+                col.get("multi_valued"),
+                Some(&serde_json::json!(false)),
+                "location column {} must carry multi_valued: false",
+                col["key"]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn browse_with_tags_multi_valued_cell_and_no_extra_requests() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {
+                        "id": "e1",
+                        "name": "LEGO Set",
+                        "quantity": 2,
+                        "purchasePrice": 49.99,
+                        "tags": [
+                            {"name": "KIDS", "id": "t1", "color": "red"},
+                            {"name": "CONSUMABLE", "id": "t2"}
+                        ]
+                    }
+                ],
+                "total": 1
+            })))
+            .expect(1)
+            .mount(&hb)
+            .await;
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let row = &v["rows"][0];
+
+        // 4.3: tags cell as ["KIDS","CONSUMABLE"] in order, others as string / number
+        assert_eq!(
+            row["cells"]["tags"],
+            serde_json::json!(["KIDS", "CONSUMABLE"])
+        );
+        assert_eq!(row["cells"]["name"], "LEGO Set");
+        assert_eq!(row["cells"]["quantity"], 2.0);
+        assert_eq!(row["cells"]["purchasePrice"], 49.99);
+
+        // 4.4: exactly 1 request made to upstream mock server
+        let received = hb.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn materialize_and_browse_tags_and_undeclared_arrays() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        // Browse mock
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {
+                        "id": "e1",
+                        "name": "Tagged Item",
+                        "quantity": 5,
+                        "tags": [
+                            {"name": "KIDS"},
+                            {"name": "CONSUMABLE"}
+                        ],
+                        "attachments": [{"id": "a1"}]
+                    },
+                    {
+                        "id": "e2",
+                        "name": "Untagged Item",
+                        "quantity": 1,
+                        "tags": [],
+                        "children": [{"id": "c1"}]
+                    }
+                ],
+                "total": 2
+            })))
+            .mount(&hb)
+            .await;
+
+        // Materialize details mocks
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "e1",
+                "name": "Tagged Item",
+                "quantity": 5,
+                "tags": [
+                    {"name": "KIDS"},
+                    {"name": "CONSUMABLE"}
+                ],
+                "attachments": [{"id": "a1"}]
+            })))
+            .mount(&hb)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/e2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "e2",
+                "name": "Untagged Item",
+                "quantity": 1,
+                "tags": null,
+                "children": [{"id": "c1"}]
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+        let router = with_auth(app(state.clone()));
+
+        // Browse verification:
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/browse", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resource":"entities"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let browse_v: Value = serde_json::from_slice(&body).unwrap();
+        let rows = browse_v["rows"].as_array().unwrap();
+
+        // e1: tags cell is ["KIDS", "CONSUMABLE"], undeclared attachments has no cell
+        assert_eq!(
+            rows[0]["cells"]["tags"],
+            serde_json::json!(["KIDS", "CONSUMABLE"])
+        );
+        assert!(rows[0]["cells"].get("attachments").is_none());
+
+        // e2 (untagged): 4.6 tags cell is [] (array, not "", not null, not absent), undeclared children has no cell
+        assert_eq!(rows[1]["cells"]["tags"], serde_json::json!([]));
+        assert!(rows[1]["cells"].get("children").is_none());
+
+        // Materialize e1: 4.5
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/materialize", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["name","quantity","tags","attachments"],"expansion":"as_listed"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let mat_v: Value = serde_json::from_slice(&body).unwrap();
+        let data1 = &mat_v[0]["data"];
+
+        assert_eq!(data1["tags"], serde_json::json!(["KIDS", "CONSUMABLE"]));
+        assert_eq!(data1["name"], serde_json::json!("Tagged Item"));
+        // Assert quantity is JSON string and not JSON number
+        assert!(
+            data1["quantity"].is_string(),
+            "quantity must be string on materialize"
+        );
+        assert_eq!(data1["quantity"], serde_json::json!("5"));
+        // 4.7: Undeclared array key attachments yields empty string on materialize
+        assert_eq!(data1["attachments"], serde_json::json!(""));
+
+        // Materialize e2 (untagged): 4.6 & 4.7
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/materialize", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"rows":[{"resource":"entities","key":"e2"}],"fields":["name","tags","children"],"expansion":"as_listed"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let mat_v2: Value = serde_json::from_slice(&body).unwrap();
+        let data2 = &mat_v2[0]["data"];
+
+        // tags is [] (not "", not null, not absent)
+        assert!(data2.get("tags").is_some(), "tags must be present");
+        assert!(data2["tags"].is_array(), "tags must be array");
+        assert_eq!(data2["tags"], serde_json::json!([]));
+        // children undeclared array yields empty string
+        assert_eq!(data2["children"], serde_json::json!(""));
+    }
+
+    #[tokio::test]
+    async fn save_connection_rejects_multi_valued_transform_source() {
+        let state = loopback_state();
+        let router = with_auth(app(state.clone()));
+
+        // 4.8: Attempt to create connection with transform sourcing 'tags'
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"BadConn","base_url":"http://hb.lan:7745","credential":"key","transforms":[{"resource":"entities","source":"tags","pattern":"(?<tag_id>.*)"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "connection_transform_invalid"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("tags"),
+            "error message must name source 'tags': {}",
+            msg
+        );
+
+        // Assert nothing is stored
+        let conns = state.store().list_connections().await.unwrap();
+        assert!(
+            conns.is_empty(),
+            "connection must be left unstored on failure"
+        );
+
+        // Assert same body with scalar source 'name' saves successfully
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"GoodConn","base_url":"http://hb.lan:7745","credential":"key","transforms":[{"resource":"entities","source":"name","pattern":"(?<clean_name>.*)"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let conns = state.store().list_connections().await.unwrap();
+        assert_eq!(conns.len(), 1);
+        assert_eq!(conns[0].name, "GoodConn");
+    }
+
+    #[tokio::test]
     async fn datetime_preview_returns_sample_and_rejects_bad_pattern() {
         let app = build_app();
         // valid pattern => 200 with a non-empty sample

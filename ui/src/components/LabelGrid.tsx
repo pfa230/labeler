@@ -2,6 +2,7 @@ import "react-data-grid/lib/styles.css";
 import { useMemo } from "react";
 import { DataGrid, type Column, type RenderEditCellProps, type RenderCellProps, type RowsChangeData } from "react-data-grid";
 import type { LabelGridRow } from "../lib/labelGrid";
+import { displayCellText } from "../lib/connectorRows";
 import type { InputControl, InputSpec } from "../api/types";
 
 const rowKeyGetter = (r: LabelGridRow) => r.id; // stable module-level identity (avoids grid recalculation)
@@ -152,7 +153,14 @@ export function LabelGrid({
       },
       renderCell: ({ row }: RenderCellProps<LabelGridRow>) => {
         const spec = cellInput ? cellInput(row, field) : { name: field, control: "text" as const };
-        if (!spec || spec.control === "list") {
+        if (!spec) {
+          return <span style={{ color: "var(--muted)", opacity: 0.35 }}>—</span>;
+        }
+        if (spec.control === "list") {
+          const rawValue = row.data[field];
+          if (Array.isArray(rawValue)) {
+            return <span>{displayCellText(rawValue)}</span>;
+          }
           return <span style={{ color: "var(--muted)", opacity: 0.35 }}>—</span>;
         }
         const err = row.validation.field?.[field];

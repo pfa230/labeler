@@ -11,7 +11,7 @@ const json = (body: unknown, status = 200) =>
 const schema = {
   version: "homebox-1",
   resources: [{ id: "entities", label: "Items", view: "table",
-    columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap" }], filters: [] }],
+    columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }], filters: [] }],
   relationships: [],
 };
 const templateDetail = {
@@ -392,7 +392,7 @@ describe("Connect: datetime parameters", () => {
               ...schema.resources[0],
               columns: [
                 ...schema.resources[0].columns,
-                { key: "printed_on", label: "Printed", ty: "text", tier: "cheap" },
+                { key: "printed_on", label: "Printed", ty: "text", tier: "cheap", multi_valued: false },
               ],
             },
           ],
@@ -506,7 +506,198 @@ describe("Connect: datetime parameters", () => {
     expect(screen.getByRole("button", { name: /download/i })).toBeDisabled();
   });
 
-  it("skips list inputs in field mapping and grid columns", async () => {
+  it("refuses mapping multi-valued column to scalar parameter and scalar column to list parameter, showing refusal naming both and adding no rows", async () => {
+    const multiValuedSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities",
+        label: "Items",
+        view: "table",
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+          { key: "tags", label: "Tags", ty: "text", tier: "cheap", multi_valued: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "title", control: "text" },
+            { name: "tagList", control: "list" },
+          ]),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(multiValuedSchema);
+      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS"] } }], next_cursor: null, has_more: false, count: 1 });
+      if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([{ source: { resource: "entities", key: "e1" }, data: { name: "Drill", tags: ["KIDS"] } }]);
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") {
+        return json({
+          ...templateDetail,
+          inputs: {
+            all: [
+              { name: "title", control: "text" },
+              { name: "tagList", control: "list" },
+            ],
+            default: [
+              { name: "title", control: "text" },
+              { name: "tagList", control: "list" },
+            ],
+          },
+        });
+      }
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/connection/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+
+    // Case 1: Map multi-valued column 'tags' to scalar parameter 'title'
+    fireEvent.change(await screen.findByLabelText("map title"), { target: { value: "tags" } });
+    expect(await screen.findByText(/tags.*title|title.*tags/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add .* row/i })).toBeDisabled();
+    expect(screen.queryByRole("grid", { name: /label rows/i })).toBeNull();
+
+    // Reset title mapping
+    fireEvent.change(screen.getByLabelText("map title"), { target: { value: "" } });
+
+    // Case 2: Map scalar column 'name' to list parameter 'tagList'
+    fireEvent.change(screen.getByLabelText("map tagList"), { target: { value: "name" } });
+    expect(await screen.findByText(/name.*tagList|tagList.*name/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add .* row/i })).toBeDisabled();
+    expect(screen.queryByRole("grid", { name: /label rows/i })).toBeNull();
+
+    // Case 3: Correct mapping (scalar -> scalar, list -> list)
+    fireEvent.change(screen.getByLabelText("map title"), { target: { value: "name" } });
+    fireEvent.change(screen.getByLabelText("map tagList"), { target: { value: "tags" } });
+    expect(screen.queryByText(/cannot map/i)).toBeNull();
+    const addButton = screen.getByRole("button", { name: /add .* row/i });
+    expect(addButton).toBeEnabled();
+    fireEvent.click(addButton);
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+    expect(within(grid).getByText("KIDS")).toBeInTheDocument();
+  });
+
+  it("mapping multi-valued tags column to list parameter and adding rows sends batch with array data and empty array for untagged item", async () => {
+    const multiValuedSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities",
+        label: "Items",
+        view: "table",
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+          { key: "tags", label: "Tags", ty: "text", tier: "cheap", multi_valued: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    let submittedBatch: { labels: Array<{ data: { tags?: string[] } }> } | null = null;
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "name", control: "text" },
+            { name: "tags", control: "list" },
+          ]),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(multiValuedSchema);
+      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({
+        rows: [
+          { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } },
+          { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer", tags: [] } },
+        ],
+        next_cursor: null,
+        has_more: false,
+        count: 2,
+      });
+      if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([
+        { source: { resource: "entities", key: "e1" }, data: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } },
+        { source: { resource: "entities", key: "e2" }, data: { name: "Hammer", tags: [] } },
+      ]);
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") {
+        return json({
+          ...templateDetail,
+          inputs: {
+            all: [
+              { name: "name", control: "text" },
+              { name: "tags", control: "list" },
+            ],
+            default: [
+              { name: "name", control: "text" },
+              { name: "tags", control: "list" },
+            ],
+          },
+        });
+      }
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") {
+        submittedBatch = JSON.parse(String(init?.body));
+        return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/connection/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+
+    // Both name and tags parameters appear in field mapping
+    expect(await screen.findByLabelText("map name")).toBeInTheDocument();
+    expect(await screen.findByLabelText("map tags")).toBeInTheDocument();
+
+    // Select both rows and add
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+    fireEvent.click(await screen.findByLabelText("select entities:e2"));
+    fireEvent.click(screen.getByRole("button", { name: /add .* row/i }));
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByText("KIDS, CONSUMABLE")).toBeInTheDocument();
+
+    // Run batch download
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /download/i }));
+      expect(submittedBatch).not.toBeNull();
+    });
+    expect(submittedBatch!.labels).toHaveLength(2);
+    expect(submittedBatch!.labels[0].data.tags).toEqual(["KIDS", "CONSUMABLE"]);
+    expect(submittedBatch!.labels[1].data.tags).toEqual([]);
+  });
+
+  it("leaves grid valid and download button enabled when a required list parameter is left unmapped", async () => {
     fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = (init?.method ?? "GET").toUpperCase();
@@ -557,7 +748,7 @@ describe("Connect: datetime parameters", () => {
 
     const grid = await screen.findByRole("grid", { name: /label rows/i });
     expect(within(grid).getByText("Drill")).toBeInTheDocument();
-    expect(screen.queryByLabelText("map tags")).toBeNull();
+    expect(screen.getByLabelText("map tags")).toHaveValue("");
     expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
   });
 });

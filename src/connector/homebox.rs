@@ -6,7 +6,7 @@ use super::cursor::{self, CursorBinding, CursorClaims, SigningKey};
 use super::{
     BrowsePage, BrowseRequest, CellValue, ColumnDef, ConnectorError, ConnectorSchema, DisplayRow,
     FieldSpec, FieldType, FilterSpec, FilterType, LabelRow, MaterializeRequest, RelationshipSpec,
-    ResourceDescriptor, ResourceSpec, RowRef, Tier, View,
+    ResourceDescriptor, ResourceSpec, RowRef, RowValue, Tier, View,
 };
 use crate::egress::Egress;
 use crate::store::Connection;
@@ -17,60 +17,77 @@ static ENTITIES_COLUMNS: &[ColumnDef] = &[
         label: "Name",
         ty: FieldType::Text,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "description",
         label: "Description",
         ty: FieldType::Text,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "assetId",
         label: "Asset ID",
         ty: FieldType::Text,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "quantity",
         label: "Quantity",
         ty: FieldType::Number,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "purchasePrice",
         label: "Price",
         ty: FieldType::Money,
         tier: Tier::Cheap,
+        multi_valued: false,
+    },
+    ColumnDef {
+        key: "tags",
+        label: "Tags",
+        ty: FieldType::Text,
+        tier: Tier::Cheap,
+        multi_valued: true,
     },
     ColumnDef {
         key: "location",
         label: "Location",
         ty: FieldType::Text,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "manufacturer",
         label: "Manufacturer",
         ty: FieldType::Text,
         tier: Tier::Hydrated,
+        multi_valued: false,
     },
     ColumnDef {
         key: "modelNumber",
         label: "Model",
         ty: FieldType::Text,
         tier: Tier::Hydrated,
+        multi_valued: false,
     },
     ColumnDef {
         key: "serialNumber",
         label: "Serial",
         ty: FieldType::Text,
         tier: Tier::Hydrated,
+        multi_valued: false,
     },
     ColumnDef {
         key: "item_url",
         label: "Homebox URL",
         ty: FieldType::Text,
         tier: Tier::Derived,
+        multi_valued: false,
     },
 ];
 
@@ -80,24 +97,28 @@ static LOCATIONS_COLUMNS: &[ColumnDef] = &[
         label: "Name",
         ty: FieldType::Text,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "description",
         label: "Description",
         ty: FieldType::Text,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "itemCount",
         label: "Items",
         ty: FieldType::Number,
         tier: Tier::Cheap,
+        multi_valued: false,
     },
     ColumnDef {
         key: "location_url",
         label: "Homebox URL",
         ty: FieldType::Text,
         tier: Tier::Derived,
+        multi_valued: false,
     },
 ];
 
@@ -225,11 +246,8 @@ impl HomeboxConnector {
         egress: &Egress,
     ) -> Result<ConnectorSchema, ConnectorError> {
         let entities_desc = &HOMEBOX_RESOURCES[0];
-        let mut columns: Vec<FieldSpec> = entities_desc
-            .columns
-            .iter()
-            .map(|c| field(c.key, c.label, c.ty, c.tier))
-            .collect();
+        let mut columns: Vec<FieldSpec> =
+            entities_desc.columns.iter().map(FieldSpec::from).collect();
         let b = base(conn)?;
         let custom: Vec<String> = egress
             .get_json(&b, "/api/v1/entities/fields", &[], &conn.credential)
@@ -244,11 +262,8 @@ impl HomeboxConnector {
             ));
         }
         let locations_desc = &HOMEBOX_RESOURCES[1];
-        let location_columns: Vec<FieldSpec> = locations_desc
-            .columns
-            .iter()
-            .map(|c| field(c.key, c.label, c.ty, c.tier))
-            .collect();
+        let location_columns: Vec<FieldSpec> =
+            locations_desc.columns.iter().map(FieldSpec::from).collect();
         Ok(ConnectorSchema {
             version: "homebox-1".into(),
             resources: vec![
@@ -408,7 +423,10 @@ impl HomeboxConnector {
                 .await?;
             let mut data = BTreeMap::new();
             for f in &req.fields {
-                data.insert(f.clone(), extract_field(&detail, f, ext_base, &r.key));
+                data.insert(
+                    f.clone(),
+                    extract_field(&detail, &r.resource, f, ext_base, &r.key),
+                );
             }
             out.push(LabelRow {
                 source: r.clone(),
@@ -423,6 +441,11 @@ impl HomeboxConnector {
 struct EntityList {
     items: Vec<EntitySummary>,
     total: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
+struct TagSummary {
+    name: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -449,6 +472,8 @@ struct EntitySummary {
     parent: Option<serde_json::Value>,
     #[serde(default)]
     fields: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    tags: Option<Vec<TagSummary>>,
 }
 
 fn field(key: &str, label: &str, ty: FieldType, tier: Tier) -> FieldSpec {
@@ -457,6 +482,7 @@ fn field(key: &str, label: &str, ty: FieldType, tier: Tier) -> FieldSpec {
         label: label.into(),
         ty,
         tier,
+        multi_valued: false,
     }
 }
 
@@ -487,6 +513,12 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
         if let Some(p) = e.purchase_price {
             cells.insert("purchasePrice".into(), CellValue::Number(p));
         }
+        let tag_names: Vec<String> = e
+            .tags
+            .as_ref()
+            .map(|tags| tags.iter().map(|t| t.name.clone()).collect())
+            .unwrap_or_default();
+        cells.insert("tags".into(), CellValue::List(tag_names));
         cells.insert("location".into(), CellValue::Text(json_name(&e.parent)));
         if let Some(ref m) = e.manufacturer {
             cells.insert("manufacturer".into(), CellValue::Text(m.clone()));
@@ -538,14 +570,36 @@ fn json_name(v: &Option<serde_json::Value>) -> String {
         .to_string()
 }
 
-fn extract_field(detail: &serde_json::Value, key: &str, base_url: &str, id: &str) -> String {
+fn extract_field(
+    detail: &serde_json::Value,
+    resource: &str,
+    key: &str,
+    base_url: &str,
+    id: &str,
+) -> RowValue {
+    if resource == "entities" && key == "tags" {
+        let names = detail
+            .get("tags")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| {
+                        t.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(ToString::to_string)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        return RowValue::List(names);
+    }
     match key {
-        "item_url" | "location_url" => build_entity_url(base_url, id),
-        "location" => json_name(&detail.get("parent").cloned()),
-        "entityType" => type_name(&detail.get("entityType").cloned()),
+        "item_url" | "location_url" => RowValue::Text(build_entity_url(base_url, id)),
+        "location" => RowValue::Text(json_name(&detail.get("parent").cloned())),
+        "entityType" => RowValue::Text(type_name(&detail.get("entityType").cloned())),
         k if k.starts_with("custom:") => {
             let want = &k["custom:".len()..];
-            detail
+            let val = detail
                 .get("fields")
                 .and_then(|f| f.as_array())
                 .and_then(|arr| {
@@ -555,12 +609,13 @@ fn extract_field(detail: &serde_json::Value, key: &str, base_url: &str, id: &str
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
                 })
-                .unwrap_or_default()
+                .unwrap_or_default();
+            RowValue::Text(val)
         }
         _ => match detail.get(key) {
-            Some(serde_json::Value::String(s)) => s.clone(),
-            Some(serde_json::Value::Number(n)) => n.to_string(),
-            _ => String::new(),
+            Some(serde_json::Value::String(s)) => RowValue::Text(s.clone()),
+            Some(serde_json::Value::Number(n)) => RowValue::Text(n.to_string()),
+            _ => RowValue::Text(String::new()),
         },
     }
 }
@@ -853,11 +908,7 @@ mod tests {
                 .iter()
                 .find(|r| r.id == desc.id)
                 .expect("resource present");
-            let expected: Vec<FieldSpec> = desc
-                .columns
-                .iter()
-                .map(|cd| field(cd.key, cd.label, cd.ty, cd.tier))
-                .collect();
+            let expected: Vec<FieldSpec> = desc.columns.iter().map(FieldSpec::from).collect();
             assert_eq!(
                 res.columns, expected,
                 "columns mismatch for resource {}",
@@ -881,19 +932,37 @@ mod tests {
                 &conn(&server.uri()),
                 &egress,
                 crate::connector::MaterializeRequest {
-                    rows: vec![crate::connector::RowRef {
-                        resource: "entities".into(),
-                        key: "e1".into(),
-                    }],
-                    fields: vec!["name".into(), "manufacturer".into(), "item_url".into()],
+                    rows: vec![
+                        crate::connector::RowRef {
+                            resource: "entities".into(),
+                            key: "e1".into(),
+                        },
+                        crate::connector::RowRef {
+                            resource: "locations".into(),
+                            key: "e1".into(),
+                        },
+                    ],
+                    fields: vec![
+                        "name".into(),
+                        "manufacturer".into(),
+                        "item_url".into(),
+                        "tags".into(),
+                    ],
                     expansion: crate::connector::ExpansionPolicy::AsListed,
                 },
             )
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].data["manufacturer"], "Acme");
-        assert!(rows[0].data["item_url"].ends_with("/entity/e1"));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].data["manufacturer"], RowValue::Text("Acme".into()));
+        assert_eq!(
+            rows[0].data["item_url"],
+            RowValue::Text(format!("{}/entity/e1", server.uri()))
+        );
+        // On entities, tags yields RowValue::List
+        assert_eq!(rows[0].data["tags"], RowValue::List(vec![]));
+        // On locations (undeclared column), tags yields RowValue::Text("")
+        assert_eq!(rows[1].data["tags"], RowValue::Text("".into()));
     }
 
     #[tokio::test]
@@ -1130,7 +1199,7 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].data["item_url"],
-            "https://public.homebox.domain/entity/e1"
+            RowValue::Text("https://public.homebox.domain/entity/e1".into())
         );
 
         let loc_rows = HomeboxConnector
@@ -1151,7 +1220,7 @@ mod tests {
         assert_eq!(loc_rows.len(), 1);
         assert_eq!(
             loc_rows[0].data["location_url"],
-            "https://public.homebox.domain/entity/loc1"
+            RowValue::Text("https://public.homebox.domain/entity/loc1".into())
         );
     }
 

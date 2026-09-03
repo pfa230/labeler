@@ -37,6 +37,7 @@ pub struct ColumnDef {
     pub label: &'static str,
     pub ty: FieldType,
     pub tier: Tier,
+    pub multi_valued: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,13 +125,13 @@ impl CompiledTransforms {
             .any(|t| t.resource == resource && t.capture_names.iter().any(|n| n == name))
     }
 
-    pub fn apply_to_map(&self, resource: &str, data: &mut BTreeMap<String, String>) {
+    pub fn apply_to_map(&self, resource: &str, data: &mut BTreeMap<String, RowValue>) {
         let mut derived = Vec::new();
         for t in self.for_resource(resource) {
-            if let Some(source_val) = data.get(&t.source) {
+            if let Some(RowValue::Text(source_val)) = data.get(&t.source) {
                 if let Some(outputs) = t.apply(source_val) {
                     for (k, v) in outputs {
-                        derived.push((k.to_string(), v.to_string()));
+                        derived.push((k.to_string(), RowValue::Text(v.to_string())));
                     }
                 }
             }
@@ -192,23 +193,22 @@ pub fn validate_transforms(
             .find(|d| d.id == t.resource)
             .ok_or_else(|| (idx, format!("unknown resource '{}'", t.resource)))?;
 
-        let is_declared_text = desc
-            .columns
-            .iter()
-            .any(|c| c.key == t.source && c.ty == FieldType::Text);
-        let is_dynamic_text = desc
-            .dynamic_text_prefix
-            .is_some_and(|prefix| t.source.starts_with(prefix));
-
-        if !is_declared_text && !is_dynamic_text {
-            if desc.columns.iter().any(|c| c.key == t.source) {
+        if let Some(c) = desc.columns.iter().find(|c| c.key == t.source) {
+            if c.multi_valued {
+                return Err((idx, format!("source field '{}' is multi-valued", t.source)));
+            }
+            if c.ty != FieldType::Text {
                 return Err((
                     idx,
                     format!("source field '{}' is not a text field", t.source),
                 ));
-            } else {
+            }
+        } else if let Some(prefix) = desc.dynamic_text_prefix {
+            if !t.source.starts_with(prefix) {
                 return Err((idx, format!("unknown source field '{}'", t.source)));
             }
+        } else {
+            return Err((idx, format!("unknown source field '{}'", t.source)));
         }
 
         let re = match regex::RegexBuilder::new(&t.pattern)
@@ -283,6 +283,19 @@ pub struct FieldSpec {
     pub label: String,
     pub ty: FieldType,
     pub tier: Tier,
+    pub multi_valued: bool,
+}
+
+impl From<&ColumnDef> for FieldSpec {
+    fn from(c: &ColumnDef) -> Self {
+        FieldSpec {
+            key: c.key.into(),
+            label: c.label.into(),
+            ty: c.ty,
+            tier: c.tier,
+            multi_valued: c.multi_valued,
+        }
+    }
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -335,6 +348,7 @@ pub struct RowRef {
 pub enum CellValue {
     Text(String),
     Number(f64),
+    List(Vec<String>),
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema, Debug)]
@@ -418,10 +432,17 @@ pub struct MaterializeRequest {
     pub expansion: ExpansionPolicy,
 }
 
+#[derive(serde::Serialize, utoipa::ToSchema, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum RowValue {
+    Text(String),
+    List(Vec<String>),
+}
+
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct LabelRow {
     pub source: RowRef,
-    pub data: BTreeMap<String, String>,
+    pub data: BTreeMap<String, RowValue>,
 }
 
 #[derive(Debug)]
@@ -488,6 +509,7 @@ impl Connectors {
                             label: name.clone(),
                             ty: FieldType::Text,
                             tier: Tier::Derived,
+                            multi_valued: false,
                         });
                     }
                 }
@@ -687,12 +709,12 @@ mod tests {
         let entity = rows.iter().find(|r| r.source.key == "e1").unwrap();
         let location = rows.iter().find(|r| r.source.key == "loc1").unwrap();
         assert_eq!(
-            entity.data.get("itemCount").map(String::as_str),
-            Some("BOX.9")
+            entity.data.get("itemCount"),
+            Some(&RowValue::Text("BOX.9".into()))
         );
         assert_eq!(
-            location.data.get("itemCount").map(String::as_str),
-            Some("7")
+            location.data.get("itemCount"),
+            Some(&RowValue::Text("7".into()))
         );
     }
 
@@ -761,8 +783,8 @@ mod tests {
             entity.data
         );
         assert_eq!(
-            location.data.get("itemCount").map(String::as_str),
-            Some("7")
+            location.data.get("itemCount"),
+            Some(&RowValue::Text("7".into()))
         );
     }
 
@@ -799,12 +821,24 @@ mod tests {
         };
         let compiled = CompiledTransforms::compile(&[t]).unwrap();
         let mut map = BTreeMap::new();
-        map.insert("location".into(), "BOX.123 | Motorcycle parts".into());
+        map.insert(
+            "location".into(),
+            RowValue::Text("BOX.123 | Motorcycle parts".into()),
+        );
         compiled.apply_to_map("entities", &mut map);
 
-        assert_eq!(map.get("location_id").unwrap(), "BOX.123");
-        assert_eq!(map.get("location_name").unwrap(), "Motorcycle parts");
-        assert_eq!(map.get("location").unwrap(), "BOX.123 | Motorcycle parts");
+        assert_eq!(
+            map.get("location_id").unwrap(),
+            &RowValue::Text("BOX.123".into())
+        );
+        assert_eq!(
+            map.get("location_name").unwrap(),
+            &RowValue::Text("Motorcycle parts".into())
+        );
+        assert_eq!(
+            map.get("location").unwrap(),
+            &RowValue::Text("BOX.123 | Motorcycle parts".into())
+        );
     }
 
     #[test]
@@ -816,7 +850,10 @@ mod tests {
         };
         let compiled = CompiledTransforms::compile(&[t]).unwrap();
         let mut map = BTreeMap::new();
-        map.insert("location".into(), "Just a simple location".into());
+        map.insert(
+            "location".into(),
+            RowValue::Text("Just a simple location".into()),
+        );
         compiled.apply_to_map("entities", &mut map);
 
         assert!(!map.contains_key("location_id"));
@@ -832,7 +869,7 @@ mod tests {
         };
         let compiled = CompiledTransforms::compile(&[t]).unwrap();
         let mut map = BTreeMap::new();
-        map.insert("location".into(), "BOX.123".into());
+        map.insert("location".into(), RowValue::Text("BOX.123".into()));
         compiled.apply_to_map("entities", &mut map);
 
         // Even though branch 1 matches, `name` does not participate, so whole rule is non-match
@@ -849,11 +886,11 @@ mod tests {
         };
         let compiled = CompiledTransforms::compile(&[t]).unwrap();
         let mut map = BTreeMap::new();
-        map.insert("tag".into(), "123:".into());
+        map.insert("tag".into(), RowValue::Text("123:".into()));
         compiled.apply_to_map("entities", &mut map);
 
-        assert_eq!(map.get("id").unwrap(), "123");
-        assert_eq!(map.get("extra").unwrap(), "");
+        assert_eq!(map.get("id").unwrap(), &RowValue::Text("123".into()));
+        assert_eq!(map.get("extra").unwrap(), &RowValue::Text("".into()));
     }
 
     #[test]
@@ -866,7 +903,7 @@ mod tests {
         let compiled = CompiledTransforms::compile(&[t]).unwrap();
         let mut map = BTreeMap::new();
         let long_val = format!("BOX.123 | {}", "a".repeat(8200));
-        map.insert("location".into(), long_val);
+        map.insert("location".into(), RowValue::Text(long_val));
         compiled.apply_to_map("entities", &mut map);
 
         assert!(!map.contains_key("location_id"));
@@ -887,10 +924,10 @@ mod tests {
         };
         let compiled = CompiledTransforms::compile(&[t1, t2]).unwrap();
         let mut map = BTreeMap::new();
-        map.insert("raw".into(), "hello".into());
+        map.insert("raw".into(), RowValue::Text("hello".into()));
         compiled.apply_to_map("entities", &mut map);
 
-        assert_eq!(map.get("step1").unwrap(), "hello");
+        assert_eq!(map.get("step1").unwrap(), &RowValue::Text("hello".into()));
         assert!(!map.contains_key("step2"));
     }
 
@@ -923,18 +960,28 @@ mod tests {
                 label: "Name",
                 ty: FieldType::Text,
                 tier: Tier::Cheap,
+                multi_valued: false,
             },
             ColumnDef {
                 key: "quantity",
                 label: "Qty",
                 ty: FieldType::Number,
                 tier: Tier::Cheap,
+                multi_valued: false,
             },
             ColumnDef {
                 key: "location",
                 label: "Loc",
                 ty: FieldType::Text,
                 tier: Tier::Cheap,
+                multi_valued: false,
+            },
+            ColumnDef {
+                key: "tags",
+                label: "Tags",
+                ty: FieldType::Text,
+                tier: Tier::Cheap,
+                multi_valued: true,
             },
         ];
         static COLS_L: &[ColumnDef] = &[ColumnDef {
@@ -942,6 +989,7 @@ mod tests {
             label: "Name",
             ty: FieldType::Text,
             tier: Tier::Cheap,
+            multi_valued: false,
         }];
         static DESCS: &[ResourceDescriptor] = &[
             ResourceDescriptor {
@@ -956,6 +1004,19 @@ mod tests {
             },
         ];
         DESCS
+    }
+
+    #[test]
+    fn validate_rejects_multi_valued_source() {
+        let descs = sample_descriptors();
+        let rules = vec![FieldTransform {
+            resource: "entities".into(),
+            source: "tags".into(),
+            pattern: r"^(?<id>.*)$".into(),
+        }];
+        let err = validate_transforms(descs, &rules).unwrap_err();
+        assert_eq!(err.0, 0);
+        assert!(err.1.contains("source field 'tags' is multi-valued"));
     }
 
     #[test]

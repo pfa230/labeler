@@ -326,7 +326,7 @@ describe("LabelGrid", () => {
     expect(updated[0].data.style).toBe("fancy");
   });
 
-  it("renders inert cell with '—' and disables editing when cellInput control is 'list'", () => {
+  it("renders inert cell with '—' and disables editing when cellInput control is 'list' and cell is not an array", () => {
     const cellInput = (_row: LabelGridRow, field: string) => {
       if (field === "notes") return { name: "notes", control: "list" as const };
       return { name: field, control: "text" as const };
@@ -348,5 +348,55 @@ describe("LabelGrid", () => {
 
     fireEvent.doubleClick(screen.getAllByText("—")[0]);
     expect(screen.queryByLabelText("edit notes")).toBeNull();
+  });
+
+  it("renders a list-control column holding an array as displayCellText and is not editable", () => {
+    const listRows: LabelGridRow[] = [
+      {
+        id: "r1",
+        origin: "connector",
+        data: { sku: "100", tags: ["KIDS", "CONSUMABLE"] },
+        option: {},
+        validation: {},
+      },
+      {
+        id: "r2",
+        origin: "connector",
+        data: { sku: "101", tags: [] },
+        option: {},
+        validation: {},
+      },
+      {
+        id: "r3",
+        origin: "connector",
+        data: { sku: "102" },
+        option: {},
+        validation: {},
+      },
+    ];
+
+    const cellInput = (_row: LabelGridRow, field: string) => {
+      if (field === "tags") return { name: "tags", control: "list" as const };
+      return { name: field, control: "text" as const };
+    };
+
+    render(
+      <LabelGrid
+        rows={listRows}
+        fields={["sku", "tags"]}
+        cellInput={cellInput}
+        onRowsChange={() => {}}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    expect(screen.getByText("KIDS, CONSUMABLE")).toBeInTheDocument();
+    // Non-array row r3 displays em-dash
+    expect(screen.getByText("—")).toBeInTheDocument();
+
+    // Double clicking list cell does not open edit input
+    fireEvent.doubleClick(screen.getByText("KIDS, CONSUMABLE"));
+    expect(screen.queryByLabelText("edit tags")).toBeNull();
   });
 });

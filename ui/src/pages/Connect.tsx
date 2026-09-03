@@ -4,7 +4,7 @@ import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { useTemplates, useTemplate, usePrinters, useSettings } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { datetimeCellError } from "../lib/templateFields";
-import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, type FieldMapping } from "../lib/connectorRows";
+import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, validateMapping, type FieldMapping } from "../lib/connectorRows";
 import {
   MAX_BATCH_LABELS, expandedCount, sourceRowForExpandedIndex,
   duplicateRow, removeRow, type LabelGridRow,
@@ -121,9 +121,14 @@ function Composer({
   printers: { id: string; name: string }[];
 }) {
   const { push } = useToast();
-  const connectorKeys = useMemo(() => [...new Set(schema.resources.flatMap((r) => r.columns.map((c) => c.key)))], [schema]);
-  const templateFields = useMemo(() => detail.inputs.all.filter((i) => i.control !== "list").map((i) => i.name), [detail]);
-  const [mapping, setMapping] = useState<FieldMapping>(() => defaultMapping(templateFields, connectorKeys));
+  const connectorColumns = useMemo(() => schema.resources.flatMap((r) => r.columns), [schema]);
+  const connectorKeys = useMemo(() => [...new Set(connectorColumns.map((c) => c.key))], [connectorColumns]);
+  const templateFields = useMemo(() => detail.inputs.all.map((i) => i.name), [detail]);
+  const [mapping, setMapping] = useState<FieldMapping>(() => defaultMapping(detail.inputs.all, connectorColumns));
+  const mappingErrors = useMemo(
+    () => validateMapping(mapping, detail.inputs.all, connectorColumns),
+    [mapping, detail, connectorColumns],
+  );
 
   const [rows, setRows] = useState<LabelGridRow[]>([]);
   const rowsRef = useRef(rows);
@@ -149,13 +154,13 @@ function Composer({
     const set = new Set<string>();
     if (rows.length === 0) {
       for (const input of detail.inputs.default) {
-        if (input.control !== "list") set.add(input.name);
+        set.add(input.name);
       }
     } else {
       for (const row of rows) {
         const inputs = getRowInputs(row.id) ?? detail.inputs.default;
         for (const input of inputs) {
-          if (input.control !== "list") set.add(input.name);
+          set.add(input.name);
         }
       }
     }
@@ -224,7 +229,7 @@ function Composer({
   const overCap = total > MAX_BATCH_LABELS;
 
   const addRows = async () => {
-    if (selected.length === 0) return;
+    if (selected.length === 0 || mappingErrors.length > 0) return;
     setFormError(null);
     if (selected.length > MATERIALIZE_CAP) { setFormError(`Select at most ${MATERIALIZE_CAP} rows at a time.`); return; }
     if (rowsRef.current.length + selected.length > MAX_BATCH_LABELS) { setFormError(`That would exceed the ${MAX_BATCH_LABELS}-row limit.`); return; }
@@ -313,8 +318,11 @@ function Composer({
             </label>
           ))}
         </div>
+        {mappingErrors.map((err) => (
+          <p key={err} className="text-sm" style={{ color: "var(--bad)" }}>{err}</p>
+        ))}
         <div>
-          <button type="button" onClick={addRows} disabled={busy || selected.length === 0} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
+          <button type="button" onClick={addRows} disabled={busy || selected.length === 0 || mappingErrors.length > 0} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>
             Add {selected.length} {selected.length === 1 ? "row" : "rows"}
           </button>
         </div>

@@ -20,8 +20,8 @@ const schema: ConnectorSchema = {
       label: "Items",
       view: "table",
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap" },
-        { key: "price", label: "Price", ty: "number", tier: "cheap" },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "price", label: "Price", ty: "number", tier: "cheap", multi_valued: false },
       ],
       filters: [],
     },

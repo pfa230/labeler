@@ -6,8 +6,8 @@ function row(id: string, cells: DisplayRow["cells"]): DisplayRow {
   return { id: { resource: "items", key: id }, cells };
 }
 
-function field(key: string, ty: FieldSpec["ty"]): FieldSpec {
-  return { key, label: key, ty, tier: "cheap" };
+function field(key: string, ty: FieldSpec["ty"], multi_valued = false): FieldSpec {
+  return { key, label: key, ty, tier: "cheap", multi_valued };
 }
 
 function sortedIds(rows: DisplayRow[], f: FieldSpec, direction: "asc" | "desc"): string[] {
@@ -211,6 +211,43 @@ describe("compareRowsBy", () => {
       // its relative input order, in both directions.
       expect(sortedIds(rows, f, "asc")).toEqual(["e", "a", "b", "c", "d"]);
       expect(sortedIds(rows, f, "desc")).toEqual(["a", "e", "b", "c", "d"]);
+    });
+  });
+
+  describe("multi-valued fields", () => {
+    it("orders a multi-valued text column ascending and descending", () => {
+      const f = field("tags", "text");
+      const rows = [
+        row("1", { tags: ["KIDS", "CONSUMABLE"] }),
+        row("2", { tags: ["ATTIC"] }),
+        row("3", { tags: [] }),
+      ];
+      expect(sortedIds(rows, f, "asc")).toEqual(["2", "1", "3"]);
+      expect(sortedIds(rows, f, "desc")).toEqual(["1", "2", "3"]);
+    });
+
+    it("places a multi-valued cell in a number column with the blanks, both directions without throwing", () => {
+      const f = field("qty", "number");
+      const rows = [
+        row("1", { qty: ["KIDS", "CONSUMABLE"] }),
+        row("2", { qty: 5 }),
+        row("3", { qty: 2 }),
+        row("4", { qty: ["5"] }),
+      ];
+      expect(sortedIds(rows, f, "asc")).toEqual(["3", "2", "1", "4"]);
+      expect(sortedIds(rows, f, "desc")).toEqual(["2", "3", "1", "4"]);
+    });
+
+    it("places a multi-valued cell in a date column with the blanks, both directions without throwing", () => {
+      const f = field("created", "date");
+      const rows = [
+        row("1", { created: ["2026-01-01", "2026-01-02"] }),
+        row("2", { created: "2026-03-01" }),
+        row("3", { created: "2025-06-20" }),
+        row("4", { created: ["2026-01-05"] }),
+      ];
+      expect(sortedIds(rows, f, "asc")).toEqual(["3", "2", "1", "4"]);
+      expect(sortedIds(rows, f, "desc")).toEqual(["2", "3", "1", "4"]);
     });
   });
 });
