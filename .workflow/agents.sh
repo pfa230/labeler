@@ -449,3 +449,88 @@ pty_run() {
     script -q -e /dev/null "${BASH:-/bin/bash}" -c "$1"
   fi
 }
+
+# --- machine-local role defaults (#330) -------------------------------------------
+#
+# Which CLIs are installed and authenticated is a property of this machine, not of
+# labeler, so the four role names live in a gitignored file beside these scripts and
+# never arrive by checkout. Same reasoning as CLAUDE.local.md, same suffix.
+#
+# ALL FOUR KEYS OR NONE. run-change.sh fills four roles and apply.sh fills two, and a
+# file that satisfies one caller and not the other is a file whose meaning depends on
+# who read it. One complete lineup, read the same way by both.
+#
+# Errors name the file and the key rather than printing a usage line: a value that came
+# from a file is not fixed by reading the command's synopsis, and sending the reader
+# there is sending them to the wrong place.
+# roles_path <workflow-dir> - the lineup file. LABELER_ROLES_FILE overrides it, and that
+# override is what keeps change-tests.sh and apply-tests.sh hermetic: both run the real
+# scripts out of .workflow/, so without it whichever lineup a developer happens to have
+# written would decide what the suite asserts.
+roles_path() { printf '%s' "${LABELER_ROLES_FILE:-$1/roles.local}"; }
+
+roles_template='planner: claude
+plan-reviewer: codex
+implementer: agy
+code-reviewer: opencode'
+
+roles_missing() { # roles_missing <path> - say where the file should be, and stop.
+  echo "no agents named, and no $1 to read them from." >&2
+  echo "Name all four on the command line, or write that file:" >&2
+  printf '\n%s\n\n' "$roles_template" >&2
+  echo "It is gitignored: it records which CLIs work on this machine, not repo policy." >&2
+}
+
+# roles_load <path> - set ROLE_PLANNER, ROLE_PLAN_REVIEWER, ROLE_IMPLEMENTER and
+# ROLE_CODE_REVIEWER from <path>. Non-zero having named the file and the line.
+#
+# Written for bash 3.2, which is what macOS ships: no associative arrays, no ${x,,}.
+# shellcheck disable=SC2034  # every ROLE_* below is read by the callers
+roles_load() {
+  local f="$1" n=0 line key val
+  ROLE_PLANNER=""; ROLE_PLAN_REVIEWER=""; ROLE_IMPLEMENTER=""; ROLE_CODE_REVIEWER=""
+  [ -f "$f" ] || { roles_missing "$f"; return 1; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    line="${line%$'\r'}"
+    line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    case "$line" in ''|'#'*) continue ;; esac
+    case "$line" in
+      *:*) ;;
+      *) echo "$f:$n: expected 'key: value', got '$line'" >&2; return 1 ;;
+    esac
+    key="$(printf '%s' "${line%%:*}" | sed 's/[[:space:]]//g')"
+    val="$(printf '%s' "${line#*:}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$val" ] || { echo "$f:$n: '$key' has no value" >&2; return 1; }
+    case "$val" in
+      *[[:space:]]*) echo "$f:$n: '$key' takes one agent name, got '$val'" >&2; return 1 ;;
+    esac
+    # An unknown key is refused rather than ignored, for the reason every raw template
+    # struct carries deny_unknown_fields: a key read and dropped is a preference that
+    # silently did nothing, and the typo that caused it is invisible.
+    case "$key" in
+      planner)       [ -z "$ROLE_PLANNER" ]       || { roles_dup "$f" "$n" "$key"; return 1; }; ROLE_PLANNER="$val" ;;
+      plan-reviewer) [ -z "$ROLE_PLAN_REVIEWER" ] || { roles_dup "$f" "$n" "$key"; return 1; }; ROLE_PLAN_REVIEWER="$val" ;;
+      implementer)   [ -z "$ROLE_IMPLEMENTER" ]   || { roles_dup "$f" "$n" "$key"; return 1; }; ROLE_IMPLEMENTER="$val" ;;
+      code-reviewer) [ -z "$ROLE_CODE_REVIEWER" ] || { roles_dup "$f" "$n" "$key"; return 1; }; ROLE_CODE_REVIEWER="$val" ;;
+      *) echo "$f:$n: unknown key '$key'." >&2
+         echo "The keys are planner, plan-reviewer, implementer, code-reviewer." >&2
+         return 1 ;;
+    esac
+  done < "$f"
+  roles_require "$f" planner "$ROLE_PLANNER" || return 1
+  roles_require "$f" plan-reviewer "$ROLE_PLAN_REVIEWER" || return 1
+  roles_require "$f" implementer "$ROLE_IMPLEMENTER" || return 1
+  roles_require "$f" code-reviewer "$ROLE_CODE_REVIEWER" || return 1
+}
+
+roles_dup() { # roles_dup <file> <line> <key>
+  echo "$1:$2: '$3' is set twice. One value per role." >&2
+}
+
+roles_require() { # roles_require <file> <key> <value>
+  [ -n "$3" ] && return 0
+  echo "$1: no '$2'. All four roles are required, even by a command that fills two:" >&2
+  printf '\n%s\n\n' "$roles_template" >&2
+  return 1
+}

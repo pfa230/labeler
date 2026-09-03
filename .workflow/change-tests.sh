@@ -47,6 +47,10 @@ setup() {
   cp "$here/../.gitignore" .gitignore
   git add -A; git commit -qm base
   cwd="$repo"
+  # Hermetic against the developer's own lineup (#330): every case below decides for
+  # itself whether a roles file exists, and this one does not until a case writes it.
+  export LABELER_ROLES_FILE="$repo/roles.local"
+  rm -f "$LABELER_ROLES_FILE"
 }
 teardown() { cd "$here" || exit 2; [ -n "${repo:-}" ] && [ -d "$repo" ] && find "$repo" -mindepth 0 -delete 2>/dev/null; repo=""; }
 
@@ -92,6 +96,71 @@ expect 2 "a planner reviewing its own plan"      -- 1 claude claude agy codex --
 expect 2 "an implementer reviewing its own code" -- 1 claude codex agy agy --dry-run
 # One agent may hold a role in both pairs: the gate judges each pair on its own.
 expect 0 "one agent may plan and implement"      -- 1 claude codex claude agy --dry-run
+
+# --- the machine-local lineup (#330) ----------------------------------------------
+#
+# All four or none. The refusals matter more than the happy path: a partial lineup that
+# quietly topped itself up from a file, or a file whose bad value was reported as a usage
+# error, is exactly the half-configured state this was built to refuse.
+roles() { printf '%s\n' "$@" > "$LABELER_ROLES_FILE"; }
+roles_say() { # roles_say <want-substring> <label> -- <args...>
+  local want="$1" label="$2"; shift 3
+  local out
+  out=$(cd "$cwd" && "$RUN" "$@" 2>&1)
+  case "$out" in
+    *"$want"*) ok "$label" ;;
+    *) bad "$label (no '$want' in the output)"; printf '%s\n' "$out" | sed 's/^/        /' | head -4 ;;
+  esac
+}
+
+rm -f "$LABELER_ROLES_FILE"
+expect 2 "the issue alone with no roles file"    -- 1
+roles_say "$LABELER_ROLES_FILE" "the refusal names the file it wanted" -- 1
+
+roles 'planner: claude' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect 0 "the issue alone, roles from the file"  -- 1 --dry-run
+roles_say "implementer: agy" "the file fills every role"           -- 1 --dry-run
+# Explicit names REPLACE the file rather than merging with it, so nothing here leaks in.
+roles_say "implementer: claude" "explicit names beat the file"     -- 1 codex claude claude agy --dry-run
+# Asserted on the MESSAGE, not the exit code. Every refusal below exits 2, and so does
+# the path each one would fall through to if it stopped firing: a partial lineup that
+# merged with the file would fail agent_known on an empty role, and an unknown key that
+# was ignored would fail the missing-role check. Both still exit 2, so an exit-code
+# assertion here passes against the broken code it exists to catch.
+expect 2 "two names is still a partial lineup"   -- 1 claude codex
+roles_say "name all four agents or none" "and says so, rather than failing on an empty role" -- 1 claude codex
+expect 2 "three names is still a partial lineup" -- 1 claude codex agy
+
+# Every validation applies to a file-supplied value: the file must not be a way to reach
+# a pairing the command line refuses.
+roles 'planner: claude' 'plan-reviewer: claude' 'implementer: agy' 'code-reviewer: opencode'
+expect 2 "a self-reviewed plan from the file"    -- 1 --dry-run
+roles 'planner: claude' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: agy'
+expect 2 "self-reviewed code from the file"      -- 1 --dry-run
+roles 'planner: nosuch' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect 2 "an unknown agent from the file"        -- 1 --dry-run
+# and it says where to fix it, rather than printing a synopsis of arguments nobody typed
+roles_say "Fix 'planner' in" "a bad value points at the file, not the usage" -- 1 --dry-run
+
+roles 'planer: claude' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect 2 "a misspelled key is refused, not ignored" -- 1 --dry-run
+roles_say "unknown key 'planer'" "naming the key, not the role it left unset" -- 1 --dry-run
+roles 'planner: claude' 'plan-reviewer: codex' 'implementer: agy'
+expect 2 "a missing role"                        -- 1 --dry-run
+roles_say "no 'code-reviewer'" "naming the role that is absent" -- 1 --dry-run
+roles 'planner: claude' 'planner: agy' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect 2 "a role set twice"                      -- 1 --dry-run
+roles_say "'planner' is set twice" "naming the role given two values" -- 1 --dry-run
+roles 'planner:' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect 2 "a role with no value"                  -- 1 --dry-run
+roles_say "'planner' has no value" "naming the empty role rather than reporting it missing" -- 1 --dry-run
+roles 'planner: claude agy' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect 2 "a role with two values"                -- 1 --dry-run
+roles_say "takes one agent name" "saying a role holds one name" -- 1 --dry-run
+# Comments and blank lines are the file's own, not an agent name.
+roles '# my machine' '' '  planner:  claude  ' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect 0 "comments, blanks and loose spacing"    -- 1 --dry-run
+rm -f "$LABELER_ROLES_FILE"
 
 # opencode authored nothing until 1.18.20 gave it --format json and -s <sessionID>;
 # it now takes every role (#286). The resumability guard itself is exercised below

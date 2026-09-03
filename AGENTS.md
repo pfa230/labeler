@@ -101,7 +101,7 @@ OpenSpec (CLI 1.9.0) on this project's own schema, `openspec/schemas/labeler/`:
 `proposal → specs → design → review → tasks → apply`. Order matters, because the review gates
 implementation and archive rewrites the main specs *after* it.
 
-**Run it with `/change <issue#> <planner> <plan-reviewer> <implementer> <code-reviewer>`** (#283). That
+**Run it with `/change <issue#> [<planner> <plan-reviewer> <implementer> <code-reviewer>]`** (#283). That
 scopes the issue with the user, then hands every stage below to `.workflow/run-change.sh`, which runs
 them unattended through to a green branch run and stops there. **The issue body is the scope**: the
 driver writes it to `.agent-runs/issue-<N>.md` in the worktree and the planner works from that file,
@@ -111,6 +111,40 @@ Which stage runs next is read off the artifacts, never off a ledger, so re-runni
 resumes rather than redoes. One function decides it, and `--dry-run` prints its answer, so what the
 driver would do next is both testable and inspectable. `.workflow/run-stage.sh` still runs a single
 stage when you want one.
+
+**The four names are optional, and their default is machine-local (#330).** Given the issue number
+alone, `run-change.sh` reads them from `.workflow/roles.local`, and `apply.sh` given neither agent
+reads its two from the same file, keyed `planner`, `plan-reviewer`, `implementer` and `code-reviewer`.
+The file is gitignored, for the reason `CLAUDE.local.md` is: which CLIs are installed and
+authenticated is a property of this machine, and a lineup arriving by checkout would be repo policy
+claiming to be a preference.
+
+```
+planner: claude
+plan-reviewer: codex
+implementer: agy
+code-reviewer: opencode
+```
+
+All four roles or none, on both sides. Naming some on the command line and leaving the rest to the
+file is refused rather than merged, because a lineup assembled from two places is one nobody can read
+off either. Naming all of them replaces the file entirely. All four keys are required even by
+`apply.sh`, which fills two: one complete lineup read the same way by both callers beats a file whose
+meaning depends on who opened it. An unknown key is a parse error naming the file and the line, the
+way `deny_unknown_fields` refuses a template's, because a key read and dropped is a preference that
+silently did nothing.
+
+Every validation applies identically to a value that came from the file, so it can never reach a
+pairing the command line refuses, and a failure names the file and the key rather than printing a
+usage line: a value read from a file is not fixed by reading a synopsis of arguments nobody typed.
+With neither file nor arguments present, both scripts stop and name the path they wanted. Never a
+default: a driver that picks its own four agents has made the one decision these commands exist to
+record. `LABELER_ROLES_FILE` overrides the path, which is what keeps `change-tests.sh` and
+`apply-tests.sh` from asserting against whichever lineup the developer running them happens to have.
+
+One consequence worth knowing at the call site: `apply.sh` takes its change last, so once the pair may
+be absent, `apply.sh issue-12-thing` names a **change** and not an implementer. A lone argument that
+is a known agent is refused as half a pair rather than resolved as a change nobody could find.
 
 The steps below are what those stages mean. Read them to understand the loop or to drive it by hand;
 `/change` is how it is normally driven.
@@ -190,10 +224,11 @@ The steps below are what those stages mean. Read them to understand the loop or 
    came back as a 0-byte record of itself.
 
 4. **Apply and review the diff**, as a named pair:
-   `.workflow/apply.sh <implementer> <reviewer> [change]`, or `/apply` with the same arguments. The
-   pair is named first because it is the guarantee; the change is last and optional, resolved from the
-   worktree you are standing in, or from the single one in flight across `.worktrees/`, and refused
-   rather than guessed when several are. `--rounds N` moves the three-round cap and `--dry-run` shows
+   `.workflow/apply.sh [<implementer> <reviewer>] [change]`, or `/apply` with the same arguments. The
+   pair is named first because it is the guarantee, and may be left to `.workflow/roles.local`; the
+   change is last and optional, resolved from the worktree you are standing in, or from the single one
+   in flight across `.worktrees/`, and refused rather than guessed when several are. With no pair
+   named, a lone argument is that change. `--rounds N` moves the three-round cap and `--dry-run` shows
    what it would do without launching anything. It runs both roles and the fix loop between them;
    `.workflow/run-stage.sh` runs a single stage, and still takes the change explicitly. Prefer it over
    `/opsx:apply`: implementing here means this session would have to review its own diff, and the
@@ -523,8 +558,9 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
   template content is fatal. Nothing is seeded into a fresh config dir. Templates are immutable,
   shared via `Arc`.
 - **Layout model** (`models.rs`). `layout` is a tree of `LayoutItem`s: `Text`, `Qr`, `Image`, `Line`,
-  `Container`. `Container` nests `items` recursively and may carry `frame` and `padding`. Any item may
-  carry `when:`, the universal conditional-visibility predicate over `params` (ADR-0056, #162).
+  `Container`. `Container` nests `items` recursively and may carry `shape`, `stroke`, `background`,
+  `rounded`, `padding` and `flow`. Any item may carry `when:`, the universal conditional-visibility
+  predicate over `params` (ADR-0056, #162).
 - **Coordinates.** Bottom-left origin, y-up, in the template `unit` (`mm` or `in`). Typst is top-left,
   so the renderer flips with `frame_height_units - top`. A `Container` re-bases children into its
   padded inner box via a fresh `RenderContext`. *Watch this when touching placement math.*
