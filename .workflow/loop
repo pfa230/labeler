@@ -1,19 +1,11 @@
 #!/usr/bin/env bash
-# The name callers use for the loop, which lives at tools/openspec-loop/ (#357).
+# Entry point to the loop, a git subtree at tools/openspec-loop/ (#357).
 #
-# A subtree rather than a submodule: run-change.sh creates a worktree per change, and
-# `git worktree add` does not populate a submodule, so the gates would be absent from
-# exactly where the loop runs. Verified on git 2.55.0: a fresh worktree gets every file
-# from a subtree and none from a submodule.
+# Callers: CI, .claude/commands/*, .claude/hooks/review-gate.sh. Not the git hooks, which
+# run from tools/openspec-loop/.githooks and call ../workflow directly.
 #
-# Used by CI, the Claude commands and the edit-time hook: callers that either sit outside
-# this repository or would otherwise hard-code the prefix above. The git hooks do NOT come
-# through here. They live inside the subtree beside workflow/ and resolve their scripts as
-# $here/../workflow, because routing them through a consumer file would leave the kit
-# unable to run its own suites.
-#
-# Arguments pass through unmodified and the exit status is the script's own, because
-# callers read specific codes: run-stage.sh 7, run-change.sh 4 and 8, apply.sh 10.
+# Never wrap or translate the exit status: callers read specific codes (run-stage.sh 7,
+# run-change.sh 4 and 8, apply.sh 10).
 set -euo pipefail
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || {
