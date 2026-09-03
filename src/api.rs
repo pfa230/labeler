@@ -2598,7 +2598,7 @@ pub async fn render_label(
     tracing::debug!(
         template = %template.id,
         dpi = template.dpi,
-        data_keys = req.label.data.len(),
+        data_keys = req.data.len(),
         "render label request"
     );
 
@@ -2670,15 +2670,15 @@ pub async fn render_label(
         }
     };
 
-    crate::render::validate_label_data_keys(template, &req.label.data)?;
+    crate::render::validate_label_data_keys(template, &req.data)?;
 
     let (bytes, content_type) = match format {
         RenderFormat::Png => (
-            render_single_label_image(template, &req.label.data, None, &variables, &dt, img_opts)?,
+            render_single_label_image(template, &req.data, None, &variables, &dt, img_opts)?,
             "image/png",
         ),
         RenderFormat::Pdf => (
-            render_single_label_pdf(template, &req.label.data, None, &variables, &dt)?,
+            render_single_label_pdf(template, &req.data, None, &variables, &dt)?,
             "application/pdf",
         ),
     };

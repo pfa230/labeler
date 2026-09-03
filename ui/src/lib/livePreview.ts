@@ -5,18 +5,14 @@ export interface PreviewInput {
   templateId: string;
   format: "single" | "sheet";   // the template's format type
   data: Record<string, ParamValue>;
-  option?: Record<string, string>;
   startSlot?: number;
 }
 
-function hasOpt(o?: Record<string, string>): o is Record<string, string> {
-  return !!o && Object.keys(o).length > 0;
-}
 const sortObj = (o?: Record<string, ParamValue | string>) =>
   o ? Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b))) : null;
 
 export function previewKey(i: PreviewInput): string {
-  return JSON.stringify([i.templateId, i.format, sortObj(i.data), hasOpt(i.option) ? sortObj(i.option) : null, i.startSlot ?? 0]);
+  return JSON.stringify([i.templateId, i.format, sortObj(i.data), i.startSlot ?? 0]);
 }
 
 interface PreviewState { url?: string; error?: string; loading: boolean }
@@ -41,9 +37,9 @@ export function useLivePreview(input: PreviewInput, enabled: boolean, debounceMs
       try {
         const single = input.format === "single";
         const path = single ? "/api/render/label" : "/api/batch";
-        const label = { data: input.data, ...(hasOpt(input.option) ? { option: input.option } : {}) };
+        const label = { data: input.data };
         const body = single
-          ? { template: input.templateId, data: input.data, ...(hasOpt(input.option) ? { option: input.option } : {}) }
+          ? { template: input.templateId, data: input.data }
           : { template: input.templateId, mode: "download", labels: [label],
               ...(input.startSlot ? { start_slot: input.startSlot } : {}) };
         const res = await fetch(path, {

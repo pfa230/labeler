@@ -66,7 +66,6 @@ reasons! {
     PathParamInvalid => "path_param_invalid",
     StartSlotOutOfRange => "start_slot_out_of_range",
     StartSlotNotApplicable => "start_slot_not_applicable",
-    OptionsNotSupported => "options_not_supported",
     BatchEmpty => "batch_empty",
     FormatUnknown => "format_unknown",
     FormatNotApplicable => "format_not_applicable",

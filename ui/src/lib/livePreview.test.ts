@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, waitFor } from "@testing-library/react";
 import { previewKey, useLivePreview, type PreviewInput } from "./livePreview";
 
-const base: PreviewInput = { templateId: "t", format: "single", data: { x: "1" }, option: { o: "a" }, startSlot: 0 };
+const base: PreviewInput = { templateId: "t", format: "single", data: { x: "1" }, startSlot: 0 };
 
 describe("previewKey", () => {
   it("is stable regardless of key insertion order, differs on data change", () => {
@@ -11,9 +11,6 @@ describe("previewKey", () => {
     const c = previewKey({ ...base, data: { x: "9", y: "2" } });
     expect(a).toBe(b);
     expect(a).not.toBe(c);
-  });
-  it("omits an empty option object from the key", () => {
-    expect(previewKey({ ...base, option: {} })).toBe(previewKey({ ...base, option: undefined }));
   });
 });
 
@@ -44,14 +41,15 @@ describe("useLivePreview", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("posts /api/batch for a sheet and omits an empty option from the body", async () => {
-    const sheet: PreviewInput = { templateId: "s", format: "sheet", data: { x: "1" }, option: {} };
+  it("posts /api/batch for a sheet and sends data-only label", async () => {
+    const sheet: PreviewInput = { templateId: "s", format: "sheet", data: { x: "1" } };
     const { result } = renderHook(() => useLivePreview(sheet, true, 0));
     await waitFor(() => expect(result.current.url).toBeDefined());
     const [url, init] = (fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(url).toBe("/api/batch");
     const body = JSON.parse((init as RequestInit).body as string);
-    expect(body.labels[0].option).toBeUndefined(); // empty option omitted
+    expect(body.labels[0]).toEqual({ data: { x: "1" } });
+    expect(body.labels[0].option).toBeUndefined();
     expect(body.mode).toBe("download");
   });
 

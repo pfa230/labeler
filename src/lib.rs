@@ -2023,7 +2023,6 @@ layout:
     async fn batch_sheet_download_returns_pdf() {
         let app = build_app();
         let label = json!({
-            "option": { "orientation": "horizontal", "outline": "yes" },
             "data": {
                 "id": "A1",
                 "url": "https://example.com/A1",
@@ -2196,7 +2195,6 @@ layout:
         let app = build_app();
         create_fake_printer(&app, "bad-sheet-printer", true).await;
         let label = json!({
-            "option": { "orientation": "horizontal", "outline": "yes" },
             "data": {
                 "id": "A1",
                 "url": "https://example.com/A1",
@@ -2230,7 +2228,6 @@ layout:
         let app = build_app();
         create_fake_printer(&app, "ok-sheet-printer", false).await;
         let label = json!({
-            "option": { "orientation": "horizontal", "outline": "yes" },
             "data": {
                 "id": "A1",
                 "url": "https://example.com/A1",
@@ -7835,6 +7832,45 @@ layout:
         );
     }
 
+    #[test]
+    fn openapi_render_label_request_is_strict() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let schemas = doc.components.as_ref().unwrap().schemas.clone();
+        assert!(
+            schemas.contains_key("RenderLabelRequest"),
+            "RenderLabelRequest missing in openapi schemas"
+        );
+        let schema = serde_json::to_value(&schemas["RenderLabelRequest"]).unwrap();
+        assert!(
+            !schema.as_object().unwrap().contains_key("allOf"),
+            "RenderLabelRequest must not use allOf, got {schema}"
+        );
+        let required = schema["required"].as_array().expect("required array");
+        let req_strs: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            req_strs.contains(&"template"),
+            "template must be required, got {schema}"
+        );
+        assert!(
+            req_strs.contains(&"data"),
+            "data must be required, got {schema}"
+        );
+        let props = schema["properties"].as_object().expect("properties object");
+        assert!(
+            props.contains_key("template"),
+            "template must be a property, got {schema}"
+        );
+        assert!(
+            props.contains_key("data"),
+            "data must be a property, got {schema}"
+        );
+        assert_eq!(
+            schema["additionalProperties"], false,
+            "additionalProperties must be false, got {schema}"
+        );
+    }
+
     // Verify the API-wide behavior: oversized bodies on non-/print JSON endpoints also return 413.
     // axum's global DefaultBodyLimit (~2 MiB) triggers the same JsonRejection->PayloadTooLarge path.
     #[tokio::test]
@@ -11523,6 +11559,193 @@ layout:
             render_body["error"]["details"]["reason"],
             "data_key_unknown"
         );
+    }
+
+    #[tokio::test]
+    async fn issue_337_render_label_option_envelope_key_rejected() {
+        let app = build_app();
+        let payload = json!({
+            "template": "shelf",
+            "data": { "title": "Bolts" },
+            "option": { "x": "1" }
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/render/label", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+        let err = body["error"]["details"]["error"].as_str().unwrap_or("");
+        assert!(
+            err.contains("unknown field `option`, expected `template` or `data`"),
+            "expected error to contain backticked option message, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_337_batch_and_inputs_option_envelope_key_rejected() {
+        let app = build_app();
+        // POST /api/batch
+        let batch_payload = json!({
+            "template": "shelf",
+            "mode": "download",
+            "labels": [
+                { "data": { "title": "Bolts" }, "option": { "x": "1" } }
+            ]
+        });
+        let res_batch = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", batch_payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res_batch.status(), StatusCode::BAD_REQUEST);
+        let body_batch = json_response(res_batch).await;
+        assert_eq!(body_batch["error"]["code"], "InvalidRequest");
+        assert_eq!(body_batch["error"]["details"]["reason"], "json_malformed");
+        let err_batch = body_batch["error"]["details"]["error"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            err_batch.contains("unknown field `option`, expected `data`"),
+            "expected batch error to contain backticked option message, got: {err_batch}"
+        );
+
+        // POST /api/templates/{id}/inputs
+        let inputs_payload = json!({
+            "labels": [
+                { "data": { "title": "Bolts" }, "option": { "x": "1" } }
+            ]
+        });
+        let res_inputs = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/templates/shelf/inputs",
+                inputs_payload.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(res_inputs.status(), StatusCode::BAD_REQUEST);
+        let body_inputs = json_response(res_inputs).await;
+        assert_eq!(body_inputs["error"]["code"], "InvalidRequest");
+        assert_eq!(body_inputs["error"]["details"]["reason"], "json_malformed");
+        let err_inputs = body_inputs["error"]["details"]["error"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            err_inputs.contains("unknown field `option`, expected `data`"),
+            "expected inputs error to contain backticked option message, got: {err_inputs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_337_misspelled_dataa_envelope_key_rejected_on_all_three_endpoints() {
+        let app = build_app();
+
+        // 1. POST /api/render/label
+        let render_payload = json!({
+            "template": "shelf",
+            "dataa": { "title": "Bolts" }
+        });
+        let res_render = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label",
+                render_payload.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(res_render.status(), StatusCode::BAD_REQUEST);
+        let body_render = json_response(res_render).await;
+        assert_eq!(body_render["error"]["code"], "InvalidRequest");
+        assert_eq!(body_render["error"]["details"]["reason"], "json_malformed");
+        let err_render = body_render["error"]["details"]["error"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            err_render.contains("unknown field `dataa`, expected `template` or `data`"),
+            "expected render error to name dataa, got: {err_render}"
+        );
+
+        // 2. POST /api/batch
+        let batch_payload = json!({
+            "template": "shelf",
+            "mode": "download",
+            "labels": [
+                { "dataa": { "title": "Bolts" } }
+            ]
+        });
+        let res_batch = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", batch_payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(res_batch.status(), StatusCode::BAD_REQUEST);
+        let body_batch = json_response(res_batch).await;
+        assert_eq!(body_batch["error"]["code"], "InvalidRequest");
+        assert_eq!(body_batch["error"]["details"]["reason"], "json_malformed");
+        let err_batch = body_batch["error"]["details"]["error"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            err_batch.contains("unknown field `dataa`, expected `data`"),
+            "expected batch error to name dataa, got: {err_batch}"
+        );
+
+        // 3. POST /api/templates/{id}/inputs
+        let inputs_payload = json!({
+            "labels": [
+                { "dataa": { "title": "Bolts" } }
+            ]
+        });
+        let res_inputs = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/templates/shelf/inputs",
+                inputs_payload.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(res_inputs.status(), StatusCode::BAD_REQUEST);
+        let body_inputs = json_response(res_inputs).await;
+        assert_eq!(body_inputs["error"]["code"], "InvalidRequest");
+        assert_eq!(body_inputs["error"]["details"]["reason"], "json_malformed");
+        let err_inputs = body_inputs["error"]["details"]["error"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            err_inputs.contains("unknown field `dataa`, expected `data`"),
+            "expected inputs error to name dataa, got: {err_inputs}"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_337_render_label_unknown_envelope_key_with_invalid_format_reports_json_malformed(
+    ) {
+        let app = build_app();
+        let payload = json!({
+            "template": "shelf",
+            "data": { "title": "Bolts" },
+            "option": { "x": "1" }
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=invalid_fmt",
+                payload.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
     }
 }
 

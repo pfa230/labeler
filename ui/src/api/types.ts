@@ -99,7 +99,7 @@ export interface TemplateDetail {
 }
 
 export interface TemplateInputsRequest {
-  labels: { data?: Record<string, unknown>; option?: Record<string, string> }[];
+  labels: { data?: Record<string, unknown> }[];
 }
 
 export interface TemplateInputsResponse {
