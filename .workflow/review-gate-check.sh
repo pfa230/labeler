@@ -24,7 +24,8 @@
 #                  for pre-commit. CI must set it to the push or PR base, because
 #                  there HEAD is the commit under test.
 #
-# Exit 0 = allowed. Exit 1 = refused, reason on stderr.
+# Exit 0 = allowed. Exit 1 = refused, reason on stderr. Exit 2 = the commit could not be
+# checked, which is never a pass: see cannot().
 set -uo pipefail
 
 # The digest tool that ships beside this script is the one it calls: resolving it
@@ -38,11 +39,26 @@ root="${1:?repo root required}"; shift || true
 [ "$#" -gt 0 ] || exit 0
 base_ref="${GATE_BASE_REF:-HEAD}"
 
-changes_dir="$root/openspec/changes"
-[ -d "$changes_dir" ] || exit 0
-
 failed=0
 fail() { printf 'review gate: %s\n' "$1" >&2; failed=1; }
+
+# A refusal says the commit is wrong. This says the commit could not be judged, which is
+# a different answer and must never arrive as the permissive one (#333).
+cannot() { printf 'review gate: %s\n' "$1" >&2; exit 2; }
+
+changes_dir="$root/openspec/changes"
+if [ ! -d "$changes_dir" ]; then
+  # A repository with no OpenSpec in it is none of this script's business. A commit that
+  # names a change while the directory holding it is absent is a different thing
+  # entirely, and exiting 0 on it is how a fixture whose mkdir failed took a whole block
+  # of refusals green: every call returned 0 before reading a single file.
+  for f in "$@"; do
+    case "$f" in
+      openspec/changes/*) cannot "'$f' is in this commit, but $changes_dir does not exist. Nothing here could be checked." ;;
+    esac
+  done
+  exit 0
+fi
 
 field() { # field <file> <name> -> value, or the literal "__AMBIGUOUS__"/"__MISSING__"
   local file="$1" name="$2" n
@@ -182,8 +198,13 @@ for f in "$@"; do
       case " $archived " in *" $dir "*) ;; *) archived="$archived $dir" ;; esac ;;
   esac
 done
+[ -z "$archived" ] || git -C "$root" rev-parse -q --verify "$base_ref^{commit}" >/dev/null 2>&1 \
+  || cannot "$base_ref does not resolve to a commit in $root, so which changes are landing in this commit cannot be told."
 for dir in $archived; do
-  git -C "$root" show "$base_ref:$dir/proposal.md" >/dev/null 2>&1 && continue   # already archived, not landing now
+  # Asked of cat-file, which answers only "is this path in that tree". show failing
+  # answers that plus every other reason it might fail, and the two must not share a
+  # branch: with the ref known to resolve, this one is the question being asked.
+  git -C "$root" cat-file -e "$base_ref:$dir/proposal.md" 2>/dev/null && continue   # already archived, not landing now
   name=$(basename "$dir")
   check_plan_review "$root/$dir" "$name"
   [ "$plan_only" = "1" ] || check_diff_review "$root/$dir" "$name"

@@ -19,6 +19,9 @@
 #
 # New content is read from the working tree, old content from the ref. Trailing
 # whitespace and trailing blank lines are normalised away; nothing else is.
+#
+# Exit 0 = the archive is faithful. Exit 1 = it is not, reason on stderr. Exit 2 = this
+# could not be checked at all, which is never a pass: see cannot().
 set -uo pipefail
 
 root="${1:?repo root required}"; shift || true
@@ -28,13 +31,21 @@ base_ref="${GATE_BASE_REF:-HEAD}"
 fail() { printf 'archive-merge: %s\n' "$1" >&2; failed=1; }
 failed=0
 
+# A refusal says the archive is wrong. This says the archive could not be read, which is
+# a different answer and must never arrive as the permissive one. Every place below that
+# reads the base ref or writes a working file goes through it, because both failures
+# produce an EMPTY requirement index, and an empty index is indistinguishable from a
+# capability that had nothing to displace: every requirement then compares against
+# nothing and the check passes saying nothing at all (#333).
+cannot() { printf 'archive-merge: %s\n' "$1" >&2; exit 2; }
+
 tmp=$(mktemp -d) || exit 2
 trap 'rm -rf "$tmp"' EXIT
 
 # Split a spec into one file per requirement, printing "op<TAB>name<TAB>index".
 # op is ADDED/MODIFIED/REMOVED in a delta, PLAIN in a published spec.
 extract() {
-  mkdir -p "$2"
+  mkdir -p "$2" || return 1
   awk -v out="$2" '
     /^##[[:space:]]+(ADDED|MODIFIED|REMOVED)[[:space:]]+Requirements[[:space:]]*$/ { op = $2; if (f) { close(f); f = "" } next }
     /^###[[:space:]]+Requirement:/ {
@@ -101,6 +112,12 @@ for f in "$@"; do
 done
 [ -n "${caps// /}" ] || exit "$failed"
 
+# Checked once, here rather than at the top, because everything above this line answers
+# without reading the ref: a commit naming no capability is none of this script's
+# business whatever state the repository is in.
+git -C "$root" rev-parse -q --verify "$base_ref^{commit}" >/dev/null 2>&1 \
+  || cannot "$base_ref does not resolve to a commit in $root, so there is nothing to compare the archive against."
+
 for cap in $caps; do
   new="$root/openspec/specs/$cap/spec.md"
 
@@ -114,18 +131,24 @@ for cap in $caps; do
     esac
   done
 
-  d="$tmp/$cap"; mkdir -p "$d/delta" "$d/new" "$d/old"
-  if git -C "$root" show "$base_ref:openspec/specs/$cap/spec.md" > "$d/old.spec" 2>/dev/null; then
-    extract "$d/old.spec" "$d/old" > "$d/old.idx"
+  d="$tmp/$cap"; mkdir -p "$d/delta" "$d/new" "$d/old" || cannot "cannot create the working directory $d."
+  # Existence is asked of cat-file and never inferred from show failing. With the ref
+  # already known to resolve, cat-file answers the one question here - was this
+  # capability published at the base - so a show that then fails is a real error and is
+  # refused rather than read as a capability that did not exist yet.
+  if git -C "$root" cat-file -e "$base_ref:openspec/specs/$cap/spec.md" 2>/dev/null; then
+    git -C "$root" show "$base_ref:openspec/specs/$cap/spec.md" > "$d/old.spec" 2>/dev/null \
+      || cannot "'$cap': openspec/specs/$cap/spec.md exists at $base_ref but could not be read."
+    extract "$d/old.spec" "$d/old" > "$d/old.idx" || cannot "'$cap': cannot write the base requirement index."
     old_existed=1
   else
-    : > "$d/old.idx"   # new capability: nothing existed to displace
+    : > "$d/old.idx" || cannot "'$cap': cannot write the base requirement index."   # new capability: nothing existed to displace
     old_existed=0
   fi
   if [ -n "$delta" ] && [ -f "$delta" ]; then
-    extract "$delta" "$d/delta" > "$d/delta.idx"
+    extract "$delta" "$d/delta" > "$d/delta.idx" || cannot "'$cap': cannot write the delta requirement index."
   else
-    : > "$d/delta.idx"
+    : > "$d/delta.idx" || cannot "'$cap': cannot write the delta requirement index."
   fi
 
   # The published spec is gone. That is a capability retired, which is legitimate only
@@ -162,7 +185,7 @@ for cap in $caps; do
     *) fail "'$cap': a delta for it is being archived, but openspec/specs/$cap/spec.md is not in this commit. Archive syncs every delta; this one was not synced."; continue ;;
   esac
 
-  extract "$new" "$d/new" > "$d/new.idx"
+  extract "$new" "$d/new" > "$d/new.idx" || cannot "'$cap': cannot write the published requirement index."
 
   # 1. Every requirement the delta names landed as the delta wrote it, or is gone.
   while IFS=$'\t' read -r op name idx; do

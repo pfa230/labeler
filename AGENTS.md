@@ -440,6 +440,23 @@ gate that stops firing looks exactly like a gate that passes, and both of these 
 development. `.workflow/apply-tests.sh` does the same for `apply.sh`'s change resolution, through
 `--dry-run`, so no agent is launched. CI runs both. Change any of those scripts and run them.
 
+**Exit 2 means the commit could not be judged**, and both gate scripts now have it (#333). A base ref
+that does not resolve, a `git show` that fails on a path that is present, a commit naming a change
+while `openspec/changes/` is absent: each used to reach the permissive branch, because a failure
+nobody could see produced an empty requirement index, and an empty index reads exactly like a
+capability that had nothing to displace. Every requirement then compared against nothing and the check
+passed saying nothing at all. Existence is now asked of `git cat-file -e`, never inferred from `show`
+failing, and every working file the check writes is checked.
+
+The suites carry the other half, in `.workflow/suite-lib.sh`: around 250 fixture writes across the
+three of them, not one of which was checked. A write that fails leaves a case asserting against a file
+that was never written, and for a refusal case that reads as a gate which stopped firing, which is the
+one signature `gate-tests.sh` exists to detect. So each `setup()` proves the fixture it just built is
+on disk, and every assertion first proves the filesystem still takes a fixture-sized write. Either
+failing ends the run with **exit 3** and no verdict, because a suite that cannot build what it asserts
+against has nothing to report. `/tmp` here carries a per-user quota that `df` does not show, and under
+it `gate-tests.sh` once returned 40 passed, 13 failed with two refusals that never fired.
+
 The gates bound what they can see. A commit that skips OpenSpec entirely has no change folder, so
 nothing is checked; `--no-verify` skips the hook. Both are recorded in `docs/WORKFLOW.md` under what
 is not guaranteed.
