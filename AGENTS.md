@@ -58,15 +58,25 @@ exists; its scratch stays under `docs/superpowers/` (gitignored).
 
 ### Which changes go through it
 
-Behavior changes, and nothing else. The discriminator is the **spec delta**, and it needs no
-declaring: a behavior change always produces one, because the first-touch rule makes the first change
-to any documented behavior write the complete post-change contract as an `ADDED` requirement. A change
-with no delta has no contract to review, and the loop below has nothing to gate.
+Behavior changes, and nothing else. **Behavior means labeler's**: the API, the template schema, the
+layout model, the coordinates and the error contract, which is what `docs/SPEC.md` froze and what
+every capability under `openspec/specs/` names. The harness is not that, however much its own behavior
+changes. `.workflow/`, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, `.githooks/`, this file,
+`docs/WORKFLOW.md` and `openspec/config.yaml` say how a change gets made, not what the service does,
+and no capability under `openspec/specs/` is theirs to name. Every harness issue this repo has closed
+already went that way, #283 and #313 included, and not one produced a change folder.
 
-So a documentation fix, a workflow script, a CI change, a dependency bump or a refactor that keeps
-behavior identical goes: issue, worktree, the three gates, one commit with `Fixes #N`, push, merge. No
-change folder, no plan review, no `diff-review.md`. Nothing else relaxes: it still starts as an issue
-and still ends as one commit that closes it.
+The discriminator is the **spec delta**, and it needs no declaring: a change to labeler's behavior
+always produces one, because the first-touch rule makes the first change to any documented behavior
+write the complete post-change contract as an `ADDED` requirement. A change with no delta has no
+contract to review, and the loop below has nothing to gate.
+
+So a documentation fix, anything under the paths above, a CI change, a dependency bump or a refactor
+that keeps behavior identical goes: issue, worktree, the three gates, one commit with `Fixes #N`, push,
+merge. No change folder, no plan review, no `diff-review.md`. Nothing else relaxes: it still starts as
+an issue and still ends as one commit that closes it. It is also the lane a harness change wants on
+its merits: the loop's four agents review a contract under `openspec/specs/`, and a change to the
+loop itself writes none, so the plan review would be judging a proposal against nothing.
 
 A correction to a published spec under `openspec/specs/` is not that lane, however much it reads like
 a documentation fix. `archive-merge-check.sh:141` refuses a commit that changes a published spec with
@@ -75,8 +85,9 @@ arrives as a delta and a delta is what sends a change through the loop. What it 
 the deliverable is the delta itself, and the plan says so in one line, `DELIVERABLE: spec-only`
 (#313).
 
-Size decides nothing. A nine-line handler check that alters behavior is a full change; a five-hundred
-line documentation rewrite is not. There is no lane to declare, no criteria to qualify under and no
+Size decides nothing, and neither does effort. A nine-line handler check that alters behavior is a
+full change; a five-hundred line documentation rewrite is not, and neither is rewriting the driver
+end to end. There is no lane to declare, no criteria to qualify under and no
 step that promotes one to the other. Writing a delta is what makes a change one, and
 `review-gate-check.sh` demands a passing `review.md` from the moment a change folder exists, so
 discovering mid-work that you need a delta costs the review and nothing else.
