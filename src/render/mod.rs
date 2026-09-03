@@ -1221,16 +1221,7 @@ fn normalize_option<'a>(
             }
             Ok(option)
         }
-        None => {
-            if option.is_some() {
-                Err(AppError::invalid_request(
-                    Reason::OptionsNotSupported,
-                    "template does not support options",
-                ))
-            } else {
-                Ok(None)
-            }
-        }
+        None => Ok(None),
     }
 }
 

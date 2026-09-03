@@ -1218,10 +1218,10 @@ pub enum TemplateFormat {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RenderLabelRequest {
     pub template: String,
-    #[serde(flatten)]
-    pub label: LabelInput,
+    pub data: HashMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -1252,6 +1252,7 @@ pub struct BatchSummary {
 }
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LabelInput {
     pub data: HashMap<String, Value>,
 }
