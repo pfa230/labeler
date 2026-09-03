@@ -435,7 +435,15 @@ extracted=1
 if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
   extracted=0
   if [ -s "$raw" ]; then
-    agent_status="NO_ANSWER_IN_OUTPUT"
+    # NO_ANSWER_IN_OUTPUT is what this run could not do, not what went wrong. Where the
+    # tool said what went wrong, say that instead: #297 was filed on a stage whose only
+    # word was that a parser found nothing, and what it hid was opencode's own error
+    # event. A capture carrying no error still reports the shape (#297 into #315).
+    if agent_error_msg=$(agent_error "$agent" "$raw"); then
+      agent_status="AGENT_ERROR ($agent_error_msg)"
+    else
+      agent_status="NO_ANSWER_IN_OUTPUT"
+    fi
     cp "$raw" "$log"
   else
     agent_status="NO_OUTPUT"
@@ -464,6 +472,17 @@ echo "role: $role   agent: $agent   status: $agent_status   exit: $status"
 echo "changed the worktree: $produced"
 echo "tree: $after_tree"
 echo "log: $log"
+
+# A failed stage that says only that it failed is what #297 was filed on. Printed here,
+# beside the stage's own result and before every exit below, so it is read whichever one
+# this run takes. It offers a line to run and runs nothing: this script never changes the
+# model it was given, because the only model that would fix a spent allowance bills.
+if [ "$status" != "0" ] && advice=$(agent_stall_advice "$agent" "$raw"); then
+  echo
+  echo "-- $agent could not finish this stage ---------------------------------------"
+  printf '%s\n' "$advice"
+  echo "-----------------------------------------------------------------------------"
+fi
 
 # Who actually wrote the code. Appended here because this is the only place that knows both
 # the agent's name and whether its stage changed anything; every caller knows one or the
