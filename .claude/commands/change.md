@@ -1,6 +1,6 @@
 ---
 description: Run one accepted issue end to end on four named agents
-argument-hint: <issue#> <planner> <plan-reviewer> <implementer> <code-reviewer>
+argument-hint: <issue#> [<planner> <plan-reviewer> <implementer> <code-reviewer>]
 allowed-tools: Bash, Read, Write, AskUserQuestion
 ---
 
@@ -33,6 +33,12 @@ its turn ended, taking 15,127 lines of review with it (#275).
 run=$(.workflow/detach.sh /tmp/run-change-$1 .workflow/run-change.sh $ARGUMENTS)
 .workflow/detach.sh --wait "$run"
 ```
+
+The four agents are optional. Given the issue number alone, the driver reads them from
+`.workflow/roles.local`, which is gitignored because which CLIs are installed and authenticated is a
+property of this machine and not of labeler. Name all four or name none: a partial lineup is refused
+rather than topped up from the file, and a missing file is an error naming the path and printing the
+four keys, never a default the driver picked for itself.
 
 The launch prints a handle on stdout, which is the log file and what `--wait` takes; every launch gets
 its own. `detach.sh` puts the run in its own session (`setsid`, else `python3`'s `os.setsid()`, else `nohup`,
