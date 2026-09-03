@@ -32,6 +32,7 @@
 GATE_FMT_FAILED=1
 GATE_CLIPPY_FAILED=2
 GATE_TEST_FAILED=3
+GATE_UI_FAILED=4
 
 # Every line goes to the run's transcript AND to the gate log, because that log is what the
 # gate-fix prompt hands the implementer: a fixer told which failures are not its to fix
@@ -156,6 +157,21 @@ gate_base_commit() { # gate_base_commit <worktree>
   return 1
 }
 
+# Whether this change touches ui/. Two distinct questions: did the committed range
+# touch ui/, and does the working tree touch ui/. The first covers a change that has
+# already committed its ui/ edits; the second covers unstaged, staged and untracked
+# edits, which `status --porcelain` already reports. One `diff` against the base and
+# one `status` answer both. A fresh worktree has no ui/node_modules (gitignored), so
+# running the ui gate unconditionally would charge every Rust or harness change an
+# npm ci (#354).
+gate_ui_touches() { # gate_ui_touches <worktree> -> 0 if ui/ is touched
+  local wt="$1" base
+  base=$(gate_base_commit "$wt" 2>/dev/null) || base=""
+  if [ -n "$base" ] && git -C "$wt" diff --name-only "$base" HEAD -- ui/ 2>/dev/null | grep -q .; then return 0; fi
+  if git -C "$wt" status --porcelain -- ui/ 2>/dev/null | grep -q .; then return 0; fi
+  return 1
+}
+
 # The suite at the base commit, in a worktree that is NOT the one being written: the change
 # is uncommitted working state, so checking the base out over it would destroy the very
 # work being judged. Scratch lives outside the repository, so no .worktrees/ scan and no
@@ -214,6 +230,11 @@ gate_attribute() { # gate_attribute <worktree> <gates-exit> <gates-log> <base-lo
     "$GATE_CLIPPY_FAILED")
       gate_err "clippy failed. It is deterministic, and a pre-existing lint is not a thing this"
       gate_err "repo tolerates, so it is never measured against the base."
+      return 1 ;;
+    "$GATE_UI_FAILED")
+      gate_err "ui gate failed (npm run lint or npm test in ui/). It is deterministic, and a"
+      gate_err "pre-existing ui lint is not a thing this repo tolerates, so it is never measured"
+      gate_err "against the base."
       return 1 ;;
     *)
       gate_err "the gates failed before any test ran (exit $rc), so there is nothing to attribute."

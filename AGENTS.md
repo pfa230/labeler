@@ -103,7 +103,7 @@ implementation and archive rewrites the main specs *after* it.
 
 **Run it with `/change <issue#> [<planner> <plan-reviewer> <implementer> <code-reviewer>]`** (#283). That
 scopes the issue with the user, then hands every stage below to `.workflow/run-change.sh`, which runs
-them unattended through to a green branch run and stops there. **The issue body is the scope**: the
+them unattended through to the commit and stops there, printing the merge sequence. **The issue body is the scope**: the
 driver writes it to `.agent-runs/issue-<N>.md` in the worktree and the planner works from that file,
 so a vague issue produces a vague plan and refining it is the point of the scoping stage. The four agents are named up front
 because the pairing is the guarantee: nobody reviews their own plan, and nobody reviews their own code.
@@ -298,9 +298,9 @@ The steps below are what those stages mean. Read them to understand the loop or 
 5. **`/opsx:archive`**, always syncing every delta into `openspec/specs/`. Archive is advisory and
    will offer to skip the sync or accept unchecked tasks; both are forbidden here. Out-of-scope tasks
    get cut and filed as issues.
-6. **Verify** with the three cargo gates, then one commit covering code, specs, and the archived
-   change, with `Fixes #N`. Push the branch and wait for its run. `run-change.sh` does all of this and
-   stops there: the merge into `main` is the one step a person approves, and by then it is mechanical.
+6. **Verify** with the gates, then one commit covering code, specs, and the archived change,
+   with `Fixes #N`. `run-change.sh` does all of this and stops there, printing the merge sequence:
+   the merge into `main` is the one step a person approves, and by then it is mechanical.
    A gate failure gets the implementer one resumed round with the output, and a second failure stops
    the run, because a lint is what an unattended round should absorb and a second failure is a defect.
 
@@ -526,20 +526,22 @@ a change's worktree, and never carry one change's worktree into another's work.
 
 ## Committing
 
-Commit and push without prompting; do not wait to be asked. There are no pull requests, so the change
-branch is the only place a change can be checked before it reaches `main`:
+Commit without prompting; do not wait to be asked. There are no pull requests. The driver ends at the
+commit and prints the merge sequence; nothing is pushed and no branch run is waited for:
 
 ```bash
 git rebase origin/main                  # only if main moved; never `git merge main`
-git push -u origin issue-<N>-<slug>     # runs the checks; publishing stays bound to main
-# once that run is green, from the repo root:
+# the driver commits with Fixes #N, then from the repo root:
 git merge --ff-only issue-<N>-<slug> && git push
-git push origin --delete issue-<N>-<slug>
 git worktree remove .worktrees/issue-<N> && git branch -d issue-<N>-<slug>
+# No `git push origin --delete`: the branch was never pushed, so no remote ref to delete.
 ```
 
-Do not merge on a red or absent branch run. CI on `main` is not a gate, it is a post-mortem: by the
-time it fails, the commit is already integrated.
+What is given up is a check on a clean machine before the commit lands. A broken commit surfaces on
+`main`'s own CI run instead, which is a post-mortem: by the time it fails, the commit is already
+integrated. That is acceptable here because publishing is already gated where it matters: `build`
+needs `[rust, ui]` and runs only on `main` or a tag (`ci.yml:155-158`), so a broken commit ships
+nothing until it is fixed forward.
 
 **A change branch rebases onto `main`; it never merges `main` into itself** (#341). A back-merge
 records that a branch outlived `main` and nothing else: of the 163 merges on `main`, 35 bring `main`
@@ -557,9 +559,7 @@ issue branches merged, 24 held one commit and 6 held two, so the bubble was wrap
 `--no-ff` stays for a branch whose boundary says something, which is what the milestone merges did.
 
 **Never rewrite `main`, or any ref another session consumes.** That is the whole scope of the rule, and
-a change branch is outside it: it is pushed to earn one run, nothing is based on it, and it is deleted
-at integration. Rebase it and push with `--force-with-lease --force-if-includes`, never a bare
-`--force`, so a push that would discard something you have not seen fails instead.
+a change branch is outside it: it is committed locally and deleted once merged.
 
 Rebase *before* the diff review wherever `main` has already moved, so the tree the reviewer approved is
 the tree that lands. A rebase after that review is a post-review write to `src/` with an author and no

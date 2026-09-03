@@ -6,9 +6,9 @@
 #   .workflow/run-change.sh 283 claude codex agy codex
 #   .workflow/run-change.sh 283                  # the four roles from .workflow/roles.local
 #
-# Worktree, plan, plan review, implementation, diff review, archive, the three cargo
-# gates, the commit and the push, stopping when the branch run is green. It never
-# merges to main: that is the one step a person approves, and by then it is mechanical.
+# Worktree, plan, plan review, implementation, diff review, archive, the gates and
+# the commit, printing the merge commands and stopping. It never merges to main: that
+# is the one step a person approves, and by then it is mechanical.
 #
 # The four agents are named first because the pairing is the guarantee, exactly as in
 # apply.sh: the model that writes a plan is never the one that judges it, and neither
@@ -22,13 +22,12 @@
 # follow: inspect files, never trust a record of who did what.
 #
 # Exit codes:
-#   0  green: the branch run passed, and the merge commands are printed
+#   0  committed, and the merge commands are printed
 #   1  a stage failed
 #   2  bad arguments
 #   6  a loop hit its round cap; the findings want a person, not another round
 #   8  a stage wrote QUESTIONS.md and stopped rather than guess. Answer them in
 #      ANSWERS.md at the worktree root and re-run; every stage reads that file
-#   9  the branch CI run was red, or never appeared
 #  11  the gate fix edited code, and the review of that edit came back REVISE (#328).
 #      A gate fix is one unattended round on a lint; findings against it are a defect,
 #      which is what the second gate failure above already stops for
@@ -571,6 +570,25 @@ run_gates() {
     # after the first failing test binary, so a regression in a later one would sit behind
     # a pre-existing failure in an earlier one and be subtracted away unseen.
     cargo test --no-fail-fast || exit "$GATE_TEST_FAILED"
+    # The ui gate runs only when this change touches ui/. Most changes here are Rust or
+    # harness, and ui/node_modules is gitignored so a fresh worktree has none; running it
+    # unconditionally would charge every change an npm ci (#354). Decided from both the
+    # committed range against the base and the uncommitted tree.
+    if gate_ui_touches "$wt"; then
+      if ! command -v npm >/dev/null 2>&1; then
+        echo "ui gate: npm is not on PATH; install Node (see .nvmrc) and run 'npm ci' in ui/" >&2
+        exit "$GATE_UI_FAILED"
+      fi
+      if [ ! -d "ui/node_modules" ]; then
+        echo "ui gate: ui/node_modules is missing; running 'npm ci' in ui/" >&2
+        (cd ui && npm ci) || {
+          echo "ui gate: npm ci failed; run 'npm ci' in ui/ and retry" >&2
+          exit "$GATE_UI_FAILED"
+        }
+      fi
+      (cd ui && npm run lint) || exit "$GATE_UI_FAILED"
+      (cd ui && npm test) || exit "$GATE_UI_FAILED"
+    fi
   ) > "$gates_log" 2>&1
 }
 # One attempt at the gates and what its failure means. Zero when this change is clear:
@@ -724,35 +742,16 @@ if [ -n "$(git -C "$wt" status --porcelain)" ]; then
   stage_done commit-msg
 fi
 
-# --- stage 6: push, and the branch run --------------------------------------------
-# CI on the branch is the last check before a person is asked for anything. On main it
-# would be a post-mortem: by then the commit is already integrated.
+# --- stage 6: the merge -------------------------------------------------------
+# The driver ends at the commit. Nothing is pushed and no branch run is waited for:
+# that run cost three to four minutes and bought almost nothing the local gates had not
+# already checked, and a broken commit ships nothing because build needs [rust, ui] and
+# runs only on main or a tag (#354). A clean-machine difference grounded in harness is
+# the one class it did catch, gating no publish.
 # The last point at which an unapplied answer can still be caught: gate-fix runs only if
 # the gates failed, and commit-msg only if there was something to commit, so either can
 # be skipped on a run that is otherwise fine.
 if [ -n "$force_stage" ]; then stranded; fi
-say "push: $branch"
-git -C "$wt" push -u origin "$branch" || { echo "the push failed; stopping." >&2; exit 1; }
-
-command -v gh >/dev/null 2>&1 || { echo "gh is not on PATH; cannot watch the branch run." >&2; exit 9; }
-# Matched on the pushed commit, not merely on the branch. A branch that ran before now
-# has an older run, and taking the newest one before this push registers reports that
-# run's result: a stale green would print the merge commands for untested code.
-head_sha=$(git -C "$wt" rev-parse HEAD)
-run_id=""
-for _ in $(seq 1 30); do
-  run_id=$(gh run list --branch "$branch" --limit 20 --json databaseId,headSha \
-    -q "[.[] | select(.headSha == \"$head_sha\")] | .[0].databaseId" 2>/dev/null)
-  [ -n "$run_id" ] && [ "$run_id" != "null" ] && break
-  run_id=""
-  sleep 10
-done
-[ -n "$run_id" ] || { echo "no CI run appeared for $head_sha on $branch within five minutes." >&2
-  echo "Do not merge on an absent run; find out why it did not start." >&2; exit 9; }
-say "branch run $run_id"
-gh run watch "$run_id" --exit-status || { echo "the branch run is red. Do not merge; fix it and re-run." >&2; exit 9; }
-
-say "green"
 
 # Which sequence to print depends on whether main has moved, and that is the only case
 # where it matters. A plain `git merge` fast-forwards when it can and builds a merge commit
@@ -779,27 +778,27 @@ fi
 [ -n "$caveat" ] && caveat="
 WARNING: $caveat
 "
+# No `git push origin --delete $branch`: the branch was never pushed, so there is
+# no remote ref to delete. `merge --ff-only` pushes main, `worktree remove` and
+# `branch -d` clean up the local worktree and branch (#354).
 if [ "$behind" = yes ]; then
   cat <<EOF
-Issue #$issue is committed, pushed and green on $branch. Nothing has reached main.
+Issue #$issue is committed on $branch. Nothing has reached main.
 $caveat
 main has moved past this branch, so it will not fast-forward, and a change branch does not
-merge main into itself (#341). Rebase it:
+merge main into itself (#341). Rebase it and then fast-forward:
 
   git -C "$wt" rebase origin/main
-  git -C "$wt" push --force-with-lease --force-if-includes
-
-Then re-run this driver. That rebase edits the tree after the diff review approved it, and
-the branch run above judged the commit it replaces, so neither the review nor the run you
-have covers what would land. Nothing records that edit yet; #342 is where it would go.
+  git -C "$root" fetch origin
+  git -C "$root" merge --ff-only $branch && git -C "$root" push
+  git -C "$root" worktree remove $wt && git -C "$root" branch -d $branch
 EOF
 else
   cat <<EOF
-Issue #$issue is committed, pushed and green on $branch. Nothing has reached main.
+Issue #$issue is committed on $branch. Nothing has reached main.
 $caveat
   git -C "$root" fetch origin
   git -C "$root" merge --ff-only $branch && git -C "$root" push
-  git -C "$root" push origin --delete $branch
   git -C "$root" worktree remove $wt && git -C "$root" branch -d $branch
 EOF
 fi

@@ -3,9 +3,9 @@ name: CI
 on:
   pull_request:
   push:
-    # issue-** gives change branches a real pre-merge run. This repo does not use
-    # pull requests, so without it nothing is validated until it is already on main.
-    branches: [main, 'issue-**']
+    # Change branches are not run here; the driver ends at the commit and the
+    # validation that would have run on the branch surfaces on main instead.
+    branches: [main]
     tags: ['v*.*.*']
 
 concurrency:

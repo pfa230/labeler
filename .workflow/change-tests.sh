@@ -2169,8 +2169,8 @@ else bad "fmt ran as: $(tr '\n' '|' < "$FMT_SINK")"; fi
 if printf '%s' "$out" | grep -q 'predate this change'; then
   ok "the driver names the failures it is not stopping for"
 else bad "the driver said nothing about a wholly pre-existing failure set"; fi
-if printf '%s' "$out" | grep -q '^== push' && ! printf '%s' "$out" | grep -q 'gets one round'; then
-  ok "and goes on to the push without spending the fix round"
+if printf '%s' "$out" | grep -q 'is committed' && ! printf '%s' "$out" | grep -q 'gets one round'; then
+  ok "and goes on to the commit without spending the fix round"
 else bad "a change whose failures all predate it did not get past the gates"; fi
 teardown
 
@@ -2182,8 +2182,8 @@ out=$(drive_gates 54 "$cfail" "$bfail")
 if printf '%s' "$out" | grep -q 'render::tests::flips_y' && printf '%s' "$out" | grep -q 'do not fail at'; then
   ok "a test this change broke still stops the driver, by name"
 else bad "a regression alongside a pre-existing failure was not named"; fi
-if ! printf '%s' "$out" | grep -q '^== push'; then ok "and nothing is pushed"
-else bad "a change that broke a test reached the push"; fi
+if ! printf '%s' "$out" | grep -q 'is committed'; then ok "and nothing is committed"
+else bad "a change that broke a test reached the commit"; fi
 find "$cfail" "$bfail" "$ARGS_SINK" "$FMT_SINK" -mindepth 0 -delete 2>/dev/null
 unset ARGS_SINK FMT_SINK
 teardown
@@ -2813,102 +2813,126 @@ else bad "a reviewer was launched with nothing new to judge"; fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 
-# --- what the driver tells you to run at the end of it (#346) ---------------------
-# Inside the pty block, and not beside it: green_run calls seed_archived and reads
-# $approved, and both are defined under that guard. Outside it, a shell with no terminal
-# reaches an undefined function and the two cases below fail for a reason that has nothing
-# to do with the driver.
-# The last thing a green run prints is the only part of it a person acts on by hand, and
-# no case asserted it. It printed a plain `git merge`, which fast-forwards when it can and
-# builds a merge commit when it cannot, so on the one occasion it mattered it recommended
-# the shape #341 removed. Both branches of the answer are asserted, because the wrong one
-# is silent: a merge on main is allowed by the hooks, so nothing downstream would refuse
-# what the message advised.
-green_run() { # green_run <issue> <slug> <behind: yes|no> -> the driver's output
-  # Split, not one `local`: under set -u a later assignment in the same declaration cannot
-  # read an earlier one, and `name="issue-$n-$slug"` beside `n="$1"` fails on the unbound n.
-  local n="$1" slug="$2" behind="$3"
-  local name="issue-$n-$slug" bare out
-  add_change "$name"
-  seed_archived "issue-$n" "$name" "$approved" > /dev/null
-  bare=$(mktemp -d) || fatal "cannot create the fixture's bare remote."
-  # The bare's HEAD is named for the reason setup()'s is: init.defaultBranch belongs to
-  # whoever runs this, and a fixture that inherits it diverges from the invariant the rest
-  # of the suite enforces.
-  git init -q --bare "$bare" && git -C "$bare" symbolic-ref HEAD refs/heads/main \
-    || fatal "cannot init the fixture's bare remote on a branch named main."
-  git -C "$repo" remote add origin "$bare" || fatal "cannot add the fixture's origin."
-  # nomain leaves the remote without the ref the question is asked of, which is the case
-  # that used to answer "not behind" and print a fast-forward onto nothing.
-  [ "$behind" = nomain ] || git -C "$repo" push -q origin main \
-    || fatal "cannot seed the fixture's remote main."
-  if [ "$behind" = yes ]; then
-    # main moves after the branch was cut, which is the whole condition being read.
-    printf 'later\n' > "$repo/later.txt"
-    git -C "$repo" add -A && git -C "$repo" commit -qm "main moves on" \
-      && git -C "$repo" push -q origin main || fatal "cannot move the fixture's remote main."
-  fi
-  bin=$(mktemp -d); seed_bin "$bin"
-  # A gh that answers the two calls the push stage makes and no others, so the scope file
-  # is still read from the cache the way every other case here reads it.
-  cat > "$bin/gh" <<'FAKE'
-#!/usr/bin/env bash
-case "$1 ${2:-}" in
-  "run list")  echo 4242 ;;
-  "run watch") exit 0 ;;
-  *) exit 1 ;;
-esac
-FAKE
-  cat > "$bin/agy" <<'FAKE'
+# --- what the driver tells you to run at the end of it (#354) ---------------------
+# The driver ends at the commit. The only thing a person acts on is the merge sequence
+# it prints. No branch is pushed and no branch run is waited for.
+if [ "$pty_available" = "1" ]; then
+setup
+# A fixture that reaches the gates stage, with a stubbed cargo and an agy stub that
+# writes .agent-runs/commit-msg.txt. The driver should commit, print the merge
+# sequence, push nothing, and exit 0. Pushing is asserted by the absence of the
+# branch on the bare remote, not merely by the message looking right.
+# Fails if: driver re-adds `git push -u origin` or prints `push origin --delete`,
+# or omits `merge --ff-only`, or exits non-zero.
+add_change issue-70-end
+a70=$(seed_archived issue-70 issue-70-end "$approved" 2>/dev/null)
+bare=$(mktemp -d) || fatal "cannot create the fixture's bare remote."
+git init -q --bare "$bare" && git -C "$bare" symbolic-ref HEAD refs/heads/main \
+  || fatal "cannot init the fixture's bare remote on a branch named main."
+git -C "$repo" remote add origin "$bare" || fatal "cannot add the fixture's origin."
+git -C "$repo" push -q origin main || fatal "cannot seed the fixture's remote main."
+bin=$(mktemp -d); seed_bin "$bin"
+cat > "$bin/agy" <<'FAKE'
 #!/usr/bin/env bash
 printf 'a message\n' > .agent-runs/commit-msg.txt
 echo '{"conversation_id":"c-1","status":"COMPLETED","response":"written"}'
 FAKE
-  chmod +x "$bin/gh" "$bin/agy"
-  out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" "$n" claude codex agy codex 2>&1)
-  find "$bin" -mindepth 0 -delete 2>/dev/null
-  find "$bare" -mindepth 0 -delete 2>/dev/null
-  printf '%s\n' "$out"
-}
-
-setup
-out=$(green_run 70 uptodate no)
-if printf '%s' "$out" | grep -q 'merge --ff-only issue-70-uptodate'; then
-  ok "a green run whose main has not moved is told to fast-forward"
-else bad "the driver printed no --ff-only merge: $(printf '%s' "$out" | tail -4 | tr '\n' ' ')"; fi
-# A --ff-only against a stale remote-tracking ref answers about a main that has moved since,
-# so the fetch is half of the instruction and is asserted as such, in order.
-ff_at=$(printf '%s\n' "$out" | grep -n 'merge --ff-only' | head -1 | cut -d: -f1)
-fetch_at=$(printf '%s\n' "$out" | grep -n 'fetch origin$' | head -1 | cut -d: -f1)
-if [ -n "$ff_at" ] && [ -n "$fetch_at" ] && [ "$fetch_at" -lt "$ff_at" ]; then
-  ok "and to fetch first, so the fast-forward is decided against the real main"
-else bad "no 'fetch origin' precedes the --ff-only merge (fetch at '${fetch_at:-none}', merge at '${ff_at:-none}')"; fi
-# Issue-number free, so the guard does not need editing per case: any printed git command
-# whose merge argument is not an option is the bare merge this change removed.
-if ! printf '%s\n' "$out" | grep -qE '^ *git .*merge [^-]'; then
-  ok "and never a bare git merge, which would build the bubble on the day it matters"
-else bad "the driver still printed a plain git merge: $(printf '%s\n' "$out" | grep -E '^ *git .*merge [^-]' | head -1)"; fi
+chmod +x "$bin/agy"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" 70 claude codex agy codex 2>&1); rc=$?
+if [ "$rc" = "0" ]; then ok "a committed run exits 0 having pushed nothing"; else bad "a committed run exited $rc"; fi
+if printf '%s' "$out" | grep -q 'merge --ff-only issue-70-end'; then
+  ok "and is told to fast-forward on the merge sequence"
+else bad "the driver printed no --ff-only merge: $(printf '%s' "$out" | tail -6 | tr '\n' ' ')"; fi
+if printf '%s' "$out" | grep -q 'push origin --delete'; then
+  bad "the driver still prints push origin --delete, which always fails now"
+else
+  ok "and never prints push origin --delete"
+fi
+# Pushed nothing: the branch exists locally but not on the bare remote. A message that
+# looks right while the branch was still pushed would pass a grep but is the silent
+# failure this asserts against.
+if git -C "$bare" show-ref --verify --quiet refs/heads/issue-70-end 2>/dev/null; then
+  bad "the branch was pushed to origin but should have stayed local"
+else
+  ok "and the branch stayed local, not pushed to origin"
+fi
+# Committed: the worktree has the new commit.
+if git -C "$repo/.worktrees/issue-70" log -1 --pretty=%B 2>/dev/null | grep -q "Fixes #70"; then
+  ok "and the commit landed in the worktree"
+else
+  bad "no commit for issue-70 in the worktree"
+fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+find "$bare" -mindepth 0 -delete 2>/dev/null
 teardown
 
 setup
-out=$(green_run 71 behind yes)
+# Behind branch: main moved past the change after it was cut. The driver must tell
+# the operator to rebase, not to merge, and must still not print a remote-branch
+# delete (nothing was pushed). Fails if: driver omits `rebase origin/main`, or prints
+# a bare `git merge` without --ff-only, or reintroduces `push origin --delete`.
+add_change issue-71-behind
+a71=$(seed_archived issue-71 issue-71-behind "$approved" 2>/dev/null)
+bare=$(mktemp -d) || fatal "cannot create the fixture's bare remote."
+git init -q --bare "$bare" && git -C "$bare" symbolic-ref HEAD refs/heads/main \
+  || fatal "cannot init the fixture's bare remote on a branch named main."
+git -C "$repo" remote add origin "$bare" || fatal "cannot add the fixture's origin."
+git -C "$repo" push -q origin main || fatal "cannot seed the fixture's remote main."
+# main moves after the branch was cut
+printf 'later\n' > "$repo/later.txt"
+git -C "$repo" add -A && git -C "$repo" commit -qm "main moves on" && git -C "$repo" push -q origin main || fatal "cannot move the fixture's remote main."
+bin=$(mktemp -d); seed_bin "$bin"
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf 'a message\n' > .agent-runs/commit-msg.txt
+echo '{"conversation_id":"c-1","status":"COMPLETED","response":"written"}'
+FAKE
+chmod +x "$bin/agy"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" 71 claude codex agy codex 2>&1); rc=$?
 if printf '%s' "$out" | grep -q 'rebase origin/main'; then
-  ok "a green run whose main has moved is told to rebase, not to merge"
-else bad "the driver printed no rebase: $(printf '%s' "$out" | tail -4 | tr '\n' ' ')"; fi
-if ! printf '%s' "$out" | grep -q 'merge --ff-only'; then
-  ok "and is not also handed a fast-forward that cannot happen"
-else bad "the driver offered a fast-forward to a branch main has moved past"; fi
+  ok "a behind branch is told to rebase origin/main"
+else bad "a behind branch printed no rebase: $(printf '%s' "$out" | tail -6 | tr '\n' ' ')"; fi
+if printf '%s' "$out" | grep -q 'push origin --delete'; then
+  bad "a behind branch still prints push origin --delete"
+else
+  ok "and still never prints push origin --delete"
+fi
+if printf '%s' "$out" | grep -q 'merge --ff-only issue-71-behind'; then
+  ok "and is then told to fast-forward the rebased branch"
+else bad "a behind branch printed no --ff-only merge after rebase: $(printf '%s' "$out" | tail -6 | tr '\n' ' ')"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+find "$bare" -mindepth 0 -delete 2>/dev/null
 teardown
 
-# The question is asked of origin/main, and without it there is no answer. Printing the
-# permissive one silently is what the repo forbids everywhere else, so it is said out loud
-# and said on stdout, beside the commands, rather than on a stderr line scrolled past.
 setup
-out=$(green_run 72 nomain nomain)
+# No origin/main: the bare remote has no main, so whether main moved cannot be read.
+# The driver must say so in a WARNING alongside the commands, not silently assume
+# not-behind. Fails if: driver omits the `origin/main does not resolve` caveat.
+add_change issue-72-nomain
+a72=$(seed_archived issue-72 issue-72-nomain "$approved" 2>/dev/null)
+bare=$(mktemp -d) || fatal "cannot create the fixture's bare remote."
+git init -q --bare "$bare" && git -C "$bare" symbolic-ref HEAD refs/heads/main \
+  || fatal "cannot init the fixture's bare remote on a branch named main."
+git -C "$repo" remote add origin "$bare" || fatal "cannot add the fixture's origin."
+# Do not push main, so origin/main does not resolve
+bin=$(mktemp -d); seed_bin "$bin"
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf 'a message\n' > .agent-runs/commit-msg.txt
+echo '{"conversation_id":"c-1","status":"COMPLETED","response":"written"}'
+FAKE
+chmod +x "$bin/agy"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" 72 claude codex agy codex 2>&1); rc=$?
 if printf '%s' "$out" | grep -q 'origin/main does not resolve'; then
-  ok "a green run that cannot read origin/main says so where the commands are"
-else bad "the driver decided silently: $(printf '%s' "$out" | tail -4 | tr '\n' ' ')"; fi
+  ok "a run with no origin/main warns that it could not be read"
+else bad "a run with no origin/main printed no warning: $(printf '%s' "$out" | tail -6 | tr '\n' ' ')"; fi
+if printf '%s' "$out" | grep -q 'merge --ff-only issue-72-nomain'; then
+  ok "and still prints the merge sequence"
+else bad "a nomain run printed no merge sequence: $(printf '%s' "$out" | tail -6 | tr '\n' ' ')"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+find "$bare" -mindepth 0 -delete 2>/dev/null
 teardown
+fi
 fi
 
 # The guard on this suite's own fixtures.
