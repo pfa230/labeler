@@ -1,13 +1,16 @@
 ---
 description: Implement a change on one agent and review it on another until it passes
-argument-hint: <implementer> <reviewer> [change]
+argument-hint: [<implementer> <reviewer>] [change]
 allowed-tools: Bash
 ---
 
 Run `.workflow/apply.sh $ARGUMENTS` in the background; it takes many minutes.
 
 The pair is named first because that is the guarantee: the model writing the code is never the model
-judging it. The change comes last and is optional. Left out, the script resolves the one in flight,
+judging it. It is also optional: left out, both roles come from the gitignored
+`.workflow/roles.local`, which records which CLIs work on this machine. Name both or name neither,
+and note that with neither named a lone argument is the *change*, not the implementer. The change
+comes last and is optional. Left out, the script resolves the one in flight,
 from the worktree you are in or from the single one across `.worktrees/`, and prints what it picked
 before doing anything; with several in flight it refuses and lists them rather than guessing. Pass
 `--rounds N` to change the three-round cap and `--dry-run` to see what it would do.

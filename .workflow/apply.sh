@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Implement a change on one agent, review it on another, loop until it passes.
 #
-#   .workflow/apply.sh <implementer> <reviewer> [change] [--rounds N] [--dry-run]
+#   .workflow/apply.sh [<implementer> <reviewer>] [change] [--rounds N] [--dry-run]
 #   .workflow/apply.sh agy codex                  # resolves the change from the worktree
 #   .workflow/apply.sh agy codex issue-123-thing  # or name it
+#   .workflow/apply.sh                            # the pair from .workflow/roles.local
+#   .workflow/apply.sh issue-123-thing            # that file, and a named change
 #
 # The pair is the point, and it is named first for that reason: the model that
 # writes the code is never the model that judges it (#224). The change comes last
@@ -33,10 +35,17 @@
 # apart; that is a person's call, which is why this stops for one.
 set -uo pipefail
 
-usage='usage: apply.sh <implementer> <reviewer> [change] [--rounds N] [--dry-run]'
+usage='usage: apply.sh [<implementer> <reviewer>] [change] [--rounds N] [--dry-run]'
 here=$(cd "$(dirname "$0")" && pwd)
+. "$here/agents.sh"
 
+# POSITIONALS ARE COLLECTED FIRST AND CLASSIFIED AFTER (#330). Once the pair may come
+# from .workflow/roles.local, a lone positional is the CHANGE and not an implementer,
+# and only the whole list says which reading applies. Assigning in order as they arrive
+# would silently resolve a change name into an agent, which nothing downstream catches:
+# this script has never called agent_known.
 implementer=""; reviewer=""; change=""; max_rounds=3; dry_run=0
+pos=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --rounds) max_rounds="${2:?--rounds needs a number}"; shift 2 ;;
@@ -44,17 +53,38 @@ while [ "$#" -gt 0 ]; do
     --dry-run) dry_run=1; shift ;;
     -h|--help) echo "$usage"; exit 0 ;;
     -*) echo "unknown option: $1" >&2; echo "$usage" >&2; exit 2 ;;
-    *)
-      if   [ -z "$implementer" ]; then implementer="$1"
-      elif [ -z "$reviewer" ];    then reviewer="$1"
-      elif [ -z "$change" ];      then change="$1"
-      else echo "too many arguments: $1" >&2; echo "$usage" >&2; exit 2; fi
-      shift ;;
+    *) pos[${#pos[@]}]="$1"; shift ;;
   esac
 done
 
-[ -n "$implementer" ] || { echo "$usage" >&2; exit 2; }
-[ -n "$reviewer" ] || { echo "reviewer required, e.g. codex" >&2; echo "$usage" >&2; exit 2; }
+case "${#pos[@]}" in
+  0) ;;
+  1) # An agent alone is the half-configured lineup this refuses, not a change named
+     # after a CLI: change names are issue-<N>-<slug>, so the two never collide.
+     if agent_known "${pos[0]}"; then
+       echo "one agent named, '${pos[0]}'. This takes both or neither." >&2
+       echo "Naming the implementer here and taking the reviewer from" >&2
+       echo "$(roles_path "$here") is a half-configured pair, so it is refused." >&2
+       echo "$usage" >&2; exit 2
+     fi
+     change="${pos[0]}" ;;
+  2) implementer="${pos[0]}"; reviewer="${pos[1]}" ;;
+  3) implementer="${pos[0]}"; reviewer="${pos[1]}"; change="${pos[2]}" ;;
+  *) echo "too many arguments: ${pos[3]}" >&2; echo "$usage" >&2; exit 2 ;;
+esac
+
+# roles_from is what every validation below blames: empty means the command line, a path
+# means the file. A value read from a file is not fixed by reading a usage line.
+roles_from=""
+if [ -z "$implementer" ]; then
+  roles_from=$(roles_path "$here")
+  roles_load "$roles_from" || exit 2
+  implementer="$ROLE_IMPLEMENTER"; reviewer="$ROLE_CODE_REVIEWER"
+fi
+role_stop() { # role_stop <key> - the closing line of a failed role validation
+  if [ -n "$roles_from" ]; then echo "Fix '$1' in $roles_from." >&2
+  else echo "$usage" >&2; fi
+}
 
 case "$max_rounds" in ''|*[!0-9]*) echo "--rounds takes a number, got '$max_rounds'" >&2; exit 2 ;; esac
 [ "$max_rounds" -ge 1 ] || { echo "--rounds must be at least 1" >&2; exit 2; }
@@ -62,14 +92,18 @@ case "$max_rounds" in ''|*[!0-9]*) echo "--rounds takes a number, got '$max_roun
 if [ "$implementer" = "$reviewer" ]; then
   echo "implementer and reviewer must differ: both are '$implementer'." >&2
   echo "Nobody reviews their own work; that is the entire reason this takes two names." >&2
-  exit 2
+  role_stop code-reviewer; exit 2
 fi
-. "$here/agents.sh"
 agent_resumable "$implementer" || {
   echo "$implementer cannot be resumed, so it cannot be the implementer here." >&2
   echo "Every fix round continues the session that wrote the code; an agent that cannot" >&2
   echo "be resumed would either start over or stop at the first REVISE." >&2
-  exit 2; }
+  role_stop implementer; exit 2; }
+
+# Announced only once both roles have passed, so a lineup that is about to be refused is
+# never reported as the one in use.
+[ -z "$roles_from" ] || printf 'roles: %s implements, %s reviews (from %s)\n' \
+  "$implementer" "$reviewer" "$roles_from"
 
 # The main checkout, not whichever worktree we were called from: --show-toplevel
 # answers the latter, and .worktrees/ hangs off the former.
@@ -172,7 +206,7 @@ if [ -f "$ledger" ] && tr '[:upper:]' '[:lower:]' < "$ledger" \
   echo "$reviewer wrote part of $change: the author ledger at $ledger names it." >&2
   echo "Nobody reviews their own work, and the landing gate refuses a diff-review.md whose" >&2
   echo "REVIEWER is among its AUTHORS. Name a reviewer that wrote none of this." >&2
-  exit 2
+  role_stop code-reviewer; exit 2
 fi
 
 if [ "$dry_run" = "1" ]; then
