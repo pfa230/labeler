@@ -19,8 +19,9 @@ const MAX_COPIES = 100;
 const clampCopies = (n: number) => Math.max(MIN_COPIES, Math.min(MAX_COPIES, Math.floor(Number.isFinite(n) ? n : 1)));
 
 // Every entry publishing a default is seeded from it and arrives deferred: the template decides it
-// until an operator says otherwise. An entry publishing none is absent from both maps, which is not
-// the same as holding an empty value or a `false` deferral.
+// until an operator says otherwise. An undefaulted list entry seeds an empty array into data so the
+// untouched editor is submittable, without being deferred. Any other entry publishing no default is
+// absent from both maps, which is not the same as holding an empty value or a `false` deferral.
 function initialFieldState(inputs: InputSpec[]): Pick<FormValue, "data" | "deferred"> {
   const data: Record<string, ParamValue> = {};
   const deferred: Record<string, boolean> = {};
@@ -28,27 +29,38 @@ function initialFieldState(inputs: InputSpec[]): Pick<FormValue, "data" | "defer
     if (input.default !== undefined && input.default !== null) {
       setOwnKey(data, input.name, seedDefaultValue(input));
       setOwnKey(deferred, input.name, true);
+    } else if (input.control === "list") {
+      setOwnKey(data, input.name, []);
     }
   }
   return { data, deferred };
 }
 
-// Deferral follows the entry, not the position. An entry a later list brings in for the first time
-// is seeded and deferred here, exactly as one present at first paint; an entry already known keeps
-// whatever value and deferral it had, which is what restores them when it returns.
+// Deferral and initial values follow the entry, not the position. An entry a later list brings in
+// for the first time is seeded (and deferred if defaulted) here, exactly as one present at first
+// paint; an undefaulted list entry seeds [] without deferral. An entry already known keeps whatever
+// value and deferral it had, which is what restores them when it returns.
 function withArrivals(value: FormValue, inputs: InputSpec[]): FormValue {
   let data = value.data;
   let deferred = value.deferred;
   for (const input of inputs) {
-    if (input.default === undefined || input.default === null) continue;
-    if (hasOwnKey(deferred, input.name)) continue;
-    if (deferred === value.deferred) deferred = { ...deferred };
-    setOwnKey(deferred, input.name, true);
-    if (hasOwnKey(data, input.name)) continue;
-    if (data === value.data) data = { ...data };
-    setOwnKey(data, input.name, seedDefaultValue(input));
+    if (input.default !== undefined && input.default !== null) {
+      if (hasOwnKey(deferred, input.name)) continue;
+      if (deferred === value.deferred) deferred = { ...deferred };
+      setOwnKey(deferred, input.name, true);
+      if (hasOwnKey(data, input.name)) continue;
+      if (data === value.data) data = { ...data };
+      setOwnKey(data, input.name, seedDefaultValue(input));
+    } else if (input.control === "list") {
+      if (hasOwnKey(data, input.name)) continue;
+      if (data === value.data) data = { ...data };
+      setOwnKey(data, input.name, []);
+    }
   }
-  return deferred === value.deferred ? value : { ...value, data, deferred };
+  // If neither deferral nor data changed (e.g. all arriving entries were already known), return the
+  // previous value object by reference to avoid triggering an unnecessary re-render. Both maps must
+  // match reference equality because undefaulted list arrivals modify data without touching deferred.
+  return deferred === value.deferred && data === value.data ? value : { ...value, data, deferred };
 }
 
 export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: boolean }) {
@@ -112,7 +124,6 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   const valid =
     !inputsPending &&
     inputs.every((input) => {
-      if (input.control === "list") return true;
       if (!input.required) return true;
       const current = getOwnKey(form.data, input.name);
       return current !== undefined && current !== "" && current !== null;

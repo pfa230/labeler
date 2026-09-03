@@ -435,6 +435,13 @@ describe("PrintForm deferring to a declared default", () => {
     return mock;
   }
 
+  const firstInputsData = () => {
+    const call = fetchMock.mock.calls.find(
+      ([u]) => String(u).startsWith("/api/templates/") && String(u).includes("/inputs"),
+    );
+    return JSON.parse((call![1] as RequestInit).body as string).labels[0].data as Record<string, unknown>;
+  };
+
   const lastInputsData = () => {
     const call = [...fetchMock.mock.calls]
       .reverse()
@@ -759,6 +766,206 @@ describe("PrintForm deferring to a declared default", () => {
     const input = (await screen.findByLabelText("event_time")) as HTMLInputElement;
     expect(input.value).toBe("2026-03-24T00:00");
   });
+
+  it("submits untouched undefaulted list entry as empty array without touching editor", async () => {
+    const list = [{ name: "tags", control: "list", required: true }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    const data = await printFields();
+    expect(data.tags).toEqual([]);
+  });
+
+  it("submits data with elements in row order after appending twice and typing", async () => {
+    const list = [{ name: "tags", control: "list", required: true }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    const addBtn = await screen.findByRole("button", { name: "add tags" });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 1" }), { target: { value: "A" } });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 2" }), { target: { value: "B" } });
+
+    const data = await printFields();
+    expect(data.tags).toEqual(["A", "B"]);
+  });
+
+  it("submits element left empty as empty string", async () => {
+    const list = [{ name: "tags", control: "list", required: true }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    const addBtn = await screen.findByRole("button", { name: "add tags" });
+    fireEvent.click(addBtn);
+
+    const data = await printFields();
+    expect(data.tags).toEqual([""]);
+  });
+
+  it("submits data with reordered elements after moving elements", async () => {
+    const list = [{ name: "tags", control: "list", required: true }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    const addBtn = await screen.findByRole("button", { name: "add tags" });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 1" }), { target: { value: "A" } });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 2" }), { target: { value: "B" } });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 3" }), { target: { value: "C" } });
+
+    // Move C one position earlier
+    fireEvent.click(screen.getByRole("button", { name: "move tags 3 earlier" }));
+    // Move A one position later
+    fireEvent.click(screen.getByRole("button", { name: "move tags 1 later" }));
+
+    const data = await printFields();
+    expect(data.tags).toEqual(["C", "A", "B"]);
+  });
+
+  it("submits data without removed element after removing element", async () => {
+    const list = [{ name: "tags", control: "list", required: true }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    const addBtn = await screen.findByRole("button", { name: "add tags" });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 1" }), { target: { value: "A" } });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 2" }), { target: { value: "B" } });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 3" }), { target: { value: "C" } });
+
+    // Remove B
+    fireEvent.click(screen.getByRole("button", { name: "remove tags 2" }));
+
+    const data = await printFields();
+    expect(data.tags).toEqual(["A", "C"]);
+  });
+
+  it("opens a defaulted list entry with one row, all controls disabled, checkbox checked, and sends no tags key", async () => {
+    const list = [{ name: "tags", control: "list", default: ["CONSUMABLE"], required: false }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    const checkbox = (await screen.findByRole("checkbox", { name: "Use default for tags" })) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    expect(screen.getByText("CONSUMABLE")).toBeInTheDocument();
+
+    const input1 = screen.getByRole("textbox", { name: "tags 1" }) as HTMLInputElement;
+    expect(input1.value).toBe("CONSUMABLE");
+    expect(input1).toBeDisabled();
+    expect(screen.getByRole("button", { name: "add tags" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "remove tags 1" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "move tags 1 earlier" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "move tags 1 later" })).toBeDisabled();
+
+    const data = await printFields();
+    expect(data.tags).toBeUndefined();
+  });
+
+  it("clearing default checkbox makes controls operable and removing row submits empty array", async () => {
+    const list = [{ name: "tags", control: "list", default: ["CONSUMABLE"], required: false }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    const checkbox = await screen.findByRole("checkbox", { name: "Use default for tags" });
+    fireEvent.click(checkbox);
+
+    const removeBtn = screen.getByRole("button", { name: "remove tags 1" });
+    expect(removeBtn).not.toBeDisabled();
+    fireEvent.click(removeBtn);
+
+    const data = await printFields();
+    expect(data.tags).toEqual([]);
+  });
+
+  it("renders empty operable editor for default_error list entry and submits empty array", async () => {
+    const list = [
+      {
+        name: "tags",
+        control: "list",
+        required: true,
+        default_error: { reason: "param_default_unresolvable", message: "Variable base not found" },
+      },
+    ];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    expect(screen.queryByRole("checkbox", { name: "Use default for tags" })).toBeNull();
+    expect(await screen.findByText("Variable base not found")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "add tags" })).not.toBeDisabled();
+
+    const data = await printFields();
+    expect(data.tags).toEqual([]);
+  });
+
+  it("sends empty array in list request for untouched undefaulted entry and retains value across branch switches", async () => {
+    const base = [
+      { name: "tier", control: "select", values: ["standard", "pro"], required: true },
+      { name: "tags", control: "list", required: true },
+    ];
+    const pro = [
+      { name: "tier", control: "select", values: ["standard", "pro"], required: true },
+      { name: "other", control: "text", required: true },
+    ];
+    stubInputs((data) => (data.tier === "pro" ? pro : base));
+    renderForm(withInputs(base));
+
+    await waitFor(() => expect(lastInputsData().tags).toEqual([]));
+
+    const addBtn = await screen.findByRole("button", { name: "add tags" });
+    fireEvent.click(addBtn);
+    fireEvent.change(screen.getByRole("textbox", { name: "tags 1" }), { target: { value: "VIP" } });
+    await waitFor(() => expect(lastInputsData().tags).toEqual(["VIP"]));
+
+    // Switch branch away to pro
+    fireEvent.change(screen.getByLabelText("tier"), { target: { value: "pro" } });
+    await screen.findByLabelText("other");
+    expect(screen.queryByRole("textbox", { name: "tags 1" })).toBeNull();
+
+    // Switch back to standard
+    fireEvent.change(screen.getByLabelText("tier"), { target: { value: "standard" } });
+    const restoredInput = (await screen.findByRole("textbox", { name: "tags 1" })) as HTMLInputElement;
+    expect(restoredInput.value).toBe("VIP");
+  });
+
+  it("carries empty array in the very first list request for untouched undefaulted entry", async () => {
+    const list = [{ name: "tags", control: "list", required: true }];
+    stubInputs(() => list);
+    renderForm(withInputs(list));
+
+    await waitFor(() => expect(firstInputsData().tags).toEqual([]));
+  });
+
+  it("submits empty array for list entry arriving in a later list without defaults without touching editor", async () => {
+    const standard = [
+      { name: "tier", control: "select", values: ["standard", "pro"], required: true },
+    ];
+    const pro = [
+      { name: "tier", control: "select", values: ["standard", "pro"], required: true },
+      { name: "tags", control: "list", required: true },
+    ];
+    stubInputs((data) => (data.tier === "pro" ? pro : standard));
+    renderForm(withInputs(standard));
+
+    await screen.findByLabelText("tier");
+    expect(screen.queryByRole("button", { name: "add tags" })).toBeNull();
+
+    // Switch tier to pro, which brings in tags (control: "list", required: true, no default)
+    fireEvent.change(screen.getByLabelText("tier"), { target: { value: "pro" } });
+
+    // tags editor appears
+    await screen.findByRole("button", { name: "add tags" });
+
+    // Submit without touching tags editor
+    const data = await printFields();
+    expect(data.tier).toBe("pro");
+    expect(data.tags).toEqual([]);
+  });
 });
 
 describe("PrintForm empty template", () => {
@@ -822,101 +1029,5 @@ describe("PrintForm empty template", () => {
     expect(body.data).toEqual({});
     expect(Object.prototype.hasOwnProperty.call(body, "data")).toBe(true);
     expect(body.fields).toBeUndefined();
-  });
-});
-
-describe("PrintForm list parameter tolerance", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
-  it("does not deadlock on a required list input and submits without it", async () => {
-    const listTemplate: TemplateDetail = {
-      id: "list_tpl",
-      name: "List Template",
-      description: "",
-      unit: "mm",
-      dpi: 300,
-      format: { type: "single", width: 80, height: 24 },
-      inputs: {
-        all: [
-          { name: "title", control: "text", required: true },
-          { name: "tags", control: "list", required: true },
-        ],
-        default: [
-          { name: "title", control: "text", required: true },
-          { name: "tags", control: "list", required: true },
-        ],
-      },
-      variables: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      void init;
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.startsWith("/api/printers")) {
-        return new Response(JSON.stringify(printers), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      if (url.startsWith("/api/templates/") && url.includes("/inputs")) {
-        return new Response(
-          JSON.stringify({
-            inputs: [
-              [
-                { name: "title", control: "text", required: true },
-                { name: "tags", control: "list", required: true },
-              ],
-            ],
-          }),
-          {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          },
-        );
-      }
-      if (url.startsWith("/api/print")) {
-        return new Response(JSON.stringify(summary), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      }
-      if (url.startsWith("/api/render/label")) {
-        return new Response(new Blob(["img"]), {
-          status: 200,
-          headers: { "content-type": "image/png" },
-        });
-      }
-      return new Response("{}", { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderForm(listTemplate);
-    const titleInput = (await screen.findByLabelText("title")) as HTMLInputElement;
-    expect(screen.queryByLabelText("tags")).toBeNull();
-
-    // With title empty, Print is disabled because title is required
-    const printBtn = screen.getByRole("button", { name: /^print$/i });
-    expect(printBtn).toBeDisabled();
-
-    // Fill title
-    fireEvent.change(titleInput, { target: { value: "Item Title" } });
-    fireEvent.change(await screen.findByLabelText("printer"), { target: { value: "p1" } });
-
-    // Now Print and Download are enabled (tags does not block validity)
-    await waitFor(() => expect(printBtn).not.toBeDisabled());
-    const downloadBtn = screen.getByRole("button", { name: /^download$/i });
-    expect(downloadBtn).not.toBeDisabled();
-
-    // Submitting posts data without tags
-    fireEvent.click(printBtn);
-    await waitFor(() => expect(countCalls("/api/print")).toBe(1));
-    const body = JSON.parse((lastCall("/api/print")![1] as RequestInit).body as string);
-    expect(body.data).toEqual({ title: "Item Title" });
   });
 });
