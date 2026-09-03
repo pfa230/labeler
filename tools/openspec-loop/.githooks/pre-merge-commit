@@ -46,7 +46,7 @@ fi
 # Found beside this hook rather than under the repository root: change-tests.sh runs this
 # hook by path against a throwaway repo that has no .workflow of its own, so a root-relative
 # lookup would exit 127 there and a suite would assert against a hook that never ran.
-"$(dirname "$0")/../.workflow/merge-shape-check.sh"
+"$(dirname "$0")/../workflow/merge-shape-check.sh"
 
 # Staged but uncommitted, which is where this hook runs, so MERGE_HEAD is the merge in
 # hand. It holds one line per commit being merged, so an octopus is read as written.

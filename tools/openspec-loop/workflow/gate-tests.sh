@@ -597,11 +597,14 @@ setup_hooked() {
   git init -q . && git symbolic-ref HEAD refs/heads/main \
     || fatal "cannot init the fixture repo on a branch named main."
   git config user.email t@t; git config user.name t
-  mkdir -p .workflow .githooks src || fatal "cannot create the fixture's harness directories."
-  cp "$here"/*.sh .workflow/ || fatal "cannot copy the workflow scripts into the fixture."
+  # The fixture mirrors the kit's own topology, workflow/ beside .githooks/, because the
+  # hooks locate their scripts as $here/../workflow (labeler #357). A fixture laid out any
+  # other way tests a path arrangement that does not ship.
+  mkdir -p workflow .githooks src || fatal "cannot create the fixture's harness directories."
+  cp "$here"/*.sh workflow/ || fatal "cannot copy the workflow scripts into the fixture."
   cp "$here/../.githooks/pre-commit" "$here/../.githooks/pre-merge-commit" .githooks/ \
     || fatal "cannot copy the hooks into the fixture."
-  chmod +x .githooks/pre-commit .githooks/pre-merge-commit .workflow/*.sh
+  chmod +x .githooks/pre-commit .githooks/pre-merge-commit workflow/*.sh
   printf 'fn main() {}\n' > src/main.rs
   git add -A && git commit -qm base || fatal "cannot write the fixture's base commit."
   git config core.hooksPath .githooks
@@ -610,7 +613,7 @@ setup_hooked() {
     || fatal "cannot build the fixture's other branch."
   git checkout -q main || fatal "cannot return to the fixture's main."
   fixture_built "$repo" .githooks/pre-commit .githooks/pre-merge-commit \
-                .workflow/merge-shape-check.sh src/main.rs
+                workflow/merge-shape-check.sh src/main.rs
 }
 
 # The path pre-commit never sees: git resolves the merge itself and runs no pre-commit
@@ -651,7 +654,7 @@ setup_hooked
 git checkout -q --detach || fatal "cannot detach the fixture's HEAD."
 expect_says 1 "on a detached HEAD" \
   "hook: a merge on a detached HEAD is refused, and not told to rebase a branch it has not got" \
-  .workflow/merge-shape-check.sh
+  workflow/merge-shape-check.sh
 teardown
 
 # --- and the hook actually calls the gates (#356) ----------------------------------
@@ -705,7 +708,7 @@ teardown
 # The other side of the same wire: a gate with no objection must let the commit through.
 # Without this, a hook that refused everything would pass the two cases above.
 setup_gated "AUTHOR: claude" "REVIEWER: codex" "VERDICT: APPROVE"
-.workflow/specs-digest.sh openspec/changes/issue-1-thing --write > /dev/null \
+workflow/specs-digest.sh openspec/changes/issue-1-thing --write > /dev/null \
   || fatal "cannot write the fixture's specs digest."
 printf 'fn added() {}\n' > src/added.rs
 git add -A || fatal "cannot stage the fixture's code change."

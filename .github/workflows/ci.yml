@@ -132,9 +132,7 @@ jobs:
       # pre-commit hook does not run them; changing a gate script does.
       - name: Workflow script tests
         run: |
-          .workflow/gate-tests.sh
-          .workflow/apply-tests.sh
-          .workflow/change-tests.sh
+          .workflow/loop test
 
       # The same scripts the pre-commit hook runs, on what actually landed.
       # Tool-agnostic: they judge files, never which agent produced them (#191).
@@ -149,8 +147,8 @@ jobs:
           # Here HEAD IS the commit under test, so the checks must measure against the
           # base rather than their HEAD default, or they compare a file to itself.
           export GATE_BASE_REF="$base"
-          .workflow/review-gate-check.sh "$PWD" "${files[@]}"
-          .workflow/archive-merge-check.sh "$PWD" "${files[@]}"
+          .workflow/loop review-gate "$PWD" "${files[@]}"
+          .workflow/loop archive-check "$PWD" "${files[@]}"
 
   build:
     needs: [rust, ui]

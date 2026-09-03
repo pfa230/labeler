@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Early local signal for the review gate. NOT the gate itself (#191).
 #
-# The gate is .workflow/review-gate-check.sh, called by .githooks/pre-commit and by
+# The gate is .workflow/loop review-gate, called by .githooks/pre-commit and by
 # CI, so it applies to every agent equally. This hook calls the same script so the
 # rules cannot drift, and exists only because failing at edit time is friendlier
 # than failing at commit time. It sees Claude Code alone.
@@ -37,6 +37,6 @@ done
 rel="${target#"$root"/}"
 # --plan-only: this fires while implementation is in progress, when no diff review
 # can exist. The commit-time gate checks that one.
-reason=$("$root/.workflow/review-gate-check.sh" --plan-only "$root" "$rel" 2>&1 >/dev/null) && exit 0
+reason=$("$root/.workflow/loop" review-gate --plan-only "$root" "$rel" 2>&1 >/dev/null) && exit 0
 jq -n --arg r "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
 exit 0
