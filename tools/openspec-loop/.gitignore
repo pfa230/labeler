@@ -1,0 +1,9 @@
+# Agent run artifacts, written into whatever worktree a stage runs in (#255).
+.agent-runs/
+
+# The blocking-question protocol: working state, never record.
+/QUESTIONS.md
+/ANSWERS.md
+
+# Machine-local agent lineup.
+/workflow/roles.local
