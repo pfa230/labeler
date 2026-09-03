@@ -8,7 +8,7 @@ use crate::models::{
     Point, Position, Rotation, Shape, Stroke, TemplateFormat,
 };
 use crate::reason::Reason;
-use crate::templates::TemplateContent;
+use crate::templates::{TemplateContent, TemplateDefinition};
 use chrono::{DateTime, Local};
 use helpers::{
     assets_root, binarize_rgba, build_qr_svg, escape_typst_string, format_length, interpolate,
@@ -144,6 +144,53 @@ fn coerce_param_value(
             };
             Ok(CoercedParam::Value(JsonValue::String(s)))
         }
+    }
+}
+
+/// Returns the parameter names that match no key of `template.params`,
+/// sorted ascending by Unicode code point (`str`'s `Ord`), empty when there are none.
+pub fn unknown_param_names<'a>(
+    template: &TemplateContent,
+    names: impl Iterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut unknown: Vec<String> = names
+        .filter(|name| !template.params.contains_key(*name))
+        .map(String::from)
+        .collect();
+    unknown.sort();
+    unknown.dedup();
+    unknown
+}
+
+/// Validates that every key in a label's `data` map names a declared parameter of `template`.
+/// Returns an `InvalidRequest` error with reason `data_key_unknown` naming all unrecognized keys
+/// (sorted ascending) and the template id if any are found.
+pub fn validate_label_data_keys(
+    template: &TemplateDefinition,
+    data: &HashMap<String, JsonValue>,
+) -> Result<(), AppError> {
+    let unknown = unknown_param_names(template, data.keys().map(|k| k.as_str()));
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        let keys_str = unknown
+            .iter()
+            .map(|k| format!("'{k}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let noun = if unknown.len() == 1 { "key" } else { "keys" };
+        let verb = if unknown.len() == 1 {
+            "is not a declared parameter"
+        } else {
+            "are not declared parameters"
+        };
+        Err(AppError::invalid_request(
+            Reason::DataKeyUnknown,
+            format!(
+                "data {noun} {keys_str} {verb} of template '{}'",
+                template.id
+            ),
+        ))
     }
 }
 
@@ -885,7 +932,7 @@ pub fn render_single_label_pdf(
 }
 
 pub fn render_sheet_pages(
-    template: &TemplateContent,
+    template: &TemplateDefinition,
     labels: &[LabelInput],
     start_slot: u32,
     settings: &BTreeMap<String, String>,
@@ -949,6 +996,16 @@ pub fn render_sheet_pages(
     let mut rendered: Vec<String> = Vec::with_capacity(labels.len());
     let mut failures: Vec<crate::errors::BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
+        if let Err(err) = validate_label_data_keys(template, &lbl.data) {
+            failures.push(crate::errors::BatchFailure {
+                index: idx,
+                code: err.code(),
+                reason: err.reason(),
+                message: err.message_text(),
+            });
+            rendered.push(String::new());
+            continue;
+        }
         let resolved = match resolve_parameters(
             template,
             &lbl.data,
@@ -2370,7 +2427,7 @@ mod tests {
         VerticalAlign,
     };
     use crate::reason::Reason;
-    use crate::templates::TemplateContent;
+    use crate::templates::{TemplateContent, TemplateDefinition};
     use serde_json::json;
     use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -4871,35 +4928,48 @@ layout:
         }
     }
 
-    fn two_slot_sheet() -> TemplateContent {
-        TemplateContent {
-            name: "Sheet2".to_string(),
-            description: String::new(),
-            unit: "mm".to_string(),
-            dpi: 200,
-            format: TemplateFormat::Sheet {
-                paper_width: 20.0,
-                paper_height: 10.0,
-                label_width: 10.0,
-                label_height: 10.0,
-                positions: vec![SheetPosition([0.0, 0.0]), SheetPosition([10.0, 0.0])],
+    fn two_slot_sheet() -> TemplateDefinition {
+        TemplateDefinition {
+            id: "sheet2".to_string(),
+            group: None,
+            content: TemplateContent {
+                name: "Sheet2".to_string(),
+                description: String::new(),
+                unit: "mm".to_string(),
+                dpi: 200,
+                format: TemplateFormat::Sheet {
+                    paper_width: 20.0,
+                    paper_height: 10.0,
+                    label_width: 10.0,
+                    label_height: 10.0,
+                    positions: vec![SheetPosition([0.0, 0.0]), SheetPosition([10.0, 0.0])],
+                },
+                params: BTreeMap::from([(
+                    "message".to_string(),
+                    ParamSpec {
+                        param_type: crate::models::ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                )]),
+                layout: Layout::Items(vec![LayoutItem::Text {
+                    value: "{message}".to_string(),
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
+                    ),
+                    font_size: FontSize::Fixed(8.0),
+                    font_weight: None,
+                    color: None,
+                    wrap: false,
+                    alignment: Alignment::default(),
+                    overflow: Overflow::Ellipsis,
+                    when: None,
+                }]),
+                version: None,
             },
-            params: BTreeMap::new(),
-            layout: Layout::Items(vec![LayoutItem::Text {
-                value: "{message}".to_string(),
-                placement: Placement::sized(
-                    Position([0.0, 0.0]),
-                    Size([SizeValue::fixed(10.0), SizeValue::fixed(10.0)]),
-                ),
-                font_size: FontSize::Fixed(8.0),
-                font_weight: None,
-                color: None,
-                wrap: false,
-                alignment: Alignment::default(),
-                overflow: Overflow::Ellipsis,
-                when: None,
-            }]),
-            version: None,
         }
     }
 
@@ -5112,34 +5182,47 @@ layout:
 
     #[test]
     fn render_sheet_labels_produces_pdf() {
-        let template = TemplateContent {
-            name: "Sheet".to_string(),
-            description: "Sheet template".to_string(),
-            unit: "mm".to_string(),
-            dpi: 200,
-            format: TemplateFormat::Sheet {
-                paper_width: 10.0,
-                paper_height: 5.0,
-                label_width: 10.0,
-                label_height: 5.0,
-                positions: vec![SheetPosition([0.0, 0.0])],
+        let template = TemplateDefinition {
+            id: "sheet".to_string(),
+            group: None,
+            content: TemplateContent {
+                name: "Sheet".to_string(),
+                description: "Sheet template".to_string(),
+                unit: "mm".to_string(),
+                dpi: 200,
+                format: TemplateFormat::Sheet {
+                    paper_width: 10.0,
+                    paper_height: 5.0,
+                    label_width: 10.0,
+                    label_height: 5.0,
+                    positions: vec![SheetPosition([0.0, 0.0])],
+                },
+                params: BTreeMap::from([(
+                    "message".to_string(),
+                    ParamSpec {
+                        param_type: crate::models::ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                )]),
+                layout: Layout::Items(vec![LayoutItem::Text {
+                    value: "{message}".to_string(),
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
+                    ),
+                    font_size: FontSize::Fixed(10.0),
+                    font_weight: None,
+                    color: None,
+                    wrap: false,
+                    alignment: Alignment::default(),
+                    overflow: Overflow::Ellipsis,
+                    when: None,
+                }]),
+                version: None,
             },
-            params: BTreeMap::new(),
-            layout: Layout::Items(vec![LayoutItem::Text {
-                value: "{message}".to_string(),
-                placement: Placement::sized(
-                    Position([0.0, 0.0]),
-                    Size([SizeValue::fixed(10.0), SizeValue::fixed(5.0)]),
-                ),
-                font_size: FontSize::Fixed(10.0),
-                font_weight: None,
-                color: None,
-                wrap: false,
-                alignment: Alignment::default(),
-                overflow: Overflow::Ellipsis,
-                when: None,
-            }]),
-            version: None,
         };
 
         let labels = vec![LabelInput {
@@ -5217,30 +5300,43 @@ layout:
 
     #[test]
     fn render_sheet_labels_with_image_produces_pdf() {
-        let template = TemplateContent {
-            name: "Sheet".to_string(),
-            description: String::new(),
-            unit: "mm".to_string(),
-            dpi: 200,
-            format: TemplateFormat::Sheet {
-                paper_width: 20.0,
-                paper_height: 20.0,
-                label_width: 20.0,
-                label_height: 20.0,
-                positions: vec![SheetPosition([0.0, 0.0])],
+        let template = TemplateDefinition {
+            id: "sheet".to_string(),
+            group: None,
+            content: TemplateContent {
+                name: "Sheet".to_string(),
+                description: String::new(),
+                unit: "mm".to_string(),
+                dpi: 200,
+                format: TemplateFormat::Sheet {
+                    paper_width: 20.0,
+                    paper_height: 20.0,
+                    label_width: 20.0,
+                    label_height: 20.0,
+                    positions: vec![SheetPosition([0.0, 0.0])],
+                },
+                params: BTreeMap::from([(
+                    "logo".to_string(),
+                    ParamSpec {
+                        param_type: crate::models::ParamType::String { multiline: false },
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                )]),
+                layout: Layout::Items(vec![LayoutItem::Image {
+                    name: Some("logo".to_string()),
+                    src: None,
+                    placement: Placement::sized(
+                        Position([0.0, 0.0]),
+                        Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
+                    ),
+                    fit: Fit::Contain,
+                    when: None,
+                }]),
+                version: None,
             },
-            params: BTreeMap::new(),
-            layout: Layout::Items(vec![LayoutItem::Image {
-                name: Some("logo".to_string()),
-                src: None,
-                placement: Placement::sized(
-                    Position([0.0, 0.0]),
-                    Size([SizeValue::fixed(20.0), SizeValue::fixed(20.0)]),
-                ),
-                fit: Fit::Contain,
-                when: None,
-            }]),
-            version: None,
         };
         let labels = vec![LabelInput {
             data: HashMap::from([(
@@ -9036,7 +9132,12 @@ layout:
         value: "DATA"
         size: [10, 10]
 "#;
-        let template = parse_and_validate(yaml).unwrap();
+        let template_content = parse_and_validate(yaml).unwrap();
+        let template = TemplateDefinition {
+            id: "sheet_flow".to_string(),
+            group: None,
+            content: template_content,
+        };
         let labels = vec![LabelInput {
             data: HashMap::new(),
         }];
@@ -10085,7 +10186,12 @@ layout:
         font_size: 8
         color: "{txt_col}"
 "#;
-        let template = crate::parse::parse_template(yaml).unwrap();
+        let template_content = crate::parse::parse_template(yaml).unwrap();
+        let template = TemplateDefinition {
+            id: "sheet_color".to_string(),
+            group: None,
+            content: template_content,
+        };
         let Layout::Items(items) = &template.layout;
         let settings = no_settings();
         let datetime = no_datetime();
@@ -10191,5 +10297,94 @@ layout:
         ];
         let pdf = super::render_sheet_pages(&template, &labels, 0, &settings, &datetime).unwrap();
         assert!(pdf.starts_with(b"%PDF"));
+    }
+
+    #[test]
+    fn test_unknown_param_names_and_validate_label_data_keys() {
+        use crate::templates::TemplateDefinition;
+
+        let yaml = r#"
+name: Shelf Label Display Name
+unit: mm
+dpi: 200
+format:
+  type: single
+  width: 50
+  height: 30
+params:
+  title:
+    type: string
+  unused_param:
+    type: string
+layout:
+  - type: text
+    value: "{title}"
+    font_size: 10
+    at: [0, 0]
+    size: [50, 10]
+"#;
+        let template_content = crate::parse::parse_template(yaml).unwrap();
+        let template = TemplateDefinition {
+            id: "shelf".to_string(),
+            group: None,
+            content: template_content,
+        };
+
+        // 1. Empty map passes
+        let empty_data = HashMap::new();
+        assert!(super::validate_label_data_keys(&template, &empty_data).is_ok());
+
+        // 2. All declared keys pass, including unused_param which layout does not read
+        let valid_data = HashMap::from([
+            ("title".to_string(), serde_json::json!("Bolts")),
+            ("unused_param".to_string(), serde_json::json!("Extra")),
+        ]);
+        assert!(super::validate_label_data_keys(&template, &valid_data).is_ok());
+
+        // 3. unknown_param_names unit checks
+        let unknown =
+            super::unknown_param_names(&template, ["zeta", "title", "alpha", "mid"].into_iter());
+        assert_eq!(unknown, vec!["alpha", "mid", "zeta"]);
+
+        // 4. Multiple unrecognized keys in data map produce one DataKeyUnknown error naming all sorted keys and template.id
+        let bad_data = HashMap::from([
+            ("zeta".to_string(), serde_json::json!("z")),
+            ("alpha".to_string(), serde_json::json!("a")),
+            ("title".to_string(), serde_json::json!("Bolts")),
+            ("mid".to_string(), serde_json::json!("m")),
+        ]);
+        let err = super::validate_label_data_keys(&template, &bad_data).unwrap_err();
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("data_key_unknown"));
+        let msg = err.message_text();
+        assert!(
+            msg.contains("'alpha', 'mid', 'zeta'"),
+            "msg should contain sorted keys: {msg}"
+        );
+        assert!(
+            msg.contains("'shelf'"),
+            "msg should contain template id 'shelf': {msg}"
+        );
+        assert!(
+            !msg.contains("Shelf Label Display Name"),
+            "msg should not contain display name"
+        );
+
+        // 5. Order is consistent across repeated runs regardless of map insertion order
+        for perm in [
+            ["alpha", "mid", "zeta"],
+            ["zeta", "mid", "alpha"],
+            ["mid", "alpha", "zeta"],
+            ["zeta", "alpha", "mid"],
+        ] {
+            let mut map = HashMap::new();
+            map.insert("title".to_string(), serde_json::json!("Bolts"));
+            for k in perm {
+                map.insert(k.to_string(), serde_json::json!("v"));
+            }
+            let err_rep = super::validate_label_data_keys(&template, &map).unwrap_err();
+            assert_eq!(err_rep.message_text(), msg);
+        }
     }
 }
