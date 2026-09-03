@@ -6405,7 +6405,7 @@ layout:
                     height: Dimension::Fixed(60.0).into(),
                     media_width: None,
                 },
-                params: BTreeMap::new(),
+                params: IndexMap::new(),
                 layout: Layout::Items(vec![LayoutItem::Text {
                     value: text.to_string(),
                     placement: Placement::sized(
@@ -6478,7 +6478,7 @@ layout:
                 height: Dimension::Fixed(16.0).into(),
                 media_width: None,
             },
-            params: BTreeMap::new(),
+            params: IndexMap::new(),
             layout: Layout::Items(vec![LayoutItem::Text {
                 value: "First line of text\nSecond line of text\nThird line of text".to_string(),
                 placement: Placement::sized(
@@ -6531,7 +6531,7 @@ layout:
                     height: Dimension::Fixed(20.0).into(),
                     media_width: None,
                 },
-                params: BTreeMap::new(),
+                params: IndexMap::new(),
                 layout: Layout::Items(vec![LayoutItem::Text {
                     value: "Single Line Invariant".to_string(),
                     placement: Placement::sized(
