@@ -46,7 +46,14 @@ expect() { # expect <want-exit> <label> -- <args...>
 setup() {
   repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
   cd "$repo" || fatal "cannot enter the fixture directory $repo."
-  git init -q .; git config user.email t@t; git config user.name t
+  # The branch is named, not inherited. init.defaultBranch is a property of whoever runs
+  # this, and since #341 the hooks answer differently on main than anywhere else, so a
+  # fixture that takes whatever `git init` hands it passes on a machine configured for
+  # `main` and fails on a runner configured for `master`. Four pre-merge-commit cases did
+  # exactly that, green locally and red in CI.
+  git init -q . && git symbolic-ref HEAD refs/heads/main \
+    || fatal "cannot init the fixture repo on a branch named main."
+  git config user.email t@t; git config user.name t
   mkdir -p openspec/changes/archive || fatal "cannot create the fixture's change directory."
   echo x > openspec/changes/archive/.gitkeep
   cp "$here/../.gitignore" .gitignore
