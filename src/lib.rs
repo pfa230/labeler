@@ -1515,8 +1515,7 @@ mod http_tests {
         let label_payload = json!({
             "template": "brother_12mm",
             "data": {
-                "message": "Hello",
-                "code": "QR-123"
+                "message": "Hello"
             }
         });
         let response = app
@@ -2046,7 +2045,7 @@ mod http_tests {
         let app = build_app();
         let payload = json!({
             "template": "brother_12mm",
-            "data": { "message": "Hello", "code": "QR-123" }
+            "data": { "message": "Hello" }
         });
         let response = app
             .oneshot(
@@ -7398,16 +7397,17 @@ layout:
             assert_eq!(c.status(), StatusCode::CREATED);
         }
 
-        // Superset of fields: covers brother_24mm (message) and homebox-qr (id, message).
+        // Template-specific fields: brother_24mm (message) and homebox-qr (id, message).
         async fn print_resp(
             app: &axum::Router,
             template: &str,
             printer: &str,
         ) -> axum::response::Response {
-            let data = json!({
-                "message": "Hi", "code": "Q", "id": "A1",
-                "url": "https://x/A1", "name": "N", "tags": "T", "description": "D"
-            });
+            let data = match template {
+                "brother_24mm" => json!({ "message": "Hi" }),
+                "homebox-qr" => json!({ "id": "A1", "message": "Hi" }),
+                _ => json!({ "message": "Hi" }),
+            };
             let payload = json!({
                 "template": template,
                 "mode": "print",
@@ -8180,6 +8180,691 @@ layout:
             .await
             .expect("request");
         assert_eq!(resp_put.status(), StatusCode::OK);
+    }
+
+    // -----------------------------------------------------------------------
+    // Issue #324 tests: refusing unrecognized data keys on render/batch/print/csv
+    // -----------------------------------------------------------------------
+
+    fn build_app_with_custom_templates(tpls: Vec<(&str, &str)>) -> (axum::Router, Arc<AppState>) {
+        let (mut templates, templates_dir) = crate::templates::load_all_for_tests();
+        for (id, yaml) in tpls {
+            let def = crate::parse::parse_template(yaml).unwrap();
+            templates.insert_for_tests(id.to_string(), None, def);
+        }
+        let store = Store::open_in_memory().expect("store");
+        seed_token(&store);
+        let state = Arc::new(AppState::new(templates, templates_dir, store));
+        (with_auth(app(state.clone())), state)
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_1_single_render_refuses_unrecognized_key() {
+        let app = build_app();
+        let payload = json!({
+            "template": "homebox-qr",
+            "data": {
+                "id": "ITEM-1",
+                "message": "Asset",
+                "sku_legacy": "X-1"
+            }
+        });
+        let res = app
+            .oneshot(json_req("POST", "/api/render/label", payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "data_key_unknown");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("'sku_legacy'"));
+        assert!(msg.contains("'homebox-qr'"));
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_2_single_render_multiple_unrecognized_keys_sorted() {
+        let app = build_app();
+        let payload = json!({
+            "template": "homebox-qr",
+            "data": {
+                "zeta": "z",
+                "alpha": "a",
+                "mid": "m",
+                "id": "ITEM-1",
+                "message": "Asset"
+            }
+        });
+        let res = app
+            .oneshot(json_req("POST", "/api/render/label", payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "data_key_unknown");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("'alpha', 'mid', 'zeta'"));
+        assert!(msg.contains("'homebox-qr'"));
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_3_single_render_declared_parameter_not_read_by_active_items_succeeds() {
+        let yaml = r#"
+name: Gated Declared
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 30 }
+params:
+  orientation:
+    type: enum
+    values: [horizontal, vertical]
+    default: horizontal
+  title:
+    type: string
+  subtitle:
+    type: string
+layout:
+  - type: text
+    value: "{title}"
+    font_size: 10
+    at: [0, 0]
+    size: [50, 10]
+  - type: container
+    when: { orientation: vertical }
+    at: [0, 10]
+    size: [50, 10]
+    items:
+      - type: text
+        value: "{subtitle}"
+        font_size: 8
+        at: [0, 0]
+        size: [50, 10]
+"#;
+        let (app, _) = build_app_with_custom_templates(vec![("gated_declared", yaml)]);
+        let payload = json!({
+            "template": "gated_declared",
+            "data": {
+                "orientation": "horizontal",
+                "title": "Hello",
+                "subtitle": "Unread"
+            }
+        });
+        let res = app
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                payload.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = bytes_response(res).await;
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_4_batch_reports_every_offending_label() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "mode": "download",
+            "labels": [
+                { "data": { "code": "QR1", "message": "one", "bad0": "x" } },
+                { "data": { "code": "QR2", "message": "two" } },
+                { "data": { "code": "QR3", "message": "three", "bad2": "y" } }
+            ]
+        });
+        let res = app
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0]["index"], 0);
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(failures[0]["reason"], "data_key_unknown");
+        assert_eq!(failures[1]["index"], 2);
+        assert_eq!(failures[1]["code"], "InvalidRequest");
+        assert_eq!(failures[1]["reason"], "data_key_unknown");
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_5_sheet_batch_reports_failures_and_is_atomic_across_pages() {
+        let app = build_app();
+        // 1. Sheet batch with 3 labels (indices 0 and 2 failing)
+        let valid_sheet_data = json!({
+            "id": "1",
+            "url": "http://example.com",
+            "name": "Item",
+            "tags": "t",
+            "description": "desc"
+        });
+        let mut bad_sheet_data0 = valid_sheet_data.as_object().unwrap().clone();
+        bad_sheet_data0.insert("bad0".to_string(), json!("x"));
+        let mut bad_sheet_data2 = valid_sheet_data.as_object().unwrap().clone();
+        bad_sheet_data2.insert("bad2".to_string(), json!("y"));
+
+        let payload3 = json!({
+            "template": "avery5163_asset_tag",
+            "mode": "download",
+            "labels": [
+                { "data": bad_sheet_data0 },
+                { "data": valid_sheet_data },
+                { "data": bad_sheet_data2 }
+            ]
+        });
+        let res3 = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", payload3.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body3 = json_response(res3).await;
+        assert_eq!(body3["error"]["code"], "BatchInvalid");
+        let failures3 = body3["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures3.len(), 2);
+        assert_eq!(failures3[0]["index"], 0);
+        assert_eq!(failures3[0]["reason"], "data_key_unknown");
+        assert_eq!(failures3[1]["index"], 2);
+        assert_eq!(failures3[1]["reason"], "data_key_unknown");
+
+        // 2. Multi-page sheet: 11 labels (10 per page), only label index 10 (page 2) fails
+        let mut labels11 = Vec::new();
+        for _ in 0..10 {
+            labels11.push(json!({ "data": valid_sheet_data }));
+        }
+        labels11.push(json!({ "data": bad_sheet_data0 }));
+        let payload11 = json!({
+            "template": "avery5163_asset_tag",
+            "mode": "download",
+            "labels": labels11
+        });
+        let res11 = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", payload11.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res11.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body11 = json_response(res11).await;
+        assert_eq!(body11["error"]["code"], "BatchInvalid");
+        let failures11 = body11["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures11.len(), 1);
+        assert_eq!(failures11[0]["index"], 10);
+        assert_eq!(failures11[0]["reason"], "data_key_unknown");
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_6_print_reports_per_copy() {
+        let app = build_app();
+        create_fake_printer(&app, "test-prn-copies", false).await;
+
+        // copies: 3 -> 3 failure entries at 0, 1, 2
+        let payload_copies3 = json!({
+            "template": "homebox-qr",
+            "printer": "test-prn-copies",
+            "copies": 3,
+            "data": { "id": "1", "message": "msg", "undeclared_key": "val" }
+        });
+        let res3 = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload_copies3.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body3 = json_response(res3).await;
+        assert_eq!(body3["error"]["code"], "BatchInvalid");
+        let failures3 = body3["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures3.len(), 3);
+        assert_eq!(failures3[0]["index"], 0);
+        assert_eq!(failures3[0]["code"], "InvalidRequest");
+        assert_eq!(failures3[0]["reason"], "data_key_unknown");
+        assert_eq!(failures3[1]["index"], 1);
+        assert_eq!(failures3[1]["code"], "InvalidRequest");
+        assert_eq!(failures3[1]["reason"], "data_key_unknown");
+        assert_eq!(failures3[2]["index"], 2);
+        assert_eq!(failures3[2]["code"], "InvalidRequest");
+        assert_eq!(failures3[2]["reason"], "data_key_unknown");
+
+        // copies omitted -> exactly 1 entry at index 0
+        let payload_copies1 = json!({
+            "template": "homebox-qr",
+            "printer": "test-prn-copies",
+            "data": { "id": "1", "message": "msg", "undeclared_key": "val" }
+        });
+        let res1 = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload_copies1.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res1.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body1 = json_response(res1).await;
+        assert_eq!(body1["error"]["code"], "BatchInvalid");
+        let failures1 = body1["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures1.len(), 1);
+        assert_eq!(failures1[0]["index"], 0);
+        assert_eq!(failures1[0]["code"], "InvalidRequest");
+        assert_eq!(failures1[0]["reason"], "data_key_unknown");
+
+        // No print job dispatched: recent-templates remains empty
+        let recents = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recent-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recents.status(), StatusCode::OK);
+        assert_eq!(json_response(recents).await, json!([]));
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_7_unrecognized_key_precedes_coercion_failure() {
+        let yaml = r#"
+name: Integer Param Test
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 30 }
+params:
+  title: { type: string }
+  count: { type: integer, default: 1 }
+layout:
+  - type: text
+    value: "{title}"
+    font_size: 10
+    at: [0, 0]
+    size: [50, 10]
+"#;
+        let (app, _) = build_app_with_custom_templates(vec![("int_param_tpl", yaml)]);
+
+        // 1. Both unrecognized key and bad integer value -> reports data_key_unknown
+        let payload_both = json!({
+            "template": "int_param_tpl",
+            "data": {
+                "title": "Item",
+                "count": "abc",
+                "stale_key": "stale"
+            }
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label",
+                payload_both.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "data_key_unknown");
+
+        // 2. Without unrecognized key -> reports invalid request for uncoercible integer
+        let payload_bad_val = json!({
+            "template": "int_param_tpl",
+            "data": {
+                "title": "Item",
+                "count": "abc"
+            }
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label",
+                payload_bad_val.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_8_query_validation_precedes_data_key_validation() {
+        let app = build_app();
+        let payload = json!({
+            "template": "homebox-qr",
+            "data": {
+                "id": "1",
+                "message": "m",
+                "bad_key": "val"
+            }
+        });
+        let res = app
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=svg",
+                payload.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "format_unknown");
+    }
+
+    #[tokio::test]
+    async fn issue_324_4_9_batch_admission_cap_precedes_data_key_validation() {
+        let app = build_app();
+        let mut labels = Vec::with_capacity(501);
+        for i in 0..501 {
+            labels.push(json!({
+                "data": {
+                    "id": format!("ID-{i}"),
+                    "message": "m",
+                    "bad_key": "val"
+                }
+            }));
+        }
+        let payload = json!({
+            "template": "homebox-qr",
+            "mode": "download",
+            "labels": labels
+        });
+        let res = app
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchTooLarge");
+    }
+
+    #[tokio::test]
+    async fn issue_324_5_1_to_5_6_csv_import_tests() {
+        let app = build_app();
+        create_fake_printer(&app, "csv-prn", false).await;
+
+        // 5.1 POST /api/import/csv with unrecognized data column -> 400 csv_data_column_unknown
+        let csv_bad_col = "id,message,sku_legacy\nITEM-1,Asset,X-1\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=homebox-qr")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_bad_col.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "csv_data_column_unknown"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("'sku_legacy'"));
+        assert!(msg.contains("'homebox-qr'"));
+
+        // 5.2 Same with mode=print and valid printer is same 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=homebox-qr&mode=print&printer=csv-prn")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_bad_col.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "csv_data_column_unknown"
+        );
+        // No print job dispatched: recent-templates remains empty
+        let recents = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/recent-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recents.status(), StatusCode::OK);
+        assert_eq!(json_response(recents).await, json!([]));
+
+        // 5.3 Two unrecognized columns with several rows -> one failure naming both in ascending order
+        let csv_multi_col = "id,message,zeta,alpha\n1,m1,z1,a1\n2,m2,z2,a2\n3,m3,z3,a3\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=homebox-qr")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_multi_col.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "csv_data_column_unknown"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("'alpha', 'zeta'"));
+
+        // 5.4 Precedence tests
+        // a) Unrecognized column + unparsable row -> csv_row_invalid
+        let csv_bad_row = "id,message,bad_col\n1,hello\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=homebox-qr")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_bad_row.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "csv_row_invalid");
+
+        // b) Unrecognized column + no data rows -> csv_empty
+        let csv_empty_rows = "id,message,bad_col\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=homebox-qr")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_empty_rows.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "csv_empty");
+
+        // c) Breaking both column rules -> csv_option_column_unknown
+        let csv_both_cols = "id,message,bad_data,option.bad_opt\n1,m,d,o\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=homebox-qr")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_both_cols.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "csv_option_column_unknown"
+        );
+
+        // 5.5 File exceeding label cap + unrecognized data column reports csv_data_column_unknown
+        let mut large_csv = String::from("id,message,bad_col\n");
+        for i in 0..505 {
+            large_csv.push_str(&format!("{i},msg,val\n"));
+        }
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=homebox-qr")
+            .header("content-type", "text/csv")
+            .body(Body::from(large_csv))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "csv_data_column_unknown"
+        );
+
+        // 5.6 File naming only declared params alongside option. columns naming declared ones still imports
+        let csv_valid = "id,url,name,tags,description,option.orientation,option.outline\n1,https://example.com,Item1,tags1,desc1,horizontal,yes\n2,https://example.com,Item2,tags2,desc2,horizontal,yes\n";
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/import/csv?template=avery5163_asset_tag")
+            .header("content-type", "text/csv")
+            .body(Body::from(csv_valid.to_string()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn issue_324_6_1_batch_mixed_failures_reported() {
+        let app = build_app();
+        let payload = json!({
+            "template": "homebox-qr",
+            "mode": "download",
+            "labels": [
+                { "data": { "id": "1", "message": "one", "bad0": "x" } },
+                { "data": { "id": "2" } } // omits required "message"
+            ]
+        });
+        let res = app
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 2);
+        assert_eq!(failures[0]["index"], 0);
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(failures[0]["reason"], "data_key_unknown");
+        assert_eq!(failures[1]["index"], 1);
+        assert_eq!(failures[1]["code"], "MissingField");
+        assert!(failures[1].get("reason").is_none());
+    }
+
+    #[tokio::test]
+    async fn issue_324_6_3_inputs_endpoint_remains_lenient() {
+        let app = build_app();
+        let label_with_extra = json!({
+            "labels": [
+                { "data": { "id": "1", "message": "msg", "extra_undeclared": "ignored" } }
+            ]
+        });
+        let label_without_extra = json!({
+            "labels": [
+                { "data": { "id": "1", "message": "msg" } }
+            ]
+        });
+
+        let res_inputs_extra = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/templates/homebox-qr/inputs",
+                label_with_extra.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_inputs_extra.status(), StatusCode::OK);
+        let body_inputs_extra = json_response(res_inputs_extra).await;
+
+        let res_inputs_clean = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/templates/homebox-qr/inputs",
+                label_without_extra.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_inputs_clean.status(), StatusCode::OK);
+        let body_inputs_clean = json_response(res_inputs_clean).await;
+
+        assert_eq!(body_inputs_extra, body_inputs_clean);
+
+        // Same label posted to /api/render/label fails with 400 data_key_unknown
+        let render_payload = json!({
+            "template": "homebox-qr",
+            "data": { "id": "1", "message": "msg", "extra_undeclared": "ignored" }
+        });
+        let res_render = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label",
+                render_payload.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_render.status(), StatusCode::BAD_REQUEST);
+        let body_render = json_response(res_render).await;
+        assert_eq!(
+            body_render["error"]["details"]["reason"],
+            "data_key_unknown"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_324_6_4_batch_label_with_unrecognized_key_and_missing_required_param_reports_data_key_unknown(
+    ) {
+        let app = build_app();
+        // brother_24mm_qr requires `code` and `message`.
+        // Send a label that omits `code` and carries unrecognized key `bad_key`.
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "mode": "download",
+            "labels": [
+                { "data": { "message": "hello", "bad_key": "x" } }
+            ]
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["index"], 0);
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(failures[0]["reason"], "data_key_unknown");
+
+        // Same label against single render endpoint reports 400 InvalidRequest data_key_unknown
+        let render_payload = json!({
+            "template": "brother_24mm_qr",
+            "data": { "message": "hello", "bad_key": "x" }
+        });
+        let res_render = app
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label",
+                render_payload.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res_render.status(), StatusCode::BAD_REQUEST);
+        let render_body = json_response(res_render).await;
+        assert_eq!(render_body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            render_body["error"]["details"]["reason"],
+            "data_key_unknown"
+        );
     }
 }
 
