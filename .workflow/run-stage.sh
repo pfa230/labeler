@@ -3,9 +3,10 @@
 #
 #   .workflow/run-stage.sh <role> <agent> <change> [--resume] [extra prompt...]
 #
-# Exit 5 = the reviewer edited files. 7 = the review produced no structured result,
-# so its log is a transcript rather than a review. 3 = implement changed nothing, which a
-# plan declaring `DELIVERABLE: spec-only` answers for its own change (#313).
+# Exit 5 = the reviewer edited files. 7 = no answer could be read out of what the agent
+# printed, whatever role it was running and whatever status it exited with (#315).
+# 3 = implement changed nothing, which a plan declaring `DELIVERABLE: spec-only`
+# answers for its own change (#313).
 #
 #   role   propose | plan-review | tasks | implement | review | gate-fix | archive |
 #          commit-msg
@@ -401,7 +402,7 @@ before_work=$(worktree_digest "${work_excl[@]}")
 case "$role" in
   implement|gate-fix)
     note_implementer "$wt" "$agent" || {
-      echo "cannot record the implementer at $runs/implement.last; not running." >&2
+      echo "cannot record '$agent' as the implementer at $runs/implement.last; not running." >&2
       exit 1; } ;;
 esac
 
@@ -411,14 +412,45 @@ after_guard=$(worktree_digest "${guard_excl[@]}")
 after_work=$(worktree_digest "${work_excl[@]}")
 after_tree=$(worktree_digest "${tree_excl[@]}")
 
+# Read here rather than below, because the extraction reports it: a stage that emitted
+# nothing while changing the tree is the worse of the two failures below, and saying which
+# one happened needs this answer.
+produced="no"
+[ "$before_work" != "$after_work" ] && produced="yes"
+
 # How an answer is separated from a transcript is per-CLI knowledge, so it lives in
-# agents.sh beside the invocation that produced it. Here only the outcome matters:
-# either the agent's own answer is in $log, or $log is the console capture.
+# agents.sh beside the invocation that produced it. Here only the outcome matters, and
+# there are two outcomes, told apart by whether the agent printed anything at all (#315):
+#
+#   NO_ANSWER_IN_OUTPUT  the capture is a console transcript the extractor found no answer
+#                        in. It becomes $log, because it is the only lead a person has.
+#   NO_OUTPUT            the agent printed nothing, so there is no transcript to fall back
+#                        to. This line used to copy the empty capture over $log anyway,
+#                        which is a fallback to something known to be worse: during #287 it
+#                        left implement-agy.log at 0 bytes for a 21-minute run that wrote
+#                        1193 lines, and an empty log reads as a run with nothing to say
+#                        rather than as one whose account was destroyed. Record the absence
+#                        instead, since the absence is the fact.
 extracted=1
 if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
-  cp "$raw" "$log"
-  agent_status="NO_STRUCTURED_RESULT"
   extracted=0
+  if [ -s "$raw" ]; then
+    agent_status="NO_ANSWER_IN_OUTPUT"
+    cp "$raw" "$log"
+  else
+    agent_status="NO_OUTPUT"
+    { printf 'run-stage.sh wrote this file. %s wrote nothing.\n\n' "$agent"
+      printf 'The %s stage of %s ran %s, which exited %s having printed nothing at all:\n' \
+        "$role" "$change" "$agent" "$status"
+      printf 'the console capture at %s is empty, so there is no transcript to keep here.\n' "$raw"
+      if [ "$produced" = "yes" ]; then
+        printf '\nIt changed the worktree while saying nothing, so the work is on disk and this\n'
+        printf 'file is the whole account of it. Read git status and git diff in %s.\n' "$wt"
+      else
+        printf '\nIt changed nothing in the worktree either.\n'
+      fi
+    } > "$log"
+  fi
   # There WAS a truncation here, for a writing role whose extraction failed leaving a
   # stale id behind. It is gone because it became unreachable, not because it stopped
   # mattering: the decision above already clears any session it declined to resume, so by
@@ -428,8 +460,6 @@ if ! agent_status=$(agent_extract "$agent" "$raw" "$log" "$conv_file"); then
   # to it, which is a question about nothing (#292).
 fi
 
-produced="no"
-[ "$before_work" != "$after_work" ] && produced="yes"
 echo "role: $role   agent: $agent   status: $agent_status   exit: $status"
 echo "changed the worktree: $produced"
 echo "tree: $after_tree"
@@ -478,21 +508,38 @@ fi
 echo "--- last 30 lines ---"
 tail -30 "$log"
 
-# Without a structured result the log is the raw console capture, not the agent's
-# answer. For a review that is not a small problem: the caller would read a verdict
-# out of a transcript, hand the transcript to the implementer, and commit it as the
-# review artifact (#264). Stop instead; a review that cannot be extracted did not
-# happen. Keyed on extraction having failed for THIS agent rather than on one agent's
-# envelope being absent: keyed the latter way, no agent but agy could pass a review it
-# had actually written (#274). Each tool withholds edits its own way, and they are not
-# equally strong: codex enforces it with -s read-only, opencode by denying edit/write/bash
-# to its reviewer agent, which drops those tools from the model's toolset entirely (#286),
-# and agy with --mode plan, which is the agent declining to act without a Proceed rather
-# than a harness refusing it (#290). The digest below is what actually decides.
-if [ "$writes" = "0" ] && [ "$extracted" -eq 0 ]; then
+# A stage whose answer could not be read did not report, and that is refused for EVERY
+# role and whatever the agent's own exit status was (#315). For a review the damage is
+# immediate: the caller would read a verdict out of a transcript, hand the transcript to
+# the implementer, and commit it as the review artifact (#264). For a writing role it is
+# the same failure one step later, and it happened: opencode returned no result and exit 0
+# on the implement stage of #287, which is indistinguishable from a stage that ran, so the
+# driver moved on to review code opencode had not written. agy's exit 2 stopped the same
+# failure the same day, and the difference between the two was the agent's rather than
+# this script's. One rule, so the agent no longer decides.
+# Keyed on extraction having failed for THIS agent rather than on one agent's envelope
+# being absent: keyed the latter way, no agent but agy could pass a review it had actually
+# written (#274). Each tool withholds edits its own way, and they are not equally strong:
+# codex enforces it with -s read-only, opencode by denying edit/write/bash to its reviewer
+# agent, which drops those tools from the model's toolset entirely (#286), and agy with
+# --mode plan, which is the agent declining to act without a Proceed rather than a harness
+# refusing it (#290). The digest below is what actually decides.
+if [ "$extracted" -eq 0 ]; then
   echo >&2
-  echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2
-  echo "Refusing to treat a transcript as a review. The capture is at $raw." >&2
+  if [ "$agent_status" = "NO_OUTPUT" ]; then
+    echo "$agent printed nothing during the $role stage: the capture at $raw is empty, so" >&2
+    echo "$log records that absence rather than anything the agent said." >&2
+    [ "$produced" = "yes" ] && \
+      echo "It changed the worktree while saying nothing: the work is here, the account of it is not." >&2
+    echo "Refusing to report a stage that said nothing as one that ran." >&2
+  elif [ "$writes" = "0" ]; then
+    echo "no structured result from $agent, so $log is the raw transcript rather than the review." >&2
+    echo "Refusing to treat a transcript as a review. The capture is at $raw." >&2
+  else
+    echo "no structured result from $agent, so $log is the raw transcript rather than its answer." >&2
+    echo "Refusing to report a stage whose answer could not be read as one that ran." >&2
+    echo "The capture is at $raw." >&2
+  fi
   exit 7
 fi
 # A reviewer that changed files has broken the rule it was told to follow. Judged by
