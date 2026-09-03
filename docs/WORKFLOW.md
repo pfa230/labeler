@@ -10,11 +10,19 @@ The mechanics — commands, tooling, enforcement — are in [`AGENTS.md`](../AGE
 A change starts as a GitHub issue. Issues and milestones are the only backlog, and one change
 implements exactly one open issue: scope is agreed there, before anything else happens.
 
-Not every commit is a change in this sense. The path below is for behavior changes, which are exactly
-the ones that write a spec delta. A documentation fix, a tooling script or a dependency bump still
-starts as an issue and still ends as one commit that closes it, but none of the stages apply to it.
-Nothing declares which kind a piece of work is, and size has no say: writing the delta is what makes
-it a change, and needing one is discovered rather than decided.
+Not every commit is a change in this sense. The path below is for changes to labeler's behavior: its
+API, its template schema, its layout model, its coordinates and its error contract, which are exactly
+the ones that write a spec delta. The harness that runs this path is not labeler, however much
+changing it changes what the path does, so a commit against `.workflow/`, `.claude/`, `.githooks/`,
+`AGENTS.md`, this file or `openspec/config.yaml` is not a behavior change here. Nor is a documentation
+fix, a CI change or a dependency bump. Each still starts as an issue and still ends as one commit that
+closes it, but none of the stages apply to it. Nothing declares which kind a piece of work is, and
+size has no say: writing the delta is what makes it a change, and needing one is discovered rather
+than decided.
+
+The exclusion is not an exemption granted to the tooling. The three stages below exist to get a
+contract under `openspec/specs/` reviewed before it is built, and a change to the harness writes no
+such contract, so a plan review of one would be judging a proposal against nothing.
 
 From there the work runs in three stages — plan, implement, archive — each started by one command and
 each running to completion without supervision: isolating the work, writing the spec and design,
