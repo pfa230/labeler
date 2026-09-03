@@ -28,6 +28,9 @@
 #   8  a stage wrote QUESTIONS.md and stopped rather than guess. Answer them in
 #      ANSWERS.md at the worktree root and re-run; every stage reads that file
 #   9  the branch CI run was red, or never appeared
+#  11  the gate fix edited code, and the review of that edit came back REVISE (#328).
+#      A gate fix is one unattended round on a lint; findings against it are a defect,
+#      which is what the second gate failure above already stops for
 #   3, 4, 5, 7, 10  passed through from apply.sh; see its header. 10 is the one worth
 #      knowing here: the fix round left the tree byte-identical to what the previous
 #      round judged, so no second verdict on the same bytes was launched (#299)
@@ -38,6 +41,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 source "$here/agents.sh"
 source "$here/questions.sh"
 source "$here/gates.sh"
+# next_round_file, no_account_stop, and the review round the gate fix now goes through
+# (#328). Shared with apply.sh, so both callers write one shape of round artifact.
+source "$here/review-round.sh"
 
 issue=""; planner=""; plan_reviewer=""; implementer=""; code_reviewer=""
 max_rounds=3; dry_run=0
@@ -130,13 +136,6 @@ propose_complete() {
   # in the schema, so its absence is not evidence of anything.
   [ -n "$(find "$d/specs" -name '*.md' 2>/dev/null | head -1)" ] || return 1
   return 0
-}
-# The first free index, so a re-run after a stop adds a round rather than overwriting
-# the record of an earlier one.
-next_round_file() { # next_round_file <dir> <prefix> -> basename
-  local dir="$1" pre="$2" i=1
-  while [ -e "$dir/$pre-$i.md" ]; do i=$((i + 1)); done
-  printf '%s-%s.md' "$pre" "$i"
 }
 # The plan's state is whatever the gate says it is. Asking the gate rather than
 # re-reading review.md here means one parser for the verdict and the digest, so this
@@ -571,19 +570,93 @@ reached=$(next_stage)
   echo "the driver reached the gates with the state reading '$reached'." >&2
   echo "Something undid an earlier stage; stopping rather than committing past it." >&2
   exit 1; }
+# Where the change is now. Archive has moved it, and the three stages left - the gate
+# fix, the review of that fix and the commit message - all write into it there.
+change_dir="$wt/openspec/changes/archive/$(archived_change)"
+[ -d "$change_dir" ] || { echo "no archived folder for $change in $wt; stopping." >&2; exit 1; }
+gate_fix_tree="$change_dir/gate-fix.tree"
+
 say "gates: fmt, clippy, test"
 if ! gates_clear; then
   say "gates failed: $implementer gets one round"
+  # Captured, because what this stage leaves behind is what the review below judges, and
+  # run-stage.sh's stdout is the only place it is stated: the digest of the tree it
+  # produced, and whether it produced one at all. stderr flows straight through.
+  #
+  # PIPESTATUS[0] rather than $?, for the reason apply.sh gives: pipefail reports tee's
+  # failure as the pipeline's, and a full disk would then be read as a gate fix that
+  # failed when it did not.
+  gate_fix_out="$wt/.agent-runs/gate-fix-stage.out"
   # run-stage.sh decides whether this continues a session, under its own lock (#292).
-  "$stage" gate-fix "$implementer" "$change" --resume; rc=$?
+  "$stage" gate-fix "$implementer" "$change" --resume | tee "$gate_fix_out"; rc=${PIPESTATUS[0]}
   ask_stop "gate fix ($implementer)" gate-fix
   [ "$rc" -eq 0 ] || { echo "the gate fix round failed; stopping." >&2; exit 1; }
   stage_done gate-fix
+  # The edit this round made, recorded where it survives the run that made it. A stop
+  # anywhere below - the second gate attempt, the review, a signal - leaves a re-run with
+  # no memory of the launch, and .agent-runs is working state a broom carries off, so the
+  # record goes in the change folder beside the author ledger and lands with it.
+  #
+  # Only when the round actually changed something. A gate fix that edited nothing, on
+  # gates that then passed, added nothing for anyone to review.
+  if grep -qx 'changed the worktree: yes' "$gate_fix_out"; then
+    fixed_tree=$(grep -E '^tree: [0-9a-f]{64}$' "$gate_fix_out" | tail -1 | sed 's/^tree:[[:space:]]*//')
+    [ -n "$fixed_tree" ] || {
+      echo "the gate fix changed the worktree and printed no tree digest, so what it wrote" >&2
+      echo "cannot be bound to a review. run-stage.sh prints one line reading 'tree: <64 hex>'." >&2
+      exit 1; }
+    printf '%s\n' "$fixed_tree" > "$gate_fix_tree" || {
+      echo "cannot record the gate fix's tree at $gate_fix_tree; stopping." >&2
+      echo "An unrecorded edit after the review is the one this records to prevent." >&2
+      exit 1; }
+  fi
   say "gates, again"
   if ! gates_clear; then
     echo >&2; echo "the gates still fail after one fix round, on something that is this change's." >&2
     echo "That is a defect, not a lint; stopping." >&2
     exit 1
+  fi
+fi
+
+# --- stage 4b: the review of what the gate fix wrote ------------------------------
+# The gate fix edits code after the diff review approved the tree and after archive, and
+# it used to fall straight through to the commit: the approving diff-review.md described
+# a tree that no longer existed (#328). Nothing could catch it, either - the landing check
+# on TREE_SHA256 is shape-only on purpose - so the one stage that exists to make edits was
+# the one stage whose edits nobody read. That contradicts the rule the whole loop is built
+# on, and it contradicts the commit-message stage immediately below, which refuses to let
+# an unreviewed edit through at all.
+#
+# Read off the artifacts, never off this run's control flow. The gate fix can have
+# happened in an earlier invocation whose review then stopped; nested inside the branch
+# that launched it, this check would never fire again on the re-run, which is the shape of
+# bug it exists to close.
+if [ -f "$gate_fix_tree" ]; then
+  fixed_tree=$(tr -d '[:space:]' < "$gate_fix_tree")
+  approved=$(grep -m1 '^TREE_SHA256:' "$change_dir/diff-review.md" 2>/dev/null \
+    | sed 's/^TREE_SHA256:[[:space:]]*//' | tr -d '[:space:]')
+  if [ "$fixed_tree" != "$approved" ]; then
+    # The digest the gate fix left is handed to the round as the tree it judges: every
+    # gate command is read-only (#326) and the review role may not write, so nothing
+    # between that measurement and this one can have moved the tree.
+    #
+    # The reviewer is the code reviewer, which cannot be one of the authors here: the only
+    # agent that can have written since the diff review is $implementer, and the two are
+    # refused as equal at the top of this script.
+    review_round "$change_dir" "$code_reviewer" "$change" "$fixed_tree" \
+      "gate-fix review: $code_reviewer"
+    case "$REVIEW_VERDICT" in
+      APPROVE)
+        write_diff_review "$change_dir" "$code_reviewer" "$fixed_tree" "$REVIEW_ROUND_NO" "$REVIEW_LOG"
+        say "the gate fix is approved" ;;
+      REVISE)
+        echo >&2
+        echo "the gate fix was reviewed and rejected. Its findings are in" >&2
+        echo "$change_dir/$REVIEW_ROUND_FILE." >&2
+        echo "A gate fix is one unattended round on a lint; findings against it are a defect," >&2
+        echo "which is what the second gate failure above already stops for. Stopping." >&2
+        exit 11 ;;
+    esac
   fi
 fi
 

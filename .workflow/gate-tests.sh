@@ -318,6 +318,19 @@ printf 'AUTHORS: agy\nREVIEWER: codex\nVERDICT: APPROVE\nTREE_SHA256: %s\nTREE_S
 expect 1 "gate: two TREE_SHA256 lines" "$GATE" "$repo" "${FILES[@]}"
 teardown; setup
 
+# --- the one writer after the review that CAN be compared: the gate fix (#328) -----
+# It edits src/ after the diff review approved the tree, so run-change.sh records what it
+# left behind. The standing approval must be the one that judged that, or the edit lands
+# unread. Absent the file no gate fix wrote anything, and there is nothing to compare.
+dr "agy" codex APPROVE "$TREE"
+expect 0 "gate: no gate fix, so nothing to compare" "$GATE" "$repo" "${FILES[@]}"
+printf '%s\n' "$TREE" > "$CDIR/gate-fix.tree"
+expect 0 "gate: the approval judged the tree the gate fix left" "$GATE" "$repo" "${FILES[@]}"
+printf '2222222222222222222222222222222222222222222222222222222222222222\n' > "$CDIR/gate-fix.tree"
+expect 1 "gate: a gate fix the standing approval never judged" "$GATE" "$repo" "${FILES[@]}"
+rm -f "$CDIR/gate-fix.tree"
+teardown; setup
+
 expect 0 "gate: a commit touching neither code nor a landing change is not its business" "$GATE" "$repo" docs/WORKFLOW.md
 teardown
 

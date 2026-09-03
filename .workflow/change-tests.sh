@@ -2515,5 +2515,210 @@ find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown
 fi
 
+# --- the gate fix is reviewed (#328) ----------------------------------------------
+# It edits code after archive and after the diff review approved the tree, and it used to
+# fall straight through to the commit: the approving diff-review.md described a tree that
+# no longer existed, and the landing check on TREE_SHA256 is shape-only by design.
+#
+# What is asserted is the RECORD, not this run's control flow. The fix can happen in one
+# invocation and its review stop in the next, so the driver reads gate-fix.tree rather than
+# remembering that it launched a fix - which is the bug shape, and the first case here.
+if [ "$pty_available" = "1" ]; then
+# Two digests that are not this tree's and not each other's; the driver compares them and
+# never computes them, so any 64 hex characters will do.
+approved=aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111
+fixed=9999999988888888777777776666666655555555444444443333333322222222
+
+# A change as the gates find it: archived, with a plan review the gate accepts, a diff
+# review naming the tree it approved, and uncommitted code for the fix round to inherit.
+# next_stage reads 'gates' off the archived folder alone, so every stage before it is
+# skipped and no agent but the ones stubbed here is ever launched.
+seed_archived() { # seed_archived <issue-n> <change-name> <approved-tree> -> the archived dir
+  local n="$1" name="$2" tree="$3" w a
+  w="$repo/.worktrees/$n"; a="$w/openspec/changes/archive/2026-01-01-$name"
+  mkdir -p "$a" "$w/.agent-runs"
+  mv "$w/openspec/changes/$name/proposal.md" "$a/proposal.md"
+  rmdir "$w/openspec/changes/$name"
+  printf '# Plan review\n\nAUTHOR: claude\nREVIEWER: codex\nVERDICT: APPROVE\n' > "$a/review.md"
+  "$here/specs-digest.sh" "$a" --write >/dev/null 2>&1
+  printf 'agy\n' > "$a/authors"
+  printf '# Diff review\n\nAUTHORS: agy\nREVIEWER: codex\nVERDICT: APPROVE\nROUNDS: 1\nTREE_SHA256: %s\n\nthe body\n' "$tree" > "$a/diff-review.md"
+  # The scope file the driver refreshes from the issue; cached here, since the stubbed gh
+  # can read no issue in a throwaway repo.
+  printf '# scope\n' > "$w/.agent-runs/issue-${n#issue-}.md"
+  # The change's own code, uncommitted as it is at this point in a real run. It is also
+  # what makes a fix round that changes nothing a defensible answer rather than exit 3.
+  printf 'implemented\n' > "$w/implemented.txt"
+  printf '%s' "$a"
+}
+# gh reads no issue here, and the driver falls back to the cached scope. cargo passes
+# unless a case replaces it.
+seed_bin() { # seed_bin <dir>
+  cat > "$1/cargo" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+  cat > "$1/gh" <<'FAKE'
+#!/usr/bin/env bash
+exit 1
+FAKE
+  chmod +x "$1/cargo" "$1/gh"
+}
+
+# THE RESUMPTION CASE, and the reason the record is a file. The gate fix happened in an
+# earlier invocation; this run's gates pass first time, so nothing in its control flow
+# knows a fix ever ran. It must still review it.
+setup
+add_change issue-60-gatefix
+a60=$(seed_archived issue-60 issue-60-gatefix "$approved")
+printf '%s\n' "$fixed" > "$a60/gate-fix.tree"
+bin=$(mktemp -d); seed_bin "$bin"
+cat > "$bin/codex" <<FAKE
+#!/usr/bin/env bash
+echo ran >> "$bin/.reviewer-ran"
+echo '{"type":"thread.started","thread_id":"t-60"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: REVISE"}}'
+FAKE
+chmod +x "$bin/codex"
+out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" 60 claude codex agy codex 2>&1); rc=$?
+if [ "$rc" = "11" ]; then ok "a recorded gate fix is reviewed on a run whose gates pass"
+else
+  bad "the gate fix went unreviewed on a passing run (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -5
+fi
+if [ -f "$bin/.reviewer-ran" ]; then ok "and the code reviewer is the one launched"
+else bad "no reviewer ran, so the edit reached the commit unread"; fi
+if grep -qx "TREE_SHA256: $fixed" "$a60/diff-review-1.md" 2>/dev/null; then
+  ok "and the round it wrote names the tree the fix left behind"
+else bad "diff-review-1.md reads '$(grep '^TREE_SHA256:' "$a60/diff-review-1.md" 2>/dev/null)'"; fi
+# REVISE must not touch the standing approval: it still describes the tree it judged, and
+# the landing gate refuses the commit on exactly that mismatch.
+if grep -qx "TREE_SHA256: $approved" "$a60/diff-review.md" 2>/dev/null; then
+  ok "and a REVISE leaves the superseded approval to be refused at landing"
+else bad "a rejected fix rewrote diff-review.md"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The approving path writes the record the landing gate then accepts.
+setup
+add_change issue-61-approve
+a61=$(seed_archived issue-61 issue-61-approve "$approved")
+printf '%s\n' "$fixed" > "$a61/gate-fix.tree"
+bin=$(mktemp -d); seed_bin "$bin"
+cat > "$bin/codex" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"thread.started","thread_id":"t-61"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: APPROVE"}}'
+FAKE
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf 'a message\n' > .agent-runs/commit-msg.txt
+echo '{"conversation_id":"c-61","status":"COMPLETED","response":"written"}'
+FAKE
+chmod +x "$bin/codex" "$bin/agy"
+# The push has no remote to reach, which is where this run stops; the record is what is
+# being asserted, and it is written before that.
+out=$(cd "$repo" && PATH="$bin:$PATH" "$RUN" 61 claude codex agy codex 2>&1); rc=$?
+if grep -qx "TREE_SHA256: $fixed" "$a61/diff-review.md" 2>/dev/null; then
+  ok "an approved gate fix becomes the standing approval, over the tree it left"
+else
+  bad "diff-review.md still reads '$(grep '^TREE_SHA256:' "$a61/diff-review.md" 2>/dev/null)' (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -5
+fi
+if grep -qx 'REVIEWER: codex' "$a61/diff-review.md" 2>/dev/null \
+   && grep -qx 'AUTHORS: agy' "$a61/diff-review.md" 2>/dev/null; then
+  ok "naming the reviewer that judged it and the ledger's authors"
+else bad "the rewritten approval reads '$(grep '^AUTHORS:\|^REVIEWER:' "$a61/diff-review.md" 2>/dev/null | tr '\n' ' ')'"; fi
+if [ "$rc" != "11" ]; then ok "and the run carries on past the review it passed"
+else bad "an approving review stopped the run as a rejection"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# The failing path end to end: the gates fail, the fix round edits code, and what it wrote
+# is recorded and then reviewed. cargo fails fmt once, which gates.sh never attributes to
+# the base commit, so no baseline is built here.
+setup
+add_change issue-62-fixround
+a62=$(seed_archived issue-62 issue-62-fixround "$approved")
+bin=$(mktemp -d); seed_bin "$bin"
+cat > "$bin/cargo" <<'FAKE'
+#!/usr/bin/env bash
+if [ "$1" = "fmt" ] && [ ! -e "$CARGO_MARK" ]; then
+  : > "$CARGO_MARK"; echo "Diff in src/lib.rs"; exit 1
+fi
+exit 0
+FAKE
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+if [ -f .agent-runs/gates.log ] && [ ! -f .agent-runs/commit-msg.txt ]; then
+  echo 'formatted' >> implemented.txt
+fi
+printf 'a message\n' > .agent-runs/commit-msg.txt
+echo '{"conversation_id":"c-62","status":"COMPLETED","response":"fixed"}'
+FAKE
+cat > "$bin/codex" <<FAKE
+#!/usr/bin/env bash
+echo ran >> "$bin/.reviewer-ran"
+echo '{"type":"thread.started","thread_id":"t-62"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: REVISE"}}'
+FAKE
+chmod +x "$bin/cargo" "$bin/agy" "$bin/codex"
+out=$(cd "$repo" && CARGO_MARK="$bin/.fmt-failed" PATH="$bin:$PATH" "$RUN" 62 claude codex agy codex 2>&1); rc=$?
+if [ "$rc" = "11" ]; then ok "a gate fix that edits code is reviewed before the commit"
+else
+  bad "the fix round reached the commit unreviewed (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+recorded=$(tr -d '[:space:]' < "$a62/gate-fix.tree" 2>/dev/null)
+case "$recorded" in
+  [0-9a-f]*) [ "${#recorded}" = "64" ] && ok "recording the digest that round left behind" \
+               || bad "gate-fix.tree holds ${#recorded} characters, not 64" ;;
+  *) bad "gate-fix.tree holds '$recorded'" ;;
+esac
+if [ "$recorded" != "$approved" ]; then ok "which is not the tree the standing approval judged"
+else bad "the fix recorded the approved tree, so nothing would ever be reviewed"; fi
+if [ -f "$bin/.reviewer-ran" ]; then ok "and the reviewer was launched on it"
+else bad "no reviewer ran after a fix round that edited code"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# A fix round that changed nothing wrote nothing for anyone to review. run-stage.sh allows
+# it - the tree it inherited may already have been right - so the driver must not read
+# "the round ran" as "the round edited".
+setup
+add_change issue-63-noop
+a63=$(seed_archived issue-63 issue-63-noop "$approved")
+bin=$(mktemp -d); seed_bin "$bin"
+cat > "$bin/cargo" <<'FAKE'
+#!/usr/bin/env bash
+if [ "$1" = "fmt" ] && [ ! -e "$CARGO_MARK" ]; then
+  : > "$CARGO_MARK"; echo "Diff in src/lib.rs"; exit 1
+fi
+exit 0
+FAKE
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+printf 'a message\n' > .agent-runs/commit-msg.txt
+echo '{"conversation_id":"c-63","status":"COMPLETED","response":"nothing to fix"}'
+FAKE
+cat > "$bin/codex" <<FAKE
+#!/usr/bin/env bash
+echo ran >> "$bin/.reviewer-ran"
+echo '{"type":"thread.started","thread_id":"t-63"}'
+echo '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"VERDICT: REVISE"}}'
+FAKE
+chmod +x "$bin/cargo" "$bin/agy" "$bin/codex"
+out=$(cd "$repo" && CARGO_MARK="$bin/.fmt-failed" PATH="$bin:$PATH" "$RUN" 63 claude codex agy codex 2>&1); rc=$?
+if [ ! -e "$a63/gate-fix.tree" ]; then ok "a fix round that edited nothing records nothing"
+else
+  bad "a no-op fix round recorded a tree to review (exit $rc)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -5
+fi
+if [ ! -f "$bin/.reviewer-ran" ]; then ok "and no reviewer is launched over an edit nobody made"
+else bad "a reviewer was launched with nothing new to judge"; fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = "0" ]

@@ -141,7 +141,7 @@ check_plan_review() { # check_plan_review <change-dir> <name>
 
 # The diff review is the last check before code lands, so it is gated where it lands.
 check_diff_review() { # check_diff_review <change-dir> <name>
-  local change="$1" name="$2" dr verdict
+  local change="$1" name="$2" dr verdict recorded approved
   dr="$change/diff-review.md"
   [ -f "$dr" ] || { fail "change '$name' lands with no diff-review.md. The implementation diff is reviewed by an agent that did not write it; .workflow/apply.sh records the verdict."; return; }
   verdict=$(field "$dr" VERDICT)
@@ -153,13 +153,23 @@ check_diff_review() { # check_diff_review <change-dir> <name>
   check_roles "$dr" "change '$name': diff-review.md" AUTHORS
   # The tree the approving review was given. Checked for shape and never against the
   # committed tree, which is a check that cannot hold: archive moves the folder and syncs
-  # openspec/specs/, a gate fix edits src/ whenever a lint fails, and the commit-message
-  # stage runs after both, so the committed tree is never the reviewed tree and a match
-  # check would refuse every change. Making it match would also void a code approval on
-  # every clippy nit, which contradicts the decision that one unattended round absorbs a
-  # lint. The value is compared where the failure actually happens: round to round, live,
-  # in apply.sh (#299).
+  # openspec/specs/, and the commit-message stage runs after that, so the committed tree is
+  # never the reviewed tree and a match check would refuse every change. The value is
+  # compared where the failure actually happens: round to round, live, in apply.sh (#299),
+  # and against the gate fix below.
   check_digest "$dr" "$name" TREE_SHA256 "the tree the review judged"
+
+  # The one stage that edits code after this review is the gate fix, and it used to land
+  # unread (#328). run-change.sh records the digest that round left behind, so the approval
+  # can be checked against it here: the review that stands must be the one that judged what
+  # the gate fix wrote. Absent the file no gate fix edited anything, and there is nothing to
+  # check - which is also all this can say, since a fix made outside the driver records
+  # nothing and the shape-only rule above is what covers the rest.
+  [ -f "$change/gate-fix.tree" ] || return 0
+  approved=$(field "$dr" TREE_SHA256)
+  case "$approved" in __MISSING__|__AMBIGUOUS__) return 0 ;; esac   # check_digest said so already
+  recorded=$(tr -d '[:space:]' < "$change/gate-fix.tree")
+  [ "$recorded" = "$approved" ] || fail "change '$name': a gate fix left the tree at ${recorded:0:12}, and the approving diff review judged ${approved:0:12}. That edit was never reviewed; run the diff review over it before this lands."
 }
 
 # Changes landing in this commit: an archived folder that did not exist at the base

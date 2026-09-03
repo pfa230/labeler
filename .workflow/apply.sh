@@ -112,6 +112,9 @@ fi
 
 stage="$here/run-stage.sh"
 . "$here/questions.sh"
+# The review round itself, shared with run-change.sh, which runs one after a gate fix
+# (#328). Sourced after $stage, which it uses.
+. "$here/review-round.sh"
 
 # run-stage.sh prints the digest of the tree it left behind, and that is the only place it
 # can be measured. Captured from stdout alone: stderr flows straight through, so nothing a
@@ -131,13 +134,6 @@ tree_printed() { # tree_printed -> the digest the last stage printed, or empty
     | tail -1 | sed 's/^tree:[[:space:]]*//'
 }
 
-# The first free index, so a re-run after a stop adds a round rather than overwriting
-# the record of an earlier one.
-next_round_file() { # next_round_file <dir> <prefix> -> basename
-  local dir="$1" pre="$2" i=1
-  while [ -e "$dir/$pre-$i.md" ]; do i=$((i + 1)); done
-  printf '%s-%s.md' "$pre" "$i"
-}
 issue=$(printf '%s' "$change" | sed -n 's/^\(issue-[0-9]\{1,\}\).*/\1/p')
 [ -n "$issue" ] || { echo "change name must start with issue-<N>-: $change" >&2; exit 2; }
 wt="$root/.worktrees/$issue"
@@ -194,21 +190,6 @@ ask_stop() { # ask_stop <label> <role>
   exit 8
 }
 
-# run-stage.sh exits 7 when no answer could be read out of what the agent printed, and it
-# does so for a writing role as readily as for a review (#315). One spelling for both roles
-# here, because it is one failure: the reviewer's used to say "produced a transcript", which
-# is only half of it - an agent that printed nothing produced no transcript either, and that
-# is the half that destroyed a run's record during #287. Carried out with its own status
-# rather than folded into the generic stop, so a person is not sent looking for a failure
-# the agent never reported.
-no_account_stop() { # no_account_stop <rc> <who>
-  [ "$1" -eq 7 ] || return 0
-  echo "$2 produced no readable result; stopping." >&2
-  echo "Its log under .agent-runs/ says whether that was a transcript with no answer in it," >&2
-  echo "or nothing at all." >&2
-  exit 7
-}
-
 # Whether this continues a session is run-stage.sh's decision, made under its own lock:
 # made here it would be a guess with a window in it, since another writing stage can
 # finish between deciding and locking (#292). --resume says what this caller intends; for
@@ -249,86 +230,17 @@ while :; do
     exit 10
   fi
 
-  say "review $round: $reviewer"
-  "$stage" review "$reviewer" "$change"
-  rc=$?
-  ask_stop "review $round ($reviewer)" review
-  review_log="$wt/.agent-runs/review-$reviewer.log"
-  [ "$rc" -eq 5 ] && { echo "the reviewer edited files; its verdict cannot be trusted." >&2; exit 5; }
-  # Checked before anything is copied or read: an unreadable stage must not become the
-  # round artifact, and must not be mistaken for a verdict.
-  no_account_stop "$rc" "the reviewer"
-  # Any other non-zero exit is a review that did not finish. A CLI can print a verdict
-  # and then die, and reading that verdict would record an approval nobody stands behind.
-  [ "$rc" -ne 0 ] && { echo "the reviewer exited $rc; its verdict cannot be trusted." >&2; exit 1; }
+  review_round "$wt/openspec/changes/$change" "$reviewer" "$change" "$tree" "review $round: $reviewer"
+  round_file="$REVIEW_ROUND_FILE"
 
-  # Last line-start VERDICT wins: the reviewer's final word ends its output, and a
-  # verdict quoted mid-prose never starts a line.
-  #
-  # Matched as a WHOLE line against the two verdicts this loop accepts, never as a
-  # prefix: a prefix match reads "VERDICT: APPROVE WITH CHANGES" as APPROVE. Anything
-  # unrecognised yields nothing, which is the refusal below rather than a guess.
-  # Searched in the closing lines only. When the agent emits no structured result the
-  # log is its whole transcript, which contains every file it read: a reviewer that
-  # opened `review.md` echoed the PLAN review's `VERDICT: APPROVE` into its own log,
-  # and a whole-file grep read that as the diff verdict.
-  verdict=$(tail -40 "$review_log" 2>/dev/null \
-    | grep -E '^VERDICT:[[:space:]]*(APPROVE|REVISE)[[:space:]]*$' \
-    | tail -1 | sed 's/^VERDICT:[[:space:]]*//' | tr -d '[:space:]')
-  # Every round is preserved, the approving one included. The gate reads
-  # diff-review.md, so a verdict that exists only in an untracked log is a verdict
-  # nothing can check (#223).
-  round_file=$(next_round_file "$wt/openspec/changes/$change" diff-review)
-  # The canonical count is the artifact's index, not this invocation's loop counter: a
-  # restart begins at 1 while the file it writes is diff-review-4.md.
-  round_no=$(printf '%s' "$round_file" | sed 's/[^0-9]//g')
-  # The tree this round judged, kept with the round that judged it. Without it the folder
-  # holds a stack of verdicts and no way to tell which of them, if any, describes the diff
-  # that shipped (#299).
-  { printf 'TREE_SHA256: %s\n\n' "$tree"
-    cat "$review_log" 2>/dev/null
-  } > "$wt/openspec/changes/$change/$round_file"
-
-  case "$verdict" in
+  case "$REVIEW_VERDICT" in
     APPROVE)
-      dr="$wt/openspec/changes/$change/diff-review.md"
-      # Every agent that changed the tree, in the order they first wrote, read from the
-      # ledger run-stage.sh keeps. Not "$implementer": that names the last stage to run,
-      # which during #291 attributed six rounds of another agent's work to an agent that
-      # wrote none of it. An empty list is written as an empty list and refused by the
-      # landing gate; there is no default, because a default is the same silent pass.
-      authors=$(paste -sd, "$wt/openspec/changes/$change/authors" 2>/dev/null | sed 's/,/, /g')
-      [ -n "$authors" ] || {
-        echo "warning: no implement or gate-fix stage changed this worktree, so nothing" >&2
-        echo "claims authorship of the code. The landing gate refuses an empty AUTHORS:" >&2
-        echo "line; whoever finishes this change writes it by hand." >&2; }
-      {
-        printf '# Diff review\n\n'
-        printf 'AUTHORS: %s\n' "$authors"
-        printf 'REVIEWER: %s\n' "$reviewer"
-        printf 'VERDICT: APPROVE\n'
-        printf 'ROUNDS: %s\n' "$round_no"
-        # The tree this approval covers. Checked for shape at landing and never against the
-        # committed tree: archive, the gate fix and the commit message all write after this
-        # point, so the committed tree is never the reviewed one.
-        printf 'TREE_SHA256: %s\n' "$tree"
-        # The contract this code was approved against. A later plan revision changes it,
-        # and whoever reads this verdict then knows the approval no longer covers what
-        # is in the folder: run-change.sh retires it on exactly that comparison.
-        printf 'SPECS_SHA256: %s\n\n' "$("$here/specs-digest.sh" "$wt/openspec/changes/$change" 2>/dev/null)"
-        # The body's own verdict line is dropped: the canonical one is above, and the
-        # gate refuses a file carrying two.
-        grep -v '^VERDICT:' "$review_log"
-      } > "$dr"
+      write_diff_review "$wt/openspec/changes/$change" "$reviewer" "$tree" "$REVIEW_ROUND_NO" "$REVIEW_LOG"
       say "APPROVE after $round round(s)"
       echo "Recorded in openspec/changes/$change/diff-review.md."
       echo "Not committed, not archived, not merged: those are separate steps."
       exit 0 ;;
     REVISE) ;;
-    *)
-      echo "no readable VERDICT line in $review_log (found '${verdict:-none}')." >&2
-      echo "Refusing to guess whether the review passed." >&2
-      exit 4 ;;
   esac
 
   # The findings go to the implementer BEFORE the cap is weighed. Checking the cap
@@ -351,7 +263,7 @@ while :; do
 
   if [ "$round" -ge "$max_rounds" ]; then
     say "still REVISE after $max_rounds round(s)"
-    echo "Stopping rather than looping. The findings are in $review_log, and the implementer" >&2
+    echo "Stopping rather than looping. The findings are in $REVIEW_LOG, and the implementer" >&2
     echo "has acted on them; a change that cannot converge in $max_rounds rounds wants a human." >&2
     echo "Re-running reviews what the implementer just fixed, so a restart makes progress." >&2
     exit 6

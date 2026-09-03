@@ -263,7 +263,9 @@ is whether the change solves the right problem, whether its scope is right, and 
 doing at all.
 
 **A gate fails twice.** The implementer gets one round to fix what `fmt`, `clippy` or the tests
-reported. A second failure is a defect rather than a lint, and it stops. A test that fails identically
+reported. A second failure is a defect rather than a lint, and it stops. What that round wrote is code
+like any other, so the code reviewer judges it before the commit, and a rejection stops the run for the
+same reason a second failure does. A test that fails identically
 at the commit the branch forked from is neither: the suite is run there too, the failures present in
 both are named and set aside, and only a failure the base does not have stops anything. Formatting and
 lints are never set aside that way. Where the comparison cannot be made at all, every failure counts
@@ -279,9 +281,10 @@ branch when you are asked, so what is left is a decision, not an inspection.
   lands, so a skipped hook delays the refusal rather than avoiding it.
 - The gates check a change that exists. Whether a given diff *should* have been a change at all is a
   judgement no gate can make, so a commit carrying no change folder is checked by nobody.
-- The one round the implementer gets to fix a failed gate produces a diff that no reviewer sees. It is
-  bounded to what the gate reported and the gate itself re-runs over the result, but a lint fix that
-  quietly changed behavior would land unreviewed.
+- The one round the implementer gets to fix a failed gate is reviewed like any other edit, but only
+  when the driver ran it. The driver records what that round left behind, and the landing check
+  compares the standing approval against that record; a gate fix made by hand records nothing, so
+  nothing is compared and the edit lands unreviewed.
 - A failure set aside as pre-existing was measured once, on the machine running the change. A test
   that fails for the machine rather than for the code is set aside with it, which is the point; a test
   that fails intermittently can be set aside by happening to fail at both ends of one comparison.

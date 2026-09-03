@@ -276,6 +276,17 @@ The steps below are what those stages mean. Read them to understand the loop or 
    been reviewed by nobody, and the landing check on `TREE_SHA256:` is shape-only and would wave it
    through. Repairing formatting is the fix round's job, and that round has an author.
 
+   **And that round is reviewed** (#328). It edits code after the diff review approved the tree and
+   after archive, and it used to fall straight through to the commit: the approving `diff-review.md`
+   described a tree that no longer existed. So `run-change.sh` records the digest the round left behind
+   in `gate-fix.tree` in the change folder, and the code reviewer judges it before the commit; a
+   `REVISE` stops the run (exit 11), because a gate fix is one unattended round on a lint and findings
+   against it are the defect the second gate failure already stops for. The record is a file rather
+   than this run's control flow on purpose: the fix can have happened in an earlier invocation whose
+   review then stopped, and a check nested inside the branch that launched it would never fire again.
+   It costs a reviewer launch on the failing path only, and only when the round actually changed
+   something.
+
    **A failure that was already there is neither** (#298). A failing `cargo test` is measured against
    the commit the branch forked from: `.workflow/gates.sh` checks that commit out in a scratch
    worktree outside the repository, runs the suite there, and subtracts. Failures present in both
@@ -328,12 +339,18 @@ digest that verdict recorded, and `diff-review.md` must pass with a non-empty `A
 `REVIEWER:` appears nowhere in, and a wellformed `TREE_SHA256:`.
 
 That last field is checked for **shape only**, never against the committed tree, and the difference is
-deliberate. Three stages write after the approving review: archive moves the folder and syncs
-`openspec/specs/`, a gate fix edits `src/` whenever a lint fails, and the commit message runs after
-both. The committed tree is therefore never the reviewed tree, so a match check would refuse every
-change; and making it match would void a code approval on every clippy nit, which contradicts the rule
-that one unattended round absorbs a lint. The value is compared where the failure it guards against
-actually happens: round to round, live, in `apply.sh`.
+deliberate. Two stages write after the approving review: archive moves the folder and syncs
+`openspec/specs/`, and the commit message runs after that. The committed tree is therefore never the
+reviewed tree, so a match check would refuse every change. The value is compared where the failure it
+guards against actually happens: round to round, live, in `apply.sh`.
+
+The third writer used to be the gate fix, and it was the one that mattered, because it edits `src/`
+(#328). It is now measured: a gate-fix round that changed the worktree records what it left behind in
+`gate-fix.tree`, and the landing gate refuses a change whose approving `TREE_SHA256:` is not that
+digest. So the one post-review stage that writes code cannot land unread, while the two that cannot
+write code stay free to run. What this cannot see is a fix made outside the driver, which records
+nothing; the shape-only rule is what covers the rest, and `docs/WORKFLOW.md` records it under what is
+not guaranteed.
 
 **In flight**, meaning a live folder under `openspec/changes/`. The plan checks apply, but only when
 the commit touches `src/` or `ui/src/`, so the planning and review loop itself stays writable.
