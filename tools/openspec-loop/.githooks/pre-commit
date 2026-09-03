@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Tool-agnostic review gate (#191). Every agent commits through git, so this is the
+# one choke point Claude Code, agy, codex and opencode all pass. Enabled by
+# `git config core.hooksPath .githooks`, which `.workflow/setup-hooks.sh` does.
+#
+# Skippable with `git commit --no-verify`; CI runs the same script on what lands.
+set -euo pipefail
+
+# Refuse commits while an apply is running IN THIS WORKTREE. The apply stage
+# implements; it does not commit, merge or archive. Prompting an agent not to do
+# something is a request, so this makes git refuse instead.
+#
+# This worktree's lock, not the repository's: keyed on the shared git dir it refused a
+# commit in every tree while any one of them was being written, which is two changes
+# serialized on disjoint files (#294). The lock names who holds it, so say that rather
+# than naming an agent this hook cannot know.
+git_dir=$(git rev-parse --path-format=absolute --git-dir)
+
+lock="$git_dir/APPLY_IN_PROGRESS"
+if [ -f "$lock" ]; then
+  echo "apply-lock: an apply is in progress here ($(cat "$lock"))." >&2
+  echo "apply-lock: the apply stage does not commit. The change is committed once, after review and archive." >&2
+  exit 1
+fi
+
+root=$(git rev-parse --show-toplevel)
+
+# The conflicted half of the merge refusal (#341). git runs pre-merge-commit for a merge
+# it resolved on its own and this hook for one that conflicted and is being committed by
+# hand, so MERGE_HEAD is what tells the second case from an ordinary commit.
+[ -f "$git_dir/MERGE_HEAD" ] && "$root/.workflow/merge-shape-check.sh"
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
+[ "${#staged[@]}" -gt 0 ] || exit 0
+
+# The checks read file contents from the working tree, not from the index. That is
+# only sound while the two agree for the files they read: an unstaged fix to a spec,
+# or an unstaged review artifact, would otherwise be judged in place of what is
+# actually being committed, and CI would then refuse what this hook allowed. Refuse
+# the divergence rather than emulate the index.
+# .workflow and .githooks are in the list because this hook EXECUTES them from the
+# working tree: a half-staged gate script would judge this commit with code the
+# commit does not contain.
+mapfile -t dirty < <(
+  git diff --name-only -- openspec src ui/src .workflow .githooks
+  git ls-files --others --exclude-standard -- openspec .workflow .githooks
+)
+if [ "${#dirty[@]}" -gt 0 ]; then
+  echo "review gate: these files are not staged as they are on disk, and the gate reads disk:" >&2
+  printf '  %s
+' "${dirty[@]}" >&2
+  echo "review gate: stage or stash them, so the checks judge what you are committing." >&2
+  exit 1
+fi
+
+# GATE_BASE_REF defaults to HEAD, which is what the staged tree is measured against here.
+"$root/.workflow/review-gate-check.sh" "$root" "${staged[@]}"
+exec "$root/.workflow/archive-merge-check.sh" "$root" "${staged[@]}"
