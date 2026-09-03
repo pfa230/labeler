@@ -354,6 +354,26 @@ decision that changes the contract. Anything a stage can decide, it decides and 
 asks instead of deciding has traded an hour of yours for a minute of its own; a stage that guesses at
 the contract has buried something a later reader will trust.
 
+`ANSWERS.md` is also the one place a person can steer a run that is already going, and it is worth
+knowing what that costs. **Every stage reads it, the reviewer included**, and `worktree_digest` hashes
+it into the tree (`run-stage.sh:374-382`), so editing it makes the next round a new round even when no
+source moved: `apply.sh`'s exit-10 identical-bytes guard will not fire, and a fix round that wrote
+nothing gets reviewed anyway.
+
+So an instruction written there sets the reviewer's work as much as the author's, and the trap is
+asking the author for **evidence the reviewer can only check by reproducing it**. During #213 five
+rounds had each found one uncovered guard, so `ANSWERS.md` asked the implementer to sweep every guard
+the diff added and report a table: `file:line`, the mutation, the test that fails under it. The author
+did that for 232,937 tokens on a free model. The reviewer, whose fixed prompt says to verify each
+finding against the actual code and not to rubber-stamp, then copied the UI tree to `/tmp` and re-ran
+the whole matrix, one full `vitest` run per row, because a coverage claim is the one kind of claim
+reading cannot check.
+
+Ask for the work, not for a claim about the work: "write the missing tests and prove them by mutation"
+lands the same code and leaves the reviewer a diff to read. If a claim table really is wanted, bound
+the check in the same file, which the reviewer also reads, or get the evidence from a tool
+(`cargo-mutants`, Stryker) whose output a reviewer can read instead of reproduce.
+
 ## What the gates check
 
 Two scripts, run by `.githooks/pre-commit` and by CI, so no agent is judged differently from another.
