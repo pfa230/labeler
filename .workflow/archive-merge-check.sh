@@ -64,8 +64,21 @@ body_of() { # body_of <index-file> <name> -> path, or empty
   [ -n "$idx" ] && printf '%s/%s.body' "$dir" "$idx"
 }
 
-# Capability of a spec path, published or delta: .../<cap>/spec.md
-cap_of() { basename "$(dirname "$1")"; }
+# Capability of a spec path, published or delta. The capability is the whole path
+# between the specs root and the trailing /spec.md, because the schema offers nested
+# names (`identity/user-auth`, schema.yaml:32). Reducing one to its last segment
+# collides two capabilities under different parents, and the check then compares a
+# delta against the wrong published spec (#329).
+cap_of() {
+  local p="$1"
+  case "$p" in
+    openspec/specs/*) p="${p#openspec/specs/}" ;;
+    openspec/changes/*)
+      p="${p#openspec/changes/}"; p="${p#archive/}"   # the change folder,
+      p="${p#*/}"; p="${p#specs/}" ;;                 # archived or live
+  esac
+  printf '%s' "${p%/spec.md}"
+}
 add_cap() { case " $caps " in *" $1 "*) ;; *) caps="$caps $1" ;; esac; }
 
 # Both sides name capabilities, and both omissions matter. A published spec in the
@@ -94,7 +107,10 @@ for cap in $caps; do
   delta=""
   for f in "$@"; do
     case "$f" in
-      openspec/changes/*/specs/"$cap"/spec.md) delta="$root/$f" ;;
+      # Compared through cap_of rather than by globbing "$cap" into the pattern: a
+      # nested name puts slashes in it, and * matches those, so the pattern would
+      # match paths naming some other capability.
+      openspec/changes/*/specs/*/spec.md) [ "$(cap_of "$f")" = "$cap" ] && delta="$root/$f" ;;
     esac
   done
 

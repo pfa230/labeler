@@ -48,6 +48,10 @@ setup() {
   cp "$here/../.gitignore" .gitignore
   git add -A; git commit -qm base
   cwd="$repo"
+  # Hermetic against the developer's own lineup (#330): every case below decides for
+  # itself whether a roles file exists, and this one does not until a case writes it.
+  export LABELER_ROLES_FILE="$repo/roles.local"
+  rm -f "$LABELER_ROLES_FILE"
 }
 teardown() { cd "$here" || exit 2; [ -n "${repo:-}" ] && [ -d "$repo" ] && find "$repo" -mindepth 0 -delete 2>/dev/null; repo=""; }
 
@@ -73,6 +77,52 @@ expect 2 "a change name that is not issue-N"   -- agy codex not-an-issue --dry-r
 
 # The old order fails loudly rather than resolving to something plausible.
 expect 2 "the old <change> <impl> <rev> order" -- issue-1-a agy codex --dry-run
+teardown
+
+# --- the machine-local lineup (#330) ----------------------------------------------
+#
+# Asserted on the MESSAGE wherever the refusal shares exit 2 with the path it would fall
+# through to, because an exit-code assertion passes against the broken code it exists to
+# catch: a lone agent read as a change name exits 2 for failing to resolve, exactly as a
+# lone agent refused as half a pair does.
+roles() { printf '%s\n' "$@" > "$LABELER_ROLES_FILE"; }
+says() { # says <want-substring> <label> -- <args...>
+  local want="$1" label="$2"; shift 3
+  local out
+  out=$(cd "$cwd" && "$APPLY" "$@" 2>&1)
+  case "$out" in
+    *"$want"*) pass=$((pass + 1)); printf 'ok    %s\n' "$label" ;;
+    *) fail=$((fail + 1)); printf 'FAIL  %s (no %s in the output)\n' "$label" "$want"
+       printf '%s\n' "$out" | sed 's/^/        /' | head -4 ;;
+  esac
+}
+
+setup
+add_change issue-1-alpha
+rm -f "$LABELER_ROLES_FILE"
+expect 2 "no agents and no roles file"          --
+says "$LABELER_ROLES_FILE" "the refusal names the file it wanted" --
+
+roles 'planner: claude' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: opencode'
+expect_change issue-1-alpha "no agents: the pair comes from the file" -- --dry-run
+says "implementer: agy" "and it is the file's implementer"    -- --dry-run
+says "reviewer: opencode" "and the file's code-reviewer"      -- --dry-run
+# A lone positional is the CHANGE once the pair may be absent, which is the reading the
+# old left-to-right assignment could not express.
+expect_change issue-1-alpha "a lone positional is the change, not the implementer" -- issue-1-alpha --dry-run
+says "implementer: agy" "with the pair still from the file"   -- issue-1-alpha --dry-run
+# and a lone AGENT is half a pair, refused rather than resolved as a change name
+expect 2 "a lone agent is half a pair"          -- agy
+says "takes both or neither" "and says so, rather than failing to resolve 'agy'" -- agy
+
+says "implementer: claude" "an explicit pair beats the file" -- claude codex --dry-run
+says "reviewer: codex" "on both roles"                      -- claude codex --dry-run
+
+# The file must not be a way to reach a pairing the command line refuses.
+roles 'planner: claude' 'plan-reviewer: codex' 'implementer: agy' 'code-reviewer: agy'
+expect 2 "a self-reviewing pair from the file"  -- --dry-run
+says "Fix 'code-reviewer' in" "pointing at the file, not at the usage" -- --dry-run
+rm -f "$LABELER_ROLES_FILE"
 teardown
 
 # --- resolution -------------------------------------------------------------------

@@ -28,6 +28,20 @@ expect() { # expect <want-exit> <label> <script> <args...>
   fi
 }
 
+# The same, plus what the refusal said. For a case that a broken script also refuses,
+# for its own wrong reason: the exit code alone would pass against the bug.
+expect_says() { # expect_says <want-exit> <pattern> <label> <script> <args...>
+  local want="$1" pat="$2" label="$3"; shift 3
+  local out rc
+  out=$("$@" 2>&1); rc=$?
+  if [ "$rc" = "$want" ] && printf '%s\n' "$out" | grep -qF -- "$pat"; then
+    pass=$((pass + 1)); printf 'ok    %s\n' "$label"
+  else
+    fail=$((fail + 1)); printf 'FAIL  %s (wanted exit %s saying "%s", got %s)\n' "$label" "$want" "$pat" "$rc"
+    printf '%s\n' "$out" | sed 's/^/        /' | head -3
+  fi
+}
+
 CHANGE=2026-01-01-issue-1-thing
 CDIR="openspec/changes/archive/$CHANGE"
 # A wellformed tree digest. It matches no tree anywhere, which is the point: the gate checks
@@ -227,6 +241,79 @@ The second thing SHALL happen.
 The stray thing SHALL happen.
 EOF
 expect 1 "merge: a requirement under an unrelated header is not a removal" "$MERGE" "$repo" "$CDIR/specs/thing/spec.md"
+teardown
+
+# A capability may be nested (`identity/user-auth`), so its name is the whole path
+# under openspec/specs/. Two nested capabilities sharing a last segment are the case
+# that matters: the name has to round-trip, or a delta is checked against the wrong
+# published spec (#329).
+setup_nested() {
+  repo=$(mktemp -d)
+  cd "$repo" || exit 2
+  git init -q .; git config user.email t@t; git config user.name t
+  for cap in identity/user-auth billing/user-auth; do
+    mkdir -p "openspec/specs/$cap"
+    cat > "openspec/specs/$cap/spec.md" <<EOF
+# $cap
+
+## Requirements
+
+### Requirement: The $cap thing
+
+The $cap thing SHALL happen.
+EOF
+  done
+  git add -A; git commit -qm base
+
+  mkdir -p "$CDIR/specs/identity/user-auth"
+  cat > "$CDIR/specs/identity/user-auth/spec.md" <<'EOF'
+## ADDED Requirements
+
+### Requirement: Another identity thing
+
+Another identity thing SHALL happen.
+EOF
+  cat >> openspec/specs/identity/user-auth/spec.md <<'EOF'
+
+### Requirement: Another identity thing
+
+Another identity thing SHALL happen.
+EOF
+}
+
+setup_nested
+expect 0 "merge: a nested capability archived faithfully" \
+  "$MERGE" "$repo" openspec/specs/identity/user-auth/spec.md "$CDIR/specs/identity/user-auth/spec.md"
+
+# The sibling's published spec was hand-edited, and this commit carries no delta for
+# it. Reducing both names to "user-auth" lets the identity delta answer for it.
+perl -pi -e 's/^The billing.user-auth thing SHALL happen\./The billing thing SHALL NOT happen./' openspec/specs/billing/user-auth/spec.md
+expect_says 1 "openspec/specs/billing/user-auth/spec.md changed" \
+  "merge: a sibling capability sharing a last segment is a different capability" \
+  "$MERGE" "$repo" openspec/specs/identity/user-auth/spec.md openspec/specs/billing/user-auth/spec.md "$CDIR/specs/identity/user-auth/spec.md"
+teardown
+
+# The other half of that collision: two deltas in one commit, for capabilities differing
+# only above their last segment. Reduced to one name, one delta answers for both, and the
+# requirements of the other are checked against the wrong published spec.
+setup_nested
+mkdir -p "$CDIR/specs/billing/user-auth"
+cat > "$CDIR/specs/billing/user-auth/spec.md" <<'EOF'
+## ADDED Requirements
+
+### Requirement: Another billing thing
+
+Another billing thing SHALL happen.
+EOF
+cat >> openspec/specs/billing/user-auth/spec.md <<'EOF'
+
+### Requirement: Another billing thing
+
+Another billing thing SHALL happen.
+EOF
+expect 0 "merge: two sibling capabilities archived in the same commit" \
+  "$MERGE" "$repo" openspec/specs/identity/user-auth/spec.md openspec/specs/billing/user-auth/spec.md \
+  "$CDIR/specs/identity/user-auth/spec.md" "$CDIR/specs/billing/user-auth/spec.md"
 teardown
 
 # --- the review gate: plan verdict, staleness, diff review ------------------------

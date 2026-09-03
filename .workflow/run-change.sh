@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Run one accepted issue end to end, on four named agents (#283).
 #
-#   .workflow/run-change.sh <issue#> <planner> <plan-reviewer> <implementer> <code-reviewer> \
+#   .workflow/run-change.sh <issue#> [<planner> <plan-reviewer> <implementer> <code-reviewer>] \
 #                           [--rounds N] [--dry-run]
 #   .workflow/run-change.sh 283 claude codex agy codex
+#   .workflow/run-change.sh 283                  # the four roles from .workflow/roles.local
 #
 # Worktree, plan, plan review, implementation, diff review, archive, the three cargo
 # gates, the commit and the push, stopping when the branch run is green. It never
@@ -36,7 +37,7 @@
 #      round judged, so no second verdict on the same bytes was launched (#299)
 set -uo pipefail
 
-usage='usage: run-change.sh <issue#> <planner> <plan-reviewer> <implementer> <code-reviewer> [--rounds N] [--dry-run]'
+usage='usage: run-change.sh <issue#> [<planner> <plan-reviewer> <implementer> <code-reviewer>] [--rounds N] [--dry-run]'
 here=$(cd "$(dirname "$0")" && pwd)
 source "$here/agents.sh"
 source "$here/questions.sh"
@@ -68,24 +69,58 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ "$positional" -eq 5 ] || { echo "$usage" >&2; exit 2; }
+# All four agents, or none of them (#330). Two roles from the command line and two from
+# a file is a half-configured lineup nobody can reason about, so a partial one is
+# refused rather than merged: what is on the command line does not top up what is in the
+# file, it replaces it entirely or is absent entirely.
+#
+# roles_from is what every validation below blames. Empty means the command line, and a
+# path means the file: a value that came from a file is not fixed by reading a synopsis
+# of arguments nobody typed, and printing one sends the reader to the wrong place.
+roles_from=""
+role_blame() { # role_blame <key>
+  if [ -n "$roles_from" ]; then printf '%s, key %s' "$roles_from" "$1"
+  else printf 'the command line'; fi
+}
+role_stop() { # role_stop <key> - the closing line of a failed role validation
+  if [ -n "$roles_from" ]; then echo "Fix '$1' in $roles_from." >&2
+  else echo "$usage" >&2; fi
+}
+case "$positional" in
+  5) ;;
+  1) roles_from=$(roles_path "$here")
+     roles_load "$roles_from" || exit 2
+     planner="$ROLE_PLANNER"; plan_reviewer="$ROLE_PLAN_REVIEWER"
+     implementer="$ROLE_IMPLEMENTER"; code_reviewer="$ROLE_CODE_REVIEWER" ;;
+  0) echo "$usage" >&2; exit 2 ;;
+  *) echo "name all four agents or none: $((positional - 1)) named." >&2
+     echo "Filling some roles here and the rest from $(roles_path "$here") is a" >&2
+     echo "half-configured lineup, so it is refused rather than merged." >&2
+     echo "$usage" >&2; exit 2 ;;
+esac
 case "$issue" in ''|*[!0-9]*) echo "the first argument is the issue number, got '$issue'" >&2; exit 2 ;; esac
 case "$max_rounds" in ''|*[!0-9]*) echo "--rounds takes a number, got '$max_rounds'" >&2; exit 2 ;; esac
 [ "$max_rounds" -ge 1 ] || { echo "--rounds must be at least 1" >&2; exit 2; }
 
-for a in "$planner" "$plan_reviewer" "$implementer" "$code_reviewer"; do
-  agent_known "$a" || { echo "unknown agent: $a" >&2; exit 2; }
+for pair in "planner:$planner" "plan-reviewer:$plan_reviewer" \
+            "implementer:$implementer" "code-reviewer:$code_reviewer"; do
+  agent_known "${pair#*:}" || {
+    echo "unknown agent '${pair#*:}', from $(role_blame "${pair%%:*}")." >&2
+    echo "The agents are claude, agy, codex and opencode." >&2
+    role_stop "${pair%%:*}"; exit 2; }
 done
 
 # Both pairs, because the gate refuses either self-review at commit time, and finding
 # that out after four agent runs is finding it out too late.
 if [ "$planner" = "$plan_reviewer" ]; then
   echo "planner and plan reviewer must differ: both are '$planner'." >&2
-  echo "Nobody reviews their own plan." >&2; exit 2
+  echo "Nobody reviews their own plan." >&2
+  role_stop plan-reviewer; exit 2
 fi
 if [ "$implementer" = "$code_reviewer" ]; then
   echo "implementer and code reviewer must differ: both are '$implementer'." >&2
-  echo "Nobody reviews their own code." >&2; exit 2
+  echo "Nobody reviews their own code." >&2
+  role_stop code-reviewer; exit 2
 fi
 # Both authors must be resumable. Every loop here returns findings to whoever wrote the
 # thing, so an author whose session cannot be continued either starts over or stops at
@@ -94,8 +129,12 @@ for pair in "planner:$planner" "implementer:$implementer"; do
   agent_resumable "${pair#*:}" || {
     echo "${pair#*:} cannot be resumed, so it cannot be the ${pair%%:*} here." >&2
     echo "Findings go back to the author, which continues the session that wrote the work." >&2
-    exit 2; }
+    echo "It is named in $(role_blame "${pair%%:*}")." >&2
+    role_stop "${pair%%:*}"; exit 2; }
 done
+
+[ -z "$roles_from" ] || printf 'roles: %s %s %s %s (from %s)\n' \
+  "$planner" "$plan_reviewer" "$implementer" "$code_reviewer" "$roles_from"
 
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { echo "not in a git repo" >&2; exit 2; }
 root=$(dirname "$common")
