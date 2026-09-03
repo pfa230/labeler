@@ -6,6 +6,7 @@ import { PrintForm } from "./PrintForm";
 import type { TemplateDetail } from "../../api/types";
 
 const tape: TemplateDetail = {
+  params: [],
   id: "t1",
   name: "Tag",
   description: "",
@@ -20,6 +21,7 @@ const tape: TemplateDetail = {
 };
 
 const sheet: TemplateDetail = {
+  params: [],
   id: "s1",
   name: "Sheet",
   description: "",
@@ -331,6 +333,7 @@ describe("PrintForm gating and submission pruning", () => {
 
   it("leaves undefaulted datetime, boolean, and enum empty on mount and seeds literal defaults", async () => {
     const detailWithTypes: TemplateDetail = {
+    params: [],
       id: "types_tpl",
       name: "Types Template",
       description: "",
@@ -979,6 +982,7 @@ describe("PrintForm empty template", () => {
 
   it("posts data: {} for a single template reporting no inputs", async () => {
     const detail: TemplateDetail = {
+    params: [],
       id: "no_inputs_tpl",
       name: "No Inputs",
       description: "",

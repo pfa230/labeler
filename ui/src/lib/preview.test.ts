@@ -66,6 +66,7 @@ describe("useTemplatePreview", () => {
     });
 
     const detail: TemplateDetail = {
+      params: [],
       id: "tpl_dt_enum",
       name: "DT and Enum",
       unit: "mm",

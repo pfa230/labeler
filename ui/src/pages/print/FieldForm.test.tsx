@@ -5,6 +5,7 @@ import { FieldForm, type FormValue } from "./FieldForm";
 import type { InputSpec, TemplateDetail } from "../../api/types";
 
 const single: TemplateDetail = {
+  params: [],
   id: "t1",
   name: "Single",
   description: "",
@@ -19,6 +20,7 @@ const single: TemplateDetail = {
 };
 
 const sheet: TemplateDetail = {
+  params: [],
   id: "s1",
   name: "Sheet",
   description: "",
