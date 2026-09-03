@@ -1,0 +1,11 @@
+{
+  "name": "openspec-loop",
+  "version": "0.1.0",
+  "description": "The gated adversarial-review loop: /change runs one accepted issue end to end on four named agents, /apply pairs an implementer with a reviewer. Commands and the edit-time review-gate hook; the shell runtime is vendored per repo as a git subtree.",
+  "license": "MIT",
+  "keywords": ["openspec", "workflow", "code-review", "agents"],
+  "commands": ["./commands/"],
+  "skills": ["./skills/"],
+  "hooks": "./hooks/hooks.json",
+  "author": { "name": "Fedir Panasenko" }
+}

@@ -1,0 +1,13 @@
+{
+  "description": "openspec-loop: an edit-time signal for the review gate. Calls the repository's own vendored gate, so the rules cannot drift from the ones the commit hook and CI enforce. Fails open when a repository has no kit installed.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/review-gate.sh", "timeout": 15 }
+        ]
+      }
+    ]
+  }
+}
