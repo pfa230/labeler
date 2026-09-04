@@ -7,7 +7,9 @@
 # what happened to #285 while #235 was mid-review.
 set -euo pipefail
 lock="$(git rev-parse --path-format=absolute --git-dir)/APPLY_IN_PROGRESS"
-[ -f "$lock" ] || exit 0
+# Found beside this hook rather than under the repository root, as pre-merge-commit is and
+# for the same reason: the suites run this hook by path against a throwaway repo.
+[ -f "$lock" ] || exec "$(dirname "$0")/../workflow/chain-hook.sh" pre-push "$@"
 echo "apply-lock: an apply is in progress here ($(cat "$lock"))." >&2
 echo "apply-lock: nothing leaves this machine mid-apply." >&2
 exit 1
