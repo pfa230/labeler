@@ -45,6 +45,15 @@ hook and CI enforce.
 `.githooks/` keeps its dot: the suites resolve it as `$here/../.githooks`, and renaming it breaks
 eight tests with exit 127.
 
+## Installing over hooks a repo already has
+
+`core.hooksPath` names one directory, not a search path, so pointing it here replaces whatever the
+repo was running rather than adding to it: their `.git/hooks`, or their husky, lefthook or dotfiles
+path, stops being consulted and git says nothing about it. `setup-hooks.sh` therefore records what
+it displaced in `hooks.displacedPath` before taking over, and every hook runs it, with its status,
+after its own checks have passed. That is pre-commit's `<hook>.legacy` migration, recorded once for
+a directory instead of once per event.
+
 ## Tests
 
     workflow/gate-tests.sh      # the two commit gates, mostly the refusals

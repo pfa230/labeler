@@ -51,7 +51,8 @@ fi
 # Staged but uncommitted, which is where this hook runs, so MERGE_HEAD is the merge in
 # hand. It holds one line per commit being merged, so an octopus is read as written.
 merge_head=$(git rev-parse --path-format=absolute --git-path MERGE_HEAD)
-[ -f "$merge_head" ] || exit 0
+chain="$(dirname "$0")/../workflow/chain-hook.sh"
+[ -f "$merge_head" ] || exec "$chain" pre-merge-commit "$@"
 
 while read -r sha; do
   [ -n "$sha" ] || continue
@@ -66,3 +67,6 @@ while read -r sha; do
     esac
   done < <(git worktree list --porcelain)
 done < "$merge_head"
+
+# Whatever this repo ran before core.hooksPath was pointed here, last and with its status.
+exec "$chain" pre-merge-commit "$@"
