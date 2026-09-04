@@ -703,17 +703,19 @@ consults the page format.
    **every one of them is laid out** whatever the item's `wrap` flag says. `\r\n` is normalised to
    `\n` before this step, because `\r` is unmapped in the bundled font and would otherwise be charged
    the `.notdef` advance while rendering nothing; a lone `\r` is not a terminator (see #259).
-   `wrap: true` then wraps each line to the box width, breaking at spaces and splitting a single word
-   wider than the box character by character, which is the current algorithm and is retained
-   unchanged. `wrap: false` breaks nothing further. A line therefore remains wider than the box only
-   when one **glyph** is, which no breaking rule can help, or when `wrap: false` was authored, which
-   step 3 resolves.
+   `wrap: true` then wraps each line to the box width, breaking at spaces and never inside a word: a
+   word wider than the box stays whole on its own line, wider than the box. `wrap: false` breaks
+   nothing further. A line therefore remains wider than the box when one **word** is and `wrap: true`
+   was authored, which step 2 shrinks and step 3 resolves; when one **glyph** is, which no breaking
+   rule can help; or when `wrap: false` was authored, which step 3 resolves.
 
 2. **Shrink.** A `font_size` range picks the largest size in `[min, max]` at which the broken block
-   fits the box height, in 0.5 pt steps, including the ink reservation the *Vertical fitting reserves
-   the ink each alignment can expose* requirement defines for the item's `alignment.vertical`. The text SHALL be re-broken at each candidate's glyph advances, as today's
+   fits the box height **and every line step 1 broke it into fits the box width**, in 0.5 pt steps, including the
+   ink reservation the *Vertical fitting reserves the ink each alignment can expose* requirement
+   defines for the item's `alignment.vertical`. The text SHALL be re-broken at each candidate's glyph advances, as today's
    `largest_fitting_font` does; the emitted breaks are the ones from the selected size, not breaks
-   frozen at `font_size.max`. A fixed `font_size` skips this step.
+   frozen at `font_size.max`. A word too wide for the box at one candidate is therefore a reason to
+   try a smaller size, not a break to place inside the word. A fixed `font_size` skips this step.
 3. **Overflow.** What still does not fit is resolved by the item's `overflow` policy.
 4. **Emit.** Every line produced by step 1, blank or not, gets its own line box. A blank first or last
    line is a line the caller wrote and is laid out like any other.
@@ -750,10 +752,12 @@ given the alignment slot as its box while a left-aligned one was given the laid-
 | fits once shortened | render the shortened form | `text_does_not_fit` |
 | cannot fit however short | `text_does_not_fit` | `text_does_not_fit` |
 
-Shortening keeps the lines that fit and appends `...` to the last, trimming characters until it fits.
+Shortening has two independent paths. Lines that do not fit the block are dropped, and the marker is
+appended to the last retained line; a line that is wider than the box is shortened where it sits,
+whether or not anything was dropped. Either path trims characters until the line and the marker fit.
 The marker reports the **field**, not the line it sits on: it is appended whenever any line was
-dropped, whether that line carried glyphs or was blank, and it lands at the end of the last retained
-line whatever that line holds. A value whose every line is shown, unshortened, carries no marker.
+dropped, whether that line carried glyphs or was blank, and for a dropped line it lands at the end
+of the last retained line whatever that line holds. A value whose every line is shown, unshortened, carries no marker.
 The shortest form it can produce is the marker alone, so shortening succeeds whenever `...` fits the
 box width and the box holds at least one line, and fails otherwise. Two cases therefore reach the
 third row, and neither is a separate rule:
@@ -762,10 +766,14 @@ third row, and neither is a separate rule:
 - the box is shorter than one line at the chosen size, since a line's height comes from the font size
   and the line count is already at its floor of one.
 
-An over-wide **glyph** is not by itself one of them. A box can be too narrow for a glyph and still
-wide enough for the marker, and under `ellipsis` that case renders `...`; it fails only when the
-marker does not fit either. Under `fail` it fails as soon as the content overflows, marker or no
-marker.
+An over-wide **line** is shortened in place, wherever it sits in the block: a line wider than the
+box at the chosen size is trimmed until it and the marker fit, independently of the dropped-lines
+path, so the marker may sit on a middle line while a later fitting line is emitted untouched. An
+over-wide **word** reaches the policy exactly like an over-wide glyph: under `wrap: true` it is
+kept whole, so at the chosen size it is a line wider than the box, and step 3 shortens or refuses
+it. A box can be too narrow for a word or a glyph and still wide enough for the marker, and under
+`ellipsis` that case renders the shortened form with `...`; it fails only when the marker does not
+fit either. Under `fail` it fails as soon as the content overflows, marker or no marker.
 
 Clipping SHALL NOT be an outcome of the policy: a box that cannot hold the shortest representable
 form of its content is an error, not a label with half a glyph on it.
@@ -805,8 +813,51 @@ truncates with an ellipsis if it still overflows", generalising both to every fo
 
 - **WHEN** a `wrap: true` `text` carries a single word far wider than its box, and the box is
   tall enough for the resulting lines
-- **THEN** the word is split character by character across lines that each fit
-- **AND** no overflow occurs and neither policy is consulted
+- **THEN** the word is not split: it stays whole on one line, step 2 spends the `font_size` range
+  on it, and whatever still does not fit at the floor is resolved by the item's `overflow` policy
+- **AND** this scenario keeps its name from the superseded version, where the word was split
+  character by character and neither policy was consulted
+
+#### Scenario: An over-wide word shrinks whole instead of breaking
+
+- **WHEN** a `wrap: true` `text` with `font_size: { min, max }` carries a value containing a word
+  too wide for its box at `max` but fitting whole at some size in the range, in a box tall enough
+  for the resulting lines
+- **THEN** it renders that word whole, on one line, at the largest such size
+- **AND** an implementation retaining the character-chunking loop accepts the first size whose
+  height works and emits the word split across lines, and fails this scenario
+
+#### Scenario: An over-wide word at the floor is shortened when the marker still fits
+
+- **WHEN** a `wrap: true` `text` with `font_size: { min, max }` and `overflow: ellipsis` carries a
+  word still wider than its box at `min`, in a box still wider than `...` at that size
+- **THEN** it renders the shortened form with the `...` marker, because a shortened form exists
+- **AND** the same item with `overflow: fail` fails with reason `text_does_not_fit`
+
+#### Scenario: An over-wide word at a fixed size takes the overflow outcome
+
+- **WHEN** a `wrap: true` `text` with a fixed `font_size` and `overflow: ellipsis` carries a word
+  wider than its box, in a box still wider than `...` at that size
+- **THEN** it renders the shortened form with the `...` marker rather than splitting the word
+- **AND** the same item with `overflow: fail` fails with reason `text_does_not_fit`
+- **AND** the same item with `overflow: ellipsis` in a box narrower than `...` fails with reason
+  `text_does_not_fit`, because no shortened form exists
+
+#### Scenario: No emitted line is ever a mid-word fragment without a marker
+
+- **WHEN** any `wrap: true` `text` renders any value under either `overflow` policy
+- **THEN** every emitted line carrying glyphs is either a whole word, words joined by single
+  spaces, or a line carrying the `...` marker; a blank line carries no glyphs and no marker
+- **AND** a mid-word fragment with no hyphen and no marker never appears
+
+#### Scenario: An over-wide line is shortened where it sits, not only at the end
+
+- **WHEN** a `wrap: true` `text` with `overflow: ellipsis` and a fixed `font_size` carries a
+  value whose first line is wider than its box while its last line fits as authored, with no
+  line dropped off the end of the block
+- **THEN** the over-wide line is trimmed until it and the marker fit, and the fitting last line
+  is emitted untouched
+- **AND** the marker therefore sits mid-block rather than at the end of the last retained line
 
 #### Scenario: An over-wide glyph is shortened when the marker still fits
 
