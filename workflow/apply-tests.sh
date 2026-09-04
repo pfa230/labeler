@@ -51,6 +51,9 @@ setup() {
   repo=$(mktemp -d) || fatal "cannot create a fixture directory (TMPDIR=${TMPDIR:-/tmp})."
   cd "$repo" || fatal "cannot enter the fixture directory $repo."
   git init -q .; git config user.email t@t; git config user.name t
+  # The gate reads impl_paths from here; without it it refuses to judge rather than guess,
+  # and every stage that probes the plan gate would read that refusal as a failed plan.
+  printf 'impl_paths: [src, ui/src]\nfrozen_paths: []\n' > .openspec-loop.yml
   mkdir -p openspec/changes/archive || fatal "cannot create the fixture's change directory."
   echo x > openspec/changes/archive/.gitkeep
   # The real ignore file, so the artifact test below judges the rule that ships.
@@ -61,7 +64,7 @@ setup() {
   # itself whether a roles file exists, and this one does not until a case writes it.
   export OPENSPEC_LOOP_ROLES_FILE="$repo/roles.local"
   rm -f "$OPENSPEC_LOOP_ROLES_FILE"
-  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore
+  fixture_built "$repo" openspec/changes/archive/.gitkeep .gitignore .openspec-loop.yml
 }
 teardown() { cd "$here" || exit 2; [ -n "${repo:-}" ] && [ -d "$repo" ] && find "$repo" -mindepth 0 -delete 2>/dev/null; repo=""; }
 
@@ -295,6 +298,102 @@ if [ "$stray" = "0" ]; then
 else
   fail=$((fail + 1)); printf 'FAIL  %s run artifact(s) would be staged\n' "$stray"
   (cd "$repo/.worktrees/issue-9" && git ls-files --others --exclude-standard) | sed 's/^/        /'
+fi
+find "$bin" -mindepth 0 -delete 2>/dev/null
+teardown
+
+# --- the repeated-round refusal is keyed on the tree AND the delta (#362) -----------
+# A review judges code against the delta specs, and tree_excl keeps openspec/changes out
+# of TREE_SHA256, so a finding answered in the delta leaves the tree byte-identical. Keyed
+# on the tree alone the refusal fired on a review that had never happened, with nothing
+# that could ever move the digest, and #338 could not land. All three directions are
+# asserted here: a refusal that stops firing looks exactly like one that passes.
+setup
+add_change issue-10-guard
+gdir="$repo/.worktrees/issue-10/openspec/changes/issue-10-guard"
+mkdir -p "$gdir/specs/thing" || fatal "cannot create the fixture's delta specs directory."
+printf '# thing\n\n## ADDED Requirements\n\n### Requirement: One\n\nIt SHALL hold.\n' \
+  > "$gdir/specs/thing/spec.md" || fatal "cannot write the fixture's delta spec."
+# A passing plan verdict, because run-stage.sh refuses to start implement without one.
+# Its digest is rewritten wherever this case moves the delta below, which is what the
+# driver does for real: a plan re-review is how a moved contract gets a verdict again,
+# and that is the state the guard has to cope with.
+printf 'AUTHOR: agy\nREVIEWER: claude\nVERDICT: APPROVE\n' > "$gdir/review.md" \
+  || fatal "cannot write the fixture's plan verdict."
+"$here/specs-digest.sh" "$gdir" --write > /dev/null \
+  || fatal "cannot record the fixture's SPECS_SHA256."
+fixture_built "$repo" "$gdir/specs/thing/spec.md" "$gdir/review.md"
+grep -q '^SPECS_SHA256:' "$gdir/review.md" \
+  || fatal "specs-digest.sh recorded no digest in the fixture's review.md."
+bin=$(mktemp -d)
+# Writes the code once and never again, which is the #338 shape: the first stage has work
+# to do, and every later one is a resumed round that correctly finds the code already
+# right. run-stage.sh permits a no-op only on a resumed round, so both halves are needed
+# to reach the guard at all.
+cat > "$bin/agy" <<'FAKE'
+#!/usr/bin/env bash
+[ -e src/thing.txt ] || { mkdir -p src && echo done > src/thing.txt; }
+echo '{"conversation_id":"conv-guard","status":"COMPLETED","response":"nothing left to do"}'
+FAKE
+cat > "$bin/claude" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"type":"result","subtype":"success","is_error":false,"result":"one finding, in the delta text\nVERDICT: REVISE","session_id":"11111111-2222-3333-4444-555555555555"}'
+FAKE
+chmod +x "$bin/agy" "$bin/claude"
+guard_run() { (cd "$repo" && PATH="$bin:$PATH" "$APPLY" agy claude issue-10-guard --rounds 1 2>&1); }
+
+# Round 1: no prior artifact, so the review runs and records what it judged.
+out=$(guard_run); rc=$?
+if [ "$rc" = "6" ] && [ -e "$gdir/diff-review-1.md" ]; then
+  pass=$((pass + 1)); printf 'ok    the first round runs and writes diff-review-1.md\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  the first round runs and writes diff-review-1.md (exit %s)\n' "$rc"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+if grep -qE '^SPECS_SHA256: [0-9a-f]{64}$' "$gdir/diff-review-1.md" 2>/dev/null; then
+  pass=$((pass + 1)); printf 'ok    and records the contract it judged, not the tree alone\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  diff-review-1.md carries no SPECS_SHA256\n'
+  head -3 "$gdir/diff-review-1.md" 2>/dev/null | sed 's/^/        /'
+fi
+
+# Neither has moved: still refused, which is what #299 bought and this must not undo.
+out=$(guard_run); rc=$?
+if [ "$rc" = "10" ]; then
+  pass=$((pass + 1)); printf 'ok    an unmoved tree and unmoved delta still exit 10\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  an unmoved tree and unmoved delta still exit 10 (got %s)\n' "$rc"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+
+# The delta moves and the code does not: the #338 shape. A review is owed, and the
+# assertion is that one actually ran, never merely that the exit differs.
+printf 'It SHALL also supersede the third frozen site.\n' >> "$gdir/specs/thing/spec.md" \
+  || fatal "cannot amend the fixture's delta spec."
+"$here/specs-digest.sh" "$gdir" --write > /dev/null \
+  || fatal "cannot re-record the fixture's SPECS_SHA256."
+out=$(guard_run); rc=$?
+if [ "$rc" != "10" ] && [ -e "$gdir/diff-review-2.md" ]; then
+  pass=$((pass + 1)); printf 'ok    a delta-only fix gets its review instead of exit 10\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  a delta-only fix gets its review instead of exit 10 (exit %s, round 2 %s)\n' \
+    "$rc" "$([ -e "$gdir/diff-review-2.md" ] && echo written || echo missing)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -6
+fi
+
+# A round artifact from before this change records no contract, so nothing can show it
+# judged this one. It must not deadlock the change it belongs to.
+rm -f "$gdir/diff-review-2.md"
+grep -v '^SPECS_SHA256:' "$gdir/diff-review-1.md" > "$gdir/diff-review-1.md.tmp" \
+  && mv "$gdir/diff-review-1.md.tmp" "$gdir/diff-review-1.md" \
+  || fatal "cannot rewrite the fixture's round artifact."
+out=$(guard_run); rc=$?
+if [ "$rc" != "10" ] && [ -e "$gdir/diff-review-2.md" ]; then
+  pass=$((pass + 1)); printf 'ok    a round artifact with no recorded contract does not deadlock\n'
+else
+  fail=$((fail + 1)); printf 'FAIL  a round artifact with no recorded contract does not deadlock (exit %s, round 2 %s)\n' \
+    "$rc" "$([ -e "$gdir/diff-review-2.md" ] && echo written || echo missing)"
+  printf '%s\n' "$out" | sed 's/^/        /' | tail -6
 fi
 find "$bin" -mindepth 0 -delete 2>/dev/null
 teardown

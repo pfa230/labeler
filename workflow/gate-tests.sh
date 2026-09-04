@@ -610,9 +610,10 @@ setup_hooked() {
   printf 'impl_paths: [src, ui/src]\nfrozen_paths: []\n' > .openspec-loop.yml
   mkdir -p workflow .githooks src || fatal "cannot create the fixture's harness directories."
   cp "$here"/*.sh workflow/ || fatal "cannot copy the workflow scripts into the fixture."
-  cp "$here/../.githooks/pre-commit" "$here/../.githooks/pre-merge-commit" .githooks/ \
+  cp "$here/../.githooks/pre-commit" "$here/../.githooks/pre-merge-commit" \
+     "$here/../.githooks/pre-push" .githooks/ \
     || fatal "cannot copy the hooks into the fixture."
-  chmod +x .githooks/pre-commit .githooks/pre-merge-commit workflow/*.sh
+  chmod +x .githooks/pre-commit .githooks/pre-merge-commit .githooks/pre-push workflow/*.sh
   printf 'fn main() {}\n' > src/main.rs
   git add -A && git commit -qm base || fatal "cannot write the fixture's base commit."
   git config core.hooksPath .githooks
@@ -620,7 +621,7 @@ setup_hooked() {
     && git add -A && git commit -qm "the other side" --no-verify \
     || fatal "cannot build the fixture's other branch."
   git checkout -q main || fatal "cannot return to the fixture's main."
-  fixture_built "$repo" .githooks/pre-commit .githooks/pre-merge-commit \
+  fixture_built "$repo" .githooks/pre-commit .githooks/pre-merge-commit .githooks/pre-push \
                 workflow/merge-shape-check.sh src/main.rs
 }
 
@@ -722,6 +723,105 @@ printf 'fn added() {}\n' > src/added.rs
 git add -A || fatal "cannot stage the fixture's code change."
 expect 0 "hook: an approved plan lets the same commit through" \
   git commit -qm "code with the plan approved"
+teardown
+
+# --- migrate and chain: a repo that already had hooks keeps them -------------------
+# core.hooksPath names ONE directory. Setting it does not add these hooks to the ones a
+# consumer already runs, it replaces them, and nothing anywhere says so: their .git/hooks,
+# or their husky, lefthook or dotfiles path, simply stops being consulted. That is this
+# suite's own signature again - a hook that has stopped firing looks exactly like a hook
+# that passes - so the install records what it displaced and every hook here runs it after
+# its own checks, which is what pre-commit does with <hook>.legacy.
+
+displace() { # displace <event> <body-line...> - the fixture had its own hook, then we installed
+  local event="$1"; shift
+  mkdir -p legacy-hooks || fatal "cannot create the fixture's displaced hooks directory."
+  { printf '#!/bin/sh\n'; printf '%s\n' "$@"; } > "legacy-hooks/$event"
+  chmod +x "legacy-hooks/$event" || fatal "cannot make the fixture's displaced hook executable."
+  git config core.hooksPath legacy-hooks
+  workflow/setup-hooks.sh > /dev/null || fatal "setup-hooks.sh could not install into the fixture."
+  fixture_built "$repo" "legacy-hooks/$event"
+}
+
+setup_hooked
+displace pre-commit 'exit 0'
+expect_says 0 "legacy-hooks" \
+  "setup: the hooks path it takes over is recorded rather than forgotten" \
+  git config --get hooks.displacedPath
+teardown
+
+# Re-running an install is ordinary. Recording ourselves as what we displaced would make
+# every later commit run this hook from inside itself, forever.
+setup_hooked
+workflow/setup-hooks.sh > /dev/null || fatal "setup-hooks.sh could not install into the fixture."
+workflow/setup-hooks.sh > /dev/null || fatal "setup-hooks.sh could not install into the fixture a second time."
+expect 1 "setup: installing over our own hooks path records nothing, so it cannot chain to itself" \
+  git config --get hooks.displacedPath
+teardown
+
+setup_gated "AUTHOR: claude" "REVIEWER: codex" "VERDICT: APPROVE"
+workflow/specs-digest.sh openspec/changes/issue-1-thing --write > /dev/null \
+  || fatal "cannot write the fixture's specs digest."
+displace pre-commit 'touch displaced-ran'
+printf 'fn added() {}\n' > src/added.rs
+git add -A || fatal "cannot stage the fixture's code change."
+git commit -qm "code with the plan approved" \
+  || fatal "the fixture's approved commit was refused, so this case would assert nothing."
+expect 0 "hook: the hook it displaced runs once the gates have passed" test -f displaced-ran
+teardown
+
+# The status, not merely the call: a displaced hook whose refusal is discarded is a
+# refusal that no longer refuses anything.
+setup_gated "AUTHOR: claude" "REVIEWER: codex" "VERDICT: APPROVE"
+workflow/specs-digest.sh openspec/changes/issue-1-thing --write > /dev/null \
+  || fatal "cannot write the fixture's specs digest."
+displace pre-commit 'echo "the repository refuses this" >&2; exit 1'
+printf 'fn added() {}\n' > src/added.rs
+git add -A || fatal "cannot stage the fixture's code change."
+expect_says 1 "the repository refuses this" \
+  "hook: a displaced hook that refuses refuses the commit" \
+  git commit -qm "code the repository's own hook objects to"
+teardown
+
+# Gates first, and a refusal stops there. A second opinion on a commit that is already
+# being refused is noise, and a displaced hook that formats or stages would be doing that
+# work for a commit that never happens.
+setup_gated
+displace pre-commit 'touch displaced-ran'
+printf 'fn added() {}\n' > src/added.rs
+git add -A || fatal "cannot stage the fixture's code change."
+git commit -qm "code while the plan is unreviewed" > /dev/null 2>&1 \
+  && fatal "the fixture's ungated commit was allowed, so this case would assert nothing."
+expect 1 "hook: the displaced hook is not reached when a gate refuses" test -f displaced-ran
+teardown
+
+# pre-push is handed the refs on stdin. A chain that consumes or drops them leaves the
+# displaced hook deciding about a push it cannot see.
+setup_hooked
+displace pre-push 'cat > pushed-refs'
+expect_says 0 "refs/heads/main" \
+  "hook: pre-push hands the displaced hook the refs it was given on stdin" \
+  bash -c 'printf "refs/heads/main sha1 refs/heads/main sha2\n" | .githooks/pre-push origin url && cat pushed-refs'
+teardown
+
+# The third hook is wired separately, so it is asserted separately: git splits the merge
+# commit across two hooks and this is the half pre-commit never sees.
+setup_hooked
+displace pre-merge-commit 'echo "the repository refuses this merge" >&2; exit 1'
+expect_says 1 "the repository refuses this merge" \
+  "hook: a merge on main reaches the displaced pre-merge-commit" \
+  git merge --no-ff --no-edit other
+teardown
+
+# Nothing recorded is the common case: a consumer with no core.hooksPath of their own had
+# .git/hooks displaced, because that is what core.hooksPath replaces.
+setup_hooked
+printf '#!/bin/sh\necho "the git hooks directory still runs" >&2\nexit 1\n' > .git/hooks/pre-push
+chmod +x .git/hooks/pre-push || fatal "cannot make the fixture's .git/hooks hook executable."
+fixture_built "$repo" .git/hooks/pre-push
+expect_says 1 "the git hooks directory still runs" \
+  "hook: with nothing recorded, the repository's own .git/hooks is what runs" \
+  .githooks/pre-push origin url
 teardown
 
 # The guard on this suite's own fixtures.

@@ -36,7 +36,12 @@ root=$(git rev-parse --show-toplevel)
 # hand, so MERGE_HEAD is what tells the second case from an ordinary commit.
 [ -f "$git_dir/MERGE_HEAD" ] && "$here/../workflow/merge-shape-check.sh"
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACMR)
-[ "${#staged[@]}" -gt 0 ] || exit 0
+# $here, like every other script this hook calls: the chain lives beside these hooks in
+# the subtree, not under a prefix the consumer chose.
+chain="$here/../workflow/chain-hook.sh"
+# The chain, not exit 0: a commit these gates have no opinion about is still a commit the
+# hook this kit displaced was running before it was installed.
+[ "${#staged[@]}" -gt 0 ] || exec "$chain" pre-commit "$@"
 
 # The checks read file contents from the working tree, not from the index. That is
 # only sound while the two agree for the files they read: an unstaged fix to a spec,
@@ -60,4 +65,7 @@ fi
 
 # GATE_BASE_REF defaults to HEAD, which is what the staged tree is measured against here.
 "$here/../workflow/review-gate-check.sh" "$root" "${staged[@]}"
-exec "$here/../workflow/archive-merge-check.sh" "$root" "${staged[@]}"
+"$here/../workflow/archive-merge-check.sh" "$root" "${staged[@]}"
+
+# Whatever this repo ran before core.hooksPath was pointed here, last and with its status.
+exec "$chain" pre-commit "$@"

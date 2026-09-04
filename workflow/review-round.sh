@@ -93,7 +93,15 @@ review_round() { # review_round <change-dir> <reviewer> <change> <tree> <banner>
   # The tree this round judged, kept with the round that judged it. Without it the folder
   # holds a stack of verdicts and no way to tell which of them, if any, describes the diff
   # that shipped (#299).
-  { printf 'TREE_SHA256: %s\n\n' "$tree"
+  #
+  # And the contract it judged that tree against, for the same reason write_diff_review
+  # records one: a review is code measured against the delta, the delta lives under
+  # openspec/changes which tree_excl deliberately keeps out of TREE_SHA256, so the tree
+  # digest alone cannot tell a round that judged this contract from one that judged an
+  # older one. Without this pair apply.sh's repeated-tree refusal fired on a review that
+  # had never happened, and #338 could not land at all (#362).
+  { printf 'TREE_SHA256: %s\n' "$tree"
+    printf 'SPECS_SHA256: %s\n\n' "$("$review_round_dir/specs-digest.sh" "$change_dir" 2>/dev/null)"
     cat "$REVIEW_LOG" 2>/dev/null
   } > "$change_dir/$REVIEW_ROUND_FILE"
 
