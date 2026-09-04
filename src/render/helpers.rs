@@ -903,27 +903,8 @@ fn wrap_text(face: &ttf_parser::Face, segment: &str, size: f32, width_pt: f32) -
     for word in segment.split_whitespace() {
         let word_width = text_width(face, word, size);
         if current.is_empty() {
-            if word_width <= width_pt {
-                current.push_str(word);
-                current_width = word_width;
-            } else {
-                let mut chunk = String::new();
-                let mut chunk_width = 0.0;
-                for ch in word.chars() {
-                    let ch_width = text_width(face, &ch.to_string(), size);
-                    if !chunk.is_empty() && chunk_width + ch_width > width_pt {
-                        lines.push(chunk);
-                        chunk = String::new();
-                        chunk_width = 0.0;
-                    }
-                    chunk.push(ch);
-                    chunk_width += ch_width;
-                }
-                if !chunk.is_empty() {
-                    current = chunk;
-                    current_width = chunk_width;
-                }
-            }
+            current.push_str(word);
+            current_width = word_width;
             continue;
         }
 
@@ -933,26 +914,8 @@ fn wrap_text(face: &ttf_parser::Face, segment: &str, size: f32, width_pt: f32) -
             current_width += space_width + word_width;
         } else {
             lines.push(current);
-            current = String::new();
-            if word_width <= width_pt {
-                current.push_str(word);
-                current_width = word_width;
-            } else {
-                let mut chunk = String::new();
-                let mut chunk_width = 0.0;
-                for ch in word.chars() {
-                    let ch_width = text_width(face, &ch.to_string(), size);
-                    if !chunk.is_empty() && chunk_width + ch_width > width_pt {
-                        lines.push(chunk);
-                        chunk = String::new();
-                        chunk_width = 0.0;
-                    }
-                    chunk.push(ch);
-                    chunk_width += ch_width;
-                }
-                current = chunk;
-                current_width = chunk_width;
-            }
+            current = word.to_string();
+            current_width = word_width;
         }
     }
     if !current.is_empty() {
@@ -1595,8 +1558,7 @@ mod helpers_tests {
         );
     }
 
-    /// `wrap_text` splits an over-wide word per glyph and keeps a glyph that is wider than the box
-    /// on its own line, so an over-wide line can sit anywhere in the block, not only last. Every
+    /// An over-wide line is shortened in place, wherever it sits in the block. Every
     /// emitted line must fit: clipping is never an outcome of an overflow policy.
     #[test]
     fn layout_text_ellipsizes_every_over_wide_line_not_only_the_last() {
@@ -1614,7 +1576,7 @@ mod helpers_tests {
         let box_w = super::pt_to_units((marker_w + glyph_w) / 2.0, "mm");
 
         let m = test_layout(
-            "WW",
+            "W W",
             &FontSize::Fixed(6.0),
             true,
             align,
@@ -1978,6 +1940,204 @@ mod helpers_tests {
                 .contains("shorter than one line"),
             "got {}",
             err_ellipsis.message_text()
+        );
+    }
+
+    /// Task 1.1: A `wrap: true` text item with font_size range whose word is too wide at max
+    /// but fits whole in range: assert it renders whole on one line at the largest such size.
+    #[test]
+    fn layout_text_over_wide_word_shrinks_whole_instead_of_breaking() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Top,
+        };
+        let word = "Refrigeration";
+        let face_10 = super::instance(400, 10.0).unwrap();
+        let w_10 = super::text_width(&face_10, word, 10.0);
+        let box_w = super::pt_to_units(w_10 + 0.1, "mm");
+
+        let m = test_layout(
+            word,
+            &FontSize::Range {
+                min: 6.0,
+                max: 20.0,
+            },
+            true,
+            align,
+            Overflow::Fail,
+            (box_w, 20.0),
+        )
+        .expect("word should fit after shrinking");
+
+        assert_eq!(
+            m.lines,
+            vec!["Refrigeration".to_string()],
+            "word must be kept whole on one line, not chunked across lines"
+        );
+        assert_eq!(m.font_size_pt, 10.0);
+    }
+
+    /// Task 1.2: A `wrap: true` text item at min font_size with an over-wide word:
+    /// ellipsis shortens with `...` on a single line; fail returns text_does_not_fit.
+    #[test]
+    fn layout_text_over_wide_word_at_floor_ellipsis_and_fail() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Top,
+        };
+        let word = "Refrigeration";
+        let face_10 = super::instance(400, 10.0).unwrap();
+        let dot_w = super::text_width(&face_10, "...", 10.0);
+        let word_w = super::text_width(&face_10, word, 10.0);
+        // Box is wider than "..." but narrower than "Refrigeration" at 10pt (which is min)
+        let box_w = super::pt_to_units((dot_w + word_w) / 2.0, "mm");
+
+        // 1. Ellipsis: renders shortened form with "..."
+        let m = test_layout(
+            word,
+            &FontSize::Range {
+                min: 10.0,
+                max: 20.0,
+            },
+            true,
+            align.clone(),
+            Overflow::Ellipsis,
+            (box_w, 20.0),
+        )
+        .expect("should produce shortened form with ellipsis");
+
+        assert_eq!(m.font_size_pt, 10.0);
+        assert_eq!(
+            m.lines.len(),
+            1,
+            "expected 1 shortened line, got {:?}",
+            m.lines
+        );
+        assert!(
+            m.lines[0].ends_with("..."),
+            "expected line to end with '...', got {:?}",
+            m.lines[0]
+        );
+
+        // 2. Fail: returns text_does_not_fit
+        let err = test_layout(
+            word,
+            &FontSize::Range {
+                min: 10.0,
+                max: 20.0,
+            },
+            true,
+            align,
+            Overflow::Fail,
+            (box_w, 20.0),
+        )
+        .expect_err("fail policy must return error when word overflows at min");
+        assert_eq!(err.reason(), Some("text_does_not_fit"));
+    }
+
+    /// Task 1.3: A `wrap: true` text item with fixed font_size and an over-wide word:
+    /// ellipsis shortens with marker, fail returns text_does_not_fit, and box narrower
+    /// than marker fails under ellipsis.
+    #[test]
+    fn layout_text_over_wide_word_at_fixed_size_overflow_outcomes() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Top,
+        };
+        let word = "Refrigeration";
+        let face_10 = super::instance(400, 10.0).unwrap();
+        let dot_w = super::text_width(&face_10, "...", 10.0);
+        let word_w = super::text_width(&face_10, word, 10.0);
+        let box_w = super::pt_to_units((dot_w + word_w) / 2.0, "mm");
+
+        // 1. Ellipsis: shortens with marker instead of splitting
+        let m = test_layout(
+            word,
+            &FontSize::Fixed(10.0),
+            true,
+            align.clone(),
+            Overflow::Ellipsis,
+            (box_w, 20.0),
+        )
+        .expect("fixed font ellipsis should shorten");
+        assert_eq!(m.lines.len(), 1, "expected 1 line, got {:?}", m.lines);
+        assert!(
+            m.lines[0].ends_with("..."),
+            "expected line to end with '...', got {:?}",
+            m.lines[0]
+        );
+
+        // 2. Fail: returns text_does_not_fit
+        let err_fail = test_layout(
+            word,
+            &FontSize::Fixed(10.0),
+            true,
+            align.clone(),
+            Overflow::Fail,
+            (box_w, 20.0),
+        )
+        .expect_err("fail policy must return text_does_not_fit");
+        assert_eq!(err_fail.reason(), Some("text_does_not_fit"));
+
+        // 3. Narrower than '...' under ellipsis: fails with text_does_not_fit
+        let narrow_box_w = super::pt_to_units(dot_w / 2.0, "mm");
+        let err_narrow = test_layout(
+            word,
+            &FontSize::Fixed(10.0),
+            true,
+            align,
+            Overflow::Ellipsis,
+            (narrow_box_w, 20.0),
+        )
+        .expect_err("box narrower than marker must fail under ellipsis");
+        assert_eq!(err_narrow.reason(), Some("text_does_not_fit"));
+    }
+
+    /// Task 1.4: A `wrap: true` text item where the first line is over-wide and the last fits
+    /// with no line dropped: assert the marker sits on the shortened first line and the last line
+    /// is emitted untouched.
+    #[test]
+    fn layout_text_over_wide_first_line_shortened_in_place_and_last_line_intact() {
+        let align = Alignment {
+            horizontal: HorizontalAlign::Left,
+            vertical: VerticalAlign::Top,
+        };
+        let face = super::instance(400, 10.0).unwrap();
+        let dot_w = super::text_width(&face, "...", 10.0);
+        let long_word_w = super::text_width(&face, "Refrigeration", 10.0);
+        let ok_w = super::text_width(&face, "ok", 10.0);
+        // Box is wide enough for "ok" and "...", but narrower than "Refrigeration"
+        let box_w = super::pt_to_units(ok_w.max(dot_w) + 2.0, "mm");
+        assert!(super::units_to_pt(box_w, "mm") < long_word_w);
+
+        // Box height is tall enough for 2 lines at 10pt
+        let h_2_lines_pt = super::block_height(&face, 10.0, 2, None, VerticalAlign::Top);
+        let box_h = super::pt_to_units(h_2_lines_pt + 2.0, "mm");
+
+        let m = test_layout(
+            "Refrigeration ok",
+            &FontSize::Fixed(10.0),
+            true,
+            align,
+            Overflow::Ellipsis,
+            (box_w, box_h),
+        )
+        .expect("layout should succeed with in-place shortening");
+
+        assert_eq!(
+            m.lines.len(),
+            2,
+            "expected exactly 2 lines (first shortened, second intact), got {:?}",
+            m.lines
+        );
+        assert!(
+            m.lines[0].ends_with("..."),
+            "first line must be shortened in place with '...', got {:?}",
+            m.lines[0]
+        );
+        assert_eq!(
+            m.lines[1], "ok",
+            "second line must be emitted untouched as 'ok'"
         );
     }
 

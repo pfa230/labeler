@@ -15866,4 +15866,94 @@ layout:
         assert!(broken.error.contains("unknown shape 'octagon'"));
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// Task 1.5: HTTP tests asserting emitted lines and status for wrap: true over-wide word.
+    /// 1. Shrink-to-fit case: 200 OK, renders whole on one line at the reduced font size.
+    /// 2. Floor fail case: 422 Unprocessable Entity with reason text_does_not_fit.
+    #[tokio::test]
+    async fn http_render_wrap_true_over_wide_word_shrink_and_floor_fail() {
+        let shrink_yaml = r#"
+name: wrap_shrink_test
+unit: mm
+dpi: 200
+format: { type: single, width: 30, height: 20 }
+layout:
+  - type: text
+    value: "Refrigeration"
+    at: [0, 0]
+    size: [30, 20]
+    wrap: true
+    font_size: { min: 6, max: 20 }
+    overflow: fail
+"#;
+
+        let fail_yaml = r#"
+name: wrap_floor_fail_test
+unit: mm
+dpi: 200
+format: { type: single, width: 15, height: 20 }
+layout:
+  - type: text
+    value: "Refrigeration"
+    at: [0, 0]
+    size: [15, 20]
+    wrap: true
+    font_size: { min: 14, max: 20 }
+    overflow: fail
+"#;
+
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("wrap_shrink_test", shrink_yaml),
+            ("wrap_floor_fail_test", fail_yaml),
+        ]);
+
+        // 1. Shrink-to-fit: status 200 OK, rendered PNG has exactly 1 ink band (word kept whole on 1 line)
+        let req_shrink = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "wrap_shrink_test",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_shrink = app.clone().oneshot(req_shrink).await.unwrap();
+        assert_eq!(res_shrink.status(), StatusCode::OK);
+        let png_bytes = body_bytes(res_shrink).await;
+
+        let count_ink_bands = |png: &[u8]| -> usize {
+            let img = image::load_from_memory(png).expect("decode").to_luma8();
+            let (w, h) = (img.width(), img.height());
+            let mut bands = 0;
+            let mut inside = false;
+            for y in 0..h {
+                let inked = (0..w).any(|x| img.get_pixel(x, y).0[0] < 128);
+                if inked && !inside {
+                    bands += 1;
+                }
+                inside = inked;
+            }
+            bands
+        };
+
+        let bands = count_ink_bands(&png_bytes);
+        assert_eq!(
+            bands, 1,
+            "shrink-to-fit must render word whole on 1 line (1 ink band), got {bands}"
+        );
+
+        // 2. Floor fail: status 422 Unprocessable Entity, reason text_does_not_fit
+        let req_fail = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "wrap_floor_fail_test",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res_fail = app.clone().oneshot(req_fail).await.unwrap();
+        assert_eq!(res_fail.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res_fail).await;
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(body["error"]["details"]["reason"], "text_does_not_fit");
+    }
 }
