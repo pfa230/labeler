@@ -180,9 +180,16 @@ previous commits for that one ref to explain. The hooks refuse the shape rather 
 memory, and it takes two of them: git runs `pre-merge-commit` for a merge it resolved itself and never
 `pre-commit`, and `pre-commit` for one that conflicted and is committed by hand.
 
-Integration is `--ff-only`, which after a rebase always succeeds and leaves no bubble. Of the last 30
-issue branches merged, 24 held one commit and 6 held two, so the bubble was wrapping a single commit.
-`--no-ff` stays for a branch whose boundary says something, which is what the milestone merges did.
+Integration is `--ff-only`, which after a rebase always succeeds and leaves no bubble. `--no-ff` stays
+for a branch whose boundary says something, which is what the milestone merges did.
+
+**A change lands as one commit, so squash the branch if it holds more than one.**
+`git rebase -i origin/main` before the merge. This is what makes a change revertible: `--ff-only`
+leaves no merge commit, so a change has no integration handle, and two commits revert as a range or
+by picking them out one at a time at the moment someone wants the thing gone in a hurry. Of the last
+30 issue branches, 24 already held one commit, so this mostly writes down what happens. Squash by
+rebasing the branch, never by merging with `--squash`: that builds a new commit from the index and
+throws away the message the driver wrote.
 
 **Never rewrite `main`, or any ref another session consumes.** That is the whole scope of the rule, and
 a change branch is outside it: it is committed locally and deleted once merged.
