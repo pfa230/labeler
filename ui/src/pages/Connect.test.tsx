@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../app/toast";
@@ -1136,5 +1136,742 @@ describe("Connect: datetime parameters", () => {
     expect(within(grid).getByText("Drill")).toBeInTheDocument();
     expect(screen.getByLabelText("map tags")).toHaveValue("");
     expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
+  });
+
+  it("a delete clears the selection before connections list reloads and drops schema without requesting it", async () => {
+    let schemaRequests = 0;
+    let failConnectionsRefetch = false;
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
+      ],
+    });
+    const originalFetch = fetchMock;
+    const wrappedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/connections/c1/schema") && method === "GET") {
+        schemaRequests++;
+      }
+      if (url.startsWith("/api/connections/") && method === "DELETE") {
+        failConnectionsRefetch = true;
+      }
+      if (url === "/api/connections" && method === "GET" && failConnectionsRefetch) {
+        return json({ error: "Failed" }, 500);
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal("fetch", wrappedFetch);
+
+    renderConnect(qc);
+    await browseSelectMaterialize();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+    expect(schemaRequests).toBe(1);
+
+    // Open block and delete c1
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+    // Picker returns to "choose a connection" at once before connections reload
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
+    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
+
+    // No cached schema for the deleted id, and no second request for it
+    expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
+    expect(schemaRequests).toBe(1);
+  });
+
+  it("deleting with the Manage connections block collapsed before delete completes clears selection and does not request schema", async () => {
+    let schemaRequests = 0;
+    let deleteStarted = false;
+    let resolveDelete!: (res: Response) => void;
+    const deletePromise = new Promise<Response>((res) => { resolveDelete = res; });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
+      ],
+    });
+    const originalFetch = fetchMock;
+    const wrappedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/connections/c1/schema") && method === "GET") {
+        schemaRequests++;
+      }
+      if (url.startsWith("/api/connections/") && method === "DELETE") {
+        deleteStarted = true;
+        return deletePromise;
+      }
+      if (url === "/api/connections" && method === "GET" && deleteStarted) {
+        return json({ error: "Failed" }, 500);
+      }
+      return originalFetch(input, init);
+    });
+    vi.stubGlobal("fetch", wrappedFetch);
+
+    renderConnect(qc);
+    await browseSelectMaterialize();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+    expect(schemaRequests).toBe(1);
+
+    // Open block and start deleting c1
+    const manageBtn = await screen.findByRole("button", { name: /manage connections/i });
+    fireEvent.click(manageBtn);
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+    // Collapse the Manage connections block before the delete completes
+    fireEvent.click(manageBtn);
+    expect(screen.queryByRole("heading", { name: /^connections$/i })).not.toBeInTheDocument();
+
+    // Now resolve delete
+    await act(async () => {
+      resolveDelete(new Response(null, { status: 204 }));
+    });
+
+    // Picker returns to "choose a connection"
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
+    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
+
+    expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
+    expect(schemaRequests).toBe(1);
+  });
+
+  it("a save that points the connection at another upstream replaces the rows", async () => {
+    let browseRequests = 0;
+    let currentUpstream = "http://hb1";
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: currentUpstream, enabled: true, has_credential: true, transforms: [] }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        const b = JSON.parse(init!.body as string);
+        currentUpstream = b.base_url;
+        return json({ id: "c1", connector: "homebox", name: b.name, base_url: currentUpstream, enabled: true, has_credential: true, transforms: [] });
+      }
+      if (url === "/api/connections/c1/schema") return json(schema);
+      if (url === "/api/connections/c1/browse") {
+        browseRequests++;
+        const rowName = currentUpstream === "http://hb1" ? "Upstream1 Item" : "Upstream2 Item";
+        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: rowName } }], next_cursor: null, has_more: false, count: 1 });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Upstream1 Item");
+    expect(browseRequests).toBe(1);
+
+    // Edit c1 to point to http://hb2
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    const baseUrlInput = screen.getByLabelText(/^base url$/i);
+    fireEvent.change(baseUrlInput, { target: { value: "http://hb2" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Browse table refreshes without reload and shows rows from new upstream
+    await waitFor(() => expect(screen.getByText("Upstream2 Item")).toBeInTheDocument());
+    expect(screen.queryByText("Upstream1 Item")).not.toBeInTheDocument();
+    expect(browseRequests).toBe(2);
+  });
+
+  it("the Manage connections block is collapsed before the save completes", async () => {
+    let browseRequests = 0;
+    let currentUpstream = "http://hb1";
+    let resolveSave!: (res: Response) => void;
+    const savePromise = new Promise<Response>((res) => { resolveSave = res; });
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: currentUpstream, enabled: true, has_credential: true, transforms: [] }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        const b = JSON.parse(init!.body as string);
+        currentUpstream = b.base_url;
+        return savePromise;
+      }
+      if (url === "/api/connections/c1/schema") return json(schema);
+      if (url === "/api/connections/c1/browse") {
+        browseRequests++;
+        const rowName = currentUpstream === "http://hb1" ? "Upstream1 Item" : "Upstream2 Item";
+        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: rowName } }], next_cursor: null, has_more: false, count: 1 });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Upstream1 Item");
+    expect(browseRequests).toBe(1);
+
+    // Edit c1 and start save
+    const manageBtn = await screen.findByRole("button", { name: /manage connections/i });
+    fireEvent.click(manageBtn);
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.change(screen.getByLabelText(/^base url$/i), { target: { value: "http://hb2" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Collapse Manage connections block before save completes
+    fireEvent.click(manageBtn);
+    expect(screen.queryByLabelText(/^base url$/i)).not.toBeInTheDocument();
+
+    // Now resolve save
+    await act(async () => {
+      resolveSave(json({ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] }));
+    });
+
+    // Rows refresh
+    await waitFor(() => expect(screen.getByText("Upstream2 Item")).toBeInTheDocument());
+    expect(screen.queryByText("Upstream1 Item")).not.toBeInTheDocument();
+    expect(browseRequests).toBe(2);
+  });
+
+  it("saving another connection does not disturb the browse table", async () => {
+    let c1BrowseRequests = 0;
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] },
+        ]);
+      }
+      if (url.startsWith("/api/connections/c2") && method === "PUT") {
+        return json({ id: "c2", connector: "homebox", name: "Home 2 Saved", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] });
+      }
+      if (url === "/api/connections/c1/schema") return json(schema);
+      if (url === "/api/connections/c2/schema") return json(schema);
+      if (url === "/api/connections/c1/browse") {
+        c1BrowseRequests++;
+        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: "c1", is_default: false } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Drill");
+    expect(c1BrowseRequests).toBe(1);
+
+    // Edit and save c2
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    const editBtns = screen.getAllByRole("button", { name: /^edit$/i });
+    fireEvent.click(editBtns[1]); // c2 edit button
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await screen.findByText("Saved Home 2");
+    // Browse request count for c1 did not change
+    expect(c1BrowseRequests).toBe(1);
+    expect(screen.getByText("Drill")).toBeInTheDocument();
+  });
+
+  it("a rule edit that changes values but no column replaces rows on screen", async () => {
+    let browseRequests = 0;
+    let currentRuleVal = "LOC-OLD";
+    const schemaWithDerived = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: [{ resource: "entities", source: "location", pattern: "pat1" }],
+        }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        currentRuleVal = "LOC-NEW";
+        return json({
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: [{ resource: "entities", source: "location", pattern: "pat2" }],
+        });
+      }
+      if (url === "/api/connections/c1/schema") return json(schemaWithDerived);
+      if (url === "/api/connections/c1/browse") {
+        browseRequests++;
+        return json({
+          rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: currentRuleVal } }],
+          next_cursor: null, has_more: false, count: 1,
+        });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Drill");
+    expect(browseRequests).toBe(1);
+
+    // Edit c1 rule
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Browse request was sent
+    await waitFor(() => expect(browseRequests).toBe(2));
+
+    // Rows refresh and show LOC-NEW
+    await waitFor(() => expect(screen.getByText("LOC-NEW")).toBeInTheDocument());
+  });
+
+  it("a newly derived field reaches the rows on screen, showing captured values on matching rows and none on non-matching", async () => {
+    let hasRule = false;
+    const baseSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+    const schemaWithRule = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: hasRule ? [{ resource: "entities", source: "location", pattern: "pat" }] : [],
+        }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        hasRule = true;
+        return json({
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: [{ resource: "entities", source: "location", pattern: "pat" }],
+        });
+      }
+      if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
+      if (url === "/api/connections/c1/browse") {
+        return json({
+          rows: hasRule
+            ? [
+                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: "LOC-42" } },
+                { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
+              ]
+            : [
+                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } },
+                { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
+              ],
+          next_cursor: null, has_more: false, count: 2,
+        });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Drill");
+    expect(screen.getByText("Hammer")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument();
+    expect(screen.queryByText("LOC-42")).not.toBeInTheDocument();
+
+    // Save rule deriving location_id
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Browse table shows Location ID without operator choosing it
+    await waitFor(() => expect(screen.getByRole("columnheader", { name: "Location ID" })).toBeInTheDocument());
+    // Matched row carries LOC-42
+    expect(await screen.findByText("LOC-42")).toBeInTheDocument();
+  });
+
+  it("removing a rule removes its column and its cells from the browse table", async () => {
+    let hasRule = true;
+    const baseSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+    const schemaWithRule = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: hasRule ? [{ resource: "entities", source: "location", pattern: "pat" }] : [],
+        }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        hasRule = false;
+        return json({
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: [],
+        });
+      }
+      if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
+      if (url === "/api/connections/c1/browse") {
+        return json({
+          rows: hasRule
+            ? [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: "LOC-42" } }]
+            : [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }],
+          next_cursor: null, has_more: false, count: 1,
+        });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Drill");
+    expect(await screen.findByRole("columnheader", { name: "Location ID" })).toBeInTheDocument();
+    expect(screen.getByText("LOC-42")).toBeInTheDocument();
+
+    // Delete rule
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Location ID column and cell disappear
+    await waitFor(() => expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument());
+    expect(screen.queryByText("LOC-42")).not.toBeInTheDocument();
+  });
+
+  it("the composer field mapping offers a newly derived field after saving a rule with no reload", async () => {
+    let hasRule = false;
+    const baseSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+    const schemaWithRule = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: hasRule ? [{ resource: "entities", source: "location", pattern: "pat" }] : [],
+        }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        hasRule = true;
+        return json({
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: [{ resource: "entities", source: "location", pattern: "pat" }],
+        });
+      }
+      if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
+      if (url === "/api/connections/c1/browse") {
+        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+
+    // Initial mapping dropdown does not offer location_id
+    const mappingSelect = await screen.findByLabelText("map name");
+    expect(within(mappingSelect).queryByRole("option", { name: "location_id" })).not.toBeInTheDocument();
+
+    // Save rule deriving location_id
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Field mapping offers location_id with no reload
+    await waitFor(() => {
+      const updatedSelect = screen.getByLabelText("map name");
+      expect(within(updatedSelect).getByRole("option", { name: "location_id" })).toBeInTheDocument();
+    });
+  });
+
+  it("guard: a refresh superseded by a resource switch is dropped and does not reach the table", async () => {
+    let resolveBrowseItems: (res: Response) => void = () => {};
+    let browseCallCount = 0;
+    const multiResourceSchema = {
+      version: "homebox-1",
+      resources: [
+        { id: "entities", label: "Items", view: "table", dynamic_source_prefix: null, fields_incomplete: false,
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }], filters: [] },
+        { id: "locations", label: "Locations", view: "table", dynamic_source_prefix: null, fields_incomplete: false,
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }], filters: [] },
+      ],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        return json({ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true });
+      }
+      if (url === "/api/connections/c1/schema") return json(multiResourceSchema);
+      if (url.startsWith("/api/connections/c1/browse")) {
+        browseCallCount++;
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        const res = body.resource;
+        if (res === "locations") {
+          return json({ rows: [{ id: { resource: "locations", key: "l1" }, cells: { name: "Shelf A" } }], next_cursor: null, has_more: false, count: 1 });
+        }
+        if (browseCallCount === 1) {
+          // initial load
+          return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+        }
+        // Save refresh: delay until after switch
+        return new Promise<Response>((resolve) => {
+          resolveBrowseItems = resolve;
+        });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Drill");
+
+    // Start save to trigger refresh
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await screen.findByText("Saved Home");
+
+    // While browse for entities is still pending, switch to Locations tab
+    fireEvent.click(screen.getByRole("button", { name: "Locations" }));
+    await screen.findByText("Shelf A");
+
+    // Now resolve the delayed entities browse
+    await act(async () => {
+      resolveBrowseItems(json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Stale Drill" } }], next_cursor: null, has_more: false, count: 1 }));
+    });
+
+    // The stale refresh rows never reach the table
+    expect(screen.queryByText("Stale Drill")).not.toBeInTheDocument();
+    expect(screen.getByText("Shelf A")).toBeInTheDocument();
+  });
+
+  it("guard: the browsing context (sort, filters, visible columns, selection) survives the refresh", async () => {
+    let browseRequests = 0;
+    const browseSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table", dynamic_source_prefix: null, fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+          { key: "category", label: "Category", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections" && method === "GET") {
+        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "PUT") {
+        return json({ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true });
+      }
+      if (url === "/api/connections/c1/schema") return json(browseSchema);
+      if (url.startsWith("/api/connections/c1/browse")) {
+        browseRequests++;
+        return json({
+          rows: [
+            { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", category: "Tools" } },
+            { id: { resource: "entities", key: "e2" }, cells: { name: "Anvil", category: "Heavy" } },
+          ],
+          next_cursor: null, has_more: false, count: 2,
+        });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByText("Drill");
+    expect(screen.getByText("Anvil")).toBeInTheDocument();
+    expect(browseRequests).toBe(1);
+
+    const grid = screen.getByRole("grid");
+    // Visible columns in force
+    expect(within(grid).getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+    const categoryHeader = within(grid).getAllByRole("columnheader").find((e) => e.textContent?.includes("Category"))!;
+    expect(categoryHeader).toBeInTheDocument();
+
+    // 1. Set sort: sort by Category ascending
+    fireEvent.click(categoryHeader);
+    await waitFor(() => expect(categoryHeader.getAttribute("aria-sort")).toBe("ascending"));
+
+    // 2. Set filter: filter Name for "Dr" (narrows rows to Drill, excluding Anvil)
+    const filterInput = screen.getByLabelText("Filter by Name") as HTMLInputElement;
+    fireEvent.change(filterInput, { target: { value: "Dr" } });
+    await waitFor(() => expect(within(grid).queryByText("Anvil")).not.toBeInTheDocument());
+    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+
+    // 3. Set selection: select row e1
+    fireEvent.click(screen.getByLabelText("select entities:e1"));
+    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+    // Save connection to trigger refresh
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    await screen.findByText("Saved Home");
+
+    // Verify refresh actually happened
+    await waitFor(() => expect(browseRequests).toBe(2));
+
+    // Assert the browsing context survived:
+    // 1. Selection survives
+    await waitFor(() => {
+      const checkbox = screen.getByLabelText("select entities:e1") as HTMLInputElement;
+      expect(checkbox.checked).toBe(true);
+    });
+
+    // 2. Sort survives
+    const refreshedCategoryHeader = within(grid).getAllByRole("columnheader").find((e) => e.textContent?.includes("Category"))!;
+    expect(refreshedCategoryHeader.getAttribute("aria-sort")).toBe("ascending");
+
+    // 3. Filter survives
+    expect((screen.getByLabelText("Filter by Name") as HTMLInputElement).value).toBe("Dr");
+    expect(within(grid).queryByText("Anvil")).not.toBeInTheDocument();
+    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+
+    // 4. Visible columns survive
+    expect(within(grid).getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+    expect(within(grid).getByRole("columnheader", { name: "Category" })).toBeInTheDocument();
   });
 });

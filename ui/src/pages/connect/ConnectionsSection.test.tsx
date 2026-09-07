@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "../../app/toast";
 import { ConnectionsSection } from "./ConnectionsSection";
@@ -175,8 +176,8 @@ function stubFetch(
   });
 }
 
-function renderSection() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderSection(client?: QueryClient) {
+  const qc = client ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
@@ -909,5 +910,210 @@ describe("ConnectionsSection", () => {
     await waitFor(() => expect(screen.getByRole("option", { name: /Home \(c1\)/i })).toBeInTheDocument());
     expect(screen.queryByText(/unavailable/i)).not.toBeInTheDocument();
     expect(select).not.toBeDisabled();
+  });
+
+  it("an editor opened on the deleted connection after delete started closes when delete succeeds with refetch failed", async () => {
+    let schemaRequests = 0;
+    let deleteStarted = false;
+    let resolveDelete!: (res: Response) => void;
+    const deletePromise = new Promise<Response>((res) => { resolveDelete = res; });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections" && method === "GET") {
+        if (deleteStarted) return json({ error: "Failed" }, 500);
+        return json([
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] },
+        ]);
+      }
+      if (url.includes("/api/connections/c1/schema") && method === "GET") {
+        schemaRequests++;
+        return json(defaultSchema);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "DELETE") {
+        deleteStarted = true;
+        return deletePromise;
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stubFetch>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSection(qc);
+    await screen.findByText("Home 1");
+
+    // 1. Confirm deleting c1 with no editor open
+    const rows = screen.getAllByRole("row");
+    const c1Row = rows[1];
+    fireEvent.click(within(c1Row).getByRole("button", { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+    await waitFor(() => expect(deleteStarted).toBe(true));
+
+    // 2. Open editor for c1 while delete is in-flight
+    fireEvent.click(within(c1Row).getByRole("button", { name: /^edit$/i }));
+    await screen.findByDisplayValue("Home 1");
+    expect(schemaRequests).toBe(1);
+
+    // 3. Complete the delete
+    await act(async () => {
+      resolveDelete(new Response(null, { status: 204 }));
+    });
+
+    // 4. Editor must close
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("Home 1")).not.toBeInTheDocument();
+    });
+
+    // 5. Deleted connection's schema is not held and not requested again
+    expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
+    expect(schemaRequests).toBe(1);
+  });
+
+  it("when collapsed and reopened before delete completes, editor on deleted connection closes", async () => {
+    let schemaRequests = 0;
+    let deleteStarted = false;
+    let resolveDelete!: (res: Response) => void;
+    const deletePromise = new Promise<Response>((res) => { resolveDelete = res; });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections" && method === "GET") {
+        if (deleteStarted) return json({ error: "Failed" }, 500);
+        return json([
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] },
+        ]);
+      }
+      if (url.includes("/api/connections/c1/schema") && method === "GET") {
+        schemaRequests++;
+        return json(defaultSchema);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "DELETE") {
+        deleteStarted = true;
+        return deletePromise;
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stubFetch>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    function Collapsible() {
+      const [show, setShow] = useState(true);
+      return (
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <button type="button" onClick={() => setShow((s) => !s)}>Toggle Block</button>
+            {show && <ConnectionsSection />}
+          </ToastProvider>
+        </QueryClientProvider>
+      );
+    }
+    render(<Collapsible />);
+    await screen.findByText("Home 1");
+
+    // 1. Confirm deleting c1
+    const rows = screen.getAllByRole("row");
+    const c1Row = rows[1];
+    fireEvent.click(within(c1Row).getByRole("button", { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+    await waitFor(() => expect(deleteStarted).toBe(true));
+
+    // 2. Collapse and reopen block
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Block" }));
+    expect(screen.queryByText("Home 1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Block" }));
+    await screen.findByText("Home 1");
+
+    // 3. Open editor for c1 before delete completes
+    const newRows = screen.getAllByRole("row");
+    fireEvent.click(within(newRows[1]).getByRole("button", { name: /^edit$/i }));
+    await screen.findByDisplayValue("Home 1");
+
+    // 4. Resolve delete
+    await act(async () => {
+      resolveDelete(new Response(null, { status: 204 }));
+    });
+
+    // 5. Editor for c1 closes
+    await waitFor(() => {
+      expect(screen.queryByDisplayValue("Home 1")).not.toBeInTheDocument();
+    });
+    expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
+    expect(schemaRequests).toBe(1);
+  });
+
+  it("when collapsed and reopened before delete completes, editor open on another connection stays open", async () => {
+    let deleteStarted = false;
+    let resolveDelete!: (res: Response) => void;
+    const deletePromise = new Promise<Response>((res) => { resolveDelete = res; });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections" && method === "GET") {
+        if (deleteStarted) return json({ error: "Failed" }, 500);
+        return json([
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] },
+        ]);
+      }
+      if (url.includes("/api/connections/c2/schema") && method === "GET") {
+        return json(defaultSchema);
+      }
+      if (url.startsWith("/api/connections/c1") && method === "DELETE") {
+        deleteStarted = true;
+        return deletePromise;
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    }) as ReturnType<typeof stubFetch>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    function Collapsible() {
+      const [show, setShow] = useState(true);
+      return (
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <button type="button" onClick={() => setShow((s) => !s)}>Toggle Block</button>
+            {show && <ConnectionsSection />}
+          </ToastProvider>
+        </QueryClientProvider>
+      );
+    }
+    render(<Collapsible />);
+    await screen.findByText("Home 1");
+
+    // 1. Confirm deleting c1
+    const rows = screen.getAllByRole("row");
+    const c1Row = rows[1];
+    fireEvent.click(within(c1Row).getByRole("button", { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+    await waitFor(() => expect(deleteStarted).toBe(true));
+
+    // 2. Collapse and reopen block
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Block" }));
+    expect(screen.queryByText("Home 1")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Toggle Block" }));
+    await screen.findByText("Home 1");
+
+    // 3. Open editor for c2 (another connection) before delete completes
+    const newRows = screen.getAllByRole("row");
+    fireEvent.click(within(newRows[2]).getByRole("button", { name: /^edit$/i }));
+    await screen.findByDisplayValue("Home 2");
+
+    // 4. Resolve delete of c1
+    await act(async () => {
+      resolveDelete(new Response(null, { status: 204 }));
+    });
+
+    // 5. Editor for c2 stays open!
+    expect(screen.getByDisplayValue("Home 2")).toBeInTheDocument();
   });
 });

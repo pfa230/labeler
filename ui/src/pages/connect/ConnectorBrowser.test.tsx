@@ -43,12 +43,12 @@ const schema: ConnectorSchema = {
   relationships: [],
 };
 
-function Harness() {
+function Harness({ schema: customSchema = schema }: { schema?: ConnectorSchema } = {}) {
   const [selected, setSelected] = useState<SelectedRow[]>([]);
   return (
     <div>
       <span data-testid="count">{selected.length}</span>
-      <ConnectorBrowser connectionId="c1" schema={schema} selected={selected} onSelectedChange={setSelected} />
+      <ConnectorBrowser connectionId="c1" schema={customSchema} selected={selected} onSelectedChange={setSelected} />
     </div>
   );
 }
@@ -541,7 +541,7 @@ describe("ConnectorBrowser", () => {
       const rawStored = localStorage.getItem("labeler:connector-columns:c1:entities");
       expect(rawStored).toBeTruthy();
       const parsed = JSON.parse(rawStored!);
-      expect(parsed).toHaveLength(6);
+      expect(parsed.visible).toHaveLength(6);
 
       // Click "Reset" to revert to cheap defaults
       fireEvent.click(screen.getByRole("button", { name: "Reset" }));
@@ -613,6 +613,144 @@ describe("ConnectorBrowser", () => {
       // Click outside
       fireEvent.pointerDown(document.body);
       expect(screen.queryByText("Visible Columns")).not.toBeInTheDocument();
+    });
+
+    it("a newly derived column appears for a resource customized in this session", async () => {
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [], next_cursor: null, has_more: false, count: 0 })));
+      const { rerender } = render(<Harness />);
+      await waitFor(() => expect(screen.getByRole("button", { name: /customize visible columns/i })).toBeInTheDocument());
+
+      // Open popover and uncheck Description (customizing columns in this session)
+      fireEvent.click(screen.getByRole("button", { name: /customize visible columns/i }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Description" }));
+      expect(screen.queryByRole("columnheader", { name: "Description" })).not.toBeInTheDocument();
+
+      // Now, on the same mount, update schema to include a newly derived column
+      const updatedSchema: ConnectorSchema = {
+        ...schema,
+        resources: [
+          {
+            ...schema.resources[0],
+            columns: [
+              ...schema.resources[0].columns,
+              { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+            ],
+          },
+          schema.resources[1],
+        ],
+      };
+      rerender(<Harness schema={updatedSchema} />);
+
+      // The new derived column is shown
+      expect(screen.getByRole("columnheader", { name: "Location ID" })).toBeInTheDocument();
+      // While Description stays hidden
+      expect(screen.queryByRole("columnheader", { name: "Description" })).not.toBeInTheDocument();
+      // And Name and Asset ID remain visible
+      expect(screen.getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+      expect(screen.getByRole("columnheader", { name: "Asset ID" })).toBeInTheDocument();
+    });
+
+    it("guard: sorting by a column a save removes stops ordering without clearing sort, and resumes when restored", async () => {
+      const schemaWithDerived: ConnectorSchema = {
+        ...schema,
+        resources: [
+          {
+            ...schema.resources[0],
+            columns: [
+              ...schema.resources[0].columns,
+              { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+            ],
+          },
+          schema.resources[1],
+        ],
+      };
+
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [
+          { id: { resource: "entities", key: "e1" }, cells: { name: "B", assetId: "1", description: "d", location_id: "LOC-2" } },
+          { id: { resource: "entities", key: "e2" }, cells: { name: "A", assetId: "2", description: "d", location_id: "LOC-1" } },
+        ], next_cursor: null, has_more: false, count: 2 })));
+
+      const { rerender } = render(<Harness schema={schemaWithDerived} />);
+      await screen.findByText("LOC-2");
+
+      // Sort by Location ID asc
+      const locHeader = screen.getByRole("columnheader", { name: "Location ID" });
+      fireEvent.click(locHeader);
+
+      // Verify row order: LOC-1 should appear before LOC-2
+      const textNodes = screen.getAllByText(/LOC-[12]/);
+      expect(textNodes[0].textContent).toBe("LOC-1");
+      expect(textNodes[1].textContent).toBe("LOC-2");
+
+      // Save removes the rule deriving Location ID
+      rerender(<Harness schema={schema} />);
+      await screen.findByText("B");
+
+      // Location ID is gone, table returns to connector's order (B, then A)
+      expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument();
+      const nameNodes = screen.getAllByText(/^[AB]$/);
+      expect(nameNodes[0].textContent).toBe("B");
+      expect(nameNodes[1].textContent).toBe("A");
+
+      // Save restores the rule deriving Location ID
+      rerender(<Harness schema={schemaWithDerived} />);
+
+      // Sorting resumes: LOC-1 comes before LOC-2 again
+      await screen.findByText("LOC-2");
+      const restoredNodes = screen.getAllByText(/LOC-[12]/);
+      expect(restoredNodes[0].textContent).toBe("LOC-1");
+      expect(restoredNodes[1].textContent).toBe("LOC-2");
+    });
+
+    it("guard: filtering by a column a save removes stops narrowing without clearing filter, and resumes when restored", async () => {
+      const schemaWithDerived: ConnectorSchema = {
+        ...schema,
+        resources: [
+          {
+            ...schema.resources[0],
+            columns: [
+              ...schema.resources[0].columns,
+              { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+            ],
+          },
+          schema.resources[1],
+        ],
+      };
+
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [
+          { id: { resource: "entities", key: "e1" }, cells: { name: "B", assetId: "1", description: "d", location_id: "LOC-2" } },
+          { id: { resource: "entities", key: "e2" }, cells: { name: "A", assetId: "2", description: "d", location_id: "LOC-1" } },
+        ], next_cursor: null, has_more: false, count: 2 })));
+
+      const { rerender } = render(<Harness schema={schemaWithDerived} />);
+      await screen.findByText("LOC-2");
+
+      // Type filter into Location ID filter input
+      const locFilter = screen.getByLabelText("Filter by Location ID");
+      fireEvent.change(locFilter, { target: { value: "LOC-1" } });
+
+      // Only LOC-1 matches
+      expect(screen.getByText("LOC-1")).toBeInTheDocument();
+      expect(screen.queryByText("LOC-2")).not.toBeInTheDocument();
+
+      // Save removes the rule deriving Location ID
+      rerender(<Harness schema={schema} />);
+      await screen.findByText("B");
+
+      // Every loaded row is shown again (both B and A)
+      expect(screen.getByText("B")).toBeInTheDocument();
+      expect(screen.getByText("A")).toBeInTheDocument();
+
+      // Save restores the rule deriving Location ID
+      rerender(<Harness schema={schemaWithDerived} />);
+
+      // Filter resumes narrowing to LOC-1
+      await screen.findByText("LOC-1");
+      expect(screen.getByText("LOC-1")).toBeInTheDocument();
+      expect(screen.queryByText("LOC-2")).not.toBeInTheDocument();
     });
   });
 });
