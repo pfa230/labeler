@@ -249,12 +249,16 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
           <PreviewPane name={detail.name} format={detail.format.type} preview={preview} />
         </details>
 
+        {/* -bottom-6 and the 1.5rem in the padding cancel the Shell's p-6, which is inside
+            the scrollport: at bottom-0 the bar rests 24px above the floor and the form
+            scrolls through the strip beneath it (#371, #372). The padding moves out of the
+            style prop because only a class can drop it again at lg, where the bar is static
+            and its surface background would read 24px taller than the buttons need. */}
         <div
-          className="sticky bottom-0 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 py-3 lg:static lg:mx-0 lg:gap-3 lg:border-t-0 lg:px-0"
+          className="sticky -bottom-6 z-10 -mx-2 flex flex-wrap items-center gap-2 border-t px-2 pt-3 pb-[calc(0.75rem_+_1.5rem_+_env(safe-area-inset-bottom))] lg:static lg:mx-0 lg:gap-3 lg:border-t-0 lg:px-0 lg:pb-3"
           style={{
             background: "var(--surface)",
             borderColor: "var(--border)",
-            paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))",
           }}
         >
           <div className="flex items-center gap-1">
