@@ -306,7 +306,7 @@ When omitted, a `container` defaults to `size: [fill, fill]`.
 ## 6. `max_w` and `max_h` are caps
 
 `max_w` and `max_h` bound the resolution of `content` and `fill` on their respective axes across validation,
-measurement, and rendering ([ADR-0053](adr/0053-max-bounds-cap.md), [ADR-0080](adr/0080-unify-size-resolution.md)).
+measurement, and rendering ([ADR-0053](adr/0053-max-bounds-cap.md), [#226](../openspec/changes/archive/2026-08-27-issue-226-unify-size-resolution)).
 
 Two rules:
 
@@ -633,7 +633,7 @@ What to know:
 
 ### Flow layout (`flow: { direction, gap, wrap, line_gap, overflow }`)
 
-A `container` may declare a `flow` block to pack its children sequentially in order rather than positioning each child with absolute `at` or `to` coordinates ([ADR-0083](adr/0083-packed-children-flow-layout.md)):
+A `container` may declare a `flow` block to pack its children sequentially in order rather than positioning each child with absolute `at` or `to` coordinates ([#263](../openspec/changes/archive/2026-08-28-issue-263-packed-children)):
 
 ```yaml
 - type: container
@@ -802,7 +802,7 @@ string uses it. This is inherent to baseline alignment and is what every other r
 ## Where to go next
 
 - [`SPEC.md`](SPEC.md) — the normative reference for every field, rule, and error code.
-- [`adr/`](adr/) — why each decision up to 2026-08-31 is the way it is; frozen, with newer reasoning
+- [`adr/`](adr/) — why each decision up to 2026-08-19 is the way it is; frozen, with newer reasoning
   in the change that made it.
 - `catalog/` — the shipped starter templates, the best base to copy from.
 - `tests/fixtures/templates/` — templates that exist to demonstrate engine features (QR layouts,

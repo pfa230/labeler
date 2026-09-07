@@ -1,6 +1,6 @@
 # 28. Current-time interpolation token ({datetime.*})
 
-**Status:** Accepted (token syntax and resolution precedence superseded by [ADR-0079](0079-token-grammar.md)). Extends [ADR-0010](0010-variable-interpolation-layer.md).
+**Status:** Accepted (token syntax and resolution precedence superseded by [#239](../../openspec/changes/archive/2026-08-27-issue-239-token-grammar)). Extends [ADR-0010](0010-variable-interpolation-layer.md).
 
 ## Context
 

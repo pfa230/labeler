@@ -1013,7 +1013,7 @@ pub(super) fn pad_pt(weight: u16, size: f32, vertical: VerticalAlign) -> Result<
 /// What the *fitter* holds back so ink falling outside the cap-height line box cannot clip:
 /// `Top` and `Bottom` reserve both overflows because padding the aligned edge pushes the opposite
 /// edge toward the slot floor/ceiling; `Center` reserves twice the larger overflow because the metric
-/// block is centred and the slack on each side must absorb the overflow on that side (ADR-0084).
+/// block is centred and the slack on each side must absorb the overflow on that side (#245).
 fn overflow_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
     match vertical {
         VerticalAlign::Top | VerticalAlign::Bottom => {
@@ -2356,7 +2356,7 @@ mod measurement_tests {
         assert!((both - (top + bottom)).abs() < 1e-6, "overflow {both}");
         assert!((both - 0.4824).abs() < 0.001, "overflow {both}");
 
-        // Center pads nothing (placement is unchanged), but reserves 2 * max(top, bottom) (ADR-0084).
+        // Center pads nothing (placement is unchanged), but reserves 2 * max(top, bottom) (#245).
         assert_eq!(pad_em(&face, VerticalAlign::Center), 0.0);
         let center_overflow = overflow_em(&face, VerticalAlign::Center);
         assert!(
@@ -2374,7 +2374,7 @@ mod measurement_tests {
     }
 
     /// A height-bound item must leave room for the ink outside the cap-height line: aligned and
-    /// centered items reserve ink room in the fitter, while placement pads only aligned edges (ADR-0084).
+    /// centered items reserve ink room in the fitter, while placement pads only aligned edges (#245).
     #[test]
     fn a_height_bound_fit_reserves_the_overflow() {
         let fit = FitBox {

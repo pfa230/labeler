@@ -923,7 +923,7 @@ mod http_tests {
     /// before the `connector` comparison, which cannot precede reading the payload that carries it.
     /// What that rejection reports is the request layer's own contract, not this one's: since #225
     /// the crate's `Json<T>` extractor maps every deserialization failure to `400 InvalidRequest`
-    /// with `json_malformed` (ADR-0075). Out of scope for #197; what matters here is only that the
+    /// with `json_malformed` (#225). Out of scope for #197; what matters here is only that the
     /// rejection is not `connector_immutable` (#197).
     #[tokio::test]
     async fn update_connection_undeserializable_body_is_rejected_before_the_connector_check() {
@@ -9339,7 +9339,7 @@ layout:
         );
     }
 
-    /// Asserts one endpoint answers a malformed JSON body with the documented envelope (ADR-0075).
+    /// Asserts one endpoint answers a malformed JSON body with the documented envelope (#225).
     ///
     /// Shared by the enumerated sweep below and the OpenAPI-derived one after it, so the two cannot
     /// come to check different things about the same contract.

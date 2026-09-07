@@ -663,7 +663,7 @@ fn check_dimension_limit(
 /// child inward, so aligning the padded block insets the content by exactly `pad` — which is how ink
 /// falling outside the cap-height/baseline line box (accents above, descenders below) stays inside
 /// the clipped slot (#124). Center pads nothing: centring the metric box already splits the slack,
-/// so placement needs no inset (ADR-0084).
+/// so placement needs no inset (#245).
 fn pad_block(body: &str, pad: f32, vertical: crate::models::VerticalAlign) -> String {
     use crate::models::VerticalAlign;
     if pad <= 0.0 {
