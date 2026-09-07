@@ -492,8 +492,12 @@ function CsvEditor({
           <PreviewPane name={detail.name} format={isSheet ? "sheet" : "single"} preview={preview} />
           )}
 
+          {/* An action bar over the preview has to be opaque and reach the scrollport floor.
+              --bg is defined nowhere, so the background computed to transparent, and at
+              bottom-0 the bar stopped 24px short on the Shell's p-6, leaving the preview
+              visible through and beneath it. z-10 matches the Print page's bar. */}
           {detail && (
-          <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border-t py-3" style={{ background: "var(--bg)", borderColor: "var(--border)" }}>
+          <div className="sticky -bottom-6 z-10 flex flex-wrap items-center gap-3 border-t pb-9 pt-3" style={{ background: "var(--paper)", borderColor: "var(--border)" }}>
             <button
               type="button"
               onClick={() => run("print")}
