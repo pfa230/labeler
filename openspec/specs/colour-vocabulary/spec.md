@@ -161,8 +161,9 @@ black (`text-ink`) and `stroke.color` draws black (`shape-paint`). A default nam
 table above rather than adding one to it, so it cannot make a name mean two things, which is what
 this requirement forbids.
 
-This requirement supersedes the divergence ADR-0092 §6 recorded as intentional, under which a text
-item's `red` was `#ff4136` and a shape's `red` was `#ff0000`.
+This requirement supersedes the divergence
+`openspec/changes/archive/2026-08-31-issue-280-shape-paint-model` recorded as intentional, under
+which a text item's `red` was `#ff4136` and a shape's `red` was `#ff0000`.
 
 #### Scenario: One name, one colour, across item kinds
 

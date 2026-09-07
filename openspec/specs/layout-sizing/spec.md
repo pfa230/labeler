@@ -740,8 +740,9 @@ the box it was laid out against. A `fill` text on a label that clamps up to `wid
 lines and size it was laid out with, and the extra width becomes slack for `alignment.horizontal`.
 
 An item's box SHALL be its box regardless of `alignment.horizontal`, which positions content inside
-it. This supersedes ADR-0059, under which a centred auto-width text on a dynamic-width label was
-given the alignment slot as its box while a left-aligned one was given the laid-out width.
+it. This supersedes `openspec/changes/archive/2026-08-21-issue-180-auto-length-text-alignment`, under
+which a centred auto-width text on a dynamic-width label was given the alignment slot as its box
+while a left-aligned one was given the laid-out width.
 
 **`overflow`.** A `text` SHALL carry an `overflow` field with the values `ellipsis` (the default) and
 `fail`. Both shorten nothing the other would not; they differ in when they give up:
@@ -778,8 +779,9 @@ fit either. Under `fail` it fails as soon as the content overflows, marker or no
 Clipping SHALL NOT be an outcome of the policy: a box that cannot hold the shortest representable
 form of its content is an error, not a label with half a glyph on it.
 
-The policy SHALL be evaluated against the **metric model** ADR-0045, ADR-0050 and ADR-0084 define:
-the cap-height-to-baseline line box plus the ink reservation for the item's `alignment.vertical`,
+The policy SHALL be evaluated against the **metric model** ADR-0045, ADR-0050 and
+`openspec/changes/archive/2026-08-28-issue-245-center-ink-reserve` define: the
+cap-height-to-baseline line box plus the ink reservation for the item's `alignment.vertical`,
 including `center`, and not against glyph outlines. Widening that model widens what the policy
 refuses, and both effects are intended: a `center`-aligned item whose block fits its box but whose
 block plus reservation does not SHALL be shortened under `ellipsis` and SHALL raise
@@ -990,7 +992,8 @@ or `fill`. The two axes are independent: `size: [content, fill]` hugs horizontal
 vertically.
 
 `auto` SHALL NOT be a valid `size` component. A template using it SHALL fail validation with a
-message naming both replacements, and SHALL be quarantined per ADR-0058 rather than making the server
+message naming both replacements, and SHALL be quarantined per
+`openspec/changes/archive/2026-08-21-issue-181-duplicate-id-not-fatal` rather than making the server
 fail to start. The value carried no single meaning to preserve: it meant "fill the frame remainder"
 for `text` and `container` on a fixed-width format, "shrink to content" for `text` on a dynamic-width
 `single`, "fill the frame remainder" for `container` on that same format, and "exactly `max_w`" for
