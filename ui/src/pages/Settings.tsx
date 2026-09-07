@@ -1,7 +1,6 @@
 import { useAuth } from "../api/auth";
 import { VariablesSection } from "./settings/VariablesSection";
 import { PrintersSection } from "./settings/PrintersSection";
-import { ConnectionsSection } from "./settings/ConnectionsSection";
 import { UsersSection } from "./settings/UsersSection";
 import { TokensSection } from "./settings/TokensSection";
 import { SettingsSection } from "./settings/SettingsSection";
@@ -16,7 +15,6 @@ export function Settings() {
       <SettingsSection />
       <DatetimeFormatsSection />
       <PrintersSection />
-      <ConnectionsSection />
       {!auth?.noAuth && (
         <>
           <UsersSection />

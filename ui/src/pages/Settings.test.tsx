@@ -17,7 +17,6 @@ function stubFetch(noAuth: boolean) {
       return json({ job_log_retention_days: { value: 90, is_default: true }, datetime_formats: { value: {}, is_default: true } });
     if (url.startsWith("/api/variables")) return json({ qr_base_url: "https://x" });
     if (url.startsWith("/api/printers")) return json([]);
-    if (url.startsWith("/api/connections")) return json([]);
     if (url.startsWith("/api/users")) return json([]);
     if (url.startsWith("/api/tokens")) return json([]);
     throw new Error(`unexpected fetch: ${url}`);
@@ -60,6 +59,20 @@ describe("Settings page", () => {
     await waitFor(() => {
       expect(screen.queryByRole("heading", { name: "Users" })).not.toBeInTheDocument();
       expect(screen.queryByRole("heading", { name: "API tokens" })).not.toBeInTheDocument();
+    });
+  });
+
+  it("renders no connections UI and makes no request to /api/connections", async () => {
+    const fetchSpy = stubFetch(false);
+    vi.stubGlobal("fetch", fetchSpy);
+    renderPage();
+    await screen.findByRole("heading", { name: /^variables$/i });
+    await screen.findByLabelText("qr_base_url");
+    await waitFor(() => {
+      expect(screen.queryByRole("heading", { name: /^connections$/i })).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/default connection/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /add connection/i })).not.toBeInTheDocument();
+      expect(fetchSpy.mock.calls.some(([u]) => String(u).startsWith("/api/connections"))).toBe(false);
     });
   });
 });

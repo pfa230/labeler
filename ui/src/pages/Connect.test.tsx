@@ -23,18 +23,43 @@ const templateDetail = {
   },
 };
 
+type StubConnection = {
+  id: string;
+  connector: string;
+  name: string;
+  base_url: string;
+  public_url?: string | null;
+  enabled: boolean;
+  has_credential: boolean;
+  transforms?: Array<{ resource: string; source: string; pattern: string; target?: string }>;
+};
+
 type StubOptions = {
   renderLabel?: () => Response;
-  connections?: Array<{ id: string; connector: string; name: string; base_url: string; enabled: boolean; has_credential: boolean }>;
+  connections?: StubConnection[];
   connectionsError?: boolean;
   settings?: Record<string, { value: unknown; is_default: boolean }>;
   settingsError?: boolean;
 };
 
 function stub(opts: StubOptions = {}) {
+  let state: StubConnection[] = opts.connections
+    ? [...opts.connections]
+    : [
+        {
+          id: "c1",
+          connector: "homebox",
+          name: "Home",
+          base_url: "http://hb",
+          enabled: true,
+          has_credential: true,
+        },
+      ];
+  let connectionsError = opts.connectionsError ?? false;
   let currentSettings = opts.settings ?? {
     default_connection_id: { value: null, is_default: true },
   };
+  let settingsError = opts.settingsError ?? false;
 
   const fn = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (input, init) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -44,20 +69,89 @@ function stub(opts: StubOptions = {}) {
       const labels = parsedBody.labels ?? [{ data: {} }];
       return json({ inputs: labels.map(() => [{ name: "name", control: "text" }]) });
     }
-    if (url === "/api/connections") {
-      if (opts.connectionsError) return json({ error: "Failed" }, 500);
-      return json(opts.connections ?? [{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
-    }
-    if (url === "/api/settings") {
-      if (opts.settingsError) return json({ error: "Failed" }, 500);
-      return json(currentSettings);
-    }
     if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
     if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
-    if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([
-      { source: { resource: "entities", key: "e1" }, data: { name: "Drill" } },
-      { source: { resource: "entities", key: "e2" }, data: { name: "Hammer" } },
-    ]);
+    if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) {
+      const parsed = init?.body ? JSON.parse(String(init.body)) : null;
+      const requestedRows: Array<{ resource: string; key: string }> = parsed?.rows ?? [
+        { resource: "entities", key: "e1" },
+        { resource: "entities", key: "e2" },
+      ];
+      const allData: Record<string, string> = { e1: "Drill", e2: "Hammer" };
+      return json(
+        requestedRows.map((r) => ({
+          source: { resource: r.resource, key: r.key },
+          data: { name: allData[r.key] ?? r.key },
+        })),
+      );
+    }
+    if (url.startsWith("/api/connections/") && method === "DELETE") {
+      const id = decodeURIComponent(url.slice("/api/connections/".length));
+      state = state.filter((c) => c.id !== id);
+      if (currentSettings.default_connection_id?.value === id) {
+        currentSettings = {
+          ...currentSettings,
+          default_connection_id: { value: null, is_default: true },
+        };
+      }
+      return new Response(null, { status: 204 });
+    }
+    if (url.startsWith("/api/connections/") && method === "PUT") {
+      const id = decodeURIComponent(url.slice("/api/connections/".length));
+      const b = JSON.parse(init!.body as string);
+      state = state.map((c) =>
+        c.id === id
+          ? {
+              ...c,
+              name: b.name,
+              base_url: b.base_url,
+              public_url: "public_url" in b ? b.public_url : c.public_url,
+              enabled: b.enabled !== undefined ? b.enabled : c.enabled,
+              has_credential: c.has_credential || !!b.credential,
+              transforms: b.transforms ?? c.transforms,
+            }
+          : c,
+      );
+      return json(state.find((c) => c.id === id)!);
+    }
+    if (url === "/api/connections" && method === "POST") {
+      const b = JSON.parse(init!.body as string);
+      const c: StubConnection = {
+        id: b.id ?? `c_${state.length + 1}`,
+        connector: b.connector,
+        name: b.name,
+        base_url: b.base_url,
+        public_url: b.public_url ?? null,
+        enabled: b.enabled ?? true,
+        has_credential: !!b.credential,
+        transforms: b.transforms ?? [],
+      };
+      state = [...state, c];
+      return json(c, 201);
+    }
+    if (url.startsWith("/api/connections") && (url === "/api/connections" || url.startsWith("/api/connections?"))) {
+      if (connectionsError) return json({ error: "Failed" }, 500);
+      return json(state);
+    }
+    if (url === "/api/settings" && method === "GET") {
+      if (settingsError) return json({ error: "Failed" }, 500);
+      return json(currentSettings);
+    }
+    if (url === "/api/settings/default_connection_id" && method === "PUT") {
+      const b = JSON.parse(init!.body as string);
+      currentSettings = {
+        ...currentSettings,
+        default_connection_id: { value: b.value, is_default: false },
+      };
+      return json({ value: b.value, is_default: false });
+    }
+    if (url === "/api/settings/default_connection_id" && method === "DELETE") {
+      currentSettings = {
+        ...currentSettings,
+        default_connection_id: { value: null, is_default: true },
+      };
+      return new Response(null, { status: 204 });
+    }
     if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
     if (url === "/api/templates/tpl") return json(templateDetail);
     if (url === "/api/printers") return json([]);
@@ -71,6 +165,9 @@ function stub(opts: StubOptions = {}) {
 
   return Object.assign(fn, {
     setSettings: (s: Record<string, { value: unknown; is_default: boolean }>) => { currentSettings = s; },
+    setSettingsError: (err: boolean) => { settingsError = err; },
+    setConnections: (conns: StubConnection[]) => { state = conns; },
+    setConnectionsError: (err: boolean) => { connectionsError = err; },
   });
 }
 
@@ -91,7 +188,7 @@ const countCalls = (path: string) => fetchMock.mock.calls.filter(([u]) => String
 
 async function browseSelectMaterialize() {
   await screen.findByRole("option", { name: "Home" });
-  fireEvent.change(await screen.findByLabelText(/connection/i), { target: { value: "c1" } });
+  fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
   fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
   // Select two rows so we can test row switching.
   fireEvent.click(await screen.findByLabelText("select entities:e1"));
@@ -161,7 +258,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c2"));
     await waitFor(() => expect(countCalls("/api/connections/c2/browse")).toBeGreaterThan(0));
   });
@@ -179,7 +276,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
   });
 
@@ -196,7 +293,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c2"));
   });
 
@@ -212,7 +309,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
   });
 
@@ -229,10 +326,11 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
     expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("grid")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /manage connections/i })).toBeInTheDocument();
   });
 
   it("falls back to first enabled connection when settings query errors", async () => {
@@ -245,7 +343,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
   });
 
@@ -262,7 +360,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("a"));
   });
 
@@ -279,7 +377,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const { queryClient } = renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
 
     // Select a row in the browser
@@ -311,7 +409,7 @@ describe("Connect", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderConnect();
-    const select = await screen.findByLabelText(/connection/i);
+    const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
 
     // Select a row
@@ -333,6 +431,293 @@ describe("Connect", () => {
       return url.startsWith("/api/settings") && method !== "GET";
     });
     expect(settingsMutations).toHaveLength(0);
+  });
+
+  it("starts collapsed when list has connections, starts expanded when empty, and starts collapsed on failure", async () => {
+    // 1. Loaded with connection -> collapsed, opens on click
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount } = renderConnect();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+    const btn = await screen.findByRole("button", { name: /manage connections/i });
+    expect(btn).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("heading", { name: /^connections$/i })).not.toBeInTheDocument();
+
+    fireEvent.click(btn);
+    expect(btn).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("heading", { name: /^connections$/i })).toBeInTheDocument();
+    unmount();
+
+    // 2. Loaded empty -> starts expanded
+    fetchMock = stub({ connections: [] });
+    vi.stubGlobal("fetch", fetchMock);
+    const { unmount: unmountEmpty } = renderConnect();
+    const btnEmpty = await screen.findByRole("button", { name: /manage connections/i });
+    await waitFor(() => expect(btnEmpty).toHaveAttribute("aria-expanded", "true"));
+    expect(await screen.findByText(/no connections configured/i)).toBeInTheDocument();
+    unmountEmpty();
+
+    // 3. Failed -> starts collapsed
+    fetchMock = stub({ connectionsError: true });
+    vi.stubGlobal("fetch", fetchMock);
+    const { queryClient: qcFailed } = renderConnect();
+    const btnFailed = await screen.findByRole("button", { name: /manage connections/i });
+    await waitFor(() => expect(qcFailed.getQueryState(["connections"])?.status).toBe("error"));
+    expect(btnFailed).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(/failed to load connections/i)).not.toBeInTheDocument();
+
+    fireEvent.click(btnFailed);
+    expect(btnFailed).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByText(/failed to load connections/i)).toBeInTheDocument();
+  });
+
+  it("adding an enabled connection in the block puts it in the picker and leaves selection, browse table and row selection unchanged", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home 1" });
+    const picker = await screen.findByLabelText(/^connection$/i);
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+    // Select row
+    const checkbox = await screen.findByLabelText("select entities:e1");
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+    // Open block and add enabled connection
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add connection/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home 2" } });
+    fireEvent.change(screen.getByLabelText(/^base url$/i), { target: { value: "http://hb2" } });
+    fireEvent.change(screen.getByLabelText(/^api key/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Verify "Home 2" is in the picker without reload
+    await screen.findByRole("option", { name: "Home 2" });
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+  });
+
+  it("adding a disabled connection lists it in block table, does not offer it in picker, and leaves selection unchanged", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home 1" });
+    const picker = await screen.findByLabelText(/^connection$/i);
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+    // Open block and add disabled connection
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /add connection/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home 2" } });
+    fireEvent.change(screen.getByLabelText(/^base url$/i), { target: { value: "http://hb2" } });
+    fireEvent.change(screen.getByLabelText(/^api key/i), { target: { value: "secret" } });
+    fireEvent.click(screen.getByLabelText(/^enabled$/i));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Wait for table row to appear in Connections table
+    await screen.findByText("Home 2");
+    // Picker should not offer Home 2
+    expect(screen.queryByRole("option", { name: "Home 2" })).not.toBeInTheDocument();
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+  });
+
+  it("renaming the selected connection offers it under the new name without reload and leaves it selected", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+    // Open block and edit name
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Picker offers "Home Renamed" and is still selected
+    await screen.findByRole("option", { name: "Home Renamed" });
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+  });
+
+  it("deleting the currently selected connection returns picker to choose a connection and leaves no browse table, row selection or composer", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+    expect(screen.getByRole("grid", { name: /label rows/i })).toBeInTheDocument();
+
+    // Open block and delete c1
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+    // Returns picker to "choose a connection"
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
+    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
+  });
+
+  it("disabling the currently selected connection returns picker to choose a connection and leaves no browse table, row selection or composer", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+    expect(screen.getByRole("grid", { name: /label rows/i })).toBeInTheDocument();
+
+    // Open block and edit c1 to disable it
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+    fireEvent.click(screen.getByLabelText(/^enabled$/i));
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+
+    // Returns picker to "choose a connection"
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
+    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
+  });
+
+  it("rows selected against a connection do not come back when connection is cleared and another is picked", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+    // Select two rows on c1
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+    fireEvent.click(await screen.findByLabelText("select entities:e2"));
+    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+    expect(screen.getByLabelText("select entities:e2")).toBeChecked();
+
+    // Delete c1 in Manage connections
+    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
+    const withinSection = within(screen.getByRole("heading", { name: /^connections$/i }).closest("section")!);
+    const editBtns = withinSection.getAllByRole("button", { name: /^delete$/i });
+    fireEvent.click(editBtns[0]);
+    fireEvent.click(withinSection.getByRole("button", { name: /^confirm$/i }));
+
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
+
+    // Pick c2
+    fireEvent.change(picker, { target: { value: "c2" } });
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c2"));
+
+    // Verify nothing is selected for c2
+    const e1 = await screen.findByLabelText("select entities:e1");
+    expect(e1).not.toBeChecked();
+    expect(screen.getByLabelText("select entities:e2")).not.toBeChecked();
+
+    // Pick template and select 1 row on c2
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    fireEvent.click(e1);
+    const addBtn = await screen.findByRole("button", { name: /add .* row/i });
+    expect(addBtn).toHaveTextContent(/add 1 row/i);
+    fireEvent.click(addBtn);
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+    expect(within(grid).queryByText("Hammer")).not.toBeInTheDocument();
+  });
+
+  it("leaves selected connection, browse table and row selection unchanged when a later connections request fails", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { queryClient } = renderConnect();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+    // Select row
+    const checkbox = await screen.findByLabelText("select entities:e1");
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+    // Later connections request fails
+    fetchMock.setConnectionsError(true);
+    await queryClient.invalidateQueries({ queryKey: ["connections"] });
+
+    // Selection and checked row remain
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+  });
+
+  it("naming a different connection as the default while working on one leaves selected connection, browse table and row selection unchanged", async () => {
+    fetchMock = stub({
+      connections: [
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ],
+      settings: {
+        default_connection_id: { value: "c1", is_default: false },
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    const picker = await screen.findByLabelText(/^connection$/i);
+    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+    // Select row
+    const checkbox = await screen.findByLabelText("select entities:e1");
+    fireEvent.click(checkbox);
+    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+    // Open block and name c2 as default connection
+    fireEvent.click(screen.getByRole("button", { name: /manage connections/i }));
+    const defaultSelect = await screen.findByLabelText(/^default connection$/i);
+    fireEvent.change(defaultSelect, { target: { value: "c2" } });
+
+    // Selected connection in main picker and row selection are unchanged
+    await waitFor(() => expect((defaultSelect as HTMLSelectElement).value).toBe("c2"));
+    expect((picker as HTMLSelectElement).value).toBe("c1");
+    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
   });
 });
 
@@ -565,7 +950,7 @@ describe("Connect: datetime parameters", () => {
 
     renderConnect();
     await screen.findByRole("option", { name: "Home" });
-    fireEvent.change(await screen.findByLabelText(/connection/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
     fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
     fireEvent.click(await screen.findByLabelText("select entities:e1"));
 
@@ -672,7 +1057,7 @@ describe("Connect: datetime parameters", () => {
 
     renderConnect();
     await screen.findByRole("option", { name: "Home" });
-    fireEvent.change(await screen.findByLabelText(/connection/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
     fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
 
     // Both name and tags parameters appear in field mapping
@@ -741,7 +1126,7 @@ describe("Connect: datetime parameters", () => {
 
     renderConnect();
     await screen.findByRole("option", { name: "Home" });
-    fireEvent.change(await screen.findByLabelText(/connection/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
     fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
     fireEvent.click(await screen.findByLabelText("select entities:e1"));
     fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
