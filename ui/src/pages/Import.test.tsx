@@ -289,7 +289,7 @@ describe("CSV Import screen", () => {
     fireEvent.change(csv, { target: { value: "sku,color\n1,blue\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     // Edit the sku cell while still template-less: this commits the displayed field map for the row.
-    fireEvent.doubleClick(await screen.findByText("1")); // enter edit mode (react-data-grid default)
+    fireEvent.doubleClick(await screen.findByText("1")); // double-click is how the grid enters edit mode
     const skuCell = (await screen.findByLabelText("edit sku")) as HTMLInputElement;
     fireEvent.change(skuCell, { target: { value: "9" } });
     fireEvent.blur(skuCell);

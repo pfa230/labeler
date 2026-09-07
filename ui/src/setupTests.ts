@@ -6,18 +6,21 @@ if (!URL.createObjectURL) {
   (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {};
 }
 
-// jsdom lacks ResizeObserver. react-data-grid only needs it to exist, but the SVAR grid in
-// ConnectorBrowser derives its rendered row window from the height this reports: it windows rows
-// unconditionally (`dynamic` off does NOT disable it), so a stub that never calls back leaves
-// clientHeight at 0 and renders ~3 rows whatever the data. Deliver a contentRect instead, which is
-// what a real browser does.
+// jsdom lacks ResizeObserver, and both SVAR grids (ConnectorBrowser and LabelGrid) derive their
+// rendered row window from the height it reports: they window rows unconditionally (`dynamic` off
+// does NOT disable it), so a stub that never calls back leaves clientHeight at 0 and renders ~3 rows
+// whatever the data. Deliver a contentRect instead, which is what a real browser does.
 //
 // GRID_TEST_VIEWPORT_HEIGHT mirrors the height `.connector-grid-viewport` declares in theme.css, so
 // tests exercise the geometry the app actually ships rather than an arbitrary large number. A test
 // that needs to prove windowing engages overrides this stub locally with a small height.
 // Kept in step with `.connector-grid-viewport { height: 60vh; min-height: 360px }` by construction
 // rather than by a copied pixel count, so editing the stylesheet cannot silently leave tests
-// exercising a geometry the app no longer ships. connectorGridViewport.test.ts pins the pairing.
+// exercising a geometry the app no longer ships. gridViewport.test.ts pins the pairing.
+// Every observed element gets that one height, which is 461px here, so the shorter
+// `.label-grid-viewport` is reported at 461px against the 350px it ships: tests window about 12 rows
+// into the batch grid where the app windows about 9. No test asserts on that grid's row window, and
+// none should read this stub as its geometry; gridViewport.test.ts is what holds the 350px.
 export const GRID_VIEWPORT_VH = 0.6;
 export const GRID_VIEWPORT_MIN_PX = 360;
 export const GRID_TEST_VIEWPORT_HEIGHT = Math.max(
@@ -46,20 +49,9 @@ if (!("ResizeObserver" in globalThis)) {
           x: 0,
           y: 0,
         } as DOMRectReadOnly;
-        // react-data-grid reads `entry.contentBoxSize[0]` (lib/index.js:843), so an entry carrying
-        // only contentRect throws there. Both box-size arrays are part of the real entry shape.
-        const boxSize = [
-          { inlineSize: GRID_TEST_VIEWPORT_WIDTH, blockSize: GRID_TEST_VIEWPORT_HEIGHT },
-        ] as unknown as ReadonlyArray<ResizeObserverSize>;
         this.cb(
           [
-            {
-              target,
-              contentRect: rect,
-              contentBoxSize: boxSize,
-              borderBoxSize: boxSize,
-              devicePixelContentBoxSize: boxSize,
-            } as unknown as ResizeObserverEntry,
+            { target, contentRect: rect } as unknown as ResizeObserverEntry,
           ],
           this as unknown as ResizeObserver,
         );
@@ -68,11 +60,6 @@ if (!("ResizeObserver" in globalThis)) {
     unobserve() {}
     disconnect() {}
   };
-}
-
-// react-data-grid scrolls the selected cell into view on edit; jsdom lacks scrollIntoView.
-if (!Element.prototype.scrollIntoView) {
-  Element.prototype.scrollIntoView = () => {};
 }
 
 // jsdom lacks matchMedia. Default to DESKTOP (matches: true) so existing tests keep the

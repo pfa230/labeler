@@ -75,6 +75,18 @@ describe("LabelGrid", () => {
     expect(onRemove).toHaveBeenCalledWith("a");
   });
 
+  it("opens no editor and disables the row actions while disabled", async () => {
+    const onRowsChange = vi.fn();
+    render(
+      <LabelGrid rows={rows()} {...props} disabled onRowsChange={onRowsChange} onDuplicate={() => {}} onRemove={() => {}} />,
+    );
+    fireEvent.doubleClick(screen.getByText("1"));
+    expect(screen.queryByLabelText("edit sku")).toBeNull();
+    expect(screen.getAllByRole("button", { name: /duplicate/i })[0]).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: /remove/i })[0]).toBeDisabled();
+    expect(onRowsChange).not.toHaveBeenCalled();
+  });
+
   it("commits a nested data-cell edit through onRowsChange", async () => {
     const onRowsChange = vi.fn();
     render(<LabelGrid rows={rows()} {...props} onRowsChange={onRowsChange} onDuplicate={() => {}} onRemove={() => {}} />);
@@ -86,6 +98,9 @@ describe("LabelGrid", () => {
     await waitFor(() => expect(onRowsChange).toHaveBeenCalled());
     const updated = onRowsChange.mock.calls.at(-1)![0] as LabelGridRow[];
     expect(updated[0].data.sku).toBe("9");
+    // Which rows the edit touched is this component's own bookkeeping, and both callers clear the
+    // edited row's stale annotation from it.
+    expect(onRowsChange.mock.calls.at(-1)![1]).toEqual({ indexes: [0] });
   });
 
   it("renders an input element for a text-control cell and commits on blur", async () => {
@@ -109,6 +124,37 @@ describe("LabelGrid", () => {
     await waitFor(() => expect(onRowsChange).toHaveBeenCalled());
     const updated = onRowsChange.mock.calls.at(-1)![0] as LabelGridRow[];
     expect(updated[0].data.sku).toBe("9");
+  });
+
+  it("commits on Tab and moves to the next editable cell, skipping an inert one", async () => {
+    const onRowsChange = vi.fn();
+    const tabRows: LabelGridRow[] = [
+      { id: "a", origin: "csv", data: { sku: "1", locked: "x", notes: "first" }, validation: {} },
+    ];
+    const cellInput = (_row: LabelGridRow, field: string) =>
+      field === "locked" ? undefined : { name: field, control: "text" as const };
+
+    render(
+      <LabelGrid
+        rows={tabRows}
+        fields={["sku", "locked", "notes"]}
+        cellInput={cellInput}
+        onRowsChange={onRowsChange}
+        onDuplicate={() => {}}
+        onRemove={() => {}}
+      />,
+    );
+
+    fireEvent.doubleClick(screen.getByText("1"));
+    const input = await screen.findByLabelText("edit sku");
+    fireEvent.change(input, { target: { value: "9" } });
+    // `code` matters: the grid's hotkeys read KeyboardEvent.code, not .key.
+    fireEvent.keyDown(input, { key: "Tab", code: "Tab" });
+
+    await waitFor(() => expect(onRowsChange).toHaveBeenCalled());
+    expect((onRowsChange.mock.calls.at(-1)![0] as LabelGridRow[])[0].data.sku).toBe("9");
+    expect(await screen.findByLabelText("edit notes")).toBeInTheDocument();
+    expect(screen.queryByLabelText("edit locked")).toBeNull();
   });
 
   it("renders inert cell with '—' and disables editing when cellInput returns undefined", async () => {
@@ -151,6 +197,55 @@ describe("LabelGrid", () => {
     );
 
     expect(screen.getByText("first")).toBeInTheDocument();
+  });
+
+  it("commits a text cell on Enter, against the grid reading a bubbled Enter as a cancel", async () => {
+    const onRowsChange = vi.fn();
+    render(<LabelGrid rows={rows()} {...props} onRowsChange={onRowsChange} onDuplicate={() => {}} onRemove={() => {}} />);
+    // The second row, so a hard-coded first index cannot pass for the one the edit touched.
+    fireEvent.doubleClick(screen.getByText("2"));
+    const input = (await screen.findByLabelText("edit sku")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "9" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(onRowsChange).toHaveBeenCalled());
+    const updated = onRowsChange.mock.calls.at(-1)![0] as LabelGridRow[];
+    expect(updated[1].data.sku).toBe("9");
+    expect(onRowsChange.mock.calls.at(-1)![1]).toEqual({ indexes: [1] });
+    expect(screen.queryByLabelText("edit sku")).toBeNull();
+  });
+
+  it("leaves prior value intact when Escape is pressed in a text cell", async () => {
+    const onRowsChange = vi.fn();
+    render(<LabelGrid rows={rows()} {...props} onRowsChange={onRowsChange} onDuplicate={() => {}} onRemove={() => {}} />);
+    fireEvent.doubleClick(screen.getByText("1"));
+    const input = (await screen.findByLabelText("edit sku")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "typed change" } });
+
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryByLabelText("edit sku")).toBeNull();
+    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(onRowsChange).not.toHaveBeenCalled();
+  });
+
+  it("drops an edit whose row left the grid while its editor was open", async () => {
+    const onRowsChange = vi.fn();
+    const both = rows();
+    const gridProps = { ...props, onRowsChange, onDuplicate: () => {}, onRemove: () => {} };
+    const { rerender } = render(<LabelGrid rows={both} {...gridProps} />);
+
+    fireEvent.doubleClick(screen.getByText("1"));
+    const input = (await screen.findByLabelText("edit sku")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "9" } });
+
+    // Row 'a' is removed (a print run resetting the rows, say) while its editor still holds an edit.
+    rerender(<LabelGrid rows={both.slice(1)} {...gridProps} />);
+    // Opening another cell's editor is what commits the open one, and it has nowhere to land.
+    fireEvent.doubleClick(screen.getByText("2"));
+    await screen.findByLabelText("edit sku");
+
+    expect(onRowsChange).not.toHaveBeenCalled();
   });
 
   it("edits a textarea cell with Shift+Enter inserting a newline and commits on blur", async () => {

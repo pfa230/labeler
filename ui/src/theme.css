@@ -24,9 +24,12 @@ body {
 
 /* SVAR grid (issue #170): bounded scroll viewport, its .wx-grid collapses to zero height otherwise.
    --wx-* maps onto our tokens instead of using the vendor's <Willow> wrapper, which fetches fonts
-   from a CDN we do not load. The vendor stylesheet itself is imported globally
-   (ConnectorBrowser.tsx:3); what this class scopes is our token mapping, so those values resolve
-   only inside the grid and cannot bleed into the rest of the app.
+   from a CDN we do not load. The vendor stylesheet itself is imported globally, by each component
+   that mounts a grid (ConnectorBrowser.tsx:3 and LabelGrid.tsx:12, deduplicated by the bundler);
+   what these classes scope is our token mapping, so those values resolve only inside a grid and
+   cannot bleed into the rest of the app. Both grids map the same tokens and each declares its own
+   height below, the batch grid keeping the 350px its previous grid library shipped as a default
+   (#377); gridViewport.test.ts is what stops either height being deleted unnoticed.
 
    This is a complete mapping of the vendor's tokens, so some entries below are inert in this app,
    including four that name an accent token (#210). --wx-table-select-background and
@@ -43,8 +46,7 @@ body {
    grip with it, so those two follow --accent. A focused body cell sits over --surface, which
    theme.test.ts asserts at 3:1; a focused header cell and the grip sit over --paper (the header
    background below), where the accent is already held to 4.5:1 as a text foreground. */
-.connector-grid-viewport {
-  height: 60vh; min-height: 360px;
+.connector-grid-viewport, .label-grid-viewport {
   --wx-background: var(--surface); --wx-background-alt: var(--paper); --wx-background-hover: var(--accent-soft);
   --wx-border: var(--border); --wx-box-shadow: 0 1px 2px rgba(0, 0, 0, .06), 0 3px 10px rgba(0, 0, 0, .12);
   --wx-color-font: var(--ink); --wx-color-font-disabled: var(--muted); --wx-color-primary: var(--accent);
@@ -68,8 +70,10 @@ body {
   --wx-table-select-background: var(--accent-soft); --wx-table-select-border: inset 3px 0 var(--accent);
   --wx-table-select-color: var(--ink);
 }
+.connector-grid-viewport { height: 60vh; min-height: 360px; }
+.label-grid-viewport { height: 350px; }
 /* Literal shadows above don't ride the app's token flip; only these need a dark-specific value. */
-.dark .connector-grid-viewport {
+.dark .connector-grid-viewport, .dark .label-grid-viewport {
   --wx-box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
   --wx-table-drag-zone-shadow: 0 4px 16px rgba(0, 0, 0, .4);
   --wx-table-editor-dropdown-shadow: 0 4px 20px rgba(0, 0, 0, .5);

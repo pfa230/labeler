@@ -819,7 +819,7 @@ describe("Connect: datetime parameters", () => {
   });
 
   // The value arrives the way a connector row's values actually arrive, through materialize and the
-  // field mapping, rather than by driving react-data-grid's editor: the editor is LabelGrid's
+  // field mapping, rather than by driving the grid's editor: the editor is LabelGrid's
   // contract and is covered there. What this asserts is Connect's own validateRow, which is the part
   // #209 changed.
   it("blocks the run when a materialized datetime value cannot be parsed", async () => {
