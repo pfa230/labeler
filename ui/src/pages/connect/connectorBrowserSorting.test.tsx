@@ -19,9 +19,11 @@ const schema: ConnectorSchema = {
       id: "entities",
       label: "Items",
       view: "table",
+      dynamic_source_prefix: "custom:",
+      fields_incomplete: false,
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
-        { key: "price", label: "Price", ty: "number", tier: "cheap", multi_valued: false },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+        { key: "price", label: "Price", ty: "number", tier: "cheap", multi_valued: false, transform_source: false },
       ],
       filters: [],
     },

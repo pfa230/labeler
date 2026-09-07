@@ -99,6 +99,13 @@ impl CompiledTransform {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct RuleEvaluation<'a> {
+    pub index: usize,
+    pub source_value: Option<&'a str>,
+    pub captures: Option<Vec<(&'a str, &'a str)>>,
+}
+
 #[derive(Debug, Default)]
 pub struct CompiledTransforms(pub Vec<CompiledTransform>);
 
@@ -125,6 +132,42 @@ impl CompiledTransforms {
             .any(|t| t.resource == resource && t.capture_names.iter().any(|n| n == name))
     }
 
+    pub fn evaluate_rule<'a>(
+        &'a self,
+        rule_idx: usize,
+        resource: &str,
+        cells: &'a BTreeMap<String, CellValue>,
+    ) -> Option<RuleEvaluation<'a>> {
+        let t = self.0.get(rule_idx)?;
+        if t.resource != resource {
+            return None;
+        }
+        let source_value = match cells.get(&t.source) {
+            Some(CellValue::Text(s)) => Some(s.as_str()),
+            _ => None,
+        };
+        let captures = source_value.and_then(|s| t.apply(s));
+        Some(RuleEvaluation {
+            index: rule_idx,
+            source_value,
+            captures,
+        })
+    }
+
+    pub fn evaluate_cells<'a>(
+        &'a self,
+        resource: &str,
+        cells: &'a BTreeMap<String, CellValue>,
+    ) -> Vec<RuleEvaluation<'a>> {
+        let mut results = Vec::new();
+        for idx in 0..self.0.len() {
+            if let Some(eval) = self.evaluate_rule(idx, resource, cells) {
+                results.push(eval);
+            }
+        }
+        results
+    }
+
     pub fn apply_to_map(&self, resource: &str, data: &mut BTreeMap<String, RowValue>) {
         let mut derived = Vec::new();
         for t in self.for_resource(resource) {
@@ -142,13 +185,12 @@ impl CompiledTransforms {
     }
 
     pub fn apply_to_cells(&self, resource: &str, cells: &mut BTreeMap<String, CellValue>) {
+        let evaluations = self.evaluate_cells(resource, cells);
         let mut derived = Vec::new();
-        for t in self.for_resource(resource) {
-            if let Some(CellValue::Text(source_val)) = cells.get(&t.source) {
-                if let Some(outputs) = t.apply(source_val) {
-                    for (k, v) in outputs {
-                        derived.push((k.to_string(), CellValue::Text(v.to_string())));
-                    }
+        for eval in evaluations {
+            if let Some(caps) = eval.captures {
+                for (k, v) in caps {
+                    derived.push((k.to_string(), CellValue::Text(v.to_string())));
                 }
             }
         }
@@ -284,6 +326,7 @@ pub struct FieldSpec {
     pub ty: FieldType,
     pub tier: Tier,
     pub multi_valued: bool,
+    pub transform_source: bool,
 }
 
 impl From<&ColumnDef> for FieldSpec {
@@ -294,6 +337,7 @@ impl From<&ColumnDef> for FieldSpec {
             ty: c.ty,
             tier: c.tier,
             multi_valued: c.multi_valued,
+            transform_source: !c.multi_valued && c.ty == FieldType::Text,
         }
     }
 }
@@ -320,6 +364,8 @@ pub struct ResourceSpec {
     pub view: View,
     pub columns: Vec<FieldSpec>,
     pub filters: Vec<FilterSpec>,
+    pub dynamic_source_prefix: Option<String>,
+    pub fields_incomplete: bool,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -484,6 +530,12 @@ impl Connectors {
         }
     }
 
+    pub fn clamp_page_size(&self, requested: Option<u32>, default_size: u32) -> u32 {
+        match self {
+            Connectors::Homebox(c) => c.clamp_page_size(requested, default_size),
+        }
+    }
+
     pub fn validate_transforms(
         &self,
         transforms: &[FieldTransform],
@@ -510,6 +562,7 @@ impl Connectors {
                             ty: FieldType::Text,
                             tier: Tier::Derived,
                             multi_valued: false,
+                            transform_source: false,
                         });
                     }
                 }
@@ -1203,5 +1256,154 @@ mod tests {
             },
         ];
         assert!(validate_transforms(descs, &rules).is_ok());
+    }
+
+    #[test]
+    fn field_spec_transform_source_predicate() {
+        let text_col = ColumnDef {
+            key: "item_url",
+            label: "URL",
+            ty: FieldType::Text,
+            tier: Tier::Derived,
+            multi_valued: false,
+        };
+        assert!(FieldSpec::from(&text_col).transform_source);
+
+        let multi_col = ColumnDef {
+            key: "tags",
+            label: "Tags",
+            ty: FieldType::Text,
+            tier: Tier::Cheap,
+            multi_valued: true,
+        };
+        assert!(!FieldSpec::from(&multi_col).transform_source);
+
+        let num_col = ColumnDef {
+            key: "quantity",
+            label: "Qty",
+            ty: FieldType::Number,
+            tier: Tier::Cheap,
+            multi_valued: false,
+        };
+        assert!(!FieldSpec::from(&num_col).transform_source);
+    }
+
+    #[tokio::test]
+    async fn schema_derived_columns_carry_transform_source_false() {
+        let conn = test_connection(
+            "http://127.0.0.1:1",
+            vec![FieldTransform {
+                resource: "entities".into(),
+                source: "location".into(),
+                pattern: r"^(?<derived_loc>[^|]+)$".into(),
+            }],
+        );
+        let egress = Egress::default();
+        let registry = ConnectorRegistry::default();
+        let connector = registry.get("homebox").unwrap();
+        let schema = connector.schema(&conn, &egress).await.unwrap();
+
+        let entities = schema
+            .resources
+            .iter()
+            .find(|r| r.id == "entities")
+            .unwrap();
+
+        let item_url = entities
+            .columns
+            .iter()
+            .find(|c| c.key == "item_url")
+            .unwrap();
+        assert!(item_url.transform_source);
+
+        let tags = entities.columns.iter().find(|c| c.key == "tags").unwrap();
+        assert!(!tags.transform_source);
+
+        let qty = entities
+            .columns
+            .iter()
+            .find(|c| c.key == "quantity")
+            .unwrap();
+        assert!(!qty.transform_source);
+
+        let derived = entities
+            .columns
+            .iter()
+            .find(|c| c.key == "derived_loc")
+            .unwrap();
+        assert_eq!(derived.tier, Tier::Derived);
+        assert!(!derived.transform_source);
+
+        let locations = schema
+            .resources
+            .iter()
+            .find(|r| r.id == "locations")
+            .unwrap();
+        let loc_url = locations
+            .columns
+            .iter()
+            .find(|c| c.key == "location_url")
+            .unwrap();
+        assert!(loc_url.transform_source);
+    }
+
+    #[test]
+    fn evaluate_rule_behavior() {
+        let compiled = CompiledTransforms::compile(&[
+            FieldTransform {
+                resource: "entities".into(),
+                source: "location".into(),
+                pattern: r"^(?<box>[^|]+)\|(?<label>.*)$".into(),
+            },
+            FieldTransform {
+                resource: "locations".into(),
+                source: "name".into(),
+                pattern: r"^(?<prefix>[A-Z]+)-(?<suffix>\d+)$".into(),
+            },
+        ])
+        .unwrap();
+
+        let mut cells = BTreeMap::new();
+        cells.insert(
+            "location".into(),
+            CellValue::Text("BOX123|Electronics".into()),
+        );
+        cells.insert("name".into(), CellValue::Text("ROOM-42".into()));
+
+        // Rule 0 on entities (matches)
+        let eval0 = compiled
+            .evaluate_rule(0, "entities", &cells)
+            .expect("should evaluate rule 0");
+        assert_eq!(eval0.index, 0);
+        assert_eq!(eval0.source_value, Some("BOX123|Electronics"));
+        assert_eq!(
+            eval0.captures,
+            Some(vec![("box", "BOX123"), ("label", "Electronics")])
+        );
+
+        // Rule 0 on locations (resource mismatch) -> returns None
+        assert!(compiled.evaluate_rule(0, "locations", &cells).is_none());
+
+        // Rule 1 on locations (matches)
+        let eval1 = compiled
+            .evaluate_rule(1, "locations", &cells)
+            .expect("should evaluate rule 1");
+        assert_eq!(eval1.index, 1);
+        assert_eq!(eval1.source_value, Some("ROOM-42"));
+        assert_eq!(
+            eval1.captures,
+            Some(vec![("prefix", "ROOM"), ("suffix", "42")])
+        );
+
+        // Out of bounds index
+        assert!(compiled.evaluate_rule(2, "entities", &cells).is_none());
+
+        // Missing cell
+        let empty_cells = BTreeMap::new();
+        let eval_empty = compiled
+            .evaluate_rule(0, "entities", &empty_cells)
+            .expect("should evaluate");
+        assert_eq!(eval_empty.source_value, None);
+        assert_eq!(eval_empty.captures, None);
     }
 }

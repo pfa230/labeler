@@ -11,7 +11,8 @@ const json = (body: unknown, status = 200) =>
 const schema = {
   version: "homebox-1",
   resources: [{ id: "entities", label: "Items", view: "table",
-    columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }], filters: [] }],
+    dynamic_source_prefix: "custom:", fields_incomplete: false,
+    columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }], filters: [] }],
   relationships: [],
 };
 const templateDetail = {

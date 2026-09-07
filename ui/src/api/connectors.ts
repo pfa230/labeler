@@ -32,9 +32,17 @@ export type FieldType = "text" | "number" | "money" | "date" | "badge";
 export type FilterType = "search" | "location_id" | "label_id";
 export type Tier = "cheap" | "hydrated" | "derived";
 
-export interface FieldSpec { key: string; label: string; ty: FieldType; tier: Tier; multi_valued: boolean }
+export interface FieldSpec { key: string; label: string; ty: FieldType; tier: Tier; multi_valued: boolean; transform_source: boolean }
 export interface FilterSpec { key: string; label: string; ty: FilterType }
-export interface ResourceSpec { id: string; label: string; view: ConnectorView; columns: FieldSpec[]; filters: FilterSpec[] }
+export interface ResourceSpec {
+  id: string;
+  label: string;
+  view: ConnectorView;
+  columns: FieldSpec[];
+  filters: FilterSpec[];
+  dynamic_source_prefix: string | null;
+  fields_incomplete: boolean;
+}
 export interface RelationshipSpec { id: string; label: string; from: string; to: string }
 export interface ConnectorSchema { version: string; resources: ResourceSpec[]; relationships: RelationshipSpec[] }
 
@@ -97,3 +105,31 @@ export function browseConnection(id: string, req: BrowseRequest): Promise<Browse
 export function materializeConnection(id: string, req: MaterializeRequest): Promise<LabelRowResult[]> {
   return sendJson<LabelRowResult[]>("POST", `/connections/${encodeURIComponent(id)}/materialize`, req);
 }
+
+export interface TransformPreviewRequest {
+  transforms: FieldTransform[];
+  rule: number;
+  page_size?: number;
+}
+
+export interface TransformPreviewRow {
+  id: RowRef;
+  source_value?: string;
+  matched: boolean;
+  value_truncated: boolean;
+  derived?: Record<string, string>;
+}
+
+export interface TransformPreviewResponse {
+  rule: number;
+  resource: string;
+  source: string;
+  row_count: number;
+  matched_count: number;
+  rows: TransformPreviewRow[];
+}
+
+export function previewTransforms(id: string, req: TransformPreviewRequest): Promise<TransformPreviewResponse> {
+  return sendJson<TransformPreviewResponse>("POST", `/connections/${encodeURIComponent(id)}/transforms/preview`, req);
+}
+
