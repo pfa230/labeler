@@ -18,13 +18,18 @@ context: |
   constructors so `code` strings stay stable. Every model exposed in the API must be registered in
   `openapi.rs`.
 
-  Specs. `docs/SPEC.md` is FROZEN at commit bc7b1ce as the baseline reference for behavior that
-  existed on 2026-08-19. It is no longer edited. New and changed behavior is specified in
-  `openspec/specs/<capability-path>/spec.md`. See `rules.specs` below for the precedence rule.
+  Specs. Freezing a file freezes no behavior: it says the file takes no further edits, not that what
+  it describes cannot change. `docs/SPEC.md` is FROZEN at commit bc7b1ce as the baseline reference
+  for behavior that existed on 2026-08-19. It is no longer edited. New and changed behavior is
+  specified in `openspec/specs/<capability-path>/spec.md`, which is where a change to behavior lands.
+  See `rules.specs` below for the precedence rule.
 
-  Decisions. `docs/adr/` is FROZEN at ADR-0091 (2026-08-31), like `docs/SPEC.md` and for the same
-  reason. Never write one and never add a row. Why a change was made belongs in its `proposal.md`
-  and `design.md`, which are kept permanently under `openspec/changes/archive/` (#285).
+  Decisions. `docs/adr/` is FROZEN at ADR-0092 (2026-08-31), like `docs/SPEC.md` and for the same
+  reason. Never write one and never add a row, and never open one for a rule that binds you now: an
+  ADR records what was decided on a date, not what holds today. The 31 records after ADR-0057
+  duplicate a change folder kept permanently under `openspec/changes/archive/`, which is the better
+  account of those decisions. Why a change was made belongs in its `proposal.md` and `design.md`,
+  kept in that same archive (#285).
 
   Tracker. GitHub issues and milestones are the sole live backlog. Every change corresponds to
   exactly one open issue.

@@ -212,11 +212,15 @@ releases, because a user's printers and tokens have no author to fix them.
 
 Two places, and the split is deliberate (ADR-0057).
 
-`docs/SPEC.md` is **frozen** at commit `10fb772` (2026-08-19): the baseline for the API, template
+Freezing a file freezes no behavior. Frozen says the file takes no further edits; changing what it
+describes is ordinary work, and the changed contract is written somewhere else.
+
+`openspec/specs/<capability>/spec.md` is that somewhere else. It holds everything added or changed
+since 2026-08-19, and it is where a change to behavior lands.
+
+`docs/SPEC.md` is **frozen** at commit `bc7b1ce` (2026-08-19): the baseline for the API, template
 schema, layout model, coordinates, and error contract as of that date. Do not edit it, and do not add
 changelog entries to it.
-
-`openspec/specs/<capability>/spec.md` holds everything added or changed since.
 
 **Precedence.** A frozen `docs/SPEC.md` section stays authoritative until an OpenSpec requirement
 explicitly names and supersedes it, and then only for that section. To look a rule up: read
@@ -228,11 +232,16 @@ section it supersedes. A `MODIFIED` delta is only valid against a requirement th
 `openspec/specs/`: the tooling resolves `MODIFIED` by locating that requirement, so a `MODIFIED`
 against an unmigrated section has nothing to resolve against.
 
-`docs/adr/` is **frozen** at ADR-0091 (2026-08-31), for the reason `docs/SPEC.md` is: it was the right
-record for its era and a better one superseded it. Do not write ADRs and do not add rows. Its entries
-stay readable and stay cited, because for behavior predating OpenSpec they are the only account of
-*why*. Rationale for a change now lives in its `proposal.md` and `design.md`, kept permanently under
-`openspec/changes/archive/`, and the contract lives in `openspec/specs/` (#285).
+`docs/adr/` is **frozen** at ADR-0092 (2026-08-31), for the reason `docs/SPEC.md` is: it was the right
+record for its era and a better one superseded it. Do not write ADRs and do not add rows, and do not
+open one looking for a rule that binds you now. An ADR records what was decided on a date, not what
+holds today, and 66 of the 88 say nothing on their face about having been superseded.
+
+The 57 records through ADR-0057 are worth opening for one thing: the *why* behind behavior
+`docs/SPEC.md` states without rationale. The 31 after it duplicate a change folder that
+`openspec/changes/archive/` keeps permanently, and that folder is the better account, so read it
+instead. Rationale for a change now lives in its `proposal.md` and `design.md`, and the contract lives
+in `openspec/specs/` (#285).
 
 `openspec/schemas/labeler/` is what the CLI reads, named by `openspec/config.yaml`. It is a **fork** of
 the built-in `spec-driven` schema, so it does not inherit upstream improvements. On a CLI upgrade, diff
