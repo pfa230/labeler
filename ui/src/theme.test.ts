@@ -8,7 +8,7 @@ import { contrastRatio } from "./lib/contrast";
 // rather than drift from a duplicate nobody updated.
 //
 // import.meta.url is not a file: URL under the jsdom environment, so resolve from the vitest root,
-// as pages/connect/connectorGridViewport.test.ts already does.
+// as gridViewport.test.ts already does.
 const css = readFileSync(resolve(process.cwd(), "src/theme.css"), "utf8");
 
 // theme.css puts several declarations on one line, so this scans semicolon-separated declarations
