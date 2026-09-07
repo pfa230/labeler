@@ -232,16 +232,17 @@ section it supersedes. A `MODIFIED` delta is only valid against a requirement th
 `openspec/specs/`: the tooling resolves `MODIFIED` by locating that requirement, so a `MODIFIED`
 against an unmigrated section has nothing to resolve against.
 
-`docs/adr/` is **frozen** at ADR-0092 (2026-08-31), for the reason `docs/SPEC.md` is: it was the right
-record for its era and a better one superseded it. Do not write ADRs and do not add rows, and do not
-open one looking for a rule that binds you now. An ADR records what was decided on a date, not what
-holds today, and 66 of the 88 say nothing on their face about having been superseded.
+`docs/adr/` is **frozen** at ADR-0057, for the reason `docs/SPEC.md` is: it was the right record for
+its era and a better one superseded it. Do not write ADRs and do not add rows, and do not open one
+looking for a rule that binds you now. An ADR records what was decided on a date, not what holds
+today; where a later change overturned part of one, the index row in `docs/adr/README.md` says so and
+names the issue that replaced it.
 
-The 57 records through ADR-0057 are worth opening for one thing: the *why* behind behavior
-`docs/SPEC.md` states without rationale. The 31 after it duplicate a change folder that
-`openspec/changes/archive/` keeps permanently, and that folder is the better account, so read it
-instead. Rationale for a change now lives in its `proposal.md` and `design.md`, and the contract lives
-in `openspec/specs/` (#285).
+What the 57 are worth opening for is the *why* behind behavior `docs/SPEC.md` states without
+rationale. The 31 records written after ADR-0057 are gone (#378): each duplicated a change folder that
+`openspec/changes/archive/` keeps permanently, and every pointer that named one now names the issue
+whose folder holds it. Rationale for a change lives in its `proposal.md` and `design.md`, and the
+contract lives in `openspec/specs/` (#285).
 
 `openspec/schemas/labeler/` is what the CLI reads, named by `openspec/config.yaml`. It is a **fork** of
 the built-in `spec-driven` schema, so it does not inherit upstream improvements. On a CLI upgrade, diff
@@ -271,7 +272,7 @@ web UI is a separate Vite/React app under `ui/`, gated by its own `lint`, `test`
   layout field means editing three files together: `raw.rs`, `models.rs`, `convert.rs`.*
 - **Template registry.** Loaded and `validate()`d at startup (`main.rs`). A template that fails to
   parse or validate is **quarantined** and the server still starts (#175); so is a file whose id is
-  already taken, with the lexicographically first filename keeping the id (#181, ADR-0058). No
+  already taken, with the lexicographically first filename keeping the id (#181). No
   template content is fatal. Nothing is seeded into a fresh config dir. Templates are immutable,
   shared via `Arc`.
 - **Layout model** (`models.rs`). `layout` is a tree of `LayoutItem`s: `Text`, `Qr`, `Image`, `Line`,
@@ -289,7 +290,7 @@ web UI is a separate Vite/React app under `ui/`, gated by its own `lint`, `test`
   #150 and #155. Only the walk supplying intrinsic sizes differs, because load cannot measure text,
   encode a QR or decode an image: it passes the available extent instead, which makes a `content`
   extent resolve exactly as a `fill` one does. *Adding a source or a bound means editing
-  `resolver.rs` alone.* (ADR-0080, ADR-0081, #226.)
+  `resolver.rs` alone.* (#226.)
 - **Rendering** (`render/mod.rs`). Walks the layout emitting Typst markup; PNG via `typst-render`,
   sheets as one clipped box per slot via `typst-pdf`. `render/helpers.rs` holds string escaping,
   length formatting, QR-SVG generation (`qrcode`), and `ttf-parser`-based text fitting for

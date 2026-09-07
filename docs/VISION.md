@@ -30,4 +30,4 @@ run headless in a container.
   as a URL by default so any phone camera resolves it.
 
 The current API and template model is specified in [`SPEC.md`](SPEC.md); decisions taken up to
-2026-08-31 are recorded as [ADRs](adr/), now frozen, and newer ones in the change that made them.
+2026-08-19 are recorded as [ADRs](adr/), now frozen, and newer ones in the change that made them.

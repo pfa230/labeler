@@ -1,4 +1,4 @@
-//! Safe fd-relative filesystem operations using `rustix` (ADR-0073).
+//! Safe fd-relative filesystem operations using `rustix` (#227).
 //!
 //! Enforces structural containment under `templates/`, exact case matching,
 //! no-symlink policies, and pre-publication cleanup.

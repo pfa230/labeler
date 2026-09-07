@@ -43,7 +43,7 @@ printing setup.
 YAML templates are loaded from `{config}/templates/` at startup and on
 `POST /api/templates/reload`. A file that fails to parse, fails validation, or claims an id another
 file already holds is quarantined: it is listed under `broken` in `GET /api/templates` and does not
-stop the service (ADR-0058).
+stop the service (#181).
 
 **A new install starts with no templates.** Install what you need from the catalog in the UI
 (Labels → Browse the catalog), or paste YAML. The catalog lives in this repo under `catalog/`,
@@ -90,5 +90,5 @@ cargo test
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) has the contributor workflow. [`docs/AUTHORING.md`](docs/AUTHORING.md)
 is the guide to writing templates; the full API and template spec is in [`docs/SPEC.md`](docs/SPEC.md);
-decisions taken up to 2026-08-31 are recorded as [ADRs](docs/adr/), now frozen, and everything since
+decisions taken up to 2026-08-19 are recorded as [ADRs](docs/adr/), now frozen, and everything since
 is in the change that made it, under [`openspec/`](openspec/).

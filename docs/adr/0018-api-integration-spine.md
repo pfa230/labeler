@@ -1,8 +1,8 @@
 # 18. API integration spine (connectors)
 
 **Status:** Accepted. Its **Connections store** decision is superseded in part by
-[ADR-0063](0063-connection-public-url-is-the-link-base.md), which adds `public_url` and makes it the
-base for generated links; ADR-0060 added `transforms` to the same record. Every other decision here
+[#169](../../openspec/changes/archive/2026-08-21-issue-169-connection-public-url), which adds `public_url` and makes it the
+base for generated links; #161 added `transforms` to the same record. Every other decision here
 stands.
 
 ## Context

@@ -2,7 +2,7 @@
 //!
 //! Handlers in this module import `Json` and `Path` from `crate::extract` rather than
 //! `axum::extract` so that request extraction failures automatically produce the standard
-//! JSON error envelope with `AppError` rather than axum's plain text rejections (ADR-0075).
+//! JSON error envelope with `AppError` rather than axum's plain text rejections (#225).
 
 use arc_swap::ArcSwap;
 use axum::{

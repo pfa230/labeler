@@ -17,7 +17,7 @@ use crate::resolver;
 
 /// The bare `{token}` names an interpolated string reads: its request fields and parameters.
 /// `{vars.*}` and `{sys.*}` resolve without caller input, and a token whose grammar is invalid is
-/// left to validation, so neither is an input (ADR-0079).
+/// left to validation, so neither is an input (#239).
 fn bare_token_names(s: &str) -> Vec<&str> {
     crate::interpolation::scan_tokens(s)
         .into_iter()

@@ -1,4 +1,4 @@
-//! Custom extractors that map rejections into `AppError` envelopes (ADR-0075).
+//! Custom extractors that map rejections into `AppError` envelopes (#225).
 
 use std::ops::{Deref, DerefMut};
 

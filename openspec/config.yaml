@@ -24,12 +24,12 @@ context: |
   specified in `openspec/specs/<capability-path>/spec.md`, which is where a change to behavior lands.
   See `rules.specs` below for the precedence rule.
 
-  Decisions. `docs/adr/` is FROZEN at ADR-0092 (2026-08-31), like `docs/SPEC.md` and for the same
-  reason. Never write one and never add a row, and never open one for a rule that binds you now: an
-  ADR records what was decided on a date, not what holds today. The 31 records after ADR-0057
-  duplicate a change folder kept permanently under `openspec/changes/archive/`, which is the better
-  account of those decisions. Why a change was made belongs in its `proposal.md` and `design.md`,
-  kept in that same archive (#285).
+  Decisions. `docs/adr/` is FROZEN at ADR-0057, like `docs/SPEC.md` and for the same reason. Never
+  write one and never add a row, and never open one for a rule that binds you now: an ADR records
+  what was decided on a date, not what holds today. The 31 records once written after ADR-0057 are
+  gone (#378); each duplicated a change folder that `openspec/changes/archive/` keeps permanently.
+  Why a change was made belongs in its `proposal.md` and `design.md`, kept in that same archive
+  (#285).
 
   Tracker. GitHub issues and milestones are the sole live backlog. Every change corresponds to
   exactly one open issue.
