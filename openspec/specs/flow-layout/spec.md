@@ -336,8 +336,9 @@ exist the next occupying child may be on a different one, and the merged rule al
 line such a child belongs to.
 
 A child SHALL NOT be broken across lines. Wrapping chooses which line a child sits on; what a `text`
-does inside the box it was given is settled by its own `overflow` policy (ADR-0082) and is not the
-arrangement's business.
+does inside the box it was given is settled by its own `overflow` policy
+(`openspec/changes/archive/2026-08-27-issue-226-unify-size-resolution`) and is not the arrangement's
+business.
 
 An **uncapped** `fill` child's box is the whole padded inner extent (`layout-sizing`), so under
 `wrap: true` it takes a line of its own whenever anything precedes it on the current line, and the
@@ -556,8 +557,9 @@ Check 1 SHALL always fail. Check 2 SHALL be decided by the container's `overflow
   of the children that were trimmed.
 
 A trim SHALL leave no mark on the label and SHALL NOT be reported to the caller. `fail` is the default
-for exactly that reason, and it differs from the `ellipsis` default a `text` carries (ADR-0082) on the
-same ground: an ellipsis is visible on the printed label and a dropped child is not.
+for exactly that reason, and it differs from the `ellipsis` default a `text` carries
+(`openspec/changes/archive/2026-08-27-issue-226-unify-size-resolution`) on the same ground: an
+ellipsis is visible on the printed label and a dropped child is not.
 
 **A trim removes a child from the drawing and from the assembled extent, and from nothing else.**
 In particular it does not exempt a child from being sized: every active child SHALL be sized and
