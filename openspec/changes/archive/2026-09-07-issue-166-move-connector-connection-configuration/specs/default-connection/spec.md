@@ -1,77 +1,76 @@
-# default-connection Specification
+## ADDED Requirements
 
-## Purpose
-Defines the connection the Connect page opens on: the instance-wide setting that names it, the
-deterministic fallback used when no setting is stored, what the page does once a connection is
-resolved, and how an operator sets and clears the default.
+### Requirement: Connect names the default connection
 
-## Requirements
+The Manage connections block SHALL let an operator choose which connection is the default and clear
+that choice, without typing an id. The control SHALL offer the existing connections by name, SHALL show
+which one is currently stored, and SHALL offer a "no default" choice that clears the setting. The
+control SHALL state that the default applies to everyone, because `default_connection_id` is
+instance-wide.
 
-### Requirement: The default connection setting
+Because connection names are not unique, an entry SHALL carry enough to tell two identically named
+connections apart. A connection that is disabled SHALL be marked as such, so an admin choosing one is
+not surprised when Connect falls through to the fallback.
 
-`default_connection_id` SHALL be a known application setting holding the id of the connection the
-Connect page opens on. Its in-code default SHALL be "none": with no override stored,
-`GET /api/settings` SHALL report the key with value `null` and `is_default: true`, alongside every
-other known setting.
+When the stored id names no connection, the control SHALL show an explicit unavailable state naming the
+stored id, rather than showing "no default" or an arbitrary connection, and that state SHALL still be
+clearable.
 
-`PUT /api/settings/default_connection_id` SHALL take the request body every settings write takes,
-`{ "value": <json> }`. Its `value` SHALL be a JSON string. Surrounding whitespace SHALL be trimmed
-before storage, and the trimmed id SHALL be the value the response reflects back. A `value` that is
-not a JSON string, is empty or whitespace-only after trimming, or names no existing connection SHALL
-be rejected with `400` and `details.reason` `setting_value_invalid`. An id naming a connection that
-exists but is **disabled** SHALL be accepted: disabling a connection is temporary and SHALL NOT cost
-the operator their stored choice.
+After a connection is deleted, the control SHALL show the resulting state without a page reload:
+deleting the connection that was the default SHALL leave the control showing no default.
 
-`DELETE /api/settings/default_connection_id` SHALL clear the override and return `204`, as it does for
-every other setting, after which the key reads back as `null` with `is_default: true`.
+The control SHALL sit with the connections list, whose entries are its options, and SHALL move with it:
+it is on the Connect page and not on the Settings page. It SHALL NOT change the connection form or the
+connections table, whose contract stays the one `connections` states. Writing the default SHALL NOT
+change which connection the page is working on: the two controls are now on one page, and the picker's
+selection answers to the operator alone.
 
-Stored text SHALL be treated the way every other setting's stored override is treated (ADR-0024):
-text that is empty or whitespace-only is **corrupt**, and reading settings SHALL surface an error
-rather than silently substituting a default. A well-formed id that names no connection is **not**
-corrupt: it is the dangling case this capability deliberately supports, and `GET /api/settings` SHALL
-report it as stored.
+This requirement supersedes nothing in `docs/SPEC.md`, which does not describe a default connection.
 
-This requirement extends the known-settings list of the frozen `docs/SPEC.md` §12 ("Settings") with one
-key. Every other part of that section, including the endpoint contract and the corrupt-override
-behavior it states, remains authoritative and is unchanged.
+#### Scenario: Choosing a default
 
-#### Scenario: No default is stored
-
-- **WHEN** a client reads `GET /api/settings` and no override has been written
-- **THEN** the response contains `default_connection_id` with value `null` and `is_default: true`
-
-#### Scenario: Setting the default to an existing connection
-
-- **WHEN** a client sends `PUT /api/settings/default_connection_id` with body
-  `{ "value": "  conn-1  " }` and `conn-1` is an existing connection
-- **THEN** the response is `200` with value `conn-1` and `is_default: false`
-- **AND** `GET /api/settings` reports `conn-1`
-
-#### Scenario: Setting the default to a disabled connection
-
-- **WHEN** a client sets `value` to the id of a connection whose `enabled` is `false`
-- **THEN** the response is `200` and the id is stored
-
-#### Scenario: Rejecting an id that names no connection
-
-- **WHEN** a client sets `value` to an id no connection has
-- **THEN** the response is `400` with `details.reason` `setting_value_invalid`
-
-#### Scenario: Rejecting a value that is not a usable id
-
-- **WHEN** a client sends `value` as `""`, `"   "`, `null`, a number, an array, or an object
-- **THEN** the response is `400` with `details.reason` `setting_value_invalid`
-
-#### Scenario: Reading a stored id whose connection was never created
-
-- **WHEN** `default_connection_id` holds a well-formed id that names no connection
-- **THEN** `GET /api/settings` reports that id with `is_default: false`, and does not error
+- **WHEN** the operator picks a connection in the default-connection control
+- **THEN** `PUT /api/settings/default_connection_id` is sent with that connection's id
+- **AND** the control shows that connection as the stored default
 
 #### Scenario: Clearing the default
 
-- **WHEN** a client sends `DELETE /api/settings/default_connection_id`
-- **THEN** the response is `204` and `GET /api/settings` reports the key as `null` with
-  `is_default: true`
+- **WHEN** the operator picks the "no default" choice
+- **THEN** `DELETE /api/settings/default_connection_id` is sent
+- **AND** the control shows no stored default
+
+#### Scenario: No default stored
+
+- **WHEN** the operator opens the Manage connections block with no default stored
+- **THEN** the control shows the "no default" choice as selected
+
+#### Scenario: Two connections share a name
+
+- **WHEN** two connections are both named `Homebox`
+- **THEN** the control presents them distinguishably, so the operator can tell which one they picked
+
+#### Scenario: A disabled connection in the control
+
+- **WHEN** a connection whose `enabled` is `false` appears in the control
+- **THEN** it is marked as disabled
+
+#### Scenario: The stored default names no connection
+
+- **WHEN** the operator opens the Manage connections block and `default_connection_id` holds an id no
+  connection has
+- **THEN** the control shows an unavailable state naming that id, and the operator can still clear it
+
+#### Scenario: Deleting the default connection
+
+- **WHEN** the operator deletes the connection that is the stored default
+- **THEN** the control shows no default without the operator reloading the page
+
+#### Scenario: Naming a default while working on another connection
+
+- **WHEN** the operator is working on a selected connection and names a different one as the default
+- **THEN** the selected connection, the browse table and the row selection are unchanged
+
+## MODIFIED Requirements
 
 ### Requirement: Connect opens on a resolved connection
 
@@ -221,72 +220,14 @@ on the Connect page" requirement.
   list fails
 - **THEN** the selected connection, the browse table and the row selection are unchanged
 
-### Requirement: Connect names the default connection
+## REMOVED Requirements
 
-The Manage connections block SHALL let an operator choose which connection is the default and clear
-that choice, without typing an id. The control SHALL offer the existing connections by name, SHALL show
-which one is currently stored, and SHALL offer a "no default" choice that clears the setting. The
-control SHALL state that the default applies to everyone, because `default_connection_id` is
-instance-wide.
+### Requirement: Settings names the default connection
 
-Because connection names are not unique, an entry SHALL carry enough to tell two identically named
-connections apart. A connection that is disabled SHALL be marked as such, so an admin choosing one is
-not surprised when Connect falls through to the fallback.
+**Reason**: The control it names moved to the Connect page with the connections list whose entries are
+its options, so a requirement naming "Settings > Connections" describes a place that does not exist.
+Its whole contract is restated at its new home by the ADDED requirement "Connect names the default
+connection".
 
-When the stored id names no connection, the control SHALL show an explicit unavailable state naming the
-stored id, rather than showing "no default" or an arbitrary connection, and that state SHALL still be
-clearable.
-
-After a connection is deleted, the control SHALL show the resulting state without a page reload:
-deleting the connection that was the default SHALL leave the control showing no default.
-
-The control SHALL sit with the connections list, whose entries are its options, and SHALL move with it:
-it is on the Connect page and not on the Settings page. It SHALL NOT change the connection form or the
-connections table, whose contract stays the one `connections` states. Writing the default SHALL NOT
-change which connection the page is working on: the two controls are now on one page, and the picker's
-selection answers to the operator alone.
-
-This requirement supersedes nothing in `docs/SPEC.md`, which does not describe a default connection.
-
-#### Scenario: Choosing a default
-
-- **WHEN** the operator picks a connection in the default-connection control
-- **THEN** `PUT /api/settings/default_connection_id` is sent with that connection's id
-- **AND** the control shows that connection as the stored default
-
-#### Scenario: Clearing the default
-
-- **WHEN** the operator picks the "no default" choice
-- **THEN** `DELETE /api/settings/default_connection_id` is sent
-- **AND** the control shows no stored default
-
-#### Scenario: No default stored
-
-- **WHEN** the operator opens the Manage connections block with no default stored
-- **THEN** the control shows the "no default" choice as selected
-
-#### Scenario: Two connections share a name
-
-- **WHEN** two connections are both named `Homebox`
-- **THEN** the control presents them distinguishably, so the operator can tell which one they picked
-
-#### Scenario: A disabled connection in the control
-
-- **WHEN** a connection whose `enabled` is `false` appears in the control
-- **THEN** it is marked as disabled
-
-#### Scenario: The stored default names no connection
-
-- **WHEN** the operator opens the Manage connections block and `default_connection_id` holds an id no
-  connection has
-- **THEN** the control shows an unavailable state naming that id, and the operator can still clear it
-
-#### Scenario: Deleting the default connection
-
-- **WHEN** the operator deletes the connection that is the stored default
-- **THEN** the control shows no default without the operator reloading the page
-
-#### Scenario: Naming a default while working on another connection
-
-- **WHEN** the operator is working on a selected connection and names a different one as the default
-- **THEN** the selected connection, the browse table and the row selection are unchanged
+**Migration**: None. The setting, its endpoints and its stored value are unchanged; only the page
+carrying the control moved.

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from "react";
 import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type SelectedRow } from "../api/connectors";
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
+import { ConnectionsSection } from "./connect/ConnectionsSection";
 import { useTemplates, useTemplate, usePrinters, useSettings } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { datetimeCellError } from "../lib/templateFields";
@@ -31,6 +32,9 @@ export function Connect() {
 
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [latchedConnectionId, setLatchedConnectionId] = useState<string | null>(null);
+  const [open, setOpen] = useState<boolean | null>(null);
+  const [templateId, setTemplateId] = useState("");
+  const [selected, setSelected] = useState<SelectedRow[]>([]);
 
   if (latchedConnectionId === null) {
     if (connectionsFailed) {
@@ -49,14 +53,26 @@ export function Connect() {
     }
   }
 
+  if (open === null && connections !== undefined && !connectionsFailed) {
+    setOpen(connections.length === 0);
+  }
+
   const connectionId =
     selectedConnectionId !== null ? selectedConnectionId : (latchedConnectionId ?? "");
+
+  if (connections !== undefined && !connectionsFailed && connectionId !== "") {
+    const isOffered = connections.some((c) => c.id === connectionId && c.enabled);
+    if (!isOffered) {
+      setSelectedConnectionId("");
+      setSelected([]);
+    }
+  }
+
   const { data: schema } = useConnectorSchema(connectionId);
-  const [templateId, setTemplateId] = useState("");
   const { data: detail, isPlaceholderData } = useTemplate(templateId);
 
-  const [selected, setSelected] = useState<SelectedRow[]>([]);
   const conn = (connections ?? []).find((c) => c.id === connectionId);
+  const isOpen = open === true;
 
   return (
     <div className="flex flex-col gap-4">
@@ -88,6 +104,23 @@ export function Connect() {
           </select>
         </label>
       )}
+
+      <div>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="text-sm underline"
+          style={{ color: "var(--muted)" }}
+          aria-expanded={isOpen}
+        >
+          {isOpen ? "▾" : "▸"} Manage connections
+        </button>
+        {isOpen && (
+          <div className="mt-2">
+            <ConnectionsSection />
+          </div>
+        )}
+      </div>
 
       {connectionId && schema && detail && conn && (
         <Composer
