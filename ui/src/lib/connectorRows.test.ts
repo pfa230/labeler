@@ -9,9 +9,9 @@ describe("connectorRows", () => {
       { name: "qty", control: "text" as const },
     ];
     const columns = [
-      { key: "name", label: "Name", ty: "text" as const, tier: "cheap" as const, multi_valued: false },
-      { key: "qty", label: "Qty", ty: "text" as const, tier: "cheap" as const, multi_valued: false },
-      { key: "manufacturer", label: "Manufacturer", ty: "text" as const, tier: "cheap" as const, multi_valued: false },
+      { key: "name", label: "Name", ty: "text" as const, tier: "cheap" as const, multi_valued: false, transform_source: true },
+      { key: "qty", label: "Qty", ty: "text" as const, tier: "cheap" as const, multi_valued: false, transform_source: true },
+      { key: "manufacturer", label: "Manufacturer", ty: "text" as const, tier: "cheap" as const, multi_valued: false, transform_source: true },
     ];
     const m = defaultMapping(inputs, columns);
     expect(m).toEqual({ name: "name", sku: "", qty: "qty" });
@@ -20,7 +20,7 @@ describe("connectorRows", () => {
   it("defaultMapping considers cardinality: leaves string parameter unmapped for multi-valued column, pre-fills list parameter", () => {
     const scalarInput = { name: "tags", control: "text" as const };
     const listInput = { name: "tags", control: "list" as const };
-    const multiCol = { key: "tags", label: "Tags", ty: "text" as const, tier: "cheap" as const, multi_valued: true };
+    const multiCol = { key: "tags", label: "Tags", ty: "text" as const, tier: "cheap" as const, multi_valued: true, transform_source: true };
 
     const mScalar = defaultMapping([scalarInput], [multiCol]);
     expect(mScalar).toEqual({ tags: "" });
@@ -36,8 +36,8 @@ describe("connectorRows", () => {
       { name: "unmappedParam", control: "list" as const },
     ];
     const columns = [
-      { key: "multiCol", label: "Multi", ty: "text" as const, tier: "cheap" as const, multi_valued: true },
-      { key: "scalarCol", label: "Scalar", ty: "text" as const, tier: "cheap" as const, multi_valued: false },
+      { key: "multiCol", label: "Multi", ty: "text" as const, tier: "cheap" as const, multi_valued: true, transform_source: true },
+      { key: "scalarCol", label: "Scalar", ty: "text" as const, tier: "cheap" as const, multi_valued: false, transform_source: true },
     ];
 
     // Mismatches in both directions:

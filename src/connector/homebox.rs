@@ -240,6 +240,10 @@ impl HomeboxConnector {
         HOMEBOX_RESOURCES
     }
 
+    pub fn clamp_page_size(&self, requested: Option<u32>, default_size: u32) -> u32 {
+        requested.unwrap_or(default_size).clamp(1, 200)
+    }
+
     pub async fn schema(
         &self,
         conn: &Connection,
@@ -249,17 +253,19 @@ impl HomeboxConnector {
         let mut columns: Vec<FieldSpec> =
             entities_desc.columns.iter().map(FieldSpec::from).collect();
         let b = base(conn)?;
-        let custom: Vec<String> = egress
+        let custom_res: Result<Vec<String>, _> = egress
             .get_json(&b, "/api/v1/entities/fields", &[], &conn.credential)
-            .await
-            .unwrap_or_default();
-        for name in custom {
-            columns.push(field(
-                &format!("custom:{name}"),
-                &name,
-                FieldType::Text,
-                Tier::Hydrated,
-            ));
+            .await;
+        let fields_incomplete = custom_res.is_err();
+        if let Ok(custom) = custom_res {
+            for name in custom {
+                columns.push(field(
+                    &format!("custom:{name}"),
+                    &name,
+                    FieldType::Text,
+                    Tier::Hydrated,
+                ));
+            }
         }
         let locations_desc = &HOMEBOX_RESOURCES[1];
         let location_columns: Vec<FieldSpec> =
@@ -289,6 +295,8 @@ impl HomeboxConnector {
                             ty: FilterType::LabelId,
                         },
                     ],
+                    dynamic_source_prefix: entities_desc.dynamic_text_prefix.map(Into::into),
+                    fields_incomplete,
                 },
                 ResourceSpec {
                     id: "locations".into(),
@@ -296,6 +304,8 @@ impl HomeboxConnector {
                     view: View::Table,
                     columns: location_columns,
                     filters: vec![],
+                    dynamic_source_prefix: locations_desc.dynamic_text_prefix.map(Into::into),
+                    fields_incomplete: false,
                 },
             ],
             relationships: vec![RelationshipSpec {
@@ -318,7 +328,7 @@ impl HomeboxConnector {
         let eff = EffectiveHomeboxFilters::parse(&req)?;
         let filter_hash = eff.to_hash(&req.resource, req.parent.as_ref().map(|p| p.key.as_str()));
 
-        let mut page_size = req.page_size.unwrap_or(PAGE_DEFAULT).clamp(1, 200);
+        let mut page_size = self.clamp_page_size(req.page_size, PAGE_DEFAULT);
         let page = match &req.cursor {
             Some(tok) => {
                 let claims = cursor::verify(
@@ -483,6 +493,7 @@ fn field(key: &str, label: &str, ty: FieldType, tier: Tier) -> FieldSpec {
         ty,
         tier,
         multi_valued: false,
+        transform_source: ty == FieldType::Text,
     }
 }
 
@@ -1250,5 +1261,78 @@ mod tests {
 
         c.public_url = Some("https://homebox.domain.com/".into());
         assert_eq!(external_base_url(&c), "https://homebox.domain.com");
+    }
+
+    #[tokio::test]
+    async fn schema_reports_prefixes_and_handles_discovery_success_and_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/fields"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(vec!["Internal SKU", "Warranty Date"]),
+            )
+            .mount(&server)
+            .await;
+
+        let egress = Egress::with_loopback();
+        let c = conn(&server.uri());
+        let connector = HomeboxConnector;
+
+        // Successful discovery
+        let schema = connector.schema(&c, &egress).await.unwrap();
+        let entities = schema
+            .resources
+            .iter()
+            .find(|r| r.id == "entities")
+            .unwrap();
+        assert_eq!(entities.dynamic_source_prefix.as_deref(), Some("custom:"));
+        assert!(!entities.fields_incomplete);
+        assert!(entities
+            .columns
+            .iter()
+            .any(|col| col.key == "custom:Internal SKU" && col.transform_source));
+        assert!(entities
+            .columns
+            .iter()
+            .any(|col| col.key == "custom:Warranty Date" && col.transform_source));
+
+        let locations = schema
+            .resources
+            .iter()
+            .find(|r| r.id == "locations")
+            .unwrap();
+        assert_eq!(locations.dynamic_source_prefix, None);
+        assert!(!locations.fields_incomplete);
+
+        // Discovery failure (e.g. 500 error from upstream)
+        let fail_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/fields"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&fail_server)
+            .await;
+
+        let fail_conn = conn(&fail_server.uri());
+        let fail_schema = connector.schema(&fail_conn, &egress).await.unwrap();
+        let fail_entities = fail_schema
+            .resources
+            .iter()
+            .find(|r| r.id == "entities")
+            .unwrap();
+        assert_eq!(
+            fail_entities.dynamic_source_prefix.as_deref(),
+            Some("custom:")
+        );
+        assert!(fail_entities.fields_incomplete);
+        // Statically declared columns are still present
+        assert!(fail_entities.columns.iter().any(|col| col.key == "name"));
+        assert!(fail_entities
+            .columns
+            .iter()
+            .any(|col| col.key == "item_url"));
+        assert!(!fail_entities
+            .columns
+            .iter()
+            .any(|col| col.key.starts_with("custom:")));
     }
 }

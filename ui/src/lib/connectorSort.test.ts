@@ -7,7 +7,7 @@ function row(id: string, cells: DisplayRow["cells"]): DisplayRow {
 }
 
 function field(key: string, ty: FieldSpec["ty"], multi_valued = false): FieldSpec {
-  return { key, label: key, ty, tier: "cheap", multi_valued };
+  return { key, label: key, ty, tier: "cheap", multi_valued, transform_source: true };
 }
 
 function sortedIds(rows: DisplayRow[], f: FieldSpec, direction: "asc" | "desc"): string[] {

@@ -7680,6 +7680,785 @@ layout:
     }
 
     #[tokio::test]
+    async fn preview_endpoint_matching_rule_returns_captures_and_counts() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        let mut items = Vec::new();
+        for i in 0..7 {
+            items.push(serde_json::json!({
+                "id": format!("e{i}"),
+                "name": format!("Item {i}"),
+                "parent": {"id": format!("loc{i}"), "name": "BOX.123 | Motorcycle parts"}
+            }));
+        }
+        for i in 7..10 {
+            items.push(serde_json::json!({
+                "id": format!("e{i}"),
+                "name": format!("Item {i}"),
+                "parent": {"id": format!("loc{i}"), "name": "NoDelim"}
+            }));
+        }
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": items,
+                "total": 10
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "location",
+                                "pattern": r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$"
+                            }],
+                            "rule": 0,
+                            "page_size": 10
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["rule"], 0);
+        assert_eq!(v["resource"], "entities");
+        assert_eq!(v["source"], "location");
+        assert_eq!(v["row_count"], 10);
+        assert_eq!(v["matched_count"], 7);
+
+        let rows = v["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 10);
+
+        let matched_row = &rows[0];
+        assert_eq!(matched_row["source_value"], "BOX.123 | Motorcycle parts");
+        assert_eq!(matched_row["matched"], true);
+        assert_eq!(matched_row["value_truncated"], false);
+        assert_eq!(matched_row["derived"]["location_id"], "BOX.123");
+        assert_eq!(matched_row["derived"]["location_name"], "Motorcycle parts");
+
+        let unmatched_row = &rows[7];
+        assert_eq!(unmatched_row["source_value"], "NoDelim");
+        assert_eq!(unmatched_row["matched"], false);
+        assert_eq!(unmatched_row["value_truncated"], false);
+        assert!(unmatched_row.get("derived").is_none());
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_rule_matching_no_row() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {"id": "e1", "name": "Item 1"},
+                    {"id": "e2", "name": "Item 2"}
+                ],
+                "total": 2
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^(?<nomatch>ZXZXZX.*)$"
+                            }],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["matched_count"], 0);
+        assert_eq!(v["row_count"], 2);
+
+        let rows = v["rows"].as_array().unwrap();
+        for row in rows {
+            assert_eq!(row["matched"], false);
+            assert!(row.get("derived").is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_distinguishes_no_source_value_non_match_and_empty_capture() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {"id": "e1", "name": "Item 1"},
+                    {"id": "e2", "name": "Item 2", "manufacturer": "other val"},
+                    {"id": "e3", "name": "Item 3", "manufacturer": "prefix:"}
+                ],
+                "total": 3
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "manufacturer",
+                                "pattern": r"^prefix:(?<empty_cap>.*)$"
+                            }],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let rows = v["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+
+        // Row 1 (e1: manufacturer absent in browse cells => no source_value, matched false, no derived)
+        let row0 = &rows[0];
+        assert!(row0.get("source_value").is_none());
+        assert_eq!(row0["matched"], false);
+        assert!(row0.get("derived").is_none());
+
+        // Row 2 (e2: manufacturer present but non-matching => reports source_value, matched false, no derived)
+        let row1 = &rows[1];
+        assert_eq!(row1["source_value"], "other val");
+        assert_eq!(row1["matched"], false);
+        assert!(row1.get("derived").is_none());
+
+        // Row 3 (e3: manufacturer matches and captures empty string => reports source_value, matched true, derived with empty string)
+        let row2 = &rows[2];
+        assert_eq!(row2["source_value"], "prefix:");
+        assert_eq!(row2["matched"], true);
+        assert_eq!(row2["derived"]["empty_cap"], "");
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_rejects_invalid_candidate_rule_elsewhere_in_list_with_no_upstream_fetch_and_leaves_store_unchanged(
+    ) {
+        use wiremock::MockServer;
+        let hb = MockServer::start().await;
+
+        let state = loopback_state();
+        let orig_transforms = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<orig_loc>[^|]+)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &orig_transforms,
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [
+                                {
+                                    "resource": "entities",
+                                    "source": "location",
+                                    "pattern": r"^(?<valid_loc>[^|]+)$"
+                                },
+                                {
+                                    "resource": "entities",
+                                    "source": "name",
+                                    "pattern": r"^([0-9]+)$" // No named group
+                                }
+                            ],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "connection_transform_invalid"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("rule 1:"), "message must name rule 1: {}", msg);
+
+        // No request was sent to wiremock server
+        assert_eq!(hb.received_requests().await.unwrap().len(), 0);
+
+        // Stored connection in DB is unchanged
+        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(stored.transforms, orig_transforms);
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_rejects_collision_between_candidate_rules() {
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: "http://hb.lan",
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [
+                                {
+                                    "resource": "entities",
+                                    "source": "name",
+                                    "pattern": r"^(?<dup_field>.*)$"
+                                },
+                                {
+                                    "resource": "entities",
+                                    "source": "description",
+                                    "pattern": r"^(?<dup_field>.*)$"
+                                }
+                            ],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "connection_transform_invalid"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("rule 1:"));
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_rejects_out_of_range_rule_index_and_unknown_connection() {
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: "http://hb.lan",
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+
+        // Out of range rule index
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^(?<clean>.*)$"
+                            }],
+                            "rule": 5
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+
+        // Unknown connection id
+        let res404 = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections/non-existent-id/transforms/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^(?<clean>.*)$"
+                            }],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res404.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_page_size_clamping() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .and(query_param("pageSize", "200"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "e1", "name": "Item 1"}],
+                "total": 1
+            })))
+            .mount(&hb)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .and(query_param("pageSize", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "e1", "name": "Item 1"}],
+                "total": 1
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+
+        // page_size: 500 clamps to 200
+        let res1 = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^(?<clean>.*)$"
+                            }],
+                            "rule": 0,
+                            "page_size": 500
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+
+        // page_size: 0 clamps to 1
+        let res2 = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^(?<clean>.*)$"
+                            }],
+                            "rule": 0,
+                            "page_size": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_over_returning_upstream_truncated_to_requested_page_size() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        let mut items = Vec::new();
+        for i in 0..50 {
+            items.push(serde_json::json!({
+                "id": format!("e{i}"),
+                "name": format!("Item {i}"),
+                "parent": {"id": format!("loc{i}"), "name": "MATCH.123"}
+            }));
+        }
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": items,
+                "total": 50
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "location",
+                                "pattern": r"^(?<m>MATCH\..*)$"
+                            }],
+                            "rule": 0,
+                            "page_size": 10
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["row_count"], 10);
+        assert_eq!(v["matched_count"], 10);
+        let rows = v["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_long_source_value_truncated_to_512_bytes_and_still_matched() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        let long_name = "X".repeat(4000);
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {"id": "e1", "name": long_name}
+                ],
+                "total": 1
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &[],
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^(?<captured>.*)$"
+                            }],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["matched_count"], 1);
+        let row = &v["rows"][0];
+        assert_eq!(row["matched"], true);
+        assert_eq!(row["value_truncated"], true);
+        let src_val = row["source_value"].as_str().unwrap();
+        assert_eq!(src_val.len(), 512);
+        let cap_val = row["derived"]["captured"].as_str().unwrap();
+        assert_eq!(cap_val.len(), 512);
+    }
+
+    #[tokio::test]
+    async fn preview_endpoint_leaves_stored_transforms_unchanged() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "e1", "name": "Item 1"}],
+                "total": 1
+            })))
+            .mount(&hb)
+            .await;
+
+        let state = loopback_state();
+        let orig_transforms = vec![crate::connector::FieldTransform {
+            resource: "entities".into(),
+            source: "location".into(),
+            pattern: r"^(?<orig_field>[^|]+)$".into(),
+        }];
+        let c = state
+            .store()
+            .create_connection(crate::store::NewConnection {
+                connector: "homebox",
+                name: "h",
+                base_url: &hb.uri(),
+                public_url: None,
+                credential: "hb_key",
+                enabled: true,
+                transforms: &orig_transforms,
+            })
+            .await
+            .unwrap();
+
+        let router = with_auth(app(state.clone()));
+
+        // Successful preview with different transforms
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^(?<preview_only_field>.*)$"
+                            }],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(stored.transforms, orig_transforms);
+
+        // Refused preview with invalid transforms
+        let res_bad = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_string(&serde_json::json!({
+                            "transforms": [{
+                                "resource": "entities",
+                                "source": "name",
+                                "pattern": r"^([0-9]+)$"
+                            }],
+                            "rule": 0
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res_bad.status(), StatusCode::BAD_REQUEST);
+
+        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(stored.transforms, orig_transforms);
+    }
+
+    #[tokio::test]
     async fn datetime_preview_returns_sample_and_rejects_bad_pattern() {
         let app = build_app();
         // valid pattern => 200 with a non-empty sample
@@ -8613,7 +9392,7 @@ layout:
     }
 
     #[tokio::test]
-    async fn all_nineteen_json_endpoints_reject_malformed_body_identically() {
+    async fn all_twenty_json_endpoints_reject_malformed_body_identically() {
         let endpoints = [
             ("POST", "/api/printers"),
             ("POST", "/api/printers/probe"),
@@ -8625,6 +9404,7 @@ layout:
             ("PUT", "/api/connections/conn-1"),
             ("POST", "/api/connections/conn-1/browse"),
             ("POST", "/api/connections/conn-1/materialize"),
+            ("POST", "/api/connections/conn-1/transforms/preview"),
             ("POST", "/api/auth/setup"),
             ("POST", "/api/auth/login"),
             ("POST", "/api/auth/password"),
@@ -8636,7 +9416,7 @@ layout:
             ("POST", "/api/render/label"),
         ];
 
-        assert_eq!(endpoints.len(), 19);
+        assert_eq!(endpoints.len(), 20);
 
         for (method, uri) in endpoints {
             assert_malformed_body_returns_envelope(method, uri).await;

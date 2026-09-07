@@ -155,7 +155,8 @@ requirement is held by the scenario below, which enumerates the endpoints that e
   `POST /api/printers`, `POST /api/printers/probe`, `PUT /api/printers/{id}`,
   `PUT /api/variables/{key}`, `PUT /api/settings/{key}`, `POST /api/datetime-formats/preview`,
   `POST /api/connections`, `PUT /api/connections/{id}`, `POST /api/connections/{id}/browse`,
-  `POST /api/connections/{id}/materialize`, `POST /api/auth/setup`, `POST /api/auth/login`,
+  `POST /api/connections/{id}/materialize`, `POST /api/connections/{id}/transforms/preview`,
+  `POST /api/auth/setup`, `POST /api/auth/login`,
   `POST /api/auth/password`, `POST /api/users`, `POST /api/tokens`,
   `PUT /api/templates/{id}/group`, `POST /api/batch`, `POST /api/print` and `POST /api/render/label`
 - **THEN** every response has status `400`, `error.code` `InvalidRequest` and

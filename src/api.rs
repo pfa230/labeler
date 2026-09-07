@@ -13,6 +13,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use sha2::Digest;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -263,6 +264,10 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/connections/{id}/materialize",
             post(connection_materialize),
+        )
+        .route(
+            "/connections/{id}/transforms/preview",
+            post(connection_transforms_preview),
         )
         .route("/variables", get(get_variables))
         .route("/variables/{key}", put(put_variable))
@@ -2217,6 +2222,161 @@ pub async fn connection_materialize(
         .await
         .map_err(AppError::from)?;
     Ok(Json(rows).into_response())
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema, Debug)]
+pub struct TransformPreviewRequest {
+    pub transforms: Vec<crate::connector::FieldTransform>,
+    pub rule: usize,
+    #[serde(default)]
+    pub page_size: Option<u32>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
+pub struct TransformPreviewRow {
+    pub id: crate::connector::RowRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_value: Option<String>,
+    pub matched: bool,
+    pub value_truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived: Option<BTreeMap<String, String>>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
+pub struct TransformPreviewResponse {
+    pub rule: usize,
+    pub resource: String,
+    pub source: String,
+    pub row_count: usize,
+    pub matched_count: usize,
+    pub rows: Vec<TransformPreviewRow>,
+}
+
+fn truncate_to_512_bytes(s: &str) -> (&str, bool) {
+    if s.len() <= 512 {
+        (s, false)
+    } else {
+        let mut idx = 512;
+        while !s.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        (&s[..idx], true)
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/connections/{id}/transforms/preview",
+    params(("id" = String, Path, description = "Connection ID")),
+    request_body = TransformPreviewRequest,
+    responses(
+        (status = 200, description = "Preview results for a transform rule", body = TransformPreviewResponse),
+        (status = 400, description = "Invalid request", body = ErrorResponse),
+        (status = 404, description = "Connection not found", body = ErrorResponse),
+        (status = 502, description = "Upstream failure", body = ErrorResponse)
+    )
+)]
+pub async fn connection_transforms_preview(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<TransformPreviewRequest>,
+) -> Result<Response, AppError> {
+    let (conn, connector) = load_conn_and_connector(&state, &id).await?;
+
+    if req.rule >= req.transforms.len() {
+        return Err(AppError::invalid_request(
+            Reason::RequestBodyInvalid,
+            format!("rule index {} out of range", req.rule),
+        ));
+    }
+
+    if let Err((idx, msg)) = connector.validate_transforms(&req.transforms) {
+        return Err(AppError::invalid_request(
+            Reason::ConnectionTransformInvalid,
+            format!("rule {idx}: {msg}"),
+        ));
+    }
+
+    let target_rule = &req.transforms[req.rule];
+    let target_resource = target_rule.resource.clone();
+    let target_source = target_rule.source.clone();
+
+    let effective_page_size = connector.clamp_page_size(req.page_size, 10);
+
+    let browse_req = crate::connector::BrowseRequest {
+        resource: target_resource.clone(),
+        filters: BTreeMap::new(),
+        parent: None,
+        cursor: None,
+        page_size: Some(effective_page_size),
+    };
+
+    let mut page = connector
+        .browse(&conn, state.egress(), state.cursor_key(), browse_req)
+        .await
+        .map_err(AppError::from)?;
+
+    if page.rows.len() > effective_page_size as usize {
+        page.rows.truncate(effective_page_size as usize);
+    }
+
+    let row_count = page.rows.len();
+
+    let compiled = crate::connector::CompiledTransforms::compile(&req.transforms).map_err(|e| {
+        AppError::invalid_request(Reason::ConnectionTransformInvalid, e.to_string())
+    })?;
+
+    let mut matched_count = 0;
+    let mut rows = Vec::with_capacity(row_count);
+
+    for display_row in page.rows {
+        let eval = compiled.evaluate_rule(req.rule, &target_resource, &display_row.cells);
+
+        let (source_value, src_cut) = match eval.as_ref().and_then(|e| e.source_value) {
+            Some(sv) => {
+                let (truncated, cut) = truncate_to_512_bytes(sv);
+                (Some(truncated.to_string()), cut)
+            }
+            None => (None, false),
+        };
+
+        let (matched, derived, val_cut) = match eval.and_then(|e| e.captures) {
+            Some(caps) => {
+                matched_count += 1;
+                let mut derived_map = BTreeMap::new();
+                let mut caps_cut = false;
+                for (k, v) in caps {
+                    let (truncated, cut) = truncate_to_512_bytes(v);
+                    if cut {
+                        caps_cut = true;
+                    }
+                    derived_map.insert(k.to_string(), truncated.to_string());
+                }
+                (true, Some(derived_map), src_cut || caps_cut)
+            }
+            None => (false, None, src_cut),
+        };
+
+        rows.push(TransformPreviewRow {
+            id: display_row.id,
+            source_value,
+            matched,
+            value_truncated: val_cut,
+            derived,
+        });
+    }
+
+    let response = TransformPreviewResponse {
+        rule: req.rule,
+        resource: target_resource,
+        source: target_source,
+        row_count,
+        matched_count,
+        rows,
+    };
+
+    Ok(Json(response).into_response())
 }
 
 struct ParsedCsvRow {

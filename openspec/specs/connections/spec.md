@@ -289,8 +289,12 @@ URL, whether an API key is set, and whether it is enabled, with `-` for a connec
 URL.
 
 The connection form SHALL carry **connector**, **name**, **base url**, an optional **public url**, an
-**api key**, an **enabled** checkbox, and the ordered field-transform rule editor that submits the
-connection's `transforms`. The form SHALL be pre-filled from the stored connection when editing one,
+**api key** and an **enabled** checkbox. The form for an existing connection SHALL additionally carry
+the ordered field-transform rule editor that submits the connection's `transforms`; the form for a new
+connection SHALL carry no rule editor and SHALL say that rules are added after saving. What that
+editor offers, when it submits `transforms` and how a rule is previewed belong to
+`connector-field-transforms`, which this requirement neither restates nor overrides.
+The form SHALL be pre-filled from the stored connection when editing one,
 and SHALL submit `public_url` on every save so that clearing the field clears the stored value. A
 non-blank **base url** or **public url** SHALL be rejected in the form, without a request, when it is
 not a parseable `http`/`https` URL.

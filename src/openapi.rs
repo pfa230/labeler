@@ -6,7 +6,7 @@ use crate::{
         AuthStatus, ConnectionInput, ConnectionView, Credentials, DatetimePreviewRequest,
         DatetimePreviewResponse, OkResponse, PasswordChange, ProbeCapabilities, ProbeRequest,
         ProbeResponse, ResolvedSetting, SettingValue, TokenCreate, TokenCreated, TokenSummary,
-        UserSummary,
+        TransformPreviewRequest, TransformPreviewResponse, TransformPreviewRow, UserSummary,
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
@@ -82,7 +82,8 @@ use crate::{
         api::delete_connection_h,
         api::connection_schema,
         api::connection_browse,
-        api::connection_materialize
+        api::connection_materialize,
+        api::connection_transforms_preview
     ),
     servers((url = "/api")),
     components(
@@ -176,7 +177,10 @@ use crate::{
             MaterializeRequest,
             ExpansionPolicy,
             RowValue,
-            LabelRow
+            LabelRow,
+            TransformPreviewRequest,
+            TransformPreviewResponse,
+            TransformPreviewRow
         )
     ),
     tags(
