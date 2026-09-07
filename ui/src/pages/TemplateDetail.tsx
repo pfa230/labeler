@@ -22,8 +22,8 @@ function formatDimensions(format: TemplateFormat, unit: string): string {
 function Chip({ children }: { children: React.ReactNode }) {
   return (
     <code
-      className="rounded px-1.5 py-0.5 text-xs"
-      style={{ background: "var(--bg)", color: "var(--ink)" }}
+      className="rounded border px-1.5 py-0.5 text-xs"
+      style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
     >
       {children}
     </code>
@@ -56,7 +56,7 @@ function RawYamlSection({ id }: { id: string }) {
           <>
             <pre
               className="mt-3 overflow-auto rounded-md p-3 text-xs"
-              style={{ background: "var(--bg)", color: "var(--ink)" }}
+              style={{ background: "var(--paper)", color: "var(--ink)" }}
             >
               {sourceFailed
                 ? `Could not load the template source: ${sourceError instanceof Error ? sourceError.message : "unknown error"}`
@@ -89,7 +89,7 @@ function RawYamlSection({ id }: { id: string }) {
               rows={20}
               aria-label="Template YAML"
               className="mt-3 w-full rounded-md border p-3 font-mono text-sm focus-visible:outline-none focus-visible:ring-2"
-              style={{ background: "var(--bg)", borderColor: "var(--border)", color: "var(--ink)" }}
+              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
             />
             {saveError && <p style={{ color: "var(--bad)" }}>{saveError}</p>}
             <div className="mt-3 flex flex-wrap items-center gap-2">

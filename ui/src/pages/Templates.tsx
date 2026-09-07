@@ -77,7 +77,7 @@ function TemplateCard({
         {template.group && (
           <span
             className="min-w-0 truncate rounded-full px-2 py-0.5 text-xs font-medium border"
-            style={{ background: "var(--bg)", color: "var(--muted)", borderColor: "var(--border)" }}
+            style={{ background: "var(--paper)", color: "var(--muted)", borderColor: "var(--border)" }}
           >
             {template.group}
           </span>
@@ -91,7 +91,7 @@ function TemplateCard({
         {failed ? (
           <div
             className="flex aspect-[3/1] items-center justify-center rounded-md border text-xs"
-            style={{ background: "var(--bg)", borderColor: "var(--border)", color: "var(--muted)" }}
+            style={{ background: "var(--paper)", borderColor: "var(--border)", color: "var(--muted)" }}
             aria-hidden="true"
           >
             preview
@@ -103,7 +103,7 @@ function TemplateCard({
             loading="lazy"
             onError={() => setFailed(true)}
             className="aspect-[3/1] w-full rounded-md border object-contain"
-            style={{ background: "var(--bg)", borderColor: "var(--border)" }}
+            style={{ background: "var(--paper)", borderColor: "var(--border)" }}
           />
         )}
         <h2 className="font-semibold" style={{ color: "var(--ink)" }}>
@@ -114,7 +114,7 @@ function TemplateCard({
         <div className="flex min-w-0 items-center gap-2">
           <code
             className="truncate rounded px-1.5 py-0.5 text-xs"
-            style={{ background: "var(--bg)", color: "var(--muted)" }}
+            style={{ background: "var(--paper)", color: "var(--muted)" }}
           >
             {template.id}
           </code>
@@ -302,7 +302,7 @@ function MoveDialog({
               onChange={(e) => setGroupInput(e.target.value)}
               placeholder="Choose or enter group (e.g. Shipping/Pallets)…"
               className="rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2"
-              style={{ background: "var(--bg)", borderColor: "var(--border)", color: "var(--ink)" }}
+              style={{ background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" }}
               autoFocus
             />
             <datalist id="groups-datalist">

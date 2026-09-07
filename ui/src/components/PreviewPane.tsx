@@ -17,7 +17,7 @@ export function PreviewPane({
   return (
     <div
       className="flex min-h-48 items-center justify-center rounded-lg border p-4"
-      style={{ background: "var(--bg)", borderColor: "var(--border)" }}
+      style={{ background: "var(--surface)", borderColor: "var(--border)" }}
     >
       {preview.loading && <p style={{ color: "var(--muted)" }}>rendering preview…</p>}
       {!preview.loading && preview.error && (
