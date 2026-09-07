@@ -11,8 +11,11 @@ import {
 } from "../../api/connectors";
 import {
   defaultColumnKeys,
-  loadSavedColumnKeys,
-  saveColumnKeys,
+  loadSavedColumnChoice,
+  makeColumnChoice,
+  resolveColumnKeys,
+  saveColumnChoice,
+  type ColumnChoice,
 } from "./connectorColumns";
 import { compareRowsBy, type SortDirection } from "../../lib/connectorSort";
 import { matchesFilters, type ColumnFilters } from "../../lib/connectorFilter";
@@ -29,6 +32,7 @@ export interface ConnectorBrowserProps {
   schema: ConnectorSchema;
   selected: SelectedRow[];
   onSelectedChange: (rows: SelectedRow[]) => void;
+  refreshToken?: number;
 }
 
 const refKey = (r: { resource: string; key: string }) => `${r.resource}:${r.key}`;
@@ -61,7 +65,7 @@ function NameCell({ row, column }: ICellProps) {
   return <>{text}</>;
 }
 
-export function ConnectorBrowser({ connectionId, schema, selected, onSelectedChange }: ConnectorBrowserProps) {
+export function ConnectorBrowser({ connectionId, schema, selected, onSelectedChange, refreshToken }: ConnectorBrowserProps) {
   const [resourceId, setResourceId] = useState(schema.resources[0]?.id ?? "");
   const resource = useMemo<ResourceSpec | undefined>(() => schema.resources.find((r) => r.id === resourceId), [schema, resourceId]);
   const [filterDraft, setFilterDraft] = useState<Record<string, string>>({});
@@ -81,12 +85,12 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   const [sortState, setSortState] = useState<{ key: string; direction: SortDirection } | null>(null);
   const [columnFilters, setColumnFilters] = useState<ColumnFilters>({});
 
-  const [columnOverrides, setColumnOverrides] = useState<Record<string, Set<string>>>({});
+  const [columnOverrides, setColumnOverrides] = useState<Record<string, ColumnChoice>>({});
   const currentResourceKey = resource ? `${connectionId}:${resource.id}` : "";
   const visibleKeys = useMemo(() => {
     if (!resource) return new Set<string>();
-    if (columnOverrides[currentResourceKey]) return columnOverrides[currentResourceKey];
-    return loadSavedColumnKeys(connectionId, resource.id, resource.columns);
+    const choice = columnOverrides[currentResourceKey] ?? loadSavedColumnChoice(connectionId, resource.id);
+    return resolveColumnKeys(resource.columns, choice);
   }, [connectionId, resource, currentResourceKey, columnOverrides]);
 
   const [columnsOpen, setColumnsOpen] = useState(false);
@@ -112,8 +116,9 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
 
   const setVisibleKeysForCurrent = (next: Set<string>) => {
     if (!resource) return;
-    setColumnOverrides((prev) => ({ ...prev, [currentResourceKey]: next }));
-    saveColumnKeys(connectionId, resource.id, next);
+    const choice = makeColumnChoice(resource.columns, next);
+    setColumnOverrides((prev) => ({ ...prev, [currentResourceKey]: choice }));
+    saveColumnChoice(connectionId, resource.id, choice);
     // Hiding a column CLEARS its filter rather than parking it: re-showing the column must not
     // silently re-apply a needle the user last typed some columns ago. `activeFilters` already
     // stops a hidden column narrowing anything, so this is about what comes back on re-show.
@@ -235,7 +240,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
         if (reqToken.current === token) setBusy(false);
       }
     })();
-  }, [connectionId, resource, applied, parent]);
+  }, [connectionId, resource, applied, parent, refreshToken]);
 
   const loadMore = async () => {
     if (!resource || !cursor) return;

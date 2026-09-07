@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type SelectedRow } from "../api/connectors";
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
 import { ConnectionsSection } from "./connect/ConnectionsSection";
@@ -35,6 +35,7 @@ export function Connect() {
   const [open, setOpen] = useState<boolean | null>(null);
   const [templateId, setTemplateId] = useState("");
   const [selected, setSelected] = useState<SelectedRow[]>([]);
+  const [refreshToken, setRefreshToken] = useState(0);
 
   if (latchedConnectionId === null) {
     if (connectionsFailed) {
@@ -59,6 +60,28 @@ export function Connect() {
 
   const connectionId =
     selectedConnectionId !== null ? selectedConnectionId : (latchedConnectionId ?? "");
+
+  useEffect(() => {
+    const onSaved = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (id && id === connectionId) {
+        setRefreshToken((t) => t + 1);
+      }
+    };
+    const onDeleted = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (id && id === connectionId) {
+        setSelectedConnectionId("");
+        setSelected([]);
+      }
+    };
+    window.addEventListener("labeler:connection-saved", onSaved);
+    window.addEventListener("labeler:connection-deleted", onDeleted);
+    return () => {
+      window.removeEventListener("labeler:connection-saved", onSaved);
+      window.removeEventListener("labeler:connection-deleted", onDeleted);
+    };
+  }, [connectionId]);
 
   if (connections !== undefined && !connectionsFailed && connectionId !== "") {
     const isOffered = connections.some((c) => c.id === connectionId && c.enabled);
@@ -136,7 +159,14 @@ export function Connect() {
       )}
 
       {connectionId && schema && (
-        <ConnectorBrowser key={connectionId} connectionId={connectionId} schema={schema} selected={selected} onSelectedChange={setSelected} />
+        <ConnectorBrowser
+          key={connectionId}
+          connectionId={connectionId}
+          schema={schema}
+          selected={selected}
+          onSelectedChange={setSelected}
+          refreshToken={refreshToken}
+        />
       )}
     </div>
   );

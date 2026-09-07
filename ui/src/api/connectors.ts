@@ -75,7 +75,15 @@ export function useSaveConnection() {
       id === undefined
         ? sendJson<Connection>("POST", "/connections", input)
         : sendJson<Connection>("PUT", `/connections/${encodeURIComponent(id)}`, input),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["connections"] }),
+    onSuccess: (data, variables) => {
+      const id = variables.id ?? data.id;
+      if (id) {
+        window.dispatchEvent(new CustomEvent("labeler:connection-saved", { detail: { id } }));
+        qc.cancelQueries({ queryKey: ["connector-schema", id], exact: true });
+        qc.invalidateQueries({ queryKey: ["connector-schema", id] });
+      }
+      qc.invalidateQueries({ queryKey: ["connections"] });
+    },
   });
 }
 
@@ -83,7 +91,9 @@ export function useDeleteConnection() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => del(`/connections/${encodeURIComponent(id)}`),
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
+      window.dispatchEvent(new CustomEvent("labeler:connection-deleted", { detail: { id } }));
+      qc.removeQueries({ queryKey: ["connector-schema", id], exact: true });
       qc.invalidateQueries({ queryKey: ["connections"] });
       qc.invalidateQueries({ queryKey: ["settings"] });
     },

@@ -1,5 +1,4 @@
-import { useState, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useState, useRef, useEffect } from "react";
 import {
   useConnections,
   useSaveConnection,
@@ -126,7 +125,6 @@ function EditConnectionForm({ initial, onClose }: { initial: Connection; onClose
 
   const schemaQuery = useConnectorSchema(initial.id);
   const save = useSaveConnection();
-  const qc = useQueryClient();
   const { push } = useToast();
 
   const isDirtyDetails = baseUrl.trim() !== initial.base_url || apiKey.trim() !== "";
@@ -239,7 +237,6 @@ function EditConnectionForm({ initial, onClose }: { initial: Connection; onClose
       { input, id: initial.id },
       {
         onSuccess: () => {
-          qc.invalidateQueries({ queryKey: ["connector-schema", initial.id] });
           push({ kind: "ok", message: `Saved ${input.name}` });
           onClose();
         },
@@ -541,7 +538,7 @@ function ConnectionForm({ initial, onClose }: { initial: Connection | null; onCl
   return <EditConnectionForm initial={initial} onClose={onClose} />;
 }
 
-function ConnectionRow({ conn, onEdit, onDeleted }: { conn: Connection; onEdit: () => void; onDeleted: (id: string) => void }) {
+function ConnectionRow({ conn, onEdit }: { conn: Connection; onEdit: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const remove = useDeleteConnection();
   const { push } = useToast();
@@ -560,7 +557,7 @@ function ConnectionRow({ conn, onEdit, onDeleted }: { conn: Connection; onEdit: 
           <>
             <button type="button" disabled={remove.isPending} onClick={() =>
               remove.mutate(conn.id, {
-                onSuccess: () => { push({ kind: "ok", message: `Deleted ${conn.name}` }); onDeleted(conn.id); },
+                onSuccess: () => { push({ kind: "ok", message: `Deleted ${conn.name}` }); },
                 onError: (err) => push({ kind: "error", message: err instanceof Error ? err.message : "Delete failed" }),
               })
             } style={{ color: "var(--bad)" }}>Confirm</button>
@@ -582,7 +579,17 @@ export function ConnectionsSection() {
   const { push } = useToast();
   const [editing, setEditing] = useState<Connection | "new" | null>(null);
   const th = "px-3 py-2 text-left text-xs font-medium";
-  const onDeleted = (id: string) => { if (editing !== null && editing !== "new" && editing.id === id) setEditing(null); };
+
+  useEffect(() => {
+    const onDeleted = (e: Event) => {
+      const id = (e as CustomEvent<{ id: string }>).detail?.id;
+      if (id) {
+        setEditing((cur) => (cur && cur !== "new" && cur.id === id ? null : cur));
+      }
+    };
+    window.addEventListener("labeler:connection-deleted", onDeleted);
+    return () => window.removeEventListener("labeler:connection-deleted", onDeleted);
+  }, []);
 
   const storedDefault = settings?.default_connection_id;
   const storedDefaultId = typeof storedDefault?.value === "string" ? storedDefault.value : null;
@@ -644,7 +651,7 @@ export function ConnectionsSection() {
           </thead>
           <tbody>
             {(connections ?? []).map((c) => (
-              <ConnectionRow key={c.id} conn={c} onEdit={() => setEditing(c)} onDeleted={onDeleted} />
+              <ConnectionRow key={c.id} conn={c} onEdit={() => setEditing(c)} />
             ))}
           </tbody>
           </table>
