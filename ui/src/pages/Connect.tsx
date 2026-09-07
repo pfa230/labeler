@@ -408,8 +408,11 @@ function Composer({
           {/* An action bar over the preview has to be opaque and reach the scrollport floor.
               --bg is defined nowhere, so the background computed to transparent, and at
               bottom-0 the bar stopped 24px short on the Shell's p-6, leaving the preview
-              visible through and beneath it. z-10 matches the Print page's bar. */}
-          <div className="sticky -bottom-6 z-10 flex flex-wrap items-center gap-3 border-t pb-9 pt-3" style={{ background: "var(--paper)", borderColor: "var(--border)" }}>
+              visible through and beneath it. The 1.5rem in the padding is that p-6 again. The
+              inset is the Print bar's spelling of the same 2.25rem and is inert until
+              index.html asks for viewport-fit=cover, without which env() is 0 (#374).
+              z-10 matches the Print page's bar. */}
+          <div className="sticky -bottom-6 z-10 flex flex-wrap items-center gap-3 border-t pt-3 pb-[calc(0.75rem_+_1.5rem_+_env(safe-area-inset-bottom))]" style={{ background: "var(--paper)", borderColor: "var(--border)" }}>
             <button type="button" onClick={() => run("print")} disabled={busy || overCap || hasErrors || !printer || stale} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Print</button>
             <button type="button" onClick={() => run("download")} disabled={busy || overCap || hasErrors || stale} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Download</button>
             <span className="text-sm" style={{ color: "var(--muted)" }}>{total} labels</span>
