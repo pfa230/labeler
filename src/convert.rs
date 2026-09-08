@@ -425,7 +425,10 @@ impl LayoutItem {
                                 ),
                             });
                         }
-                        Some(spacing)
+                        Some(DynamicValue::Literal(spacing))
+                    }
+                    Some(Some(crate::raw::RawLineSpacing::Ref(param))) => {
+                        Some(DynamicValue::Ref(param))
                     }
                     Some(Some(crate::raw::RawLineSpacing::Invalid(s))) => {
                         return Err(TemplateError::Validation {

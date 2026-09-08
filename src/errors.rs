@@ -282,6 +282,17 @@ impl AppError {
         )
     }
 
+    pub fn line_spacing_param_invalid(
+        path: &str,
+        param: &str,
+        detail: impl std::fmt::Display,
+    ) -> Self {
+        Self::invalid_request(
+            Reason::LineSpacingParamInvalid,
+            format!("Invalid line_spacing value for parameter '{param}' at {path}: {detail}"),
+        )
+    }
+
     pub fn template_invalid(reason: Reason, message: impl Into<String>) -> Self {
         Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,

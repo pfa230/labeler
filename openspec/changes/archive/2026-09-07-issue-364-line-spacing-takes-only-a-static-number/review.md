@@ -1,0 +1,17 @@
+# Plan review
+
+AUTHOR: claude
+REVIEWER: codex
+VERDICT: APPROVE_WITH_CHANGES
+ROUNDS: 3
+
+## Required changes
+
+1. **[P2] Correct the integer-overflow contract.** [Delta spec:112](/home/pfa/projects/labeler/.worktrees/issue-364/openspec/changes/issue-364-line-spacing-takes-only-a-static-number/specs/text-line-spacing/spec.md:112) promises that any oversized integer input becomes a positive, legal pitch. However, [coercion:108](/home/pfa/projects/labeler/.worktrees/issue-364/src/render/mod.rs:108) handles JSON numbers and strings differently: numeric `-1e300` saturates to `i64::MIN`, while `"9223372036854775808"` fails integer parsing. Rust confirms saturation toward the respective [integer bounds](https://doc.rust-lang.org/reference/expressions/operator-expr.html#numeric-cast). Restrict the positive-saturation promise and scenario at delta line 183 to positive JSON numbers such as `1e300`. Explicitly require negative numeric overflow to return `400 InvalidRequest / line_spacing_param_invalid`, and oversized integer strings to return `400 InvalidRequest / request_body_invalid`. Add endpoint scenarios for both, and align proposal lines 47–51 and design lines 278–281. Preserve shared coercion.
+
+2. **[P2] Correct the interpolation spelling without changing its behavior.** [Delta spec:9](/home/pfa/projects/labeler/.worktrees/issue-364/openspec/changes/issue-364-line-spacing-takes-only-a-static-number/specs/text-line-spacing/spec.md:9) says double braces name a parameter in text; proposal lines 18–19 repeat this, and [design:230](/home/pfa/projects/labeler/.worktrees/issue-364/openspec/changes/issue-364-line-spacing-takes-only-a-static-number/design.md:230) claims `{{ n }}` interpolates to `null`. The authoritative [interpolation contract:29](/home/pfa/projects/labeler/.worktrees/issue-364/openspec/specs/interpolation-tokens/spec.md:29) uses `{name}` for tokens; line 39 defines doubled braces as literal escapes. Correct these explanations throughout the artifacts and use `{n}` in the design’s interpolation example. Keep `line_spacing: "{{ pitch }}"` rejected because it is outside the field’s accepted reference grammar.
+
+The author applies these specific edits; NO further review follows.
+
+CHANGES_APPLIED: yes
+SPECS_SHA256: 9140f93120a2d6dd175a07c5cd69d807c114501b2edd830fa7498bdb69adebcd
