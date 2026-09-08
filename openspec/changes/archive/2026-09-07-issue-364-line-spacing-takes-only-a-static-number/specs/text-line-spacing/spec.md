@@ -1,8 +1,4 @@
-## Purpose
-
-Gives template authors control over the line pitch of multi-line text: one bare number per text item fixing the baseline-to-baseline distance as a multiple of the font size, defaulting to 1.2 and replacing the font-derived default the renderer inherits from Typst.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: A text item's line pitch is authored as `line_spacing`
 

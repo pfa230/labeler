@@ -1309,7 +1309,6 @@ struct TextRenderArgs<'a> {
     pub font_weight: Option<u16>,
     pub color: Option<&'a crate::models::Color>,
     pub alignment: &'a crate::models::Alignment,
-    pub line_spacing: Option<f32>,
     pub pbox: PlacedBox,
     pub text_fit: &'a helpers::TextFit,
 }
@@ -1684,6 +1683,21 @@ impl<'a> RenderContext<'a> {
                     }
                 });
 
+                let resolved_line_spacing = match line_spacing {
+                    None => None,
+                    Some(dyn_val) => {
+                        let f = helpers::resolve_dynamic_value_f32(dyn_val, self.data)?;
+                        if !f.is_finite() || f <= 0.0 {
+                            let param_name = match dyn_val {
+                                crate::models::DynamicValue::Ref(r) => r.as_str(),
+                                crate::models::DynamicValue::Literal(_) => "line_spacing",
+                            };
+                            return Err(AppError::line_spacing_param_invalid(path, param_name, f));
+                        }
+                        Some(f)
+                    }
+                };
+
                 // The layout pass is unconditional: the emitted lines are the render payload
                 // whether or not either axis asked for an intrinsic.
                 let text_fit = helpers::layout_text(
@@ -1692,7 +1706,7 @@ impl<'a> RenderContext<'a> {
                         font_size,
                         font_weight: dyn_weight,
                         wrap: *wrap,
-                        line_spacing: *line_spacing,
+                        line_spacing: resolved_line_spacing,
                         alignment: alignment.clone(),
                         overflow: *overflow,
                     },
@@ -2075,7 +2089,6 @@ impl<'a> RenderContext<'a> {
                 font_weight,
                 color,
                 alignment,
-                line_spacing,
                 ..
             } => {
                 let resolved_weight = match font_weight {
@@ -2093,7 +2106,6 @@ impl<'a> RenderContext<'a> {
                         font_weight: resolved_weight,
                         color: resolved_color.as_ref(),
                         alignment,
-                        line_spacing: *line_spacing,
                         pbox: args.pbox,
                         text_fit: args.measured_node.text.as_ref().unwrap(),
                     },
@@ -2200,8 +2212,11 @@ impl<'a> RenderContext<'a> {
             body.push_str("#linebreak()");
         }
 
-        let leading_pt =
-            helpers::derived_leading_pt(weight, args.text_fit.font_size_pt, args.line_spacing)?;
+        let leading_pt = helpers::derived_leading_pt(
+            weight,
+            args.text_fit.font_size_pt,
+            args.text_fit.line_spacing,
+        )?;
 
         let body = format!(
             "#text(size: {}pt{weight_arg}{fill_arg})[#set par(leading: {leading_pt}pt)\n{body}]",
@@ -4913,7 +4928,6 @@ layout:
                     font_weight: None,
                     color: None,
                     alignment: &Alignment::default(),
-                    line_spacing: None,
                     pbox,
                     text_fit: measured[0].text.as_ref().unwrap(),
                 },
@@ -6238,6 +6252,82 @@ layout:
                 );
             }
         }
+
+        // Cover a supplied pitch at 0.5, 0.99, 1.2 and 1.5 over one to three lines
+        let env = super::RenderEnv {
+            settings: &no_settings(),
+            datetime: &no_datetime(),
+        };
+        for spacing in [0.5, 0.99, 1.2, 1.5] {
+            for lines in 1..=3usize {
+                let body = (0..lines).map(|_| "Hxy").collect::<Vec<_>>().join("\n");
+                let mut params = IndexMap::new();
+                params.insert(
+                    "pitch".to_string(),
+                    ParamSpec {
+                        param_type: ParamType::Number,
+                        default: None,
+                        min: None,
+                        max: None,
+                        description: None,
+                    },
+                );
+                let template = TemplateContent {
+                    name: "SuppliedBlockHeight".to_string(),
+                    description: String::new(),
+                    unit: "mm".to_string(),
+                    dpi: 200,
+                    format: TemplateFormat::Single {
+                        width: Dimension::Fixed(100.0).into(),
+                        height: Dimension::Fixed(100.0).into(),
+                        media_width: None,
+                    },
+                    params,
+                    layout: Layout::Items(vec![LayoutItem::Text {
+                        value: body,
+                        placement: Placement::sized(
+                            Position([0.0, 0.0]),
+                            Size([SizeValue::fixed(100.0), SizeValue::content()]),
+                        ),
+                        font_size: FontSize::Fixed(20.0),
+                        font_weight: None,
+                        color: None,
+                        wrap: false,
+                        line_spacing: Some(DynamicValue::Ref("pitch".to_string())),
+                        alignment: crate::models::Alignment::default(),
+                        overflow: Overflow::Ellipsis,
+                        when: None,
+                    }]),
+                    version: None,
+                };
+                let mut data = HashMap::new();
+                data.insert("pitch".to_string(), serde_json::json!(spacing));
+                let compiled = super::compile_label_source(&template, &data, &env)
+                    .expect("compile supplied agreement");
+                let rendered = typst_block_height_pt(lines, 20.0, Some(spacing));
+                let predicted = super::helpers::block_height_with_spacing_for_test(
+                    400,
+                    20.0,
+                    lines,
+                    Some(spacing),
+                );
+                let drift = (rendered - predicted).abs() / rendered;
+                assert!(
+                    drift < 0.01,
+                    "supplied {lines} line(s) at pitch {spacing}: predicted {predicted:.2}pt, Typst laid out {rendered:.2}pt ({:.1}% off)",
+                    drift * 100.0
+                );
+                let expected_leading = super::helpers::derived_leading_pt(400, 20.0, Some(spacing))
+                    .expect("derived leading");
+                assert!(
+                    compiled
+                        .source
+                        .contains(&format!("#set par(leading: {expected_leading}pt)")),
+                    "emitted Typst must carry leading {expected_leading}pt: got {}",
+                    compiled.source
+                );
+            }
+        }
     }
 
     /// The per-character advance sum must match a real shaped line. Not a claim of shaping parity —
@@ -6323,7 +6413,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
-                    line_spacing: spacing,
+                    line_spacing: spacing.map(DynamicValue::Literal),
                     alignment: crate::models::Alignment {
                         horizontal: HorizontalAlign::Left,
                         vertical: VerticalAlign::Top,
@@ -6393,7 +6483,7 @@ layout:
                 font_weight: None,
                 color: None,
                 wrap: false,
-                line_spacing: spacing,
+                line_spacing: spacing.map(DynamicValue::Literal),
                 alignment: crate::models::Alignment::default(),
                 overflow: Overflow::Ellipsis,
                 when: None,
@@ -6443,7 +6533,7 @@ layout:
                     font_weight: None,
                     color: None,
                     wrap: false,
-                    line_spacing: spacing,
+                    line_spacing: spacing.map(DynamicValue::Literal),
                     alignment: crate::models::Alignment::default(),
                     overflow: Overflow::Ellipsis,
                     when: None,

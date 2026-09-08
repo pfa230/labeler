@@ -398,13 +398,15 @@ Text layout items support an optional `wrap: bool` flag (default: `false`):
 
 ### Line spacing (`line_spacing`)
 
-Text layout items support an optional `line_spacing: float` multiplier (default: `1.2`):
+Text layout items support an optional `line_spacing` multiplier (default: `1.2`), specified as either a bare float or a parameter reference `"{param}"` to a `number` or `integer` parameter:
 - **Baseline-to-baseline pitch:** `pitch = line_spacing * font_size`. The spacing between consecutive lines is directly proportional to the font size.
 - **Tighter or looser lines:** Values below `1.2` (such as `0.99` or `1.0`) produce tighter line spacing for dense badges or multi-line descriptions, allowing auto-shrink to settle at larger font sizes within a height-constrained box. Values above `1.2` (such as `1.4` or `1.5`) create more open leading.
+- **Parameter references:** Authored as `"{param}"`, resolving dynamically at render time. The referenced parameter must be declared with `type: number` or `type: integer`.
 - **Single-line invariant:** For single-line text, `line_spacing` has no effect on block height or rendering.
-- **Validation:** Must be a finite positive number (`> 0`). Unitless multiplier.
+- **Validation:** Must be (or resolve at render time to) a finite positive number (`> 0`). Unitless multiplier.
 
 ```yaml
+# Bare number
 - type: text
   value: "{description}"
   at: [0.0, 0.0]
@@ -412,6 +414,15 @@ Text layout items support an optional `line_spacing: float` multiplier (default:
   font_size: { min: 8.0, max: 14.0 }
   wrap: true
   line_spacing: 1.0     # tighter 1.0x line pitch for multi-line description
+
+# Or a parameter reference to a number or integer parameter
+- type: text
+  value: "{description}"
+  at: [0.0, 0.0]
+  size: [60.0, 20.0]
+  font_size: { min: 8.0, max: 14.0 }
+  wrap: true
+  line_spacing: "{pitch}"   # dynamic multiplier from a number or integer parameter
 ```
 
 ## 8. Edge-relative coordinates and `to:`

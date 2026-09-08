@@ -1067,7 +1067,7 @@ pub enum LayoutItem {
         #[serde(default)]
         wrap: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        line_spacing: Option<f32>,
+        line_spacing: Option<DynamicValue<f32>>,
         #[serde(default)]
         alignment: Alignment,
         #[serde(default)]

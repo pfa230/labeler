@@ -214,6 +214,7 @@ pub enum LayoutItemRaw {
 #[derive(Debug, Clone, PartialEq)]
 pub enum RawLineSpacing {
     Float(f32),
+    Ref(String),
     Invalid(String),
 }
 
@@ -234,7 +235,18 @@ impl<'de> Deserialize<'de> for RawLineSpacing {
                     Ok(RawLineSpacing::Invalid(format!("{n}")))
                 }
             }
-            Value::String(s) => Ok(RawLineSpacing::Invalid(format!("\"{s}\""))),
+            Value::String(s) => {
+                if s.starts_with('{') && s.ends_with('}') && s.len() >= 2 {
+                    let inner = &s[1..s.len() - 1];
+                    if !inner.contains('{') && !inner.contains('}') && !inner.trim().is_empty() {
+                        Ok(RawLineSpacing::Ref(inner.trim().to_string()))
+                    } else {
+                        Ok(RawLineSpacing::Invalid(format!("\"{s}\"")))
+                    }
+                } else {
+                    Ok(RawLineSpacing::Invalid(format!("\"{s}\"")))
+                }
+            }
             Value::Bool(b) => Ok(RawLineSpacing::Invalid(format!("{b}"))),
             Value::Sequence(_) => Ok(RawLineSpacing::Invalid("an array".to_string())),
             Value::Mapping(_) => Ok(RawLineSpacing::Invalid("a mapping".to_string())),
@@ -506,5 +518,34 @@ color: {color_str}
         let raw_null_color: TextRaw =
             serde_yaml_ng::from_str("value: \"Hello\"\nfont_size: 12\ncolor: null\n").unwrap();
         assert_eq!(raw_null_color.color, Some(None));
+    }
+
+    #[test]
+    fn test_raw_line_spacing() {
+        let parse =
+            |s: &str| -> RawLineSpacing { serde_yaml_ng::from_str::<RawLineSpacing>(s).unwrap() };
+
+        assert_eq!(parse("1.2"), RawLineSpacing::Float(1.2));
+        assert_eq!(parse("2"), RawLineSpacing::Float(2.0));
+        assert_eq!(
+            parse("\"{pitch}\""),
+            RawLineSpacing::Ref("pitch".to_string())
+        );
+        assert_eq!(
+            parse("\"{ pitch }\""),
+            RawLineSpacing::Ref("pitch".to_string())
+        );
+
+        assert!(matches!(parse("\"1.2\""), RawLineSpacing::Invalid(_)));
+        assert!(matches!(parse("\"1.2mm\""), RawLineSpacing::Invalid(_)));
+        assert!(matches!(parse("\"1.2em\""), RawLineSpacing::Invalid(_)));
+        assert!(matches!(
+            parse("\"{{ pitch }}\""),
+            RawLineSpacing::Invalid(_)
+        ));
+        assert!(matches!(parse("\"{}\""), RawLineSpacing::Invalid(_)));
+        assert!(matches!(parse("true"), RawLineSpacing::Invalid(_)));
+        assert!(matches!(parse("[1.2]"), RawLineSpacing::Invalid(_)));
+        assert!(matches!(parse("null"), RawLineSpacing::Invalid(_)));
     }
 }

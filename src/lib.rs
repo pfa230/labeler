@@ -3383,12 +3383,15 @@ layout:
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
 
-        // 1. PUT a template with explicit line_spacing: 0.99 and another item with absent line_spacing
+        // 1. PUT a template with explicit line_spacing: 0.99, absent line_spacing, and ref "{pitch}"
         let yaml_valid = r#"
 name: SpacingReadback
 unit: mm
 dpi: 200
-format: { type: single, width: 50, height: 40 }
+format: { type: single, width: 50, height: 60 }
+params:
+  - name: pitch
+    type: number
 layout:
   - type: text
     value: "Explicit Spacing"
@@ -3401,6 +3404,12 @@ layout:
     at: [0, 20]
     size: [50, 20]
     font_size: 10
+  - type: text
+    value: "Ref Spacing"
+    at: [0, 40]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
 "#;
         let res = app
             .clone()
@@ -3431,6 +3440,8 @@ layout:
         assert_eq!(body["layout"][0]["line_spacing"], 0.99);
         // Item 1 omits line_spacing key
         assert!(body["layout"][1].get("line_spacing").is_none());
+        // Item 2 reports reference "{pitch}"
+        assert_eq!(body["layout"][2]["line_spacing"], "{pitch}");
 
         // 2. PUT with line_spacing on non-text items: container, qr, image, line
         for (item_type, item_yaml) in [
@@ -8821,6 +8832,28 @@ layout:
         assert_eq!(
             color_schema["type"], "string",
             "Color schema must have type: string, got: {color_schema}"
+        );
+    }
+
+    #[test]
+    fn openapi_schema_reports_line_spacing_dynamic_value() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let components = doc.components.expect("components present");
+        let schemas = &components.schemas;
+        assert!(
+            schemas.contains_key("LayoutItem"),
+            "LayoutItem missing in openapi schemas"
+        );
+        let layout_item_str = serde_json::to_string(&schemas["LayoutItem"]).unwrap();
+        assert!(
+            layout_item_str.contains("line_spacing"),
+            "LayoutItem schema must describe line_spacing: {layout_item_str}"
+        );
+        assert!(
+            schemas.contains_key("DynamicValue_f32")
+                || layout_item_str.contains("DynamicValue_f32"),
+            "DynamicValue_f32 must be present for line_spacing: {layout_item_str}"
         );
     }
 
@@ -16735,5 +16768,603 @@ layout:
         let body = body_json(res_fail).await;
         assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["reason"], "text_does_not_fit");
+    }
+
+    #[tokio::test]
+    async fn issue_364_line_spacing_endpoint_render_measured_tests() {
+        let ink_rows_helper = |png: &[u8]| -> (u32, u32) {
+            let img = image::load_from_memory(png).expect("decode").to_luma8();
+            let (w, h) = (img.width(), img.height());
+            let inked: Vec<u32> = (0..h)
+                .filter(|&y| (0..w).any(|x| img.get_pixel(x, y).0[0] < 128))
+                .collect();
+            assert!(!inked.is_empty(), "rendered label has no ink");
+            (inked[0], inked[inked.len() - 1])
+        };
+
+        let line1_ink_height = |png: &[u8]| -> u32 {
+            let img = image::load_from_memory(png).expect("decode").to_luma8();
+            let (w, h) = (img.width(), img.height());
+            let mut line1_top = None;
+            let mut line1_bottom = None;
+            let mut inside_band = false;
+            for y in 0..h {
+                let has_ink = (0..w).any(|x| img.get_pixel(x, y).0[0] < 128);
+                if has_ink {
+                    if !inside_band {
+                        inside_band = true;
+                        if line1_top.is_none() {
+                            line1_top = Some(y);
+                        }
+                    }
+                } else if inside_band {
+                    line1_bottom = Some(y - 1);
+                    break;
+                }
+            }
+            line1_bottom.expect("line1 bottom") - line1_top.expect("line1 top") + 1
+        };
+
+        let tpl_pitch_num = r#"
+name: tpl_pitch_num
+unit: mm
+dpi: 180
+format: { type: single, width: 100, height: 60 }
+params:
+  - name: pitch
+    type: number
+  - name: text
+    type: string
+    default: "Hxy\nHxy"
+layout:
+  - type: text
+    value: "{text}"
+    at: [0, 0]
+    size: [100, 60]
+    font_size: 20
+    line_spacing: "{pitch}"
+"#;
+
+        let tpl_pitch_int = r#"
+name: tpl_pitch_int
+unit: mm
+dpi: 180
+format: { type: single, width: 100, height: 60 }
+params:
+  - name: pitch
+    type: integer
+  - name: text
+    type: string
+    default: "Hxy\nHxy"
+layout:
+  - type: text
+    value: "{text}"
+    at: [0, 0]
+    size: [100, 60]
+    font_size: 20
+    line_spacing: "{pitch}"
+"#;
+
+        let tpl_pitch_default = r#"
+name: tpl_pitch_default
+unit: mm
+dpi: 180
+format: { type: single, width: 100, height: 60 }
+params:
+  - name: pitch
+    type: number
+    default: 0.99
+  - name: text
+    type: string
+    default: "Hxy\nHxy"
+layout:
+  - type: text
+    value: "{text}"
+    at: [0, 0]
+    size: [100, 60]
+    font_size: 20
+    line_spacing: "{pitch}"
+"#;
+
+        let tpl_pitch_shrink = r#"
+name: tpl_pitch_shrink
+unit: mm
+dpi: 180
+format: { type: single, width: 100, height: 10 }
+params:
+  - name: pitch
+    type: number
+layout:
+  - type: text
+    value: "Hxy\nHxy"
+    at: [0, 0]
+    size: [100, 10]
+    font_size: { min: 8, max: 24 }
+    line_spacing: "{pitch}"
+"#;
+
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("tpl_pitch_num", tpl_pitch_num),
+            ("tpl_pitch_int", tpl_pitch_int),
+            ("tpl_pitch_default", tpl_pitch_default),
+            ("tpl_pitch_shrink", tpl_pitch_shrink),
+        ]);
+
+        let render_pitch_png = |template: &str, data: serde_json::Value| {
+            let app = app.clone();
+            let template = template.to_string();
+            async move {
+                let req = req_post_json(
+                    "/api/render/label?format=png",
+                    &serde_json::json!({
+                        "template": template,
+                        "data": data
+                    })
+                    .to_string(),
+                );
+                let res = app.oneshot(req).await.unwrap();
+                assert_eq!(res.status(), StatusCode::OK);
+                body_bytes(res).await
+            }
+        };
+
+        // Task 6.1: Render one template declaring line_spacing: "{pitch}" twice (0.99 and 1.5)
+        let png_1line_099 = render_pitch_png(
+            "tpl_pitch_num",
+            serde_json::json!({ "pitch": 0.99, "text": "Hxy" }),
+        )
+        .await;
+        let png_2line_099 = render_pitch_png(
+            "tpl_pitch_num",
+            serde_json::json!({ "pitch": 0.99, "text": "Hxy\nHxy" }),
+        )
+        .await;
+        let (_, bottom1_099) = ink_rows_helper(&png_1line_099);
+        let (_, bottom2_099) = ink_rows_helper(&png_2line_099);
+        let pitch_px_099 = (bottom2_099 - bottom1_099) as f32;
+        let drift_099 = (pitch_px_099 - 0.99 * 50.0).abs();
+        assert!(
+            drift_099 <= 1.0,
+            "pitch 0.99: measured {pitch_px_099}px, expected 49.5px (drift {drift_099}px)"
+        );
+
+        let png_1line_15 = render_pitch_png(
+            "tpl_pitch_num",
+            serde_json::json!({ "pitch": 1.5, "text": "Hxy" }),
+        )
+        .await;
+        let png_2line_15 = render_pitch_png(
+            "tpl_pitch_num",
+            serde_json::json!({ "pitch": 1.5, "text": "Hxy\nHxy" }),
+        )
+        .await;
+        let (_, bottom1_15) = ink_rows_helper(&png_1line_15);
+        let (_, bottom2_15) = ink_rows_helper(&png_2line_15);
+        let pitch_px_15 = (bottom2_15 - bottom1_15) as f32;
+        let drift_15 = (pitch_px_15 - 1.5 * 50.0).abs();
+        assert!(
+            drift_15 <= 1.0,
+            "pitch 1.5: measured {pitch_px_15}px, expected 75.0px (drift {drift_15}px)"
+        );
+
+        // Task 6.7: integer-typed pitch 2 renders with ink bands 2 font sizes apart
+        let png_1line_2 = render_pitch_png(
+            "tpl_pitch_int",
+            serde_json::json!({ "pitch": 2, "text": "Hxy" }),
+        )
+        .await;
+        let png_2line_2 = render_pitch_png(
+            "tpl_pitch_int",
+            serde_json::json!({ "pitch": 2, "text": "Hxy\nHxy" }),
+        )
+        .await;
+        let (_, bottom1_2) = ink_rows_helper(&png_1line_2);
+        let (_, bottom2_2) = ink_rows_helper(&png_2line_2);
+        let pitch_px_2 = (bottom2_2 - bottom1_2) as f32;
+        let drift_2 = (pitch_px_2 - 2.0 * 50.0).abs();
+        assert!(
+            drift_2 <= 1.0,
+            "integer pitch 2: measured {pitch_px_2}px, expected 100.0px (drift {drift_2}px)"
+        );
+
+        // Task 6.12: pitch parameter declaring default: 0.99, omitted at request, renders at 0.99 font sizes
+        let png_1line_def =
+            render_pitch_png("tpl_pitch_default", serde_json::json!({ "text": "Hxy" })).await;
+        let png_2line_def = render_pitch_png(
+            "tpl_pitch_default",
+            serde_json::json!({ "text": "Hxy\nHxy" }),
+        )
+        .await;
+        let (_, bottom1_def) = ink_rows_helper(&png_1line_def);
+        let (_, bottom2_def) = ink_rows_helper(&png_2line_def);
+        let pitch_px_def = (bottom2_def - bottom1_def) as f32;
+        let drift_def = (pitch_px_def - 0.99 * 50.0).abs();
+        assert!(
+            drift_def <= 1.0,
+            "default pitch 0.99: measured {pitch_px_def}px, expected 49.5px (drift {drift_def}px)"
+        );
+
+        // Task 6.3: height-bound two-line item with range font_size: tighter pitch (0.99) settles at larger size than looser (1.5)
+        let png_shrink_099 =
+            render_pitch_png("tpl_pitch_shrink", serde_json::json!({ "pitch": 0.99 })).await;
+        let png_shrink_15 =
+            render_pitch_png("tpl_pitch_shrink", serde_json::json!({ "pitch": 1.5 })).await;
+        let h_099 = line1_ink_height(&png_shrink_099);
+        let h_15 = line1_ink_height(&png_shrink_15);
+        assert!(
+            h_099 > h_15,
+            "tighter pitch (0.99) line 1 height ({h_099}px) must be greater than looser pitch (1.5) line 1 height ({h_15}px)"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_364_line_spacing_endpoint_refusal_tests() {
+        let tpl_pitch_num = r#"
+name: tpl_pitch_num_refusal
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+
+        let tpl_pitch_int = r#"
+name: tpl_pitch_int_refusal
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: integer
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+
+        let tpl_pitch_int_overflow_fail = r#"
+name: tpl_pitch_int_overflow_fail
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 10 }
+params:
+  - name: pitch
+    type: integer
+layout:
+  - type: text
+    value: "Hxy\nHxy"
+    at: [0, 0]
+    size: [50, 10]
+    font_size: 10
+    line_spacing: "{pitch}"
+    overflow: fail
+"#;
+
+        let tpl_pitch_def_zero = r#"
+name: tpl_pitch_def_zero
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+    default: 0
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+
+        let tpl_pitch_def_nan = r#"
+name: tpl_pitch_def_nan
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+    default: .nan
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("tpl_pitch_num_refusal", tpl_pitch_num),
+            ("tpl_pitch_int_refusal", tpl_pitch_int),
+            ("tpl_pitch_int_overflow_fail", tpl_pitch_int_overflow_fail),
+            ("tpl_pitch_def_zero", tpl_pitch_def_zero),
+            ("tpl_pitch_def_nan", tpl_pitch_def_nan),
+        ]);
+
+        let post_render = |template: &str, data: serde_json::Value| {
+            let app = app.clone();
+            let template = template.to_string();
+            async move {
+                let req = req_post_json(
+                    "/api/render/label?format=png",
+                    &serde_json::json!({
+                        "template": template,
+                        "data": data
+                    })
+                    .to_string(),
+                );
+                app.oneshot(req).await.unwrap()
+            }
+        };
+
+        // Task 6.4: supplied 0 and -0.5 are refused with 400 InvalidRequest, line_spacing_param_invalid, message naming layout path and pitch
+        for bad_pitch in [serde_json::json!(0), serde_json::json!(-0.5)] {
+            let res = post_render(
+                "tpl_pitch_num_refusal",
+                serde_json::json!({ "pitch": bad_pitch }),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            let body = body_json(res).await;
+            assert_eq!(body["error"]["code"], "InvalidRequest");
+            assert_eq!(
+                body["error"]["details"]["reason"],
+                "line_spacing_param_invalid"
+            );
+            let msg = body["error"]["message"].as_str().unwrap();
+            assert!(
+                msg.contains("layout[0]") && msg.contains("pitch"),
+                "message must name layout[0] and pitch: {msg}"
+            );
+        }
+
+        // Task 6.5: supplied value numeric resolution cannot read as a number is refused with 400, request_body_invalid, naming pitch, not line_spacing_param_invalid
+        let res = post_render(
+            "tpl_pitch_num_refusal",
+            serde_json::json!({ "pitch": "invalid_num" }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("pitch"), "message must name pitch: {msg}");
+
+        // Task 6.6: supplied NaN or magnitude beyond number range: refused with 400, request_body_invalid, naming pitch
+        for bad_num in [
+            serde_json::json!("NaN"),
+            serde_json::json!("inf"),
+            serde_json::json!(1e300),
+        ] {
+            let res = post_render(
+                "tpl_pitch_num_refusal",
+                serde_json::json!({ "pitch": bad_num }),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            let body = body_json(res).await;
+            assert_eq!(body["error"]["code"], "InvalidRequest");
+            assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+            let msg = body["error"]["message"].as_str().unwrap();
+            assert!(msg.contains("pitch"), "message must name pitch: {msg}");
+        }
+
+        // Task 6.8: integer-typed pitch supplied as JSON number 1e300 saturates to legal enormous pitch; overflow: fail refuses with 422, text_does_not_fit
+        let res = post_render(
+            "tpl_pitch_int_overflow_fail",
+            serde_json::json!({ "pitch": 1e300 }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "text_does_not_fit");
+
+        // Task 6.9: integer-typed pitch supplied as JSON number -1e300 saturates negative and is refused with 400 line_spacing_param_invalid
+        let res = post_render(
+            "tpl_pitch_int_refusal",
+            serde_json::json!({ "pitch": -1e300 }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "line_spacing_param_invalid"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("layout[0]") && msg.contains("pitch"),
+            "message must name layout[0] and pitch: {msg}"
+        );
+
+        // Task 6.10: integer-typed pitch supplied as string "9223372036854775808" fails integer parsing -> 400 request_body_invalid
+        let res = post_render(
+            "tpl_pitch_int_refusal",
+            serde_json::json!({ "pitch": "9223372036854775808" }),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("pitch"), "message must name pitch: {msg}");
+
+        // Task 6.11: omitting pitch parameter that declares no default refuses with 422 MissingField
+        let res = post_render("tpl_pitch_num_refusal", serde_json::json!({})).await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "MissingField");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("pitch"), "message must name pitch: {msg}");
+
+        // Task 6.13: pitch parameter declaring default: 0 loads and is served, and omitting pitch is refused with 400 line_spacing_param_invalid
+        let res = post_render("tpl_pitch_def_zero", serde_json::json!({})).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "line_spacing_param_invalid"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("layout[0]") && msg.contains("pitch"),
+            "message must name layout[0] and pitch: {msg}"
+        );
+
+        // Task 6.14: pitch parameter declaring default: .nan, with pitch omitted, refuses with 422 TemplateInvalid and param_default_unresolvable
+        let res = post_render("tpl_pitch_def_nan", serde_json::json!({})).await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "TemplateInvalid");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "param_default_unresolvable"
+        );
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("pitch"), "message must name pitch: {msg}");
+    }
+
+    #[tokio::test]
+    async fn issue_364_line_spacing_batch_tests() {
+        let tpl_pitch_num = r#"
+name: tpl_pitch_batch
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+
+        let tpl_pitch_def_nan = r#"
+name: tpl_pitch_batch_nan
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+    default: .nan
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("tpl_pitch_batch", tpl_pitch_num),
+            ("tpl_pitch_batch_nan", tpl_pitch_def_nan),
+        ]);
+
+        // Task 7.1: 3 labels from template declaring line_spacing: "{pitch}",
+        // 1st and 3rd supplying usable pitch (1.2, 1.5) and 2nd supplying 0 ->
+        // refuse whole request with 422 BatchInvalid, exactly 1 failures entry at index 1
+        // with code InvalidRequest and reason line_spacing_param_invalid naming layout path and pitch.
+        let req1 = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "tpl_pitch_batch",
+                "labels": [
+                    { "data": { "pitch": 1.2 } },
+                    { "data": { "pitch": 0 } },
+                    { "data": { "pitch": 1.5 } }
+                ],
+                "mode": "download"
+            })
+            .to_string(),
+        );
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body1 = body_json(res1).await;
+        assert_eq!(body1["error"]["code"], "BatchInvalid");
+        let failures1 = body1["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures1.len(), 1);
+        assert_eq!(failures1[0]["index"], 1);
+        assert_eq!(failures1[0]["code"], "InvalidRequest");
+        assert_eq!(failures1[0]["reason"], "line_spacing_param_invalid");
+        let msg1 = failures1[0]["message"].as_str().unwrap();
+        assert!(
+            msg1.contains("layout[0]") && msg1.contains("pitch"),
+            "message must name layout[0] and pitch: {msg1}"
+        );
+
+        // Task 7.2: 2-label batch whose second label omits pitch with no default ->
+        // 422 BatchInvalid, failure at index 1 with code MissingField and NO reason key.
+        let req2 = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "tpl_pitch_batch",
+                "labels": [
+                    { "data": { "pitch": 1.2 } },
+                    { "data": {} }
+                ],
+                "mode": "download"
+            })
+            .to_string(),
+        );
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body2 = body_json(res2).await;
+        assert_eq!(body2["error"]["code"], "BatchInvalid");
+        let failures2 = body2["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures2.len(), 1);
+        assert_eq!(failures2[0]["index"], 1);
+        assert_eq!(failures2[0]["code"], "MissingField");
+        assert!(
+            failures2[0].get("reason").is_none(),
+            "MissingField must have no reason key"
+        );
+
+        // Task 7.3: same batch against template with default: .nan, second label omitting pitch ->
+        // code TemplateInvalid and reason param_default_unresolvable.
+        let req3 = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "tpl_pitch_batch_nan",
+                "labels": [
+                    { "data": { "pitch": 1.2 } },
+                    { "data": {} }
+                ],
+                "mode": "download"
+            })
+            .to_string(),
+        );
+        let res3 = app.clone().oneshot(req3).await.unwrap();
+        assert_eq!(res3.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body3 = body_json(res3).await;
+        assert_eq!(body3["error"]["code"], "BatchInvalid");
+        let failures3 = body3["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures3.len(), 1);
+        assert_eq!(failures3[0]["index"], 1);
+        assert_eq!(failures3[0]["code"], "TemplateInvalid");
+        assert_eq!(failures3[0]["reason"], "param_default_unresolvable");
     }
 }

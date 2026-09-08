@@ -273,6 +273,7 @@ impl TemplateContent {
                         placement,
                         font_weight,
                         color,
+                        line_spacing,
                         value,
                         ..
                     } => {
@@ -287,6 +288,9 @@ impl TemplateContent {
                             record_ref(r, false, false);
                         }
                         if let Some(DynamicValue::Ref(r)) = color {
+                            record_ref(r, false, false);
+                        }
+                        if let Some(DynamicValue::Ref(r)) = line_spacing {
                             record_ref(r, false, false);
                         }
                         for name in bare_token_names(value) {
@@ -1535,6 +1539,7 @@ fn validate_item_references(
             placement,
             font_weight,
             color,
+            line_spacing,
             when,
             ..
         } => {
@@ -1545,6 +1550,14 @@ fn validate_item_references(
             }
             if let Some(DynamicValue::Ref(ref_name)) = color {
                 check_param_ref(params, ref_name, "color", &["string", "enum"])?;
+            }
+            if let Some(DynamicValue::Ref(ref_name)) = line_spacing {
+                check_param_ref(
+                    params,
+                    ref_name,
+                    &format!("{path}.line_spacing"),
+                    &["number", "integer"],
+                )?;
             }
             if let Extent::Size(size) = &placement.extent {
                 for (axis, sv) in [("width", &size.0[0]), ("height", &size.0[1])] {
@@ -1831,7 +1844,7 @@ fn instantiate_item_defaults(
                 font_weight: fw,
                 color: color.clone(),
                 wrap: *wrap,
-                line_spacing: *line_spacing,
+                line_spacing: line_spacing.clone(),
                 alignment: alignment.clone(),
                 overflow: *overflow,
                 when: when.clone(),
@@ -2081,7 +2094,7 @@ fn validate_layout_item(
             }
             validate_when(when.as_ref())?;
             validate_font_weight(font_weight.as_ref())?;
-            validate_line_spacing(*line_spacing)?;
+            validate_line_spacing(line_spacing.as_ref())?;
             validate_font_size(font_size)?;
             validate_placement(placement, false, frame, axes_resolved, geometry_values)?;
         }
@@ -2319,11 +2332,11 @@ fn validate_font_weight(font_weight: Option<&DynamicValue<u16>>) -> Result<(), S
     }
 }
 
-fn validate_line_spacing(line_spacing: Option<f32>) -> Result<(), String> {
+fn validate_line_spacing(line_spacing: Option<&DynamicValue<f32>>) -> Result<(), String> {
     match line_spacing {
-        Some(spacing) if !spacing.is_finite() || spacing <= 0.0 => Err(format!(
-            "line_spacing must be a finite number greater than 0, got {spacing}"
-        )),
+        Some(DynamicValue::Literal(spacing)) if !spacing.is_finite() || *spacing <= 0.0 => Err(
+            format!("line_spacing must be a finite number greater than 0, got {spacing}"),
+        ),
         _ => Ok(()),
     }
 }
@@ -9187,6 +9200,8 @@ layout:
 
         write_template(&dir, "str_unit.yaml", &make_yaml("\"1.2em\""));
         write_template(&dir, "str_token.yaml", &make_yaml("\"{{ pitch }}\""));
+        write_template(&dir, "str_num.yaml", &make_yaml("\"1.2\""));
+        write_template(&dir, "str_unit_mm.yaml", &make_yaml("\"1.2mm\""));
         write_template(&dir, "bool.yaml", &make_yaml("true"));
         write_template(&dir, "array.yaml", &make_yaml("[1.2]"));
         write_template(&dir, "null.yaml", &make_yaml("null"));
@@ -9204,11 +9219,13 @@ layout:
         assert!(registry.get("valid_spacing").is_some());
 
         let broken = registry.broken();
-        assert_eq!(broken.len(), 10);
+        assert_eq!(broken.len(), 12);
 
         for (filename, val_desc) in [
             ("str_unit.yaml", "string unit"),
             ("str_token.yaml", "string template token"),
+            ("str_num.yaml", "string number"),
+            ("str_unit_mm.yaml", "string unit mm"),
             ("bool.yaml", "boolean"),
             ("array.yaml", "array"),
             ("null.yaml", "null"),
@@ -9228,5 +9245,227 @@ layout:
                 entry.error
             );
         }
+    }
+
+    #[test]
+    fn line_spacing_undeclared_param_ref_quarantined() {
+        let dir = temp_dir("line_spacing_undeclared_ref");
+        let valid_yaml = sample_yaml("valid");
+        write_template(&dir, "valid.yaml", &valid_yaml);
+
+        let bad_yaml = r#"name: BadRef
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+        write_template(&dir, "bad_ref.yaml", bad_yaml);
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+        assert!(registry.get("valid").is_some());
+        assert!(registry.get("bad_ref").is_none());
+
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 1);
+        let entry = &broken[0];
+        assert_eq!(entry.path, "bad_ref.yaml");
+        assert!(
+            entry.error.contains("layout[0]") && entry.error.contains("line_spacing"),
+            "error should name layout path and line_spacing: {}",
+            entry.error
+        );
+    }
+
+    #[test]
+    fn line_spacing_param_types_load_and_refusals() {
+        let dir = temp_dir("line_spacing_param_types");
+        let make_yaml = |param_def: &str| {
+            format!(
+                r#"name: Test
+unit: mm
+dpi: 200
+format: {{ type: single, width: 50, height: 20 }}
+params:
+  - name: pitch
+    {param_def}
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{{pitch}}"
+"#
+            )
+        };
+
+        // Rejected parameter types
+        write_template(
+            &dir,
+            "length.yaml",
+            &make_yaml("type: length\n    default: 1.2mm"),
+        );
+        write_template(
+            &dir,
+            "string.yaml",
+            &make_yaml("type: string\n    default: \"1.2\""),
+        );
+        write_template(
+            &dir,
+            "boolean.yaml",
+            &make_yaml("type: boolean\n    default: true"),
+        );
+        write_template(
+            &dir,
+            "enum.yaml",
+            &make_yaml("type: enum\n    values: [\"1.2\", \"1.5\"]\n    default: \"1.2\""),
+        );
+        write_template(
+            &dir,
+            "datetime.yaml",
+            &make_yaml("type: datetime\n    default: now"),
+        );
+        write_template(&dir, "list.yaml", &make_yaml("type: list\n    default: []"));
+
+        // Accepted parameter types
+        write_template(
+            &dir,
+            "number.yaml",
+            &make_yaml("type: number\n    default: 1.2"),
+        );
+        write_template(
+            &dir,
+            "integer.yaml",
+            &make_yaml("type: integer\n    default: 2"),
+        );
+
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+        assert!(registry.get("number").is_some());
+        assert!(registry.get("integer").is_some());
+
+        let broken = registry.broken();
+        assert_eq!(broken.len(), 6);
+        for filename in [
+            "length.yaml",
+            "string.yaml",
+            "boolean.yaml",
+            "enum.yaml",
+            "datetime.yaml",
+            "list.yaml",
+        ] {
+            let entry = broken
+                .iter()
+                .find(|b| b.path == filename)
+                .unwrap_or_else(|| panic!("expected {filename} to be quarantined"));
+            assert!(
+                entry.error.contains("layout[0]") && entry.error.contains("line_spacing"),
+                "{filename} error should name layout[0] and line_spacing: {}",
+                entry.error
+            );
+        }
+    }
+
+    #[test]
+    fn line_spacing_param_declaring_default_zero_loads() {
+        let dir = temp_dir("line_spacing_default_zero");
+        let yaml = r#"name: DefaultZero
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+    default: 0
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+        write_template(&dir, "default_zero.yaml", yaml);
+        let registry = TemplateRegistry::load_from_dir(&dir).expect("registry load must not fail");
+        assert!(
+            registry.get("default_zero").is_some(),
+            "template with default: 0 must load and be served"
+        );
+        assert!(registry.broken().is_empty());
+    }
+
+    #[test]
+    fn line_spacing_input_discovery_active_and_gated() {
+        let yaml_active = r#"name: InputTest
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+"#;
+        let template_active = crate::parse::parse_template(yaml_active).unwrap();
+        let inputs_active = test_derive_inputs_for_label(&template_active, &HashMap::new());
+        let pitch_input = inputs_active
+            .iter()
+            .find(|i| i.name == "pitch")
+            .expect("pitch input must be discovered");
+        assert_eq!(pitch_input.control, InputControl::Number);
+        assert!(
+            !pitch_input.interpolated,
+            "pitch parameter must have interpolated: false"
+        );
+
+        // Gated off
+        let yaml_gated = r#"name: GatedInputTest
+unit: mm
+dpi: 200
+format: { type: single, width: 50, height: 20 }
+params:
+  - name: pitch
+    type: number
+  - name: show
+    type: boolean
+    default: false
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [50, 20]
+    font_size: 10
+    line_spacing: "{pitch}"
+    when:
+      show: true
+"#;
+        let template_gated = crate::parse::parse_template(yaml_gated).unwrap();
+        // When show is false
+        let mut data_false = HashMap::new();
+        data_false.insert("show".to_string(), serde_json::json!(false));
+        let inputs_false = test_derive_inputs_for_label(&template_gated, &data_false);
+        assert!(
+            inputs_false.iter().find(|i| i.name == "pitch").is_none(),
+            "pitch input should NOT be present when gate is false"
+        );
+
+        // When show is true
+        let mut data_true = HashMap::new();
+        data_true.insert("show".to_string(), serde_json::json!(true));
+        let inputs_true = test_derive_inputs_for_label(&template_gated, &data_true);
+        assert!(
+            inputs_true.iter().find(|i| i.name == "pitch").is_some(),
+            "pitch input SHOULD be present when gate is true"
+        );
     }
 }

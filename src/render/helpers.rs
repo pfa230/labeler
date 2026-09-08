@@ -720,6 +720,7 @@ pub struct TextFit {
     pub lines: Vec<String>,
     pub width_units: f32,
     pub height_units: f32,
+    pub line_spacing: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -876,6 +877,7 @@ pub(super) fn layout_text(
         lines,
         width_units,
         height_units,
+        line_spacing: item.line_spacing,
     })
 }
 
