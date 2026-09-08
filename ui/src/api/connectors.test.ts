@@ -1,8 +1,16 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, waitFor, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { browseConnection, materializeConnection, useSaveConnection, useDeleteConnection, useConnectorSchema } from "./connectors";
+import {
+  browseConnection,
+  materializeConnection,
+  useConnectorSchema,
+  useSaveConnection,
+  useDeleteConnection,
+  useSetDefaultConnection,
+  useClearDefaultConnection,
+} from "./connectors";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -31,12 +39,11 @@ describe("connectors api", () => {
     expect(rows[0].data.name).toBe("Drill");
   });
 
-  it("useSaveConnection cancels and invalidates connector-schema and invalidates connections for update and create", async () => {
+  it("useSaveConnection removes queries appropriately for update and create, and carries mutationKey", async () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
-    const cancelSpy = vi.spyOn(qc, "cancelQueries");
-    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+    const removeSpy = vi.spyOn(qc, "removeQueries");
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -64,21 +71,10 @@ describe("connectors api", () => {
       });
     });
 
-    expect(cancelSpy).toHaveBeenCalledWith({ queryKey: ["connector-schema", "c1"], exact: true });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["connector-schema", "c1"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["connections"] });
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["connections"] });
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["connector-schema", "c1"] });
 
-    // Verify order: cancel was called before schema invalidation
-    const cancelOrder = cancelSpy.mock.invocationCallOrder[0];
-    const schemaInvalidateCall = invalidateSpy.mock.calls.findIndex(
-      (c) => JSON.stringify(c[0]?.queryKey) === JSON.stringify(["connector-schema", "c1"])
-    );
-    expect(schemaInvalidateCall).toBeGreaterThanOrEqual(0);
-    const schemaInvalidateOrder = invalidateSpy.mock.invocationCallOrder[schemaInvalidateCall];
-    expect(cancelOrder).toBeLessThan(schemaInvalidateOrder);
-
-    cancelSpy.mockClear();
-    invalidateSpy.mockClear();
+    removeSpy.mockClear();
 
     // 2. Create
     await act(async () => {
@@ -87,9 +83,87 @@ describe("connectors api", () => {
       });
     });
 
-    expect(cancelSpy).toHaveBeenCalledWith({ queryKey: ["connector-schema", "c2"], exact: true });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["connector-schema", "c2"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["connections"] });
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["connections"] });
+    expect(removeSpy).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["connector-schema", expect.anything()] }));
+    expect(qc.getMutationCache().getAll()[0].options.mutationKey).toEqual(["connection"]);
+  });
+
+  it("useDeleteConnection removes connections, connector-schema and settings queries and carries mutationKey", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const removeSpy = vi.spyOn(qc, "removeQueries");
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method || "GET").toUpperCase();
+      if (url.includes("/api/connections/c1") && method === "DELETE") {
+        return json({ ok: true });
+      }
+      return json({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children);
+
+    const { result } = renderHook(() => useDeleteConnection(), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync("c1");
+    });
+
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["connections"] });
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["connector-schema", "c1"] });
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["settings"] });
+    expect(qc.getMutationCache().getAll()[0].options.mutationKey).toEqual(["connection"]);
+  });
+
+  it("useSaveConnection and useDeleteConnection do not dispatch window events", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    const events: Array<{ type: string; detail: unknown }> = [];
+    const saveHandler = (e: Event) => events.push({ type: e.type, detail: (e as CustomEvent).detail });
+    const deleteHandler = (e: Event) => events.push({ type: e.type, detail: (e as CustomEvent).detail });
+
+    window.addEventListener("labeler:connection-saved", saveHandler);
+    window.addEventListener("labeler:connection-deleted", deleteHandler);
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method || "GET").toUpperCase();
+      if (url.includes("/api/connections/c1") && method === "PUT") {
+        return json({ id: "c1", name: "Saved", connector: "mock", base_url: "http://example.com", enabled: true, has_credential: false, transforms: [] });
+      }
+      if (url.includes("/api/connections/c1") && method === "DELETE") {
+        return json({ ok: true });
+      }
+      return json({}, 404);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children);
+
+    const { result: saveResult } = renderHook(() => useSaveConnection(), { wrapper });
+    const { result: deleteResult } = renderHook(() => useDeleteConnection(), { wrapper });
+
+    await act(async () => {
+      await saveResult.current.mutateAsync({
+        id: "c1",
+        input: { name: "Saved", connector: "mock", base_url: "http://example.com" },
+      });
+    });
+    await act(async () => {
+      await deleteResult.current.mutateAsync("c1");
+    });
+
+    window.removeEventListener("labeler:connection-saved", saveHandler);
+    window.removeEventListener("labeler:connection-deleted", deleteHandler);
+
+    expect(events).toEqual([]);
   });
 
   it("a save while the first schema read is still in flight starts a fresh read and ignores the abandoned response", async () => {
@@ -149,7 +223,12 @@ describe("connectors api", () => {
       });
     });
 
-    // A fresh read should start and resolve with newSchema
+    // A fresh read (e.g. on next visit or refetch) is issued
+    await act(async () => {
+      schemaResult.current.refetch();
+    });
+
+    // Fresh read resolves with newSchema
     await waitFor(() => expect(schemaCallCount).toBe(2));
     await waitFor(() => expect(schemaResult.current.data?.resources[0].label).toBe("Entities New"));
 
@@ -162,28 +241,48 @@ describe("connectors api", () => {
     expect(schemaResult.current.data?.resources[0].label).toBe("Entities New");
   });
 
-  it("useDeleteConnection dispatches labeler:connection-deleted then removes connector-schema and invalidates queries", async () => {
+  it("failed mutations evict nothing", async () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     const removeSpy = vi.spyOn(qc, "removeQueries");
-    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
 
-    const events: Array<{ type: string; detail: { id: string } }> = [];
-    let eventDispatchedBeforeRemoval = false;
-    const eventHandler = (e: Event) => {
-      events.push({ type: e.type, detail: (e as CustomEvent).detail });
-      if (removeSpy.mock.calls.length === 0) {
-        eventDispatchedBeforeRemoval = true;
-      }
-    };
-    window.addEventListener("labeler:connection-deleted", eventHandler);
+    const fetchMock = vi.fn(async () => json({ error: "failed" }, 500));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const wrapper = ({ children }: { children: React.ReactNode }) =>
+      React.createElement(QueryClientProvider, { client: qc }, children);
+
+    const { result: saveResult } = renderHook(() => useSaveConnection(), { wrapper });
+    const { result: deleteResult } = renderHook(() => useDeleteConnection(), { wrapper });
+
+    await act(async () => {
+      await expect(
+        saveResult.current.mutateAsync({
+          id: "c1",
+          input: { name: "Saved", connector: "mock", base_url: "http://example.com" },
+        }),
+      ).rejects.toThrow();
+    });
+
+    await act(async () => {
+      await expect(deleteResult.current.mutateAsync("c1")).rejects.toThrow();
+    });
+
+    expect(removeSpy).not.toHaveBeenCalled();
+  });
+
+  it("useSetDefaultConnection sends PUT /settings/default_connection_id, removes settings and carries mutationKey", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const removeSpy = vi.spyOn(qc, "removeQueries");
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method || "GET").toUpperCase();
-      if (url.includes("/api/connections/c1") && method === "DELETE") {
-        return json({ ok: true });
+      if (url.includes("/api/settings/default_connection_id") && method === "PUT") {
+        return json({ value: "c1", is_default: false });
       }
       return json({}, 404);
     });
@@ -192,37 +291,32 @@ describe("connectors api", () => {
     const wrapper = ({ children }: { children: React.ReactNode }) =>
       React.createElement(QueryClientProvider, { client: qc }, children);
 
-    const { result } = renderHook(() => useDeleteConnection(), { wrapper });
+    const { result } = renderHook(() => useSetDefaultConnection(), { wrapper });
 
     await act(async () => {
       await result.current.mutateAsync("c1");
     });
 
-    window.removeEventListener("labeler:connection-deleted", eventHandler);
-
-    expect(events).toEqual([{ type: "labeler:connection-deleted", detail: { id: "c1" } }]);
-    expect(eventDispatchedBeforeRemoval).toBe(true);
-    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["connector-schema", "c1"], exact: true });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["connections"] });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["settings"] });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("/api/settings/default_connection_id");
+    expect((init as RequestInit).method).toBe("PUT");
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({ value: "c1" });
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["settings"] });
+    expect(removeSpy).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["connections"] }));
+    expect(qc.getMutationCache().getAll()[0].options.mutationKey).toEqual(["connection"]);
   });
 
-  it("useSaveConnection dispatches labeler:connection-saved carrying the saved connection id", async () => {
+  it("useClearDefaultConnection sends DELETE /settings/default_connection_id, removes settings and carries mutationKey", async () => {
     const qc = new QueryClient({
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
-
-    const events: Array<{ type: string; detail: { id: string } }> = [];
-    const eventHandler = (e: Event) => {
-      events.push({ type: e.type, detail: (e as CustomEvent).detail });
-    };
-    window.addEventListener("labeler:connection-saved", eventHandler);
+    const removeSpy = vi.spyOn(qc, "removeQueries");
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method || "GET").toUpperCase();
-      if (url.includes("/api/connections/c1") && method === "PUT") {
-        return json({ id: "c1", name: "Saved", connector: "mock", base_url: "http://example.com", enabled: true, has_credential: false, transforms: [] });
+      if (url.includes("/api/settings/default_connection_id") && method === "DELETE") {
+        return json({ value: null, is_default: true });
       }
       return json({}, 404);
     });
@@ -231,17 +325,17 @@ describe("connectors api", () => {
     const wrapper = ({ children }: { children: React.ReactNode }) =>
       React.createElement(QueryClientProvider, { client: qc }, children);
 
-    const { result } = renderHook(() => useSaveConnection(), { wrapper });
+    const { result } = renderHook(() => useClearDefaultConnection(), { wrapper });
 
     await act(async () => {
-      await result.current.mutateAsync({
-        id: "c1",
-        input: { name: "Saved", connector: "mock", base_url: "http://example.com" },
-      });
+      await result.current.mutateAsync();
     });
 
-    window.removeEventListener("labeler:connection-saved", eventHandler);
-
-    expect(events).toEqual([{ type: "labeler:connection-saved", detail: { id: "c1" } }]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("/api/settings/default_connection_id");
+    expect((init as RequestInit).method).toBe("DELETE");
+    expect(removeSpy).toHaveBeenCalledWith({ queryKey: ["settings"] });
+    expect(removeSpy).not.toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["connections"] }));
+    expect(qc.getMutationCache().getAll()[0].options.mutationKey).toEqual(["connection"]);
   });
 });

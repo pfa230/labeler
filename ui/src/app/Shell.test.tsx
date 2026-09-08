@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ToastProvider } from "./toast";
@@ -24,9 +24,11 @@ const lastCall = (path: string, method: string) =>
   [...fetchMock.mock.calls].reverse().find(([u, i]) => String(u).startsWith(path) && ((i as RequestInit)?.method ?? "GET").toUpperCase() === method);
 
 function renderShell() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <MemoryRouter><Shell /></MemoryRouter>
       </ToastProvider>
@@ -45,11 +47,28 @@ describe("Shell", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders exactly the four nav sections", () => {
+  it("renders the five nav sections in order with Connections directly after Connect", () => {
     renderShell();
-    for (const label of ["Labels", "Import", "Connect", "Settings"]) {
-      expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
-    }
+    const nav = screen.getByRole("navigation", { name: "Primary" });
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((l) => l.textContent?.trim())).toEqual([
+      "Labels",
+      "Import",
+      "Connect",
+      "Connections",
+      "Settings",
+    ]);
+    expect(links.map((l) => l.getAttribute("href"))).toEqual([
+      "/",
+      "/import",
+      "/connect",
+      "/connections",
+      "/settings",
+    ]);
+
+    const connectIdx = links.findIndex((l) => l.textContent?.trim() === "Connect");
+    expect(links[connectIdx + 1]?.textContent?.trim()).toBe("Connections");
+
     expect(screen.queryByRole("link", { name: "Templates" })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Print" })).not.toBeInTheDocument();
   });

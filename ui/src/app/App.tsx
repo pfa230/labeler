@@ -9,6 +9,8 @@ import { Catalog } from "../pages/Catalog";
 import { Print } from "../pages/Print";
 import { Import } from "../pages/Import";
 import { Connect } from "../pages/Connect";
+import { ConnectionsList } from "../pages/connections/ConnectionsList";
+import { ConnectionForm } from "../pages/connections/ConnectionForm";
 import { Settings } from "../pages/Settings";
 import { Login } from "../pages/Login";
 import { Setup } from "../pages/Setup";
@@ -32,6 +34,9 @@ export function App() {
             <Route path="print/:templateId" element={<Print />} />
             <Route path="import" element={<Import />} />
             <Route path="connect" element={<Connect />} />
+            <Route path="connections" element={<ConnectionsList />} />
+            <Route path="connections/new" element={<ConnectionForm />} />
+            <Route path="connections/:id" element={<ConnectionForm />} />
             <Route path="settings" element={<Settings />} />
           </Route>
         </Route>
