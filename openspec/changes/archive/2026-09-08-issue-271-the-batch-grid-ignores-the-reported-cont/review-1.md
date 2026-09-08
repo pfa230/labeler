@@ -1,0 +1,9 @@
+## Required changes
+
+1. **The checkbox scenario contradicts the specified cycle.** [spec.md:479](/home/pfa/projects/labeler/.worktrees/issue-271/openspec/changes/issue-271-the-batch-grid-ignores-the-reported-cont/specs/template-inputs/spec.md:479) requires one activation to change false to true. But [design.md:78](/home/pfa/projects/labeler/.worktrees/issue-271/openspec/changes/issue-271-the-batch-grid-ignores-the-reported-cont/design.md:78) and spec.md:233 prescribe unset → checked → unchecked → unset, making false → unset mandatory. Both expectations cannot pass. Change the scenario’s starting value from false to unset; retain its checked-state outcome and the separate three-activation scenario.
+
+2. **The select contract forbids the retained option the design requires.** [spec.md:187](/home/pfa/projects/labeler/.worktrees/issue-271/openspec/changes/issue-271-the-batch-grid-ignores-the-reported-cont/specs/template-inputs/spec.md:187) permits declared values “and nothing else,” and spec.md:465–468 requires exactly three declared choices plus unset without restricting the current value. [design.md:86](/home/pfa/projects/labeler/.worktrees/issue-271/openspec/changes/issue-271-the-batch-grid-ignores-the-reported-cont/design.md:86) additionally requires the held out-of-set value as an option. Amend the normative clause to permit declared values, unset, and the currently held out-of-set value only. Restrict the four-choice scenario to a currently unset or declared value, and extend the `enormous` scenario to require its retained option alongside the declared choices and unset. Preserve the prohibition on typing arbitrary values and the unchanged submission on an untouched commit.
+
+The author applies these specific edits; NO further review follows.
+
+VERDICT: APPROVE_WITH_CHANGES

@@ -1065,12 +1065,68 @@ cell held before the row deactivated the name SHALL be retained and SHALL become
 the name returns to the row's list. That is how a union column and a per-row list coexist without
 either rule bending.
 
-A grid cell's **editor** follows that same reported `control`. A cell whose control is `textarea`
-SHALL be edited in a control that accepts a line break, and its keys SHALL be: Enter commits the
-edit, Shift+Enter inserts a newline, Escape abandons it, and moving focus away commits. Enter SHALL
-NOT insert a newline. A grid owns Enter for commit, an operator reaches for it out of habit, and one
-that silently broke the line instead would cost a row of typing with no way back. A newline the
-operator enters SHALL reach the submitted `data` unaltered.
+A grid cell's **editor** follows that same reported `control`, and so does the cell at rest. Which
+editor opens SHALL be decided from `control` alone, on the entry the grid holds for that row and that
+name, and no cell SHALL fall back to a free-text editor for a control that has one:
+
+- `text` SHALL be edited in a single-line text control.
+- `textarea` SHALL be edited in a control that accepts a line break.
+- `select` SHALL be edited in a control whose choices are the entry's `values`, one standing for
+  nothing chosen, and the value the cell currently holds where that is neither of those, and nothing
+  else, so a value outside `values` cannot be entered by typing. The retained choice shows a value a
+  CSV import or a connector delivered rather than hiding it behind a blank control, and it offers
+  nothing the cell did not already hold.
+- `checkbox` SHALL be edited in a tick box, over the three states below.
+- `integer` and `number` SHALL be edited in a numeric control carrying the entry's `min` and `max`
+  where it publishes them, stepping by 1 for `integer` and unconstrained for `number`, and reporting
+  itself invalid while it holds a value outside those bounds or one that is not a number.
+- `date` SHALL be edited in a date control, and `datetime` in a date-and-time control.
+- `image` SHALL open no editor, on the same terms as `list`: a per-cell file chooser is the wrong
+  shape for bulk editing, and free text was never an editor for a data URI, so an operator sets an
+  image on the print form. That is not the inertness above: the name is in the row's list, and its
+  value is held, validated and submitted like any other. Only the editor is withheld.
+
+`slider` SHALL be ignored by a grid. A range presentation cannot carry a readable value in a dense
+table cell, so an `integer` or `number` entry takes the plain numeric control whatever its `slider`
+flag says. The print form is untouched by this and keeps honoring the flag.
+
+**Every grid cell editor SHALL answer Enter and Escape itself.** Enter commits the edit, Escape
+abandons it, and moving focus away commits. The grid around an open editor reads a bubbled Enter as an
+abandonment and a bubbled Escape as its own hotkey, so an editor letting either key through would
+discard the edit it was asked to commit. `textarea` alone adds Shift+Enter, which inserts a newline and
+commits nothing; Enter in a `textarea` SHALL NOT insert a newline. A grid owns Enter for commit, an
+operator reaches for it out of habit, and one that silently broke the line instead would cost a row of
+typing with no way back. A newline the operator enters SHALL reach the submitted `data` unaltered.
+
+**An editor SHALL NOT alter a value it cannot display.** A cell can hold a value its control has no
+form for: a `select` cell holding a value outside `values`, or a `date` cell holding an offset-bearing
+RFC 3339 instant, both of which a CSV import and a connector can deliver and neither of which the
+grid's validation refuses. Opening such a cell's editor and committing without an explicit change SHALL
+leave the held value exactly as it was, so a value the operator never touched cannot be destroyed by a
+focus.
+
+**The cell at rest SHALL present its value by that same `control`**, so that what the grid displays and
+what it will edit describe one thing. A `checkbox` cell SHALL draw a tick box that is not itself
+operable, carrying an accessible name naming the field and the state it shows; a `select` cell SHALL
+show the chosen option; an `image` cell SHALL show that it holds an image rather than the data URI
+itself; every other control SHALL show the value as held. Three rules already stated take precedence,
+in this order: a cell for a name absent from the row's list is inert; a cell holding a value its
+control has no form for shows that value as text, rather than misreporting it as a state the control
+can hold; and the marker below for an empty invalid cell replaces the presentation entirely.
+
+**An unset `checkbox` or `select` cell SHALL show that nothing is chosen**, distinguishably from
+`false` and from the first option, and its editor SHALL offer a gesture returning it to that state.
+This is the rule the opening block states for an entry with no `default`, reaching the one screen that
+could previously not express it. A cell holding the empty string for either control is unset, and the
+inert marker is not available to express it: that marker already means the row's list does not carry
+the name. For a `select` the returning gesture SHALL be an offered choice standing for nothing chosen.
+For a `checkbox` it SHALL be a third activation, cycling unset, checked, unchecked and back to unset,
+because a cell editor cannot carry a second control: Tab is the grid's own commit-and-move, so a
+separate clearing control beside the tick box could not be reached by keyboard at all.
+
+An empty cell whose row reports an error against that name SHALL keep showing the marker naming that
+error, whatever its control, because that is what tells an operator which cell blocks the run. An
+unset tick box in its place would say less.
 
 A cell SHALL show that its value holds a line break rather than rendering it as one collapsed line,
 so that a two-line value is distinguishable from the same words written with a space, and so that an
@@ -1293,6 +1349,93 @@ it has received none, and SHALL surface the failure rather than silently blockin
   `line one line two`
 - **THEN** the two cells render differently, and the first shows that its value continues past what
   the cell displays
+
+#### Scenario: A select cell offers the values the entry declares and nothing else
+
+- **WHEN** the operator opens the editor of a grid cell holding no value, whose entry has control
+  `select` with `values` of `small`, `medium` and `large`
+- **THEN** the editor is a control offering exactly those three choices plus one standing for nothing
+  chosen, and no other value can be entered into the cell by typing
+
+#### Scenario: A select cell keeps a value its choices do not carry
+
+- **WHEN** a CSV import puts `enormous` into that cell and the operator opens its editor and commits
+  without choosing anything
+- **THEN** the editor offers `enormous` alongside `small`, `medium`, `large` and the choice standing
+  for nothing chosen, and nothing else; the cell still holds `enormous`; and the row submits
+  `enormous`, which the render refuses on the same terms it does today
+
+#### Scenario: A checkbox cell is toggled rather than typed
+
+- **WHEN** the operator opens the editor of a cell whose entry has control `checkbox` and which holds
+  no value, and activates the tick box
+- **THEN** the cell holds a true value, the row submits it, and the cell at rest draws a ticked box
+  rather than the text `true`
+
+#### Scenario: A checkbox cell can be returned to unset
+
+- **WHEN** the operator activates the tick box of an unset `checkbox` cell three times
+- **THEN** the cell reads checked after the first activation and submits a true value, unchecked after
+  the second and submits a false value, and unset after the third, whereupon the row submits no key for
+  that name
+
+#### Scenario: An unset checkbox does not read as false and an unset select does not read as its first option
+
+- **WHEN** a row carries no value for an entry with control `checkbox` and none for an entry with
+  control `select` whose first declared value is `small`, and neither entry is required
+- **THEN** the checkbox cell shows a box that is neither checked nor unchecked, the select cell shows
+  that nothing is chosen rather than showing `small`, and the row submits no key for either
+
+#### Scenario: An integer cell enforces the bounds its entry publishes
+
+- **WHEN** the entry for `copies` has control `integer` with `min: 1` and `max: 9`, and the operator
+  types `20` into its editor
+- **THEN** the editor carries those bounds, reports the value it holds as invalid, and cannot be
+  stepped past `9`
+
+#### Scenario: An integer cell steps by one where a number cell does not
+
+- **WHEN** one entry has control `integer` and another has control `number`, and neither publishes
+  bounds
+- **THEN** the integer editor steps by 1, and the number editor accepts a fractional value such as
+  `2.5`
+
+#### Scenario: A date cell and a datetime cell open the controls their entries name
+
+- **WHEN** the operator opens the editor of a cell whose entry has control `date`, and then one whose
+  entry has control `datetime`
+- **THEN** the first is a date control and the second a date-and-time control, in place of the
+  free-text control both opened before
+
+#### Scenario: An editor does not destroy a value it cannot display
+
+- **WHEN** a `date` cell holds `2026-09-01T12:00:00Z`, which its control has no form for, and the
+  operator opens the editor and commits without typing
+- **THEN** the cell still holds `2026-09-01T12:00:00Z`
+
+#### Scenario: An image cell opens no editor
+
+- **WHEN** the operator double-clicks a cell whose entry has control `image` and holds a data URI
+- **THEN** no editor opens, the cell shows that it holds an image rather than the data URI, and the row
+  still submits the value the cell holds
+
+#### Scenario: A grid ignores a slider flag the print form honors
+
+- **WHEN** an entry with control `number` carries `slider: true` and publishes `min` and `max`
+- **THEN** its grid cell is edited in the plain numeric control, while the print form still renders a
+  range control for the same entry
+
+#### Scenario: An empty invalid cell keeps its marker whatever its control
+
+- **WHEN** a required `checkbox` cell and a required `select` cell are both empty and the row reports
+  `required` against each
+- **THEN** each cell shows the marker naming that error, rather than an unset tick box or an empty
+  choice
+
+#### Scenario: Escape abandons an edit in a control that is not a text box
+
+- **WHEN** the operator chooses a different option in a `select` cell's editor and presses Escape
+- **THEN** the cell holds the value it held before the edit, and the grid does not act on the key
 
 #### Scenario: A declared default starts deferred and is not sent
 
