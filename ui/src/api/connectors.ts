@@ -71,18 +71,16 @@ export function useConnections() {
 export function useSaveConnection() {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["connection"],
     mutationFn: ({ input, id }: { input: ConnectionInput; id?: string }) =>
       id === undefined
         ? sendJson<Connection>("POST", "/connections", input)
         : sendJson<Connection>("PUT", `/connections/${encodeURIComponent(id)}`, input),
-    onSuccess: (data, variables) => {
-      const id = variables.id ?? data.id;
-      if (id) {
-        window.dispatchEvent(new CustomEvent("labeler:connection-saved", { detail: { id } }));
-        qc.cancelQueries({ queryKey: ["connector-schema", id], exact: true });
-        qc.invalidateQueries({ queryKey: ["connector-schema", id] });
+    onSuccess: (_data, variables) => {
+      qc.removeQueries({ queryKey: ["connections"] });
+      if (variables.id !== undefined) {
+        qc.removeQueries({ queryKey: ["connector-schema", variables.id] });
       }
-      qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
 }
@@ -90,12 +88,35 @@ export function useSaveConnection() {
 export function useDeleteConnection() {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ["connection"],
     mutationFn: (id: string) => del(`/connections/${encodeURIComponent(id)}`),
     onSuccess: (_data, id) => {
-      window.dispatchEvent(new CustomEvent("labeler:connection-deleted", { detail: { id } }));
-      qc.removeQueries({ queryKey: ["connector-schema", id], exact: true });
-      qc.invalidateQueries({ queryKey: ["connections"] });
-      qc.invalidateQueries({ queryKey: ["settings"] });
+      qc.removeQueries({ queryKey: ["connections"] });
+      qc.removeQueries({ queryKey: ["connector-schema", id] });
+      qc.removeQueries({ queryKey: ["settings"] });
+    },
+  });
+}
+
+export function useSetDefaultConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: ["connection"],
+    mutationFn: (id: string) =>
+      sendJson<{ value: unknown; is_default: boolean }>("PUT", "/settings/default_connection_id", { value: id }),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ["settings"] });
+    },
+  });
+}
+
+export function useClearDefaultConnection() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationKey: ["connection"],
+    mutationFn: () => del("/settings/default_connection_id"),
+    onSuccess: () => {
+      qc.removeQueries({ queryKey: ["settings"] });
     },
   });
 }

@@ -1,77 +1,4 @@
-# default-connection Specification
-
-## Purpose
-Defines the connection the Connect page opens on: the instance-wide setting that names it, the
-deterministic fallback used when no setting is stored, what the page does once a connection is
-resolved, and how an operator sets and clears the default.
-
-## Requirements
-
-### Requirement: The default connection setting
-
-`default_connection_id` SHALL be a known application setting holding the id of the connection the
-Connect page opens on. Its in-code default SHALL be "none": with no override stored,
-`GET /api/settings` SHALL report the key with value `null` and `is_default: true`, alongside every
-other known setting.
-
-`PUT /api/settings/default_connection_id` SHALL take the request body every settings write takes,
-`{ "value": <json> }`. Its `value` SHALL be a JSON string. Surrounding whitespace SHALL be trimmed
-before storage, and the trimmed id SHALL be the value the response reflects back. A `value` that is
-not a JSON string, is empty or whitespace-only after trimming, or names no existing connection SHALL
-be rejected with `400` and `details.reason` `setting_value_invalid`. An id naming a connection that
-exists but is **disabled** SHALL be accepted: disabling a connection is temporary and SHALL NOT cost
-the operator their stored choice.
-
-`DELETE /api/settings/default_connection_id` SHALL clear the override and return `204`, as it does for
-every other setting, after which the key reads back as `null` with `is_default: true`.
-
-Stored text SHALL be treated the way every other setting's stored override is treated (ADR-0024):
-text that is empty or whitespace-only is **corrupt**, and reading settings SHALL surface an error
-rather than silently substituting a default. A well-formed id that names no connection is **not**
-corrupt: it is the dangling case this capability deliberately supports, and `GET /api/settings` SHALL
-report it as stored.
-
-This requirement extends the known-settings list of the frozen `docs/SPEC.md` §12 ("Settings") with one
-key. Every other part of that section, including the endpoint contract and the corrupt-override
-behavior it states, remains authoritative and is unchanged.
-
-#### Scenario: No default is stored
-
-- **WHEN** a client reads `GET /api/settings` and no override has been written
-- **THEN** the response contains `default_connection_id` with value `null` and `is_default: true`
-
-#### Scenario: Setting the default to an existing connection
-
-- **WHEN** a client sends `PUT /api/settings/default_connection_id` with body
-  `{ "value": "  conn-1  " }` and `conn-1` is an existing connection
-- **THEN** the response is `200` with value `conn-1` and `is_default: false`
-- **AND** `GET /api/settings` reports `conn-1`
-
-#### Scenario: Setting the default to a disabled connection
-
-- **WHEN** a client sets `value` to the id of a connection whose `enabled` is `false`
-- **THEN** the response is `200` and the id is stored
-
-#### Scenario: Rejecting an id that names no connection
-
-- **WHEN** a client sets `value` to an id no connection has
-- **THEN** the response is `400` with `details.reason` `setting_value_invalid`
-
-#### Scenario: Rejecting a value that is not a usable id
-
-- **WHEN** a client sends `value` as `""`, `"   "`, `null`, a number, an array, or an object
-- **THEN** the response is `400` with `details.reason` `setting_value_invalid`
-
-#### Scenario: Reading a stored id whose connection was never created
-
-- **WHEN** `default_connection_id` holds a well-formed id that names no connection
-- **THEN** `GET /api/settings` reports that id with `is_default: false`, and does not error
-
-#### Scenario: Clearing the default
-
-- **WHEN** a client sends `DELETE /api/settings/default_connection_id`
-- **THEN** the response is `204` and `GET /api/settings` reports the key as `null` with
-  `is_default: true`
+## ADDED Requirements
 
 ### Requirement: Connections names the default connection
 
@@ -343,3 +270,31 @@ is untouched here, and parts of it are already superseded elsewhere: the browse 
 - **WHEN** an operator is working on a resolved connection and a later request for the connections
   list fails
 - **THEN** the selected connection, the browse table and the row selection are unchanged
+
+## REMOVED Requirements
+
+### Requirement: Connect opens on a resolved connection
+
+**Reason**: Its resolution latched for a session and its scenarios turn on a form that shared the
+Connect page's mount: adding, renaming, disabling or deleting a connection "in the Manage connections
+block" while the page stayed put. #384 moved that form to its own route, so the page unmounts for
+every one of those acts and resolves again on return. "Connect opens on a connection it resolves per
+visit" carries the resolution order, the no-refetch-moves-you rule, the selection-does-not-outlive-what
+-it-names rule and the connection-scoped-state reset forward unchanged, and replaces only the clauses
+that assumed the two views shared a screen.
+
+**Migration**: None. Pre-1.0, a change that alters behavior breaks what came before. An operator who
+had picked a connection by hand and leaves Connect to manage connections returns to the resolved
+connection rather than the hand-picked one; picking again is one control.
+
+### Requirement: Connect names the default connection
+
+**Reason**: The control it names sits with the connections list, and that list moved off the Connect
+page to `/connections` (#384). Every clause of this requirement locates the control in the **Manage
+connections** block, and that block no longer exists. "Connections names the default connection"
+restates the whole control contract at its new home, including the unavailable state and the
+instance-wide notice, and replaces the one clause that assumed the control and the Connect page's
+picker shared a mount.
+
+**Migration**: None. The setting, its endpoints and its stored value are unchanged; only the page
+carrying the control moves.

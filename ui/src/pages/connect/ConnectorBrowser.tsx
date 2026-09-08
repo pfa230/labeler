@@ -32,7 +32,6 @@ export interface ConnectorBrowserProps {
   schema: ConnectorSchema;
   selected: SelectedRow[];
   onSelectedChange: (rows: SelectedRow[]) => void;
-  refreshToken?: number;
 }
 
 const refKey = (r: { resource: string; key: string }) => `${r.resource}:${r.key}`;
@@ -65,7 +64,7 @@ function NameCell({ row, column }: ICellProps) {
   return <>{text}</>;
 }
 
-export function ConnectorBrowser({ connectionId, schema, selected, onSelectedChange, refreshToken }: ConnectorBrowserProps) {
+export function ConnectorBrowser({ connectionId, schema, selected, onSelectedChange }: ConnectorBrowserProps) {
   const [resourceId, setResourceId] = useState(schema.resources[0]?.id ?? "");
   const resource = useMemo<ResourceSpec | undefined>(() => schema.resources.find((r) => r.id === resourceId), [schema, resourceId]);
   const [filterDraft, setFilterDraft] = useState<Record<string, string>>({});
@@ -240,7 +239,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
         if (reqToken.current === token) setBusy(false);
       }
     })();
-  }, [connectionId, resource, applied, parent, refreshToken]);
+  }, [connectionId, resource, applied, parent]);
 
   const loadMore = async () => {
     if (!resource || !cursor) return;

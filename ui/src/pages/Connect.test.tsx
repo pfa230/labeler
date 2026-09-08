@@ -1,9 +1,16 @@
+import { useEffect } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 import { ToastProvider } from "../app/toast";
 import { Connect } from "./Connect";
+import {
+  useSaveConnection,
+  useDeleteConnection,
+  useSetDefaultConnection,
+  useClearDefaultConnection,
+} from "../api/connectors";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -172,16 +179,101 @@ function stub(opts: StubOptions = {}) {
   });
 }
 
-function renderConnect(client?: QueryClient) {
+function MutationBridge() {
+  const save = useSaveConnection();
+  const del = useDeleteConnection();
+  const setDef = useSetDefaultConnection();
+  const clearDef = useClearDefaultConnection();
+  return (
+    <div style={{ display: "none" }}>
+      <button
+        data-testid="test-trigger-save"
+        type="button"
+        onClick={() =>
+          save.mutate({
+            input: {
+              connector: "homebox",
+              name: "New Connection",
+              base_url: "http://hb-new.lan",
+              enabled: true,
+              credential: "secret",
+            },
+          })
+        }
+      >
+        Save
+      </button>
+      <button
+        data-testid="test-trigger-delete"
+        type="button"
+        onClick={() => del.mutate("c1")}
+      >
+        Delete
+      </button>
+      <button
+        data-testid="test-trigger-set-default"
+        type="button"
+        onClick={() => setDef.mutate("c2")}
+      >
+        Set Default
+      </button>
+      <button
+        data-testid="test-trigger-clear-default"
+        type="button"
+        onClick={() => clearDef.mutate()}
+      >
+        Clear Default
+      </button>
+      <button
+        data-testid="test-trigger-update-c1"
+        type="button"
+        onClick={() =>
+          save.mutate({
+            id: "c1",
+            input: {
+              connector: "homebox",
+              name: "Home 1",
+              base_url: "http://hb-updated",
+              enabled: true,
+              credential: "secret",
+            },
+          })
+        }
+      >
+        Update C1
+      </button>
+    </div>
+  );
+}
+
+function renderConnect(client?: QueryClient, initialPath = "/connect") {
   const qc = client ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  let currentLocation = { pathname: initialPath, state: undefined as unknown };
+
+  function LocationTracker() {
+    const loc = useLocation();
+    useEffect(() => {
+      currentLocation = loc;
+    }, [loc]);
+    return null;
+  }
+
   const view = render(
     <QueryClientProvider client={qc}>
       <ToastProvider>
-        <MemoryRouter><Connect /></MemoryRouter>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <LocationTracker />
+          <MutationBridge />
+          <Routes>
+            <Route path="/connect" element={<Connect />} />
+            <Route path="/connections" element={<div data-testid="connections-page">Connections Page</div>} />
+            <Route path="/connections/new" element={<div data-testid="new-connection-page">New Connection Page</div>} />
+          </Routes>
+        </MemoryRouter>
       </ToastProvider>
     </QueryClientProvider>,
   );
-  return { ...view, queryClient: qc };
+  return { ...view, queryClient: qc, getLocation: () => currentLocation };
 }
 
 let fetchMock: ReturnType<typeof stub>;
@@ -331,7 +423,7 @@ describe("Connect", () => {
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
     expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("grid")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /manage connections/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /manage connections/i })).toBeInTheDocument();
   });
 
   it("falls back to first enabled connection when settings query errors", async () => {
@@ -434,291 +526,920 @@ describe("Connect", () => {
     expect(settingsMutations).toHaveLength(0);
   });
 
-  it("starts collapsed when list has connections, starts expanded when empty, and starts collapsed on failure", async () => {
-    // 1. Loaded with connection -> collapsed, opens on click
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
-      ],
+  describe("8.1 Connection management link, empty-state CTA, loading, failure", () => {
+    it("renders no connections table, form or default-connection control, and offers link to /connections with origin state", async () => {
+      fetchMock = stub({
+        connections: [
+          { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
+        ],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { getLocation } = renderConnect();
+
+      // Verify no connections table or form or default control
+      expect(screen.queryByLabelText(/default connection/i)).not.toBeInTheDocument();
+      expect(screen.queryByLabelText(/base url/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole("table")).not.toBeInTheDocument();
+
+      // Offers link to /connections
+      const link = await screen.findByRole("link", { name: /manage connections/i });
+      expect(link).toHaveAttribute("href", "/connections");
+
+      fireEvent.click(link);
+      expect(await screen.findByTestId("connections-page")).toBeInTheDocument();
+      expect(getLocation().state).toEqual({ from: "/connect" });
     });
-    vi.stubGlobal("fetch", fetchMock);
-    const { unmount } = renderConnect();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
-    const btn = await screen.findByRole("button", { name: /manage connections/i });
-    expect(btn).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("heading", { name: /^connections$/i })).not.toBeInTheDocument();
 
-    fireEvent.click(btn);
-    expect(btn).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("heading", { name: /^connections$/i })).toBeInTheDocument();
-    unmount();
+    it("offers call to action linking to /connections/new with origin state when list loads empty", async () => {
+      fetchMock = stub({ connections: [] });
+      vi.stubGlobal("fetch", fetchMock);
+      const { getLocation } = renderConnect();
 
-    // 2. Loaded empty -> starts expanded
-    fetchMock = stub({ connections: [] });
-    vi.stubGlobal("fetch", fetchMock);
-    const { unmount: unmountEmpty } = renderConnect();
-    const btnEmpty = await screen.findByRole("button", { name: /manage connections/i });
-    await waitFor(() => expect(btnEmpty).toHaveAttribute("aria-expanded", "true"));
-    expect(await screen.findByText(/no connections configured/i)).toBeInTheDocument();
-    unmountEmpty();
+      expect(await screen.findByText(/no connections configured/i)).toBeInTheDocument();
+      const ctaLink = screen.getByRole("link", { name: /add connection/i });
+      expect(ctaLink).toHaveAttribute("href", "/connections/new");
 
-    // 3. Failed -> starts collapsed
-    fetchMock = stub({ connectionsError: true });
-    vi.stubGlobal("fetch", fetchMock);
-    const { queryClient: qcFailed } = renderConnect();
-    const btnFailed = await screen.findByRole("button", { name: /manage connections/i });
-    await waitFor(() => expect(qcFailed.getQueryState(["connections"])?.status).toBe("error"));
-    expect(btnFailed).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText(/failed to load connections/i)).not.toBeInTheDocument();
+      fireEvent.click(ctaLink);
+      expect(await screen.findByTestId("new-connection-page")).toBeInTheDocument();
+      expect(getLocation().state).toEqual({ from: "/connect" });
+    });
 
-    fireEvent.click(btnFailed);
-    expect(btnFailed).toHaveAttribute("aria-expanded", "true");
-    expect(await screen.findByText(/failed to load connections/i)).toBeInTheDocument();
+    it("offers no call to action while connections list has not answered", async () => {
+      let release: (() => void) | undefined;
+      const pendingGate = new Promise<void>((r) => { release = r; });
+      fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/connections") {
+          await pendingGate;
+          return json([]);
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderConnect();
+      expect(screen.queryByRole("link", { name: /add connection/i })).not.toBeInTheDocument();
+
+      release?.();
+      expect(await screen.findByText(/no connections configured/i)).toBeInTheDocument();
+    });
+
+    it("reports a failed list and offers no call to action", async () => {
+      fetchMock = stub({ connectionsError: true });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderConnect();
+      expect(await screen.findByText(/failed to load connections\./i)).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /add connection/i })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /manage connections/i })).toBeInTheDocument();
+    });
   });
 
-  it("adding an enabled connection in the block puts it in the picker and leaves selection, browse table and row selection unchanged", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-      ],
+  describe("8.2 Resolution per visit", () => {
+    it("returning from connection management resolves afresh without restoring hand-picked connection or its rows", async () => {
+      fetchMock = stub({
+        connections: [
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        ],
+        settings: {
+          default_connection_id: { value: "c1", is_default: false },
+        },
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      // Visit 1: connect opens on default c1
+      const { unmount, queryClient } = renderConnect();
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+      // Manually pick c2 and select a row
+      fireEvent.change(picker, { target: { value: "c2" } });
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c2"));
+      const checkbox = await screen.findByLabelText("select entities:e1");
+      fireEvent.click(checkbox);
+      await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+      // Leave Connect (unmount)
+      unmount();
+
+      // Visit 2: return to Connect
+      renderConnect(queryClient);
+      const newPicker = await screen.findByLabelText(/^connection$/i);
+      // Resolves afresh to c1 (the stored default), NOT c2!
+      await waitFor(() => expect((newPicker as HTMLSelectElement).value).toBe("c1"));
+      // The hand-picked c2's row selection is gone
+      const newCheckbox = await screen.findByLabelText("select entities:e1");
+      expect(newCheckbox).not.toBeChecked();
     });
-    vi.stubGlobal("fetch", fetchMock);
 
-    renderConnect();
-    await screen.findByRole("option", { name: "Home 1" });
-    const picker = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+    it("a connection created while away resolves on return when it sorts first", async () => {
+      fetchMock = stub({
+        connections: [
+          { id: "c2", connector: "homebox", name: "Zeta", base_url: "http://hb2", enabled: true, has_credential: true },
+        ],
+      });
+      vi.stubGlobal("fetch", fetchMock);
 
-    // Select row
-    const checkbox = await screen.findByLabelText("select entities:e1");
-    fireEvent.click(checkbox);
-    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+      // Visit 1: resolves c2
+      const { unmount, queryClient } = renderConnect();
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c2"));
+      unmount();
 
-    // Open block and add enabled connection
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /add connection/i }));
-    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home 2" } });
-    fireEvent.change(screen.getByLabelText(/^base url$/i), { target: { value: "http://hb2" } });
-    fireEvent.change(screen.getByLabelText(/^api key/i), { target: { value: "secret" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      // While away: create c1 which sorts first
+      const c1: StubConnection = {
+        id: "c1",
+        connector: "homebox",
+        name: "Alpha",
+        base_url: "http://hb1",
+        enabled: true,
+        has_credential: true,
+      };
+      fetchMock.setConnections([c1, { id: "c2", connector: "homebox", name: "Zeta", base_url: "http://hb2", enabled: true, has_credential: true }]);
+      await queryClient.removeQueries({ queryKey: ["connections"] });
 
-    // Verify "Home 2" is in the picker without reload
-    await screen.findByRole("option", { name: "Home 2" });
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
-  });
-
-  it("adding a disabled connection lists it in block table, does not offer it in picker, and leaves selection unchanged", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-      ],
+      // Visit 2: returns to Connect
+      renderConnect(queryClient);
+      const newPicker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((newPicker as HTMLSelectElement).value).toBe("c1"));
     });
-    vi.stubGlobal("fetch", fetchMock);
 
-    renderConnect();
-    await screen.findByRole("option", { name: "Home 1" });
-    const picker = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+    it("creating the first connection from the call to action resolves on return", async () => {
+      fetchMock = stub({ connections: [] });
+      vi.stubGlobal("fetch", fetchMock);
 
-    // Open block and add disabled connection
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /add connection/i }));
-    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home 2" } });
-    fireEvent.change(screen.getByLabelText(/^base url$/i), { target: { value: "http://hb2" } });
-    fireEvent.change(screen.getByLabelText(/^api key/i), { target: { value: "secret" } });
-    fireEvent.click(screen.getByLabelText(/^enabled$/i));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      // Visit 1: empty CTA shown
+      const { unmount, queryClient } = renderConnect();
+      expect(await screen.findByText(/no connections configured/i)).toBeInTheDocument();
+      unmount();
 
-    // Wait for table row to appear in Connections table
-    await screen.findByText("Home 2");
-    // Picker should not offer Home 2
-    expect(screen.queryByRole("option", { name: "Home 2" })).not.toBeInTheDocument();
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-  });
+      // While away: created first connection
+      const c1: StubConnection = {
+        id: "c1",
+        connector: "homebox",
+        name: "First Home",
+        base_url: "http://hb1",
+        enabled: true,
+        has_credential: true,
+      };
+      fetchMock.setConnections([c1]);
+      await queryClient.removeQueries({ queryKey: ["connections"] });
 
-  it("renaming the selected connection offers it under the new name without reload and leaves it selected", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-      ],
+      // Visit 2: returns to Connect
+      renderConnect(queryClient);
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+      expect(screen.queryByText(/no connections configured/i)).not.toBeInTheDocument();
     });
-    vi.stubGlobal("fetch", fetchMock);
 
-    renderConnect();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+    it("a connection saved disabled, renamed or deleted while away reflects on return", async () => {
+      fetchMock = stub({
+        connections: [
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        ],
+        settings: {
+          default_connection_id: { value: "c1", is_default: false },
+        },
+      });
+      vi.stubGlobal("fetch", fetchMock);
 
-    // Open block and edit name
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "Home Renamed" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      // 1. Saved disabled while away:
+      const { unmount: unmount1, queryClient } = renderConnect();
+      const picker1 = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker1 as HTMLSelectElement).value).toBe("c1"));
+      unmount1();
 
-    // Picker offers "Home Renamed" and is still selected
-    await screen.findByRole("option", { name: "Home Renamed" });
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-  });
-
-  it("deleting the currently selected connection returns picker to choose a connection and leaves no browse table, row selection or composer", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
-      ],
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await browseSelectMaterialize();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-    expect(screen.getByRole("grid", { name: /label rows/i })).toBeInTheDocument();
-
-    // Open block and delete c1
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
-
-    // Returns picker to "choose a connection"
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
-    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
-  });
-
-  it("disabling the currently selected connection returns picker to choose a connection and leaves no browse table, row selection or composer", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
-      ],
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await browseSelectMaterialize();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-    expect(screen.getByRole("grid", { name: /label rows/i })).toBeInTheDocument();
-
-    // Open block and edit c1 to disable it
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByLabelText(/^enabled$/i));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    // Returns picker to "choose a connection"
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
-    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
-  });
-
-  it("rows selected against a connection do not come back when connection is cleared and another is picked", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      // Disable c1 while away
+      fetchMock.setConnections([
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
         { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
-      ],
-    });
-    vi.stubGlobal("fetch", fetchMock);
+      ]);
+      await queryClient.removeQueries({ queryKey: ["connections"] });
 
-    renderConnect();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+      const { unmount: unmount2 } = renderConnect(queryClient);
+      const picker2 = await screen.findByLabelText(/^connection$/i);
+      // c1 is disabled so fallback c2 resolves!
+      await waitFor(() => expect((picker2 as HTMLSelectElement).value).toBe("c2"));
+      expect(screen.queryByRole("option", { name: "Home 1" })).not.toBeInTheDocument();
+      unmount2();
 
-    // Select two rows on c1
-    fireEvent.click(await screen.findByLabelText("select entities:e1"));
-    fireEvent.click(await screen.findByLabelText("select entities:e2"));
-    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
-    expect(screen.getByLabelText("select entities:e2")).toBeChecked();
-
-    // Delete c1 in Manage connections
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    const withinSection = within(screen.getByRole("heading", { name: /^connections$/i }).closest("section")!);
-    const editBtns = withinSection.getAllByRole("button", { name: /^delete$/i });
-    fireEvent.click(editBtns[0]);
-    fireEvent.click(withinSection.getByRole("button", { name: /^confirm$/i }));
-
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
-
-    // Pick c2
-    fireEvent.change(picker, { target: { value: "c2" } });
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c2"));
-
-    // Verify nothing is selected for c2
-    const e1 = await screen.findByLabelText("select entities:e1");
-    expect(e1).not.toBeChecked();
-    expect(screen.getByLabelText("select entities:e2")).not.toBeChecked();
-
-    // Pick template and select 1 row on c2
-    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
-    fireEvent.click(e1);
-    const addBtn = await screen.findByRole("button", { name: /add .* row/i });
-    expect(addBtn).toHaveTextContent(/add 1 row/i);
-    fireEvent.click(addBtn);
-
-    const grid = await screen.findByRole("grid", { name: /label rows/i });
-    expect(within(grid).getByText("Drill")).toBeInTheDocument();
-    expect(within(grid).queryByText("Hammer")).not.toBeInTheDocument();
-  });
-
-  it("leaves selected connection, browse table and row selection unchanged when a later connections request fails", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-      ],
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const { queryClient } = renderConnect();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
-
-    // Select row
-    const checkbox = await screen.findByLabelText("select entities:e1");
-    fireEvent.click(checkbox);
-    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
-
-    // Later connections request fails
-    fetchMock.setConnectionsError(true);
-    await queryClient.invalidateQueries({ queryKey: ["connections"] });
-
-    // Selection and checked row remain
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
-    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
-  });
-
-  it("naming a different connection as the default while working on one leaves selected connection, browse table and row selection unchanged", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+      // 2. Renamed while away:
+      fetchMock.setConnections([
+        { id: "c1", connector: "homebox", name: "Home 1 Renamed", base_url: "http://hb1", enabled: true, has_credential: true },
         { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
-      ],
-      settings: {
-        default_connection_id: { value: "c1", is_default: false },
-      },
+      ]);
+      await queryClient.removeQueries({ queryKey: ["connections"] });
+
+      const { unmount: unmount3 } = renderConnect(queryClient);
+      const picker3 = await screen.findByLabelText(/^connection$/i);
+      await screen.findByRole("option", { name: "Home 1 Renamed" });
+      await waitFor(() => expect((picker3 as HTMLSelectElement).value).toBe("c1"));
+      unmount3();
+
+      // 3. Deleted while away:
+      fetchMock.setConnections([
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ]);
+      fetchMock.setSettings({ default_connection_id: { value: null, is_default: true } });
+      await queryClient.removeQueries({ queryKey: ["connections"] });
+      await queryClient.removeQueries({ queryKey: ["connector-schema", "c1"] });
+      await queryClient.removeQueries({ queryKey: ["settings"] });
+
+      renderConnect(queryClient);
+      const picker4 = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker4 as HTMLSelectElement).value).toBe("c2"));
+      expect(screen.queryByRole("option", { name: /Home 1/ })).not.toBeInTheDocument();
     });
-    vi.stubGlobal("fetch", fetchMock);
+  });
 
-    renderConnect();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+  describe("8.3 Pending-write gate", () => {
+    it("leaving form by Cancel during a save leaves Connect selecting nothing and reporting that it waits, then acting on post-write answers", async () => {
+      let resolveSave!: (res: Response) => void;
+      const savePromise = new Promise<Response>((r) => { resolveSave = r; });
 
-    // Select row
-    const checkbox = await screen.findByLabelText("select entities:e1");
-    fireEvent.click(checkbox);
-    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections" && method === "POST") return savePromise;
+        if (url === "/api/connections" && method === "GET") {
+          return json([
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          ]);
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
 
-    // Open block and name c2 as default connection
-    fireEvent.click(screen.getByRole("button", { name: /manage connections/i }));
-    const defaultSelect = await screen.findByLabelText(/^default connection$/i);
-    fireEvent.change(defaultSelect, { target: { value: "c2" } });
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const { getLocation } = renderConnect(qc);
 
-    // Selected connection in main picker and row selection are unchanged
-    await waitFor(() => expect((defaultSelect as HTMLSelectElement).value).toBe("c2"));
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-    expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+      // Trigger save mutation (which has mutationKey: ["connection"])
+      fireEvent.click(screen.getByTestId("test-trigger-save"));
+
+      // Connect renders waiting message, selects nothing, reads no schema
+      expect(await screen.findByText(/waiting\.\.\./i)).toBeInTheDocument();
+      expect((screen.getByLabelText(/^connection$/i) as HTMLSelectElement).value).toBe("");
+
+      // Resolve save
+      await act(async () => {
+        resolveSave(json({ id: "c_new", connector: "homebox", name: "New Connection", base_url: "http://hb-new.lan", enabled: true, has_credential: true, transforms: [] }, 201));
+      });
+
+      // Once resolved, waiting message clears and Connect resolves
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+      expect(getLocation().pathname).toBe("/connect");
+    });
+
+    it("leaving form by primary navigation during a delete leaves Connect selecting nothing and reporting waiting, then acts on post-write answers without moving operator", async () => {
+      let resolveDelete!: (res: Response) => void;
+      const deletePromise = new Promise<Response>((r) => { resolveDelete = r; });
+      let schemaRequested = false;
+
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections/c1" && method === "DELETE") return deletePromise;
+        if (url === "/api/connections" && method === "GET") {
+          return json([
+            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+          ]);
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.includes("/api/connections/c1/schema")) {
+          schemaRequested = true;
+          return json(schema);
+        }
+        if (url.includes("/api/connections/c2/schema")) return json(schema);
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const { getLocation } = renderConnect(qc);
+
+      // Trigger delete mutation
+      fireEvent.click(screen.getByTestId("test-trigger-delete"));
+
+      // Connect waits
+      expect(await screen.findByText(/waiting\.\.\./i)).toBeInTheDocument();
+      expect((screen.getByLabelText(/^connection$/i) as HTMLSelectElement).value).toBe("");
+
+      // Resolve delete
+      await act(async () => {
+        resolveDelete(new Response(null, { status: 204 }));
+      });
+
+      // Post-delete: c2 resolves, c1 schema is never requested, operator stays on /connect
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c2"));
+      expect(schemaRequested).toBe(false);
+      expect(getLocation().pathname).toBe("/connect");
+    });
+
+    it("naming a default then opening Connect before write answers waits and resolves on newly named default", async () => {
+      let resolveSetDefault!: (res: Response) => void;
+      const defaultPromise = new Promise<Response>((r) => { resolveSetDefault = r; });
+      let defaultSaved = false;
+
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/settings/default_connection_id" && method === "PUT") {
+          defaultSaved = true;
+          return defaultPromise;
+        }
+        if (url === "/api/connections" && method === "GET") {
+          return json([
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+          ]);
+        }
+        if (url === "/api/settings" && method === "GET") {
+          return json({ default_connection_id: { value: defaultSaved ? "c2" : "c1", is_default: false } });
+        }
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderConnect(qc);
+
+      // Trigger set default to c2
+      fireEvent.click(screen.getByTestId("test-trigger-set-default"));
+
+      // Connect waits
+      expect(await screen.findByText(/waiting\.\.\./i)).toBeInTheDocument();
+      expect((screen.getByLabelText(/^connection$/i) as HTMLSelectElement).value).toBe("");
+
+      // Resolve set default
+      await act(async () => {
+        resolveSetDefault(json({ value: "c2", is_default: false }));
+      });
+
+      // Connect resolves on newly named default c2
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c2"));
+    });
+
+    it("clearing a default before write answers waits and clears waiting once settled", async () => {
+      let resolveClearDefault!: (res: Response) => void;
+      const clearPromise = new Promise<Response>((r) => { resolveClearDefault = r; });
+
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/settings/default_connection_id" && method === "DELETE") return clearPromise;
+        if (url === "/api/connections" && method === "GET") {
+          return json([
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          ]);
+        }
+        if (url === "/api/settings" && method === "GET") {
+          return json({ default_connection_id: { value: null, is_default: true } });
+        }
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderConnect(qc);
+
+      // Trigger clear default
+      fireEvent.click(screen.getByTestId("test-trigger-clear-default"));
+
+      // Connect waits
+      expect(await screen.findByText(/waiting\.\.\./i)).toBeInTheDocument();
+      expect((screen.getByLabelText(/^connection$/i) as HTMLSelectElement).value).toBe("");
+
+      // Resolve clear default
+      await act(async () => {
+        resolveClearDefault(new Response(null, { status: 204 }));
+      });
+
+      // Connect resolves on fallback c1 once settled
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+      expect(screen.queryByText(/waiting\.\.\./i)).not.toBeInTheDocument();
+    });
+
+    it("presents neither empty-list call to action nor failure message while reporting waiting", async () => {
+      let resolveSave!: (res: Response) => void;
+      const savePromise = new Promise<Response>((r) => { resolveSave = r; });
+
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections" && method === "POST") return savePromise;
+        if (url === "/api/connections" && method === "GET") {
+          return json([]);
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      renderConnect(qc);
+
+      // Trigger save mutation (in flight)
+      fireEvent.click(screen.getByTestId("test-trigger-save"));
+
+      // Connect renders waiting message
+      expect(await screen.findByText(/waiting\.\.\./i)).toBeInTheDocument();
+      // While waiting, it does NOT present pre-write empty call to action or failure message
+      expect(screen.queryByText(/no connections configured/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/failed to load connections/i)).not.toBeInTheDocument();
+
+      // Resolve save
+      await act(async () => {
+        resolveSave(json({ id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] }, 201));
+      });
+    });
+  });
+
+  describe("8.4 Freshness", () => {
+    it("a save reaching Connect on the next visit with that connection selected browses new rows", async () => {
+      let isUpdated = false;
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections/c1" && method === "PUT") {
+          isUpdated = true;
+          return json({ id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb-updated", enabled: true, has_credential: true, transforms: [] });
+        }
+        if (url === "/api/connections" && method === "GET") {
+          return json([
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: isUpdated ? "http://hb-updated" : "http://hb1", enabled: true, has_credential: true, transforms: [] },
+          ]);
+        }
+        if (url === "/api/connections/c1/schema") return json(schema);
+        if (url.startsWith("/api/connections/c1/browse")) {
+          return json({
+            rows: [
+              {
+                id: { resource: "entities", key: isUpdated ? "e-new" : "e-old" },
+                cells: { name: isUpdated ? "Hammer from updated upstream" : "Drill from old upstream" },
+              },
+            ],
+            next_cursor: null,
+            has_more: false,
+            count: 1,
+          });
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: "c1", is_default: false } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const { unmount } = renderConnect(qc);
+
+      // Initial visit: Connect resolves c1 and browses rows from old upstream
+      expect(await screen.findByText("Drill from old upstream")).toBeInTheDocument();
+      unmount();
+
+      // Operator updates c1 to new base_url via real mutation
+      const bridge = render(
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <MemoryRouter>
+              <MutationBridge />
+            </MemoryRouter>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+      fireEvent.click(bridge.getByTestId("test-trigger-update-c1"));
+      await waitFor(() => expect(isUpdated).toBe(true));
+      bridge.unmount();
+
+      // Next visit: returning to Connect with that connection selected
+      renderConnect(qc);
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+      // The rows shown are browsed from the new upstream
+      expect(await screen.findByText("Hammer from updated upstream")).toBeInTheDocument();
+      expect(screen.queryByText("Drill from old upstream")).not.toBeInTheDocument();
+    });
+
+    it("no pre-write answer being presented: schema and list acted on are answers made after save", async () => {
+      let saved = false;
+      let connectionsFetches = 0;
+      let schemaFetches = 0;
+
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections/c1" && method === "PUT") {
+          saved = true;
+          return json({ id: "c1", connector: "homebox", name: "Home Updated", base_url: "http://hb-updated", enabled: true, has_credential: true, transforms: [] });
+        }
+        if (url === "/api/connections" && method === "GET") {
+          connectionsFetches++;
+          return json([
+            { id: "c1", connector: "homebox", name: saved ? "Home Post-Write" : "Home Pre-Write", base_url: "http://hb", enabled: true, has_credential: true, transforms: [] },
+          ]);
+        }
+        if (url === "/api/connections/c1/schema") {
+          schemaFetches++;
+          return json({
+            ...schema,
+            resources: [
+              {
+                ...schema.resources[0],
+                label: saved ? "Items Post-Write" : "Items Pre-Write",
+              },
+            ],
+          });
+        }
+        if (url.startsWith("/api/connections/c1/browse")) {
+          return json({
+            rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }],
+            next_cursor: null,
+            has_more: false,
+            count: 1,
+          });
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: "c1", is_default: false } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const { unmount } = renderConnect(qc);
+
+      // Pre-write: Connect presents pre-write answers
+      expect(await screen.findByRole("option", { name: "Home Pre-Write" })).toBeInTheDocument();
+      expect(await screen.findByText("Items Pre-Write")).toBeInTheDocument();
+      expect(connectionsFetches).toBe(1);
+      expect(schemaFetches).toBe(1);
+      unmount();
+
+      // Operator saves connection
+      const bridge = render(
+        <QueryClientProvider client={qc}>
+          <ToastProvider>
+            <MemoryRouter>
+              <MutationBridge />
+            </MemoryRouter>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+      fireEvent.click(bridge.getByTestId("test-trigger-update-c1"));
+      await waitFor(() => expect(saved).toBe(true));
+      bridge.unmount();
+
+      // Return to Connect: requests made after save, copies read before it are NEVER presented
+      renderConnect(qc);
+      expect(await screen.findByRole("option", { name: "Home Post-Write" })).toBeInTheDocument();
+      expect(await screen.findByText("Items Post-Write")).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Home Pre-Write" })).not.toBeInTheDocument();
+      expect(screen.queryByText("Items Pre-Write")).not.toBeInTheDocument();
+      expect(connectionsFetches).toBe(2);
+      expect(schemaFetches).toBe(2);
+    });
+
+    it("a credential-only save requests schema and browses rows again on next visit", async () => {
+      let schemaCalls = 0;
+      let browseCalls = 0;
+      fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/connections") {
+          return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: "c1", is_default: false } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.includes("/api/connections/c1/schema")) {
+          schemaCalls++;
+          return json(schema);
+        }
+        if (url.includes("/api/connections/c1/browse")) {
+          browseCalls++;
+          return json({ rows: [{ id: { resource: "entities", key: "1" }, cells: { name: "Item" } }], next_cursor: null, has_more: false, count: 1 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const { unmount } = renderConnect(qc);
+      await screen.findByText("Item");
+      expect(schemaCalls).toBe(1);
+      expect(browseCalls).toBe(1);
+      unmount();
+
+      // Credential-only save evicts schema and connections
+      await qc.removeQueries({ queryKey: ["connections"] });
+      await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
+
+      renderConnect(qc);
+      await screen.findByText("Item");
+      expect(schemaCalls).toBe(2);
+      expect(browseCalls).toBe(2);
+    });
+
+    it("failed write changes nothing and Connect proceeds on cached answers", async () => {
+      let failSave = false;
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections" && method === "POST") {
+          if (failSave) return json({ error: "Server error" }, 500);
+          return json({ id: "c_new" }, 201);
+        }
+        if (url === "/api/connections" && method === "GET") {
+          return json([
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          ]);
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.startsWith("/api/connections/c1/schema")) return json(schema);
+        if (url.startsWith("/api/connections/c1/browse")) {
+          return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+      renderConnect(qc);
+      await screen.findByText("Drill");
+
+      // Verify queries are cached
+      expect(qc.getQueryData(["connections"])).toBeDefined();
+      expect(qc.getQueryData(["connector-schema", "c1"])).toBeDefined();
+
+      // Configure save to fail with 500
+      failSave = true;
+
+      // Trigger real save mutation and wait for it to fail
+      fireEvent.click(screen.getByTestId("test-trigger-save"));
+      await waitFor(() => {
+        const failedCalls = fetchMock.mock.calls.filter(([u, init]) => String(u) === "/api/connections" && ((init as RequestInit)?.method ?? "GET").toUpperCase() === "POST");
+        expect(failedCalls.length).toBe(1);
+      });
+
+      // Wait until mutation has settled
+      await waitFor(() => expect(screen.queryByText(/waiting\.\.\./i)).not.toBeInTheDocument());
+
+      // Failed write did NOT evict anything: cache is intact
+      expect(qc.getQueryData(["connections"])).toBeDefined();
+      expect(qc.getQueryData(["connector-schema", "c1"])).toBeDefined();
+
+      // Connect proceeds on cached answers; rows ("Drill") remain on screen
+      expect(screen.getByText("Drill")).toBeInTheDocument();
+    });
+
+    it("default write does not evict connections list", async () => {
+      let connectionsFetches = 0;
+      let settingsFetches = 0;
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections" && method === "GET") {
+          connectionsFetches++;
+          return json([
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+          ]);
+        }
+        if (url === "/api/settings/default_connection_id" && method === "PUT") {
+          return json({ value: "c2", is_default: false });
+        }
+        if (url === "/api/settings" && method === "GET") {
+          settingsFetches++;
+          return json({ default_connection_id: { value: "c1", is_default: false } });
+        }
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 60_000 } } });
+      renderConnect(qc);
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+      expect(connectionsFetches).toBe(1);
+      expect(settingsFetches).toBe(1);
+
+      // Trigger the real useSetDefaultConnection mutation via test bridge
+      fireEvent.click(screen.getByTestId("test-trigger-set-default"));
+
+      // Wait for mutation to complete
+      await waitFor(() => {
+        const putCalls = fetchMock.mock.calls.filter(([u, i]) => String(u) === "/api/settings/default_connection_id" && ((i as RequestInit)?.method ?? "GET").toUpperCase() === "PUT");
+        expect(putCalls.length).toBe(1);
+      });
+      await waitFor(() => expect(screen.queryByText(/waiting\.\.\./i)).not.toBeInTheDocument());
+
+      // Settings was evicted and refetched by active observer
+      await waitFor(() => expect(settingsFetches).toBe(2));
+
+      // Connections query was NOT evicted by the mutation
+      expect(qc.getQueryData(["connections"])).toBeDefined();
+
+      // connections was not re-fetched
+      expect(connectionsFetches).toBe(1);
+    });
+
+    it("deleted connection leaves no held schema and draws no request", async () => {
+      let schemaC1Calls = 0;
+      let deleteResolved = false;
+      fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url === "/api/connections/c1" && method === "DELETE") {
+          deleteResolved = true;
+          return new Response(null, { status: 204 });
+        }
+        if (url === "/api/connections" && method === "GET") {
+          return json(
+            deleteResolved
+              ? [{ id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true }]
+              : [
+                  { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+                  { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+                ],
+          );
+        }
+        if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+        if (url === "/api/templates") return json({ templates: [] });
+        if (url === "/api/printers") return json([]);
+        if (url.includes("/api/connections/c1/schema")) {
+          schemaC1Calls++;
+          return json(schema);
+        }
+        if (url.includes("/api/connections/c2/schema")) return json(schema);
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as ReturnType<typeof stub>;
+      vi.stubGlobal("fetch", fetchMock);
+
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const { unmount } = renderConnect(qc);
+
+      // Initial visit: Connect resolves on c1 and loads c1 schema
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+      expect(schemaC1Calls).toBe(1);
+      expect(qc.getQueryData(["connector-schema", "c1"])).toBeDefined();
+
+      // Operator triggers delete of c1 via real useDeleteConnection hook
+      fireEvent.click(screen.getByTestId("test-trigger-delete"));
+      await waitFor(() => expect(deleteResolved).toBe(true));
+
+      // After delete mutation settles, c1 schema is no longer held in query client
+      expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
+
+      unmount();
+
+      // Next visit to Connect: c1 is deleted, resolves on c2, and draws NO schema request for c1
+      renderConnect(qc);
+      const picker2 = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker2 as HTMLSelectElement).value).toBe("c2"));
+      expect(schemaC1Calls).toBe(1); // No new request for c1 schema
+      expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
+    });
+  });
+
+  describe("8.5 Surviving selection rules", () => {
+    it("rows selected against a connection do not come back when connection is cleared and another is picked", async () => {
+      fetchMock = stub({
+        connections: [
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        ],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { queryClient } = renderConnect();
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+      // Select two rows on c1
+      fireEvent.click(await screen.findByLabelText("select entities:e1"));
+      fireEvent.click(await screen.findByLabelText("select entities:e2"));
+      expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+      expect(screen.getByLabelText("select entities:e2")).toBeChecked();
+
+      // Disable c1 in background (e.g. another operator disabled it)
+      fetchMock.setConnections([
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+      ]);
+      await queryClient.invalidateQueries({ queryKey: ["connections"] });
+
+      // Picker clears to ""
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
+
+      // Pick c2
+      fireEvent.change(picker, { target: { value: "c2" } });
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c2"));
+
+      // Verify nothing is selected for c2
+      const e1 = await screen.findByLabelText("select entities:e1");
+      expect(e1).not.toBeChecked();
+      expect(screen.getByLabelText("select entities:e2")).not.toBeChecked();
+
+      // Pick template and select 1 row on c2
+      fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+      fireEvent.click(e1);
+      const addBtn = await screen.findByRole("button", { name: /add .* row/i });
+      expect(addBtn).toHaveTextContent(/add 1 row/i);
+      fireEvent.click(addBtn);
+
+      const grid = await screen.findByRole("grid", { name: /label rows/i });
+      expect(within(grid).getByText("Drill")).toBeInTheDocument();
+      expect(within(grid).queryByText("Hammer")).not.toBeInTheDocument();
+    });
+
+    it("leaves selected connection, browse table and row selection unchanged when a later connections request fails", async () => {
+      fetchMock = stub({
+        connections: [
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        ],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { queryClient } = renderConnect();
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+      // Select row
+      const checkbox = await screen.findByLabelText("select entities:e1");
+      fireEvent.click(checkbox);
+      await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+      // Later connections request fails
+      fetchMock.setConnectionsError(true);
+      await queryClient.invalidateQueries({ queryKey: ["connections"] });
+
+      // Selection and checked row remain
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+      expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+    });
+
+    it("naming a different connection as default while working on one leaves selection unchanged", async () => {
+      fetchMock = stub({
+        connections: [
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        ],
+        settings: {
+          default_connection_id: { value: "c1", is_default: false },
+        },
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { queryClient } = renderConnect();
+      const picker = await screen.findByLabelText(/^connection$/i);
+      await waitFor(() => expect((picker as HTMLSelectElement).value).toBe("c1"));
+
+      // Select row
+      const checkbox = await screen.findByLabelText("select entities:e1");
+      fireEvent.click(checkbox);
+      await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
+
+      // Setting changes in background to c2
+      fetchMock.setSettings({ default_connection_id: { value: "c2", is_default: false } });
+      await queryClient.invalidateQueries({ queryKey: ["settings"] });
+
+      // Selected connection in main picker and row selection are unchanged
+      expect((picker as HTMLSelectElement).value).toBe("c1");
+      expect(screen.getByLabelText("select entities:e1")).toBeChecked();
+    });
   });
 });
 
@@ -1137,333 +1858,20 @@ describe("Connect: datetime parameters", () => {
     expect(screen.getByLabelText("map tags")).toHaveValue("");
     expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
   });
+});
 
-  it("a delete clears the selection before connections list reloads and drops schema without requesting it", async () => {
-    let schemaRequests = 0;
-    let failConnectionsRefetch = false;
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
-      ],
-    });
-    const originalFetch = fetchMock;
-    const wrappedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/api/connections/c1/schema") && method === "GET") {
-        schemaRequests++;
-      }
-      if (url.startsWith("/api/connections/") && method === "DELETE") {
-        failConnectionsRefetch = true;
-      }
-      if (url === "/api/connections" && method === "GET" && failConnectionsRefetch) {
-        return json({ error: "Failed" }, 500);
-      }
-      return originalFetch(input, init);
-    });
-    vi.stubGlobal("fetch", wrappedFetch);
-
-    renderConnect(qc);
-    await browseSelectMaterialize();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-    expect(schemaRequests).toBe(1);
-
-    // Open block and delete c1
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
-
-    // Picker returns to "choose a connection" at once before connections reload
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
-    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
-
-    // No cached schema for the deleted id, and no second request for it
-    expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
-    expect(schemaRequests).toBe(1);
+describe("8.6 Field transforms scenarios at their new timing", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
-  it("deleting with the Manage connections block collapsed before delete completes clears selection and does not request schema", async () => {
-    let schemaRequests = 0;
-    let deleteStarted = false;
-    let resolveDelete!: (res: Response) => void;
-    const deletePromise = new Promise<Response>((res) => { resolveDelete = res; });
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
-      ],
-    });
-    const originalFetch = fetchMock;
-    const wrappedFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/api/connections/c1/schema") && method === "GET") {
-        schemaRequests++;
-      }
-      if (url.startsWith("/api/connections/") && method === "DELETE") {
-        deleteStarted = true;
-        return deletePromise;
-      }
-      if (url === "/api/connections" && method === "GET" && deleteStarted) {
-        return json({ error: "Failed" }, 500);
-      }
-      return originalFetch(input, init);
-    });
-    vi.stubGlobal("fetch", wrappedFetch);
-
-    renderConnect(qc);
-    await browseSelectMaterialize();
-    const picker = await screen.findByLabelText(/^connection$/i);
-    expect((picker as HTMLSelectElement).value).toBe("c1");
-    expect(schemaRequests).toBe(1);
-
-    // Open block and start deleting c1
-    const manageBtn = await screen.findByRole("button", { name: /manage connections/i });
-    fireEvent.click(manageBtn);
-    fireEvent.click(screen.getByRole("button", { name: /^delete$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
-
-    // Collapse the Manage connections block before the delete completes
-    fireEvent.click(manageBtn);
-    expect(screen.queryByRole("heading", { name: /^connections$/i })).not.toBeInTheDocument();
-
-    // Now resolve delete
-    await act(async () => {
-      resolveDelete(new Response(null, { status: 204 }));
-    });
-
-    // Picker returns to "choose a connection"
-    await waitFor(() => expect((picker as HTMLSelectElement).value).toBe(""));
-    expect(screen.queryByRole("grid", { name: /label rows/i })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("select entities:e1")).not.toBeInTheDocument();
-
-    expect(qc.getQueryData(["connector-schema", "c1"])).toBeUndefined();
-    expect(schemaRequests).toBe(1);
-  });
-
-  it("a save that points the connection at another upstream replaces the rows", async () => {
-    let browseRequests = 0;
-    let currentUpstream = "http://hb1";
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
-        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: currentUpstream, enabled: true, has_credential: true, transforms: [] }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        const b = JSON.parse(init!.body as string);
-        currentUpstream = b.base_url;
-        return json({ id: "c1", connector: "homebox", name: b.name, base_url: currentUpstream, enabled: true, has_credential: true, transforms: [] });
-      }
-      if (url === "/api/connections/c1/schema") return json(schema);
-      if (url === "/api/connections/c1/browse") {
-        browseRequests++;
-        const rowName = currentUpstream === "http://hb1" ? "Upstream1 Item" : "Upstream2 Item";
-        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: rowName } }], next_cursor: null, has_more: false, count: 1 });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await screen.findByText("Upstream1 Item");
-    expect(browseRequests).toBe(1);
-
-    // Edit c1 to point to http://hb2
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    const baseUrlInput = screen.getByLabelText(/^base url$/i);
-    fireEvent.change(baseUrlInput, { target: { value: "http://hb2" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    // Browse table refreshes without reload and shows rows from new upstream
-    await waitFor(() => expect(screen.getByText("Upstream2 Item")).toBeInTheDocument());
-    expect(screen.queryByText("Upstream1 Item")).not.toBeInTheDocument();
-    expect(browseRequests).toBe(2);
-  });
-
-  it("the Manage connections block is collapsed before the save completes", async () => {
-    let browseRequests = 0;
-    let currentUpstream = "http://hb1";
-    let resolveSave!: (res: Response) => void;
-    const savePromise = new Promise<Response>((res) => { resolveSave = res; });
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
-        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: currentUpstream, enabled: true, has_credential: true, transforms: [] }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        const b = JSON.parse(init!.body as string);
-        currentUpstream = b.base_url;
-        return savePromise;
-      }
-      if (url === "/api/connections/c1/schema") return json(schema);
-      if (url === "/api/connections/c1/browse") {
-        browseRequests++;
-        const rowName = currentUpstream === "http://hb1" ? "Upstream1 Item" : "Upstream2 Item";
-        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: rowName } }], next_cursor: null, has_more: false, count: 1 });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await screen.findByText("Upstream1 Item");
-    expect(browseRequests).toBe(1);
-
-    // Edit c1 and start save
-    const manageBtn = await screen.findByRole("button", { name: /manage connections/i });
-    fireEvent.click(manageBtn);
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.change(screen.getByLabelText(/^base url$/i), { target: { value: "http://hb2" } });
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    // Collapse Manage connections block before save completes
-    fireEvent.click(manageBtn);
-    expect(screen.queryByLabelText(/^base url$/i)).not.toBeInTheDocument();
-
-    // Now resolve save
-    await act(async () => {
-      resolveSave(json({ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] }));
-    });
-
-    // Rows refresh
-    await waitFor(() => expect(screen.getByText("Upstream2 Item")).toBeInTheDocument());
-    expect(screen.queryByText("Upstream1 Item")).not.toBeInTheDocument();
-    expect(browseRequests).toBe(2);
-  });
-
-  it("saving another connection does not disturb the browse table", async () => {
-    let c1BrowseRequests = 0;
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
-        return json([
-          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] },
-          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] },
-        ]);
-      }
-      if (url.startsWith("/api/connections/c2") && method === "PUT") {
-        return json({ id: "c2", connector: "homebox", name: "Home 2 Saved", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] });
-      }
-      if (url === "/api/connections/c1/schema") return json(schema);
-      if (url === "/api/connections/c2/schema") return json(schema);
-      if (url === "/api/connections/c1/browse") {
-        c1BrowseRequests++;
-        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: "c1", is_default: false } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await screen.findByText("Drill");
-    expect(c1BrowseRequests).toBe(1);
-
-    // Edit and save c2
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    const editBtns = screen.getAllByRole("button", { name: /^edit$/i });
-    fireEvent.click(editBtns[1]); // c2 edit button
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    await screen.findByText("Saved Home 2");
-    // Browse request count for c1 did not change
-    expect(c1BrowseRequests).toBe(1);
-    expect(screen.getByText("Drill")).toBeInTheDocument();
-  });
-
-  it("a rule edit that changes values but no column replaces rows on screen", async () => {
-    let browseRequests = 0;
-    let currentRuleVal = "LOC-OLD";
-    const schemaWithDerived = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
-        return json([{
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: [{ resource: "entities", source: "location", pattern: "pat1" }],
-        }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        currentRuleVal = "LOC-NEW";
-        return json({
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: [{ resource: "entities", source: "location", pattern: "pat2" }],
-        });
-      }
-      if (url === "/api/connections/c1/schema") return json(schemaWithDerived);
-      if (url === "/api/connections/c1/browse") {
-        browseRequests++;
-        return json({
-          rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: currentRuleVal } }],
-          next_cursor: null, has_more: false, count: 1,
-        });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await screen.findByText("Drill");
-    expect(browseRequests).toBe(1);
-
-    // Edit c1 rule
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    // Browse request was sent
-    await waitFor(() => expect(browseRequests).toBe(2));
-
-    // Rows refresh and show LOC-NEW
-    await waitFor(() => expect(screen.getByText("LOC-NEW")).toBeInTheDocument());
-  });
-
-  it("a newly derived field reaches the rows on screen, showing captured values on matching rows and none on non-matching", async () => {
+  it("newly derived field reaches the rows on return, showing column without choosing it and values on matching rows", async () => {
     let hasRule = false;
     const baseSchema = {
       version: "homebox-1",
@@ -1491,33 +1899,25 @@ describe("Connect: datetime parameters", () => {
       relationships: [],
     };
 
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
       if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
+      if (url === "/api/connections") {
         return json([{
           id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: hasRule ? [{ resource: "entities", source: "location", pattern: "pat" }] : [],
+          transforms: hasRule ? [{ resource: "entities", source: "name", pattern: "(\\d+)" }] : [],
         }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        hasRule = true;
-        return json({
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: [{ resource: "entities", source: "location", pattern: "pat" }],
-        });
       }
       if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
       if (url === "/api/connections/c1/browse") {
         return json({
           rows: hasRule
             ? [
-                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: "LOC-42" } },
+                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill 42", location_id: "42" } },
                 { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
               ]
             : [
-                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } },
+                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill 42" } },
                 { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
               ],
           next_cursor: null, has_more: false, count: 2,
@@ -1527,28 +1927,92 @@ describe("Connect: datetime parameters", () => {
       if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
       if (url === "/api/templates/tpl") return json(templateDetail);
       if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
+      throw new Error(`unexpected fetch: ${url}`);
     }) as ReturnType<typeof stub>;
     vi.stubGlobal("fetch", fetchMock);
 
-    renderConnect();
-    await screen.findByText("Drill");
-    expect(screen.getByText("Hammer")).toBeInTheDocument();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = renderConnect(qc);
+    await screen.findByText("Drill 42");
     expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument();
-    expect(screen.queryByText("LOC-42")).not.toBeInTheDocument();
+    expect(screen.queryByText("42")).not.toBeInTheDocument();
+    unmount();
 
-    // Save rule deriving location_id
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    // Operator saves rule deriving location_id on c1
+    hasRule = true;
+    await qc.removeQueries({ queryKey: ["connections"] });
+    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
 
-    // Browse table shows Location ID without operator choosing it
-    await waitFor(() => expect(screen.getByRole("columnheader", { name: "Location ID" })).toBeInTheDocument());
-    // Matched row carries LOC-42
-    expect(await screen.findByText("LOC-42")).toBeInTheDocument();
+    // Operator returns to Connect with c1 selected
+    renderConnect(qc);
+    await screen.findByText("Drill 42");
+
+    // The browse table shows location_id column without the operator choosing it
+    expect(await screen.findByRole("columnheader", { name: "Location ID" })).toBeInTheDocument();
+    // Matching row carries captured value, non-matching carries no location_id cell
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("Hammer")).toBeInTheDocument();
   });
 
-  it("removing a rule removes its column and its cells from the browse table", async () => {
+  it("rule edit that changes values but no column shows the new values on return", async () => {
+    let currentRuleVal = "LOC-OLD";
+    const schemaWithDerived = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
+      if (url === "/api/connections") {
+        return json([{
+          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
+          transforms: [{ resource: "entities", source: "name", pattern: currentRuleVal === "LOC-OLD" ? "pat1" : "pat2" }],
+        }]);
+      }
+      if (url === "/api/connections/c1/schema") return json(schemaWithDerived);
+      if (url === "/api/connections/c1/browse") {
+        return json({
+          rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: currentRuleVal } }],
+          next_cursor: null, has_more: false, count: 1,
+        });
+      }
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(templateDetail);
+      if (url === "/api/printers") return json([]);
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as ReturnType<typeof stub>;
+    vi.stubGlobal("fetch", fetchMock);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = renderConnect(qc);
+    await screen.findByText("Drill");
+    expect(await screen.findByText("LOC-OLD")).toBeInTheDocument();
+    unmount();
+
+    // Rule edited to capture different value, derived name unchanged, connection saved
+    currentRuleVal = "LOC-NEW";
+    await qc.removeQueries({ queryKey: ["connections"] });
+    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
+
+    // Returns to Connect
+    renderConnect(qc);
+    await screen.findByText("Drill");
+    expect(await screen.findByText("LOC-NEW")).toBeInTheDocument();
+    expect(screen.queryByText("LOC-OLD")).not.toBeInTheDocument();
+  });
+
+  it("removing a rule removes its column and its cells on return", async () => {
     let hasRule = true;
     const baseSchema = {
       version: "homebox-1",
@@ -1576,22 +2040,14 @@ describe("Connect: datetime parameters", () => {
       relationships: [],
     };
 
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
       if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
+      if (url === "/api/connections") {
         return json([{
           id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: hasRule ? [{ resource: "entities", source: "location", pattern: "pat" }] : [],
+          transforms: hasRule ? [{ resource: "entities", source: "name", pattern: "pat" }] : [],
         }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        hasRule = false;
-        return json({
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: [],
-        });
       }
       if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
       if (url === "/api/connections/c1/browse") {
@@ -1606,26 +2062,30 @@ describe("Connect: datetime parameters", () => {
       if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
       if (url === "/api/templates/tpl") return json(templateDetail);
       if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
+      throw new Error(`unexpected fetch: ${url}`);
     }) as ReturnType<typeof stub>;
     vi.stubGlobal("fetch", fetchMock);
 
-    renderConnect();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = renderConnect(qc);
     await screen.findByText("Drill");
     expect(await screen.findByRole("columnheader", { name: "Location ID" })).toBeInTheDocument();
     expect(screen.getByText("LOC-42")).toBeInTheDocument();
+    unmount();
 
-    // Delete rule
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    // Rule deleted and saved
+    hasRule = false;
+    await qc.removeQueries({ queryKey: ["connections"] });
+    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
 
-    // Location ID column and cell disappear
-    await waitFor(() => expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument());
+    // Returns to Connect
+    renderConnect(qc);
+    await screen.findByText("Drill");
+    expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument();
     expect(screen.queryByText("LOC-42")).not.toBeInTheDocument();
   });
 
-  it("the composer field mapping offers a newly derived field after saving a rule with no reload", async () => {
+  it("composer field mapping offers newly derived field on return with connection selected and template chosen", async () => {
     let hasRule = false;
     const baseSchema = {
       version: "homebox-1",
@@ -1653,225 +2113,52 @@ describe("Connect: datetime parameters", () => {
       relationships: [],
     };
 
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
       if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
+      if (url === "/api/connections") {
         return json([{
           id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: hasRule ? [{ resource: "entities", source: "location", pattern: "pat" }] : [],
+          transforms: hasRule ? [{ resource: "entities", source: "name", pattern: "pat" }] : [],
         }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        hasRule = true;
-        return json({
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: [{ resource: "entities", source: "location", pattern: "pat" }],
-        });
       }
       if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
       if (url === "/api/connections/c1/browse") {
-        return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await screen.findByRole("option", { name: "Home" });
-    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
-    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
-
-    // Initial mapping dropdown does not offer location_id
-    const mappingSelect = await screen.findByLabelText("map name");
-    expect(within(mappingSelect).queryByRole("option", { name: "location_id" })).not.toBeInTheDocument();
-
-    // Save rule deriving location_id
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    // Field mapping offers location_id with no reload
-    await waitFor(() => {
-      const updatedSelect = screen.getByLabelText("map name");
-      expect(within(updatedSelect).getByRole("option", { name: "location_id" })).toBeInTheDocument();
-    });
-  });
-
-  it("guard: a refresh superseded by a resource switch is dropped and does not reach the table", async () => {
-    let resolveBrowseItems: (res: Response) => void = () => {};
-    let browseCallCount = 0;
-    const multiResourceSchema = {
-      version: "homebox-1",
-      resources: [
-        { id: "entities", label: "Items", view: "table", dynamic_source_prefix: null, fields_incomplete: false,
-          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }], filters: [] },
-        { id: "locations", label: "Locations", view: "table", dynamic_source_prefix: null, fields_incomplete: false,
-          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }], filters: [] },
-      ],
-      relationships: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
-        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        return json({ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true });
-      }
-      if (url === "/api/connections/c1/schema") return json(multiResourceSchema);
-      if (url.startsWith("/api/connections/c1/browse")) {
-        browseCallCount++;
-        const body = init?.body ? JSON.parse(String(init.body)) : {};
-        const res = body.resource;
-        if (res === "locations") {
-          return json({ rows: [{ id: { resource: "locations", key: "l1" }, cells: { name: "Shelf A" } }], next_cursor: null, has_more: false, count: 1 });
-        }
-        if (browseCallCount === 1) {
-          // initial load
-          return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
-        }
-        // Save refresh: delay until after switch
-        return new Promise<Response>((resolve) => {
-          resolveBrowseItems = resolve;
-        });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    await screen.findByText("Drill");
-
-    // Start save to trigger refresh
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-    await screen.findByText("Saved Home");
-
-    // While browse for entities is still pending, switch to Locations tab
-    fireEvent.click(screen.getByRole("button", { name: "Locations" }));
-    await screen.findByText("Shelf A");
-
-    // Now resolve the delayed entities browse
-    await act(async () => {
-      resolveBrowseItems(json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Stale Drill" } }], next_cursor: null, has_more: false, count: 1 }));
-    });
-
-    // The stale refresh rows never reach the table
-    expect(screen.queryByText("Stale Drill")).not.toBeInTheDocument();
-    expect(screen.getByText("Shelf A")).toBeInTheDocument();
-  });
-
-  it("guard: the browsing context (sort, filters, visible columns, selection) survives the refresh", async () => {
-    let browseRequests = 0;
-    const browseSchema = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table", dynamic_source_prefix: null, fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-          { key: "category", label: "Category", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections" && method === "GET") {
-        return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
-      }
-      if (url.startsWith("/api/connections/c1") && method === "PUT") {
-        return json({ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true });
-      }
-      if (url === "/api/connections/c1/schema") return json(browseSchema);
-      if (url.startsWith("/api/connections/c1/browse")) {
-        browseRequests++;
         return json({
-          rows: [
-            { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", category: "Tools" } },
-            { id: { resource: "entities", key: "e2" }, cells: { name: "Anvil", category: "Heavy" } },
-          ],
-          next_cursor: null, has_more: false, count: 2,
+          rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }],
+          next_cursor: null, has_more: false, count: 1,
         });
       }
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
       if (url === "/api/templates/tpl") return json(templateDetail);
       if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url} ${method}`);
+      throw new Error(`unexpected fetch: ${url}`);
     }) as ReturnType<typeof stub>;
     vi.stubGlobal("fetch", fetchMock);
 
-    renderConnect();
-    await screen.findByText("Drill");
-    expect(screen.getByText("Anvil")).toBeInTheDocument();
-    expect(browseRequests).toBe(1);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { unmount } = renderConnect(qc);
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    await screen.findByLabelText(/map name/i);
 
-    const grid = screen.getByRole("grid");
-    // Visible columns in force
-    expect(within(grid).getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
-    const categoryHeader = within(grid).getAllByRole("columnheader").find((e) => e.textContent?.includes("Category"))!;
-    expect(categoryHeader).toBeInTheDocument();
+    // Initial mapping options do not include location_id
+    expect(screen.queryByRole("option", { name: "Location ID" })).not.toBeInTheDocument();
+    unmount();
 
-    // 1. Set sort: sort by Category ascending
-    fireEvent.click(categoryHeader);
-    await waitFor(() => expect(categoryHeader.getAttribute("aria-sort")).toBe("ascending"));
+    // Rule saved deriving location_id
+    hasRule = true;
+    await qc.removeQueries({ queryKey: ["connections"] });
+    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
 
-    // 2. Set filter: filter Name for "Dr" (narrows rows to Drill, excluding Anvil)
-    const filterInput = screen.getByLabelText("Filter by Name") as HTMLInputElement;
-    fireEvent.change(filterInput, { target: { value: "Dr" } });
-    await waitFor(() => expect(within(grid).queryByText("Anvil")).not.toBeInTheDocument());
-    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+    // Returns to Connect and chooses template
+    renderConnect(qc);
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    await screen.findByLabelText(/map name/i);
 
-    // 3. Set selection: select row e1
-    fireEvent.click(screen.getByLabelText("select entities:e1"));
-    await waitFor(() => expect(screen.getByLabelText("select entities:e1")).toBeChecked());
-
-    // Save connection to trigger refresh
-    fireEvent.click(await screen.findByRole("button", { name: /manage connections/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
-
-    await screen.findByText("Saved Home");
-
-    // Verify refresh actually happened
-    await waitFor(() => expect(browseRequests).toBe(2));
-
-    // Assert the browsing context survived:
-    // 1. Selection survives
-    await waitFor(() => {
-      const checkbox = screen.getByLabelText("select entities:e1") as HTMLInputElement;
-      expect(checkbox.checked).toBe(true);
-    });
-
-    // 2. Sort survives
-    const refreshedCategoryHeader = within(grid).getAllByRole("columnheader").find((e) => e.textContent?.includes("Category"))!;
-    expect(refreshedCategoryHeader.getAttribute("aria-sort")).toBe("ascending");
-
-    // 3. Filter survives
-    expect((screen.getByLabelText("Filter by Name") as HTMLInputElement).value).toBe("Dr");
-    expect(within(grid).queryByText("Anvil")).not.toBeInTheDocument();
-    expect(within(grid).getByText("Drill")).toBeInTheDocument();
-
-    // 4. Visible columns survive
-    expect(within(grid).getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
-    expect(within(grid).getByRole("columnheader", { name: "Category" })).toBeInTheDocument();
+    // Derived field is offered as connector field in mapping
+    expect(await screen.findByRole("option", { name: "location_id" })).toBeInTheDocument();
   });
 });

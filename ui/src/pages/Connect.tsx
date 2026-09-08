@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { useIsMutating } from "@tanstack/react-query";
 import { useConnections, useConnectorSchema, materializeConnection, type ConnectorSchema, type SelectedRow } from "../api/connectors";
 import { ConnectorBrowser } from "./connect/ConnectorBrowser";
-import { ConnectionsSection } from "./connect/ConnectionsSection";
 import { useTemplates, useTemplate, usePrinters, useSettings } from "../api/queries";
 import { EmptyTemplates } from "../components/EmptyTemplates";
 import { datetimeCellError } from "../lib/templateFields";
@@ -30,14 +31,15 @@ export function Connect() {
   const { data: templates, isError: templatesFailed } = useTemplates();
   const { data: printers } = usePrinters();
 
+  const isMutating = useIsMutating({ mutationKey: ["connection"] });
+  const isWaiting = isMutating > 0;
+
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [latchedConnectionId, setLatchedConnectionId] = useState<string | null>(null);
-  const [open, setOpen] = useState<boolean | null>(null);
   const [templateId, setTemplateId] = useState("");
   const [selected, setSelected] = useState<SelectedRow[]>([]);
-  const [refreshToken, setRefreshToken] = useState(0);
 
-  if (latchedConnectionId === null) {
+  if (latchedConnectionId === null && !isWaiting) {
     if (connectionsFailed) {
       setLatchedConnectionId("");
     } else if (connections !== undefined && (settings !== undefined || settingsFailed)) {
@@ -54,37 +56,13 @@ export function Connect() {
     }
   }
 
-  if (open === null && connections !== undefined && !connectionsFailed) {
-    setOpen(connections.length === 0);
-  }
+  const effectiveId = selectedConnectionId !== null ? selectedConnectionId : (latchedConnectionId ?? "");
+  const connectionId = !isWaiting && (connections !== undefined || connectionsFailed)
+    ? (connections && !connectionsFailed ? (connections.some((c) => c.id === effectiveId && c.enabled) ? effectiveId : "") : effectiveId)
+    : "";
 
-  const connectionId =
-    selectedConnectionId !== null ? selectedConnectionId : (latchedConnectionId ?? "");
-
-  useEffect(() => {
-    const onSaved = (e: Event) => {
-      const id = (e as CustomEvent<{ id: string }>).detail?.id;
-      if (id && id === connectionId) {
-        setRefreshToken((t) => t + 1);
-      }
-    };
-    const onDeleted = (e: Event) => {
-      const id = (e as CustomEvent<{ id: string }>).detail?.id;
-      if (id && id === connectionId) {
-        setSelectedConnectionId("");
-        setSelected([]);
-      }
-    };
-    window.addEventListener("labeler:connection-saved", onSaved);
-    window.addEventListener("labeler:connection-deleted", onDeleted);
-    return () => {
-      window.removeEventListener("labeler:connection-saved", onSaved);
-      window.removeEventListener("labeler:connection-deleted", onDeleted);
-    };
-  }, [connectionId]);
-
-  if (connections !== undefined && !connectionsFailed && connectionId !== "") {
-    const isOffered = connections.some((c) => c.id === connectionId && c.enabled);
+  if (connections !== undefined && !connectionsFailed && effectiveId !== "") {
+    const isOffered = connections.some((c) => c.id === effectiveId && c.enabled);
     if (!isOffered) {
       setSelectedConnectionId("");
       setSelected([]);
@@ -95,19 +73,46 @@ export function Connect() {
   const { data: detail, isPlaceholderData } = useTemplate(templateId);
 
   const conn = (connections ?? []).find((c) => c.id === connectionId);
-  const isOpen = open === true;
 
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">Connect</h1>
-      <div className="flex flex-wrap gap-3">
+
+      {isWaiting && (
+        <p className="text-sm" style={{ color: "var(--muted)" }}>Waiting...</p>
+      )}
+
+      {!isWaiting && connectionsFailed && (
+        <p className="text-sm" style={{ color: "var(--bad)" }}>Failed to load connections.</p>
+      )}
+
+      {!isWaiting && connections !== undefined && !connectionsFailed && connections.length === 0 && (
+        <p className="text-sm" style={{ color: "var(--muted)" }}>
+          No connections configured.{" "}
+          <Link to="/connections/new" state={{ from: "/connect" }} className="underline" style={{ color: "var(--ink)" }}>
+            Add connection
+          </Link>
+        </p>
+      )}
+
+      <div className="flex flex-wrap items-center gap-3">
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium">Connection</span>
-          <select aria-label="connection" value={connectionId} onChange={(e) => { setSelectedConnectionId(e.target.value); setSelected([]); }} className={inputClass} style={inputStyle}>
+          <select
+            aria-label="connection"
+            disabled={isWaiting}
+            value={connectionId}
+            onChange={(e) => { setSelectedConnectionId(e.target.value); setSelected([]); }}
+            className={inputClass}
+            style={inputStyle}
+          >
             <option value="">choose a connection</option>
             {(connections ?? []).filter((c) => c.enabled).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
           </select>
         </label>
+        <Link to="/connections" state={{ from: "/connect" }} className="text-sm underline self-end pb-2" style={{ color: "var(--ink)" }}>
+          Manage connections
+        </Link>
       </div>
 
       {connectionId && schema && templatesFailed && (
@@ -127,23 +132,6 @@ export function Connect() {
           </select>
         </label>
       )}
-
-      <div>
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="text-sm underline"
-          style={{ color: "var(--muted)" }}
-          aria-expanded={isOpen}
-        >
-          {isOpen ? "▾" : "▸"} Manage connections
-        </button>
-        {isOpen && (
-          <div className="mt-2">
-            <ConnectionsSection />
-          </div>
-        )}
-      </div>
 
       {connectionId && schema && detail && conn && (
         <Composer
@@ -165,7 +153,6 @@ export function Connect() {
           schema={schema}
           selected={selected}
           onSelectedChange={setSelected}
-          refreshToken={refreshToken}
         />
       )}
     </div>

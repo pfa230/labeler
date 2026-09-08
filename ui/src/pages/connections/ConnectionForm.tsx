@@ -1,4 +1,5 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   useConnections,
   useSaveConnection,
@@ -10,14 +11,32 @@ import {
   type FieldTransform,
   type TransformPreviewResponse,
 } from "../../api/connectors";
-import { useSettings, useUpdateSetting, useResetSetting } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 
 const inputClass = "w-full rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
 const buttonBase = "rounded-md px-3 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 
-function CreateConnectionForm({ onClose }: { onClose: () => void }) {
+function getReturnPath(locationState: unknown): string {
+  const from = (locationState as { from?: unknown } | null)?.from;
+  if (typeof from === "string" && from.startsWith("/") && !from.startsWith("//")) {
+    try {
+      const base =
+        typeof window !== "undefined" && window.location?.origin
+          ? window.location.origin
+          : "http://localhost";
+      const resolved = new URL(from, base);
+      if (resolved.origin === base) {
+        return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+      }
+    } catch {
+      return "/connections";
+    }
+  }
+  return "/connections";
+}
+
+function CreateConnectionForm() {
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [publicUrl, setPublicUrl] = useState("");
@@ -26,6 +45,10 @@ function CreateConnectionForm({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const save = useSaveConnection();
   const { push } = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const returnPath = getReturnPath(location.state);
 
   const submit = () => {
     if (name.trim() === "") { setError("name must not be empty"); return; }
@@ -50,15 +73,25 @@ function CreateConnectionForm({ onClose }: { onClose: () => void }) {
     save.mutate(
       { input },
       {
-        onSuccess: () => { push({ kind: "ok", message: `Saved ${input.name}` }); onClose(); },
-        onError: (err) => { const message = err instanceof Error ? err.message : "Save failed"; setError(message); push({ kind: "error", message }); },
+        onSuccess: () => {
+          push({ kind: "ok", message: `Saved ${input.name}` });
+          navigate(returnPath);
+        },
+        onError: (err) => {
+          const message = err instanceof Error ? err.message : "Save failed";
+          setError(message);
+          push({ kind: "error", message });
+        },
       },
     );
   };
 
   return (
-    <div className="flex flex-col gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)" }}>
-      <div className="flex flex-wrap gap-3">
+    <div className="flex max-w-xl flex-col gap-6">
+      <h1 className="text-2xl font-semibold">New connection</h1>
+
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-semibold">Details</h2>
         <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>connector</span>
           <select aria-label="connector" value="homebox" disabled className={inputClass} style={inputStyle}>
@@ -69,41 +102,41 @@ function CreateConnectionForm({ onClose }: { onClose: () => void }) {
           <span className="text-xs" style={{ color: "var(--muted)" }}>name</span>
           <input aria-label="name" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>base url</span>
           <input aria-label="base url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://homebox.lan:7745" className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>public url</span>
           <input aria-label="public url" value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)} placeholder="https://homebox.example.com" className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>api key</span>
           <input aria-label="api key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex items-center gap-2 self-end pb-2">
+        <label className="flex items-center gap-2">
           <input type="checkbox" aria-label="enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           <span className="text-sm">enabled</span>
         </label>
-      </div>
+      </section>
 
-      <div className="flex flex-col gap-2 pt-2 border-t" style={{ borderColor: "var(--border)" }}>
-        <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>Field transforms</span>
+      <section className="flex flex-col gap-2 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
+        <h2 className="text-lg font-semibold">Field transforms</h2>
         <p className="text-xs" style={{ color: "var(--muted)" }}>
           Transform rules can be added after saving the connection.
         </p>
-      </div>
+      </section>
 
       {error && <p className="text-sm" style={{ color: "var(--bad)" }}>{error}</p>}
-      <div className="flex gap-3">
+      <div className="flex gap-3 pt-2">
         <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Save</button>
-        <button type="button" onClick={onClose} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Cancel</button>
+        <button type="button" onClick={() => navigate(returnPath)} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Cancel</button>
       </div>
     </div>
   );
 }
 
-function EditConnectionForm({ initial, onClose }: { initial: Connection; onClose: () => void }) {
+function EditConnectionForm({ initial }: { initial: Connection }) {
   const [name, setName] = useState(initial.name);
   const [baseUrl, setBaseUrl] = useState(initial.base_url);
   const [publicUrl, setPublicUrl] = useState(initial.public_url ?? "");
@@ -122,10 +155,16 @@ function EditConnectionForm({ initial, onClose }: { initial: Connection; onClose
   const [previewLoadingRule, setPreviewLoadingRule] = useState<number | null>(null);
   const [ruleErrors, setRuleErrors] = useState<Record<number, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const schemaQuery = useConnectorSchema(initial.id);
   const save = useSaveConnection();
+  const remove = useDeleteConnection();
   const { push } = useToast();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const returnPath = getReturnPath(location.state);
 
   const isDirtyDetails = baseUrl.trim() !== initial.base_url || apiKey.trim() !== "";
   const isSchemaError = schemaQuery.isError;
@@ -238,7 +277,7 @@ function EditConnectionForm({ initial, onClose }: { initial: Connection; onClose
       {
         onSuccess: () => {
           push({ kind: "ok", message: `Saved ${input.name}` });
-          onClose();
+          navigate(returnPath);
         },
         onError: (err) => {
           const message = err instanceof Error ? err.message : "Save failed";
@@ -255,42 +294,57 @@ function EditConnectionForm({ initial, onClose }: { initial: Connection; onClose
     );
   };
 
+  const handleDelete = () => {
+    remove.mutate(initial.id, {
+      onSuccess: () => {
+        push({ kind: "ok", message: `Deleted ${initial.name}` });
+        navigate("/connections");
+      },
+      onError: (err) => {
+        push({ kind: "error", message: err instanceof Error ? err.message : "Delete failed" });
+      },
+    });
+  };
+
   const schema = schemaQuery.data;
 
   return (
-    <div className="flex flex-col gap-3 rounded-md border p-4" style={{ borderColor: "var(--border)" }}>
-      <div className="flex flex-wrap gap-3">
+    <div className="flex max-w-xl flex-col gap-6">
+      <h1 className="text-2xl font-semibold">Edit {initial.name}</h1>
+
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-semibold">Details</h2>
         <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>connector</span>
           <select aria-label="connector" value={initial.connector} disabled className={inputClass} style={inputStyle}>
-            <option value="homebox">homebox</option>
+            <option value={initial.connector}>{initial.connector}</option>
           </select>
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>name</span>
           <input aria-label="name" value={name} onChange={(e) => setName(e.target.value)} className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>base url</span>
           <input aria-label="base url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://homebox.lan:7745" className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>public url</span>
           <input aria-label="public url" value={publicUrl} onChange={(e) => setPublicUrl(e.target.value)} placeholder="https://homebox.example.com" className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex flex-1 flex-col gap-1">
+        <label className="flex flex-col gap-1">
           <span className="text-xs" style={{ color: "var(--muted)" }}>api key (leave blank to keep)</span>
           <input aria-label="api key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className={inputClass} style={inputStyle} />
         </label>
-        <label className="flex items-center gap-2 self-end pb-2">
+        <label className="flex items-center gap-2">
           <input type="checkbox" aria-label="enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           <span className="text-sm">enabled</span>
         </label>
-      </div>
+      </section>
 
-      <div className="flex flex-col gap-2 pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+      <section className="flex flex-col gap-4 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium" style={{ color: "var(--muted)" }}>Field transforms</span>
+          <h2 className="text-lg font-semibold">Field transforms</h2>
           {!isSuspended && schema && (
             <button
               type="button"
@@ -520,175 +574,88 @@ function EditConnectionForm({ initial, onClose }: { initial: Connection; onClose
             );
           })
         ) : null}
-      </div>
+      </section>
 
       {formError && <p className="text-sm" style={{ color: "var(--bad)" }}>{formError}</p>}
-      <div className="flex gap-3">
-        <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Save</button>
-        <button type="button" onClick={onClose} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Cancel</button>
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t" style={{ borderColor: "var(--border)" }}>
+        <div className="flex gap-3">
+          <button type="button" onClick={submit} disabled={save.isPending} className={buttonBase} style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Save</button>
+          <button type="button" onClick={() => navigate(returnPath)} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Cancel</button>
+        </div>
+        <div className="flex items-center gap-2">
+          {confirmingDelete ? (
+            <>
+              <button
+                type="button"
+                disabled={remove.isPending}
+                onClick={handleDelete}
+                className={buttonBase}
+                style={{ color: "var(--bad)" }}
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(false)}
+                className={`${buttonBase} border`}
+                style={{ borderColor: "var(--border)", color: "var(--muted)" }}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmingDelete(true)}
+              className={buttonBase}
+              style={{ color: "var(--bad)" }}
+            >
+              Delete
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function ConnectionForm({ initial, onClose }: { initial: Connection | null; onClose: () => void }) {
-  if (initial === null) {
-    return <CreateConnectionForm onClose={onClose} />;
-  }
-  return <EditConnectionForm initial={initial} onClose={onClose} />;
-}
-
-function ConnectionRow({ conn, onEdit }: { conn: Connection; onEdit: () => void }) {
-  const [confirming, setConfirming] = useState(false);
-  const remove = useDeleteConnection();
-  const { push } = useToast();
-  const td = "px-3 py-2 text-sm";
-  return (
-    <tr style={{ borderTop: "1px solid var(--border)" }}>
-      <td className={td}>{conn.name}</td>
-      <td className={`${td} font-mono`}>{conn.connector}</td>
-      <td className={`${td} font-mono`}>{conn.base_url}</td>
-      <td className={`${td} font-mono`}>{conn.public_url || "-"}</td>
-      <td className={td}>{conn.has_credential ? "set" : "none"}</td>
-      <td className={td}>{conn.enabled ? "yes" : "no"}</td>
-      <td className={`${td} flex gap-2`}>
-        <button type="button" onClick={onEdit} className="underline" style={{ color: "var(--ink)" }}>Edit</button>
-        {confirming ? (
-          <>
-            <button type="button" disabled={remove.isPending} onClick={() =>
-              remove.mutate(conn.id, {
-                onSuccess: () => { push({ kind: "ok", message: `Deleted ${conn.name}` }); },
-                onError: (err) => push({ kind: "error", message: err instanceof Error ? err.message : "Delete failed" }),
-              })
-            } style={{ color: "var(--bad)" }}>Confirm</button>
-            <button type="button" onClick={() => setConfirming(false)} style={{ color: "var(--muted)" }}>Cancel</button>
-          </>
-        ) : (
-          <button type="button" onClick={() => setConfirming(true)} style={{ color: "var(--bad)" }}>Delete</button>
-        )}
-      </td>
-    </tr>
-  );
-}
-
-export function ConnectionsSection() {
+export function ConnectionForm() {
+  const { id } = useParams<{ id?: string }>();
+  const location = useLocation();
   const { data: connections, isPending, isError } = useConnections();
-  const { data: settings } = useSettings();
-  const updateSetting = useUpdateSetting();
-  const resetSetting = useResetSetting();
-  const { push } = useToast();
-  const [editing, setEditing] = useState<Connection | "new" | null>(null);
-  const th = "px-3 py-2 text-left text-xs font-medium";
 
-  useEffect(() => {
-    const onDeleted = (e: Event) => {
-      const id = (e as CustomEvent<{ id: string }>).detail?.id;
-      if (id) {
-        setEditing((cur) => (cur && cur !== "new" && cur.id === id ? null : cur));
-      }
-    };
-    window.addEventListener("labeler:connection-deleted", onDeleted);
-    return () => window.removeEventListener("labeler:connection-deleted", onDeleted);
-  }, []);
+  const isNew = id === undefined;
 
-  const storedDefault = settings?.default_connection_id;
-  const storedDefaultId = typeof storedDefault?.value === "string" ? storedDefault.value : null;
-  const isDefault = storedDefault?.is_default ?? true;
-  const matchingConn = storedDefaultId ? (connections ?? []).find((c) => c.id === storedDefaultId) : null;
-  // "Unavailable" means the stored id names no connection, which is only knowable once the
-  // connections list has actually loaded. While it is pending or failed, `matchingConn` is absent
-  // because we do not know yet, not because the connection is gone: reporting a valid default as
-  // unavailable invites the operator to "fix" it by clearing a setting that was never broken.
-  const connectionsKnown = !isPending && !isError;
-  const isDangling = connectionsKnown && storedDefaultId !== null && !matchingConn && !isDefault;
-
-  const handleDefaultChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const val = e.target.value;
-    if (!val) {
-      resetSetting.mutate("default_connection_id", {
-        onSuccess: () => push({ kind: "ok", message: "Default connection reset to default" }),
-        onError: (err) => push({ kind: "error", message: err instanceof Error ? err.message : "Failed to clear default connection" }),
-      });
-    } else {
-      updateSetting.mutate(
-        { key: "default_connection_id", value: val },
-        {
-          onSuccess: () => push({ kind: "ok", message: "Default connection saved" }),
-          onError: (err) => push({ kind: "error", message: err instanceof Error ? err.message : "Failed to save default connection" }),
-        },
+  if (!isNew) {
+    if (isPending && !connections) {
+      return <p className="text-sm" style={{ color: "var(--muted)" }}>Loading connections...</p>;
+    }
+    if (isError && !connections) {
+      return <p className="text-sm" style={{ color: "var(--bad)" }}>Failed to load connections.</p>;
+    }
+    const conn = connections?.find((c) => c.id === id);
+    if (!conn) {
+      return (
+        <div className="flex flex-col gap-4">
+          <p className="text-sm" style={{ color: "var(--bad)" }}>Connection &quot;{id}&quot; not found.</p>
+          <Link to="/connections" className="text-sm underline" style={{ color: "var(--ink)" }}>
+            Back to connections
+          </Link>
+        </div>
       );
     }
-  };
+
+    return (
+      <EditConnectionForm
+        key={`${location.key}:${id}`}
+        initial={conn}
+      />
+    );
+  }
 
   return (
-    <section className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Connections</h2>
-        <button type="button" onClick={() => setEditing("new")} className={`${buttonBase} border`} style={{ borderColor: "var(--border)", color: "var(--ink)" }}>Add connection</button>
-      </div>
-      {editing !== null && (
-        <ConnectionForm key={editing === "new" ? "new" : editing.id} initial={editing === "new" ? null : editing} onClose={() => setEditing(null)} />
-      )}
-      {isPending ? (
-        <p className="text-sm" style={{ color: "var(--muted)" }}>Loading connections...</p>
-      ) : isError ? (
-        <p className="text-sm" style={{ color: "var(--bad)" }}>Failed to load connections.</p>
-      ) : (connections ?? []).length === 0 ? (
-        <p className="text-sm" style={{ color: "var(--muted)" }}>No connections configured.</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse">
-          <thead>
-            <tr>
-              <th className={th} style={{ color: "var(--muted)" }}>Name</th>
-              <th className={th} style={{ color: "var(--muted)" }}>Connector</th>
-              <th className={th} style={{ color: "var(--muted)" }}>Base URL</th>
-              <th className={th} style={{ color: "var(--muted)" }}>Public URL</th>
-              <th className={th} style={{ color: "var(--muted)" }}>API key</th>
-              <th className={th} style={{ color: "var(--muted)" }}>Enabled</th>
-              <th className={th} style={{ color: "var(--muted)" }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {(connections ?? []).map((c) => (
-              <ConnectionRow key={c.id} conn={c} onEdit={() => setEditing(c)} />
-            ))}
-          </tbody>
-          </table>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1 max-w-md pt-2 border-t" style={{ borderColor: "var(--border)" }}>
-        <label className="flex flex-col gap-1">
-          <span className="text-sm font-medium">Default connection</span>
-          <select
-            aria-label="default connection"
-            value={isDefault || !storedDefaultId ? "" : storedDefaultId}
-            disabled={updateSetting.isPending || resetSetting.isPending || !connectionsKnown}
-            onChange={handleDefaultChange}
-            className={inputClass}
-            style={inputStyle}
-          >
-            <option value="">(no default)</option>
-            {isDangling && (
-              <option value={storedDefaultId}>
-                {storedDefaultId} (unavailable)
-              </option>
-            )}
-            {!connectionsKnown && storedDefaultId !== null && !isDefault && (
-              <option value={storedDefaultId}>{storedDefaultId}</option>
-            )}
-            {(connections ?? []).map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name} ({c.id}){c.enabled ? "" : " (disabled)"}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className="text-xs" style={{ color: "var(--muted)" }}>
-          The default connection applies to everyone on this instance.
-        </p>
-      </div>
-    </section>
+    <CreateConnectionForm
+      key={`${location.key}:new`}
+    />
   );
 }
