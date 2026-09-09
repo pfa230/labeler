@@ -796,7 +796,7 @@ describe("CSV Import screen: datetime parameters", () => {
     await screen.findByRole("option", { name: "Tag" });
     fireEvent.change(picker, { target: { value: "t1" } });
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
-    // CSV has no column for the required list — validateRow must skip it (Import.tsx:154)
+    // CSV has no column for the required list — validateRow must skip it (Import.tsx:142)
     fireEvent.change(csv, { target: { value: "sku\n123\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByLabelText(/copies/i);
@@ -812,5 +812,286 @@ describe("CSV Import screen: datetime parameters", () => {
     const body = JSON.parse((batchCall[1] as RequestInit).body as string);
     expect(body.labels[0].data.sku).toBe("123");
     expect(body.labels[0].data.tags).toBeUndefined();
+  });
+});
+
+describe("issue-385: CSV import grid shows fields of every variant", () => {
+  it("parameter read only inside one branch is offered for every row and editable there without refusal (3.7)", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as { labels?: Array<{ data?: Record<string, unknown> }> }) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map((l) => {
+            if (l.data?.orientation === "horizontal") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+                { name: "subtitle", control: "text" },
+              ];
+            }
+            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"] }];
+          }),
+        });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return json({
+          ...detail,
+          inputs: {
+            all: [
+              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+              { name: "subtitle", control: "text" },
+            ],
+            default: [
+              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+            ],
+          },
+        });
+      }
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "orientation\nvertical\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    expect(await screen.findByRole("columnheader", { name: "subtitle" })).toBeInTheDocument();
+    const dataRows = screen.getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+    const cells = within(dataRows[0]).getAllByRole("gridcell");
+    // columns: preview(0), orientation(1), subtitle(2), status(3), actions(4)
+    fireEvent.doubleClick(cells[2]);
+    const subtitleInput = await screen.findByLabelText("edit subtitle");
+    expect(subtitleInput).toBeInTheDocument();
+    fireEvent.blur(subtitleInput);
+
+    expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
+  });
+
+  it("keeps CSV header order and appends the rest in inputs.all order (3.8)", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "title", control: "text" },
+            { name: "subtitle", control: "text" },
+          ]),
+        });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return json({
+          ...detail,
+          inputs: {
+            all: [
+              { name: "title", control: "text" },
+              { name: "subtitle", control: "text" },
+              { name: "code", control: "text" },
+            ],
+            default: [
+              { name: "title", control: "text" },
+              { name: "subtitle", control: "text" },
+            ],
+          },
+        });
+      }
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "subtitle,title\nsub,tit\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    const fieldHeaders = headers.filter((h) => ["title", "subtitle", "code"].includes(h ?? ""));
+    expect(fieldHeaders).toEqual(["subtitle", "title", "code"]);
+  });
+
+  it("yields columns and validation in title, subtitle, code order with code appended (3.9)", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "title", control: "text", required: true },
+            { name: "subtitle", control: "text", required: true },
+            { name: "code", control: "text", required: true },
+          ]),
+        });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return json({
+          ...detail,
+          inputs: {
+            all: [
+              { name: "title", control: "text", required: true },
+              { name: "subtitle", control: "text", required: true },
+              { name: "code", control: "text", required: true },
+            ],
+            default: [
+              { name: "title", control: "text", required: true },
+              { name: "subtitle", control: "text", required: true },
+              { name: "code", control: "text", required: true },
+            ],
+          },
+        });
+      }
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "title,subtitle\nt,s\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
+    const fieldHeaders = headers.filter((h) => ["title", "subtitle", "code"].includes(h ?? ""));
+    expect(fieldHeaders).toEqual(["title", "subtitle", "code"]);
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    const getRowCells = () => {
+      const rows = within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+      return within(rows[0]).getAllByRole("gridcell");
+    };
+
+    // Clear title and subtitle so all three require values
+    fireEvent.doubleClick(getRowCells()[1]);
+    const titleInput = await screen.findByLabelText("edit title");
+    fireEvent.change(titleInput, { target: { value: "" } });
+    fireEvent.blur(titleInput);
+
+    fireEvent.doubleClick(getRowCells()[2]);
+    const subtitleInput = await screen.findByLabelText("edit subtitle");
+    fireEvent.change(subtitleInput, { target: { value: "" } });
+    fireEvent.blur(subtitleInput);
+
+    // columns: preview(0), title(1), subtitle(2), code(3), status(4), actions(5)
+    await waitFor(() => {
+      expect(within(getRowCells()[1]).getByLabelText(/title required/i)).toBeInTheDocument();
+      expect(within(getRowCells()[2]).getByLabelText(/subtitle required/i)).toBeInTheDocument();
+      expect(within(getRowCells()[3]).getByLabelText(/code required/i)).toBeInTheDocument();
+    });
+  });
+
+  it("two rows selecting different branches require different inputs and both columns are editable (3.10)", async () => {
+    fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as { labels?: Array<{ data?: Record<string, unknown> }> }) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map((l) => {
+            if (l.data?.orientation === "horizontal") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+                { name: "subtitle", control: "text", required: true },
+              ];
+            }
+            if (l.data?.orientation === "vertical") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+                { name: "tracking_url", control: "text", required: true },
+              ];
+            }
+            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"] }];
+          }),
+        });
+      }
+      if (url.startsWith("/api/templates/t1")) {
+        return json({
+          ...detail,
+          inputs: {
+            all: [
+              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+              { name: "subtitle", control: "text", required: true },
+              { name: "tracking_url", control: "text", required: true },
+            ],
+            default: [
+              { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+            ],
+          },
+        });
+      }
+      if (url.startsWith("/api/templates")) return json(list);
+      if (url.startsWith("/api/printers")) return json(printers);
+      if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url.startsWith("/api/batch")) return new Response(new Blob(["zip"]), { status: 200, headers: { "content-type": "application/zip" } });
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "orientation,subtitle,tracking_url\nhorizontal,,\nvertical,,\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByLabelText(/copies/i);
+
+    expect(screen.getByRole("columnheader", { name: "subtitle" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "tracking_url" })).toBeInTheDocument();
+
+    const dataRows = screen.getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+    expect(dataRows).toHaveLength(2);
+
+    // Row 1 (horizontal): invalid only for missing subtitle
+    await waitFor(() => {
+      expect(within(dataRows[0]).getByLabelText(/subtitle required/i)).toBeInTheDocument();
+      expect(within(dataRows[0]).queryByLabelText(/tracking_url required/i)).toBeNull();
+    });
+
+    // Row 1: tracking_url is editable
+    const row1Cells = within(dataRows[0]).getAllByRole("gridcell");
+    // columns: preview(0), orientation(1), subtitle(2), tracking_url(3), status(4), actions(5)
+    fireEvent.doubleClick(row1Cells[3]);
+    const trackingInput1 = await screen.findByLabelText("edit tracking_url");
+    expect(trackingInput1).toBeInTheDocument();
+    fireEvent.blur(trackingInput1);
+
+    // Row 2 (vertical): invalid only for missing tracking_url
+    await waitFor(() => {
+      expect(within(dataRows[1]).getByLabelText(/tracking_url required/i)).toBeInTheDocument();
+      expect(within(dataRows[1]).queryByLabelText(/subtitle required/i)).toBeNull();
+    });
+
+    // Row 2: subtitle is editable
+    const row2Cells = within(dataRows[1]).getAllByRole("gridcell");
+    fireEvent.doubleClick(row2Cells[2]);
+    const subtitleInput2 = await screen.findByLabelText("edit subtitle");
+    expect(subtitleInput2).toBeInTheDocument();
+    fireEvent.blur(subtitleInput2);
   });
 });
