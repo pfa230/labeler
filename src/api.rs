@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tower_http::trace::TraceLayer;
+use tower_http::{catch_panic::CatchPanicLayer, trace::TraceLayer};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -84,7 +84,19 @@ pub struct AppState {
     /// request cannot stage: a file arriving at the destination name once the guard has passed.
     #[cfg(test)]
     pre_publish_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Fires between update_connection and the read-back in update_connection_h.
+    #[cfg(test)]
+    mid_connection_update_hook: std::sync::Mutex<Option<MidConnectionUpdateHook>>,
 }
+
+#[cfg(test)]
+type MidConnectionUpdateHook = std::sync::Arc<
+    dyn for<'a> Fn(
+            &'a Store,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>
+        + Send
+        + Sync,
+>;
 
 impl AppState {
     pub fn new(registry: TemplateRegistry, templates_dir: PathBuf, store: Store) -> Self {
@@ -103,6 +115,8 @@ impl AppState {
             mid_write_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             pre_publish_hook: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            mid_connection_update_hook: std::sync::Mutex::new(None),
             no_auth: std::env::var("LABELER_NO_AUTH")
                 .map(|v| v == "true")
                 .unwrap_or(false),
@@ -168,6 +182,22 @@ impl AppState {
         *self.pre_publish_hook.lock().expect("hook lock") = Some(Box::new(hook));
     }
 
+    /// Install the between-update-and-readback hook. Test-only; see the field.
+    #[cfg(test)]
+    pub fn set_mid_connection_update_hook(
+        &self,
+        hook: impl for<'a> Fn(
+                &'a Store,
+            )
+                -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        *self.mid_connection_update_hook.lock().expect("hook lock") =
+            Some(std::sync::Arc::new(hook));
+    }
+
     /// Called by each write endpoint after its write and before its reload.
     fn after_write(&self) {
         #[cfg(test)]
@@ -186,6 +216,21 @@ impl AppState {
             let hook = self.pre_publish_hook.lock().expect("hook lock");
             if let Some(hook) = hook.as_ref() {
                 hook();
+            }
+        }
+    }
+
+    /// Called by update_connection_h after update_connection and before read-back.
+    async fn after_connection_update(&self) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .mid_connection_update_hook
+                .lock()
+                .expect("hook lock")
+                .clone();
+            if let Some(hook) = hook {
+                hook(&self.store).await;
             }
         }
     }
@@ -222,7 +267,7 @@ impl AppState {
 }
 
 fn api_router() -> Router<Arc<AppState>> {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/templates", get(list_templates))
         .route("/template-groups", get(list_groups))
@@ -300,11 +345,45 @@ fn api_router() -> Router<Arc<AppState>> {
         // `/api` nest (SwaggerUi's own `.url()` serving route gets double-prefixed when nested).
         .route("/openapi.json", get(openapi_json))
         // SwaggerUi serves the UI at /api/docs/ (trailing slash).
-        .merge(SwaggerUi::new("/docs").url("/api/openapi.json", ApiDoc::openapi()))
+        .merge(SwaggerUi::new("/docs").url("/api/openapi.json", ApiDoc::openapi()));
+
+    #[cfg(test)]
+    let router = router.route("/test/panic/{shape}", get(test_api_panic_h));
+
+    router
+}
+
+pub const UNREADABLE_PANIC_MARKER: &str = "unreadable panic payload";
+pub const PANIC_RESPONSE_MESSAGE: &str = "internal server error";
+
+#[cfg(test)]
+async fn test_api_panic_h(Path(shape): Path<String>) -> Response {
+    match shape.as_str() {
+        "formatted" => panic!("distinctive interpolated panic: {}", "payload-value-42"),
+        "literal" => panic!("distinctive literal panic payload"),
+        "any" => std::panic::panic_any(123_u32),
+        other => panic!("unknown panic shape: {other}"),
+    }
+}
+
+#[cfg(test)]
+async fn test_outside_panic_h() -> Response {
+    panic!("distinctive outside api panic");
 }
 
 async fn openapi_json() -> Response {
     Json(ApiDoc::openapi()).into_response()
+}
+
+fn handle_panic(err: Box<dyn std::any::Any + Send + 'static>) -> Response {
+    if let Some(s) = err.downcast_ref::<String>() {
+        tracing::error!("panic caught: {s}");
+    } else if let Some(s) = err.downcast_ref::<&'static str>() {
+        tracing::error!("panic caught: {s}");
+    } else {
+        tracing::error!("panic caught: {UNREADABLE_PANIC_MARKER}");
+    }
+    AppError::internal(PANIC_RESPONSE_MESSAGE).into_response()
 }
 
 pub fn app(state: Arc<AppState>) -> Router {
@@ -313,11 +392,17 @@ pub fn app(state: Arc<AppState>) -> Router {
         state.clone(),
         crate::middleware::require_auth,
     ));
-    Router::new()
+    let router = Router::new()
         .nest("/api", api)
-        .nest_service("/assets", assets)
+        .nest_service("/assets", assets);
+
+    #[cfg(test)]
+    let router = router.route("/test/panic", get(test_outside_panic_h));
+
+    router
         .fallback(fallback)
         .layer(TraceLayer::new_for_http())
+        .layer(CatchPanicLayer::custom(handle_panic as fn(_) -> _))
         .with_state(state)
 }
 
@@ -701,15 +786,26 @@ fn confirm_written_template(
             let winner_rel = registry
                 .rel_path(id)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|| winner.file_name().unwrap().to_string_lossy().into_owned());
+                .unwrap_or_else(|| {
+                    winner
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| winner.display().to_string())
+                });
             let mut files = vec![winner_rel];
             files.extend(
                 refused
                     .iter()
                     .map(|p| p.to_string_lossy().replace('\\', "/")),
             );
-            let this_file_display = path.file_name().unwrap().to_string_lossy();
-            let winner_display = winner.file_name().unwrap().to_string_lossy();
+            let this_file_display = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            let winner_display = winner
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| winner.display().to_string());
             Err(AppError::template_id_collision(
                 id,
                 files,
@@ -1031,7 +1127,9 @@ pub async fn update_template_group(
         }
     };
     if existing.group.as_deref() == target_group {
-        let detail = registry.detail(&id, &variables, &dt_resolver).unwrap();
+        let detail = registry
+            .detail(&id, &variables, &dt_resolver)
+            .ok_or_else(|| AppError::internal("template detail invariant failed"))?;
         return Ok((axum::http::StatusCode::OK, Json(detail)).into_response());
     }
 
@@ -1126,11 +1224,14 @@ pub async fn delete_template(
             return Err(AppError::template_not_found(id));
         }
     };
-    let path = registry.path(&id).unwrap().to_path_buf();
+    let path = registry
+        .path(&id)
+        .ok_or_else(|| AppError::internal("template path invariant failed"))?
+        .to_path_buf();
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap()
+        .ok_or_else(|| AppError::internal("template filename invariant failed"))?
         .to_string();
 
     let refused = registry.duplicates(&id);
@@ -2113,7 +2214,12 @@ pub async fn update_connection_h(
     if !ok {
         return Err(AppError::not_found(&id));
     }
-    let c = state.store().get_connection(&id).await?.unwrap();
+    state.after_connection_update().await;
+    let c = state
+        .store()
+        .get_connection(&id)
+        .await?
+        .ok_or_else(|| AppError::not_found(&id))?;
     Ok(Json(ConnectionView::from(&c)).into_response())
 }
 

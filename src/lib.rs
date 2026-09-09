@@ -1023,6 +1023,54 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn update_connection_disappearing_before_readback_returns_not_found() {
+        let (app, state) = build_app_with_state();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/connections")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+
+        let conn_id = id.clone();
+        state.set_mid_connection_update_hook(move |store| {
+            let conn_id = conn_id.clone();
+            Box::pin(async move {
+                store.delete_connection_and_default(&conn_id).await.unwrap();
+            })
+        });
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/connections/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"connector":"homebox","name":"renamed","base_url":"http://hb.lan:7745"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "NotFound");
+        assert!(body["error"]["message"].is_string());
+    }
+
+    #[tokio::test]
     async fn deleted_connection_no_longer_appears_in_the_list() {
         let app = build_app();
         let res = app
@@ -9370,6 +9418,183 @@ layout:
             log_str.contains("json_malformed"),
             "log must contain reason slug json_malformed, got: {log_str}"
         );
+    }
+
+    #[tokio::test]
+    async fn panic_envelope_and_logging_for_payload_shapes() {
+        init_test_tracing();
+        let buf = Arc::new(std::sync::Mutex::new(Vec::new()));
+        TEST_LOG_BUFFER.with(|cell| {
+            *cell.borrow_mut() = Some(buf.clone());
+        });
+
+        let app = build_app();
+
+        // 1. Formatted panic: payload is String
+        let req1 = Request::builder()
+            .method("GET")
+            .uri("/api/test/panic/formatted")
+            .body(Body::empty())
+            .unwrap();
+        let resp1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(resp1.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            resp1
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
+        let body1 = json_response(resp1).await;
+        assert_eq!(body1["error"]["code"], "Internal");
+        assert!(
+            body1["error"].get("details").is_none()
+                || body1["error"]["details"].get("reason").is_none(),
+            "error.details must be absent or contain no reason key, got {body1}"
+        );
+        let msg1 = body1["error"]["message"].as_str().expect("message string");
+        assert!(
+            !serde_json::to_string(&body1)
+                .unwrap()
+                .contains("distinctive interpolated panic"),
+            "response body must not contain panic payload"
+        );
+
+        // 2. Literal panic: payload is &'static str
+        let req2 = Request::builder()
+            .method("GET")
+            .uri("/api/test/panic/literal")
+            .body(Body::empty())
+            .unwrap();
+        let resp2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            resp2
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
+        let body2 = json_response(resp2).await;
+        assert_eq!(body2["error"]["code"], "Internal");
+        assert!(
+            body2["error"].get("details").is_none()
+                || body2["error"]["details"].get("reason").is_none(),
+            "error.details must be absent or contain no reason key, got {body2}"
+        );
+        let msg2 = body2["error"]["message"].as_str().expect("message string");
+        assert!(
+            !serde_json::to_string(&body2)
+                .unwrap()
+                .contains("distinctive literal panic"),
+            "response body must not contain panic payload"
+        );
+
+        // 3. Any panic: payload is neither String nor &'static str (123_u32)
+        let req3 = Request::builder()
+            .method("GET")
+            .uri("/api/test/panic/any")
+            .body(Body::empty())
+            .unwrap();
+        let resp3 = app.clone().oneshot(req3).await.unwrap();
+        assert_eq!(resp3.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            resp3
+                .headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
+        let body3 = json_response(resp3).await;
+        assert_eq!(body3["error"]["code"], "Internal");
+        assert!(
+            body3["error"].get("details").is_none()
+                || body3["error"]["details"].get("reason").is_none(),
+            "error.details must be absent or contain no reason key, got {body3}"
+        );
+        let msg3 = body3["error"]["message"].as_str().expect("message string");
+
+        // 2.4: Assert error.message is byte-equal across all three shapes, in one place
+        assert_eq!(
+            msg1, msg2,
+            "error.message must be identical between formatted and literal"
+        );
+        assert_eq!(
+            msg2, msg3,
+            "error.message must be identical between literal and any"
+        );
+
+        TEST_LOG_BUFFER.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+
+        let log_str = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        // 2.2: Assert logs for all three shapes
+        assert!(
+            log_str.contains("distinctive interpolated panic: payload-value-42"),
+            "log must contain full formatted panic payload, got: {log_str}"
+        );
+        assert!(
+            log_str.contains("distinctive literal panic payload"),
+            "log must contain full literal panic payload, got: {log_str}"
+        );
+        assert!(
+            log_str.contains(crate::api::UNREADABLE_PANIC_MARKER),
+            "log must contain unreadable payload marker, got: {log_str}"
+        );
+    }
+
+    #[tokio::test]
+    async fn panic_outside_api_returns_internal_envelope() {
+        let app = build_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/test/panic")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "Internal");
+    }
+
+    #[tokio::test]
+    async fn service_survives_covered_panic() {
+        let app = build_app();
+
+        // Trigger a covered panic
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/test/panic/literal")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // Subsequent unrelated request is served normally on the same app
+        let req2 = Request::builder()
+            .method("GET")
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp2 = app.oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::OK);
+        let body2 = json_response(resp2).await;
+        assert_eq!(body2["status"], "ok");
     }
 
     /// Asserts one endpoint answers a malformed JSON body with the documented envelope (#225).
