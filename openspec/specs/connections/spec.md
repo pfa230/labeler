@@ -108,6 +108,16 @@ the `connector` in a `PUT /api/connections/{id}` payload differs from the stored
 connection being updated. The response body SHALL carry it in the standard error shape, as
 `error.code` `InvalidRequest` with `error.details.reason` `connector_immutable`.
 
+The `404` SHALL also cover the record ceasing to exist part-way through the update. The service
+SHALL answer `404` when the connection is absent at the point the handler builds its response from
+the stored record, on the same terms as an unknown id: the caller asked to update a connection that
+does not exist, and the outcome it is owed is the one the unknown-id case already gets. The service
+SHALL NOT answer that case with a `500`, and SHALL NOT fail to answer it.
+
+Whether a request can reach that state is a property of how the service serialises its writes, and no
+requirement here promises one way or the other. What this requirement fixes is the answer, so that
+the endpoint's contract does not depend on that promise holding.
+
 This requirement supersedes the `PUT /api/connections/{id}` description in the frozen
 `docs/SPEC.md` §12, alongside `connector-field-transforms` for the `transforms` key.
 
@@ -169,6 +179,14 @@ This requirement supersedes the `PUT /api/connections/{id}` description in the f
 - **WHEN** a client updates an unknown id with a payload whose `connector` is also not the one any
   connection holds
 - **THEN** the response is `404`, not `400`
+
+#### Scenario: The connection is gone when the updated record is read back
+
+- **WHEN** a client updates a connection that exists when the update is applied, and the connection is
+  absent by the time the service reads the stored record to build its response
+- **THEN** the response is `404`
+- **AND** the body is the standard error envelope, carrying `error.code` and `error.message`
+- **AND** the response is not `500` and the connection is not left half-reported
 
 ### Requirement: Deleting a connection
 
