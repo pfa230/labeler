@@ -200,29 +200,10 @@ function Composer({
   const isSheet = detail.format.type === "sheet";
   const positions = detail.format.type === "sheet" ? detail.format.positions.length : 0;
 
-  const requiredUnion = useMemo(() => {
-    const set = new Set<string>();
-    if (rows.length === 0) {
-      for (const input of detail.inputs.default) {
-        set.add(input.name);
-      }
-    } else {
-      for (const row of rows) {
-        const inputs = getRowInputs(row.id) ?? detail.inputs.default;
-        for (const input of inputs) {
-          set.add(input.name);
-        }
-      }
-    }
-    return [...set];
-  }, [rows, detail, getRowInputs]);
-
-  const displayedFields = requiredUnion;
-
   const cellInput = (row: LabelGridRow, field: string): InputSpec | undefined => {
     const inputs = getRowInputs(row.id);
     if (!inputs) return { name: field, control: "text" };
-    return inputs.find((i) => i.name === field);
+    return inputs.find((i) => i.name === field) ?? detail.inputs.all.find((i) => i.name === field);
   };
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {
@@ -406,7 +387,7 @@ function Composer({
 
           <LabelGrid
             rows={viewRows}
-            fields={displayedFields}
+            fields={templateFields}
             cellInput={cellInput}
             onRowsChange={(next, { indexes }) => {
               const dirty = new Set(indexes);

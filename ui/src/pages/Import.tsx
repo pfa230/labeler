@@ -108,42 +108,30 @@ function CsvEditor({
 
   const isSheet = detail?.format.type === "sheet";
 
-  const requiredUnion = useMemo(() => {
-    const set = new Set<string>();
-    if (rows.length === 0 && detail) {
-      for (const input of detail.inputs?.default ?? []) {
-        if (input.control !== "list") set.add(input.name);
-      }
-    } else {
-      for (const row of rows) {
-        const inputs = getRowInputs(row.id) ?? detail?.inputs?.default ?? [];
-        for (const input of inputs) {
-          if (input.control !== "list") set.add(input.name);
-        }
-      }
-    }
-    return [...set];
-  }, [rows, detail, getRowInputs]);
+  const templateFields = useMemo(() => {
+    if (!detail) return [];
+    return detail.inputs.all.map((i) => i.name);
+  }, [detail]);
 
   const listNames = useMemo(() => {
     if (!detail) return new Set<string>();
     const s = new Set<string>();
-    for (const inp of detail.inputs.all ?? []) if (inp.control === "list") s.add(inp.name);
+    for (const inp of detail.inputs.all) if (inp.control === "list") s.add(inp.name);
     for (const inp of detail.inputs.default ?? []) if (inp.control === "list") s.add(inp.name);
     return s;
   }, [detail]);
 
   const displayedFields = useMemo(() => {
     const set = new Set(csvFields);
-    for (const f of requiredUnion) set.add(f);
+    for (const f of templateFields) set.add(f);
     return [...set].filter((f) => !listNames.has(f));
-  }, [csvFields, requiredUnion, listNames]);
+  }, [csvFields, templateFields, listNames]);
 
   const cellInput = (row: LabelGridRow, field: string): InputSpec | undefined => {
     if (!detail) return { name: field, control: "text" };
     const inputs = getRowInputs(row.id);
     if (!inputs) return { name: field, control: "text" };
-    return inputs.find((i) => i.name === field);
+    return inputs.find((i) => i.name === field) ?? detail.inputs.all.find((i) => i.name === field);
   };
 
   const validateRow = (row: LabelGridRow): LabelGridRow["validation"] => {

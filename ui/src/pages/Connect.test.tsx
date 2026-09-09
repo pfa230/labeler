@@ -2162,3 +2162,589 @@ describe("8.6 Field transforms scenarios at their new timing", () => {
     expect(await screen.findByRole("option", { name: "location_id" })).toBeInTheDocument();
   });
 });
+
+describe("issue-385: connector grid shows fields of every variant", () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("shows columns for orientation, tags and location when gate is unsatisfied, cells are editable, and rows not refused for either (3.1)", async () => {
+    const testDetail = {
+      ...templateDetail,
+      inputs: {
+        all: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+          { name: "tags", control: "text" as const, required: true },
+          { name: "location", control: "text" as const, required: true },
+        ],
+        default: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+        ],
+      },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = (parsedBody.labels ?? [{ data: {} }]) as Array<{ data?: Record<string, unknown> }>;
+        return json({
+          inputs: labels.map((l) => {
+            if (l.data?.orientation === "horizontal") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true },
+                { name: "tags", control: "text", required: true },
+                { name: "location", control: "text", required: true },
+              ];
+            }
+            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true }];
+          }),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections/c1/schema") return json(schema);
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
+      if (url === "/api/connections/c1/materialize") {
+        return json([
+          { source: { resource: "entities", key: "e1" }, data: {} },
+          { source: { resource: "entities", key: "e2" }, data: {} },
+        ]);
+      }
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(testDetail);
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByRole("columnheader", { name: "orientation" })).toBeInTheDocument();
+    expect(within(grid).getByRole("columnheader", { name: "tags" })).toBeInTheDocument();
+    expect(within(grid).getByRole("columnheader", { name: "location" })).toBeInTheDocument();
+
+    const dataRows = within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+    expect(dataRows).toHaveLength(2);
+
+    const row1Cells = within(dataRows[0]).getAllByRole("gridcell");
+    // columns: [preview(0), orientation(1), tags(2), location(3), status(4), actions(5)]
+    fireEvent.doubleClick(row1Cells[2]);
+    const tagsEditor = await screen.findByLabelText("edit tags");
+    expect(tagsEditor).toBeInTheDocument();
+    fireEvent.blur(tagsEditor);
+
+    fireEvent.doubleClick(row1Cells[3]);
+    const locationEditor = await screen.findByLabelText("edit location");
+    expect(locationEditor).toBeInTheDocument();
+    fireEvent.blur(locationEditor);
+
+    // Neither tags nor location reports an error on either row
+    expect(screen.queryByLabelText(/tags required/i)).toBeNull();
+    expect(screen.queryByLabelText(/location required/i)).toBeNull();
+
+    // Rows are refused and run blocked for missing required orientation
+    await waitFor(() => {
+      expect(screen.getAllByLabelText(/orientation required/i)).toHaveLength(2);
+      expect(screen.getByRole("button", { name: /^download$/i })).toBeDisabled();
+    });
+  });
+
+  it("typing gate's value brings branch into play after tags value was typed while gate was unset (3.2)", async () => {
+    let submittedBatch: { labels: Array<{ data: Record<string, unknown> }> } | null = null;
+    const testDetail = {
+      ...templateDetail,
+      inputs: {
+        all: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+          { name: "tags", control: "text" as const },
+          { name: "location", control: "text" as const },
+        ],
+        default: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+        ],
+      },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = (parsedBody.labels ?? [{ data: {} }]) as Array<{ data?: Record<string, unknown> }>;
+        return json({
+          inputs: labels.map((l) => {
+            if (l.data?.orientation === "horizontal") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true },
+                { name: "tags", control: "text" },
+                { name: "location", control: "text" },
+              ];
+            }
+            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true }];
+          }),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections/c1/schema") return json(schema);
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+      if (url === "/api/connections/c1/materialize") return json([{ source: { resource: "entities", key: "e1" }, data: {} }]);
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(testDetail);
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") {
+        submittedBatch = JSON.parse(String(init?.body));
+        return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+    fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    const dataRows = within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+    const row1Cells = within(dataRows[0]).getAllByRole("gridcell");
+
+    // While gate is unset, type into tags cell
+    fireEvent.doubleClick(row1Cells[2]);
+    const tagsEditor = await screen.findByLabelText("edit tags");
+    fireEvent.change(tagsEditor, { target: { value: "my-tag" } });
+    fireEvent.blur(tagsEditor);
+
+    // Type horizontal into orientation cell
+    fireEvent.doubleClick(row1Cells[1]);
+    const orientEditor = await screen.findByLabelText("edit orientation");
+    fireEvent.change(orientEditor, { target: { value: "horizontal" } });
+    fireEvent.blur(orientEditor);
+
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+      expect(submittedBatch).not.toBeNull();
+    });
+    expect(submittedBatch!.labels[0].data.orientation).toBe("horizontal");
+    expect(submittedBatch!.labels[0].data.tags).toBe("my-tag");
+  });
+
+  it("inert cell of vertical row is editable, not validated, keeps value across switching, and absent from data while inactive (3.3)", async () => {
+    let submittedBatch: { labels: Array<{ data: Record<string, unknown> }> } | null = null;
+    const testDetail = {
+      ...templateDetail,
+      inputs: {
+        all: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"] },
+          { name: "subtitle", control: "text" as const, required: true },
+          { name: "tracking_url", control: "text" as const },
+        ],
+        default: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"] },
+        ],
+      },
+    };
+    const connSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "orientation", label: "Orientation", ty: "text", tier: "cheap", multi_valued: false },
+          { key: "subtitle", label: "Subtitle", ty: "text", tier: "cheap", multi_valued: false },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = (parsedBody.labels ?? [{ data: {} }]) as Array<{ data?: Record<string, unknown> }>;
+        return json({
+          inputs: labels.map((l) => {
+            if (l.data?.orientation === "horizontal") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+                { name: "subtitle", control: "text", required: true },
+              ];
+            }
+            if (l.data?.orientation === "vertical") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"] },
+                { name: "tracking_url", control: "text" },
+              ];
+            }
+            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"] }];
+          }),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections/c1/schema") return json(connSchema);
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { orientation: "horizontal", subtitle: "sub-1" } }, { id: { resource: "entities", key: "e2" }, cells: { orientation: "vertical", subtitle: "" } }], next_cursor: null, has_more: false, count: 2 });
+      if (url === "/api/connections/c1/materialize") {
+        return json([
+          { source: { resource: "entities", key: "e1" }, data: { orientation: "horizontal", subtitle: "sub-1" } },
+          { source: { resource: "entities", key: "e2" }, data: { orientation: "vertical", subtitle: "" } },
+        ]);
+      }
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(testDetail);
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") {
+        submittedBatch = JSON.parse(String(init?.body));
+        return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    const dataRows = within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+    const row2Cells = within(dataRows[1]).getAllByRole("gridcell");
+    // columns: [preview(0), orientation(1), subtitle(2), tracking_url(3), status(4), actions(5)]
+
+    // Subtitle cell of vertical row is editable
+    fireEvent.doubleClick(row2Cells[2]);
+    const subEditor = await screen.findByLabelText("edit subtitle");
+    fireEvent.change(subEditor, { target: { value: "typed-sub" } });
+    fireEvent.blur(subEditor);
+
+    // It is not validated (even though subtitle is required on horizontal, row 2 is vertical)
+    expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled();
+
+    // Submit while vertical: subtitle is absent from row 2 submitted data
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+      expect(submittedBatch).not.toBeNull();
+    });
+    expect(submittedBatch!.labels[1].data.subtitle).toBeUndefined();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled());
+
+    // Switch row 2 to horizontal
+    const getRow2 = () => within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null)[1];
+    const getRow2Cells = () => within(getRow2()).getAllByRole("gridcell");
+
+    fireEvent.doubleClick(getRow2Cells()[1]);
+    const orientEditor = await screen.findByLabelText("edit orientation");
+    fireEvent.change(orientEditor, { target: { value: "horizontal" } });
+    fireEvent.blur(orientEditor);
+
+    // Submit while horizontal: subtitle is present with typed-sub
+    submittedBatch = null;
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+      expect(submittedBatch).not.toBeNull();
+      expect(submittedBatch!.labels[1].data.subtitle).toBe("typed-sub");
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled());
+
+    // Switch row 2 back to vertical: value kept, absent from submitted data
+    fireEvent.doubleClick(getRow2Cells()[1]);
+    const orientEditor2 = await screen.findByLabelText("edit orientation");
+    fireEvent.change(orientEditor2, { target: { value: "vertical" } });
+    fireEvent.blur(orientEditor2);
+
+    submittedBatch = null;
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+      expect(submittedBatch).not.toBeNull();
+      expect(submittedBatch!.labels[1].data.subtitle).toBeUndefined();
+    });
+    // The value remains visible in the cell
+    expect(within(getRow2()).getByText("typed-sub")).toBeInTheDocument();
+  });
+
+  it("orders every column by declaration in inputs.all and validates in declaration order (3.4)", async () => {
+    const testDetail = {
+      ...templateDetail,
+      inputs: {
+        all: [
+          { name: "title", control: "text" as const, required: true },
+          { name: "subtitle", control: "text" as const, required: true },
+          { name: "code", control: "text" as const, required: true },
+        ],
+        default: [
+          { name: "title", control: "text" as const, required: true },
+          { name: "subtitle", control: "text" as const, required: true },
+          { name: "code", control: "text" as const, required: true },
+        ],
+      },
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as { labels?: Array<{ data?: Record<string, unknown> }> }) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "title", control: "text", required: true },
+            { name: "subtitle", control: "text", required: true },
+            { name: "code", control: "text", required: true },
+          ]),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections/c1/schema") return json(schema);
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
+      if (url === "/api/connections/c1/materialize") {
+        return json([
+          { source: { resource: "entities", key: "e1" }, data: {} },
+          { source: { resource: "entities", key: "e2" }, data: {} },
+        ]);
+      }
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(testDetail);
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    const headers = within(grid).getAllByRole("columnheader").map((h) => h.textContent);
+    const fieldHeaders = headers.filter((h) => ["title", "subtitle", "code"].includes(h ?? ""));
+    expect(fieldHeaders).toEqual(["title", "subtitle", "code"]);
+
+    const dataRows = within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+    const row1Cells = within(dataRows[0]).getAllByRole("gridcell");
+    // columns: preview(0), title(1), subtitle(2), code(3), status(4), actions(5)
+    await waitFor(() => {
+      expect(within(row1Cells[1]).getByLabelText(/title required/i)).toBeInTheDocument();
+      expect(within(row1Cells[2]).getByLabelText(/subtitle required/i)).toBeInTheDocument();
+      expect(within(row1Cells[3]).getByLabelText(/code required/i)).toBeInTheDocument();
+    });
+  });
+
+  it("mapped list behind unsatisfied gate stays visible and read-only, row refused for missing orientation (3.5)", async () => {
+    const testDetail = {
+      ...templateDetail,
+      inputs: {
+        all: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+          { name: "tags", control: "list" as const },
+        ],
+        default: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+        ],
+      },
+    };
+    const listSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+          { key: "tags", label: "Tags", ty: "text", tier: "cheap", multi_valued: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as { labels?: Array<{ data?: Record<string, unknown> }> }) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map((l) => {
+            if (l.data?.orientation === "horizontal") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true },
+                { name: "tags", control: "list" },
+              ];
+            }
+            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true }];
+          }),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections/c1/schema") return json(listSchema);
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } }], next_cursor: null, has_more: false, count: 1 });
+      if (url === "/api/connections/c1/materialize") {
+        return json([
+          { source: { resource: "entities", key: "e1" }, data: { tags: ["KIDS", "CONSUMABLE"] } },
+        ]);
+      }
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(testDetail);
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+    fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByRole("columnheader", { name: "tags" })).toBeInTheDocument();
+    expect(within(grid).getByText("KIDS, CONSUMABLE")).toBeInTheDocument();
+
+    // Read-only: double click does not open editor
+    fireEvent.doubleClick(within(grid).getByText("KIDS, CONSUMABLE"));
+    expect(screen.queryByLabelText("edit tags")).toBeNull();
+
+    // Row keeps the array, no error reported against tags
+    expect(screen.queryByLabelText(/tags required/i)).toBeNull();
+
+    // Row is refused and run blocked for missing orientation
+    await waitFor(() => {
+      expect(screen.getByLabelText(/orientation required/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^download$/i })).toBeDisabled();
+    });
+  });
+
+  it("valid row on other branch submits without mapped list, activating gate submits array unchanged (3.6)", async () => {
+    let submittedBatch: { labels: Array<{ data: Record<string, unknown> }> } | null = null;
+    const testDetail = {
+      ...templateDetail,
+      inputs: {
+        all: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+          { name: "tags", control: "list" as const },
+        ],
+        default: [
+          { name: "orientation", control: "select" as const, values: ["horizontal", "vertical"], required: true },
+        ],
+      },
+    };
+    const listSchema = {
+      version: "homebox-1",
+      resources: [{
+        id: "entities", label: "Items", view: "table",
+        dynamic_source_prefix: "custom:", fields_incomplete: false,
+        columns: [
+          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+          { key: "tags", label: "Tags", ty: "text", tier: "cheap", multi_valued: true },
+        ],
+        filters: [],
+      }],
+      relationships: [],
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/inputs")) {
+        const parsedBody = init?.body ? (JSON.parse(String(init.body)) as { labels?: Array<{ data?: Record<string, unknown> }> }) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map((l) => {
+            if (l.data?.orientation === "horizontal") {
+              return [
+                { name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true },
+                { name: "tags", control: "list" },
+              ];
+            }
+            return [{ name: "orientation", control: "select", values: ["horizontal", "vertical"], required: true }];
+          }),
+        });
+      }
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
+      if (url === "/api/connections/c1/schema") return json(listSchema);
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } }], next_cursor: null, has_more: false, count: 1 });
+      if (url === "/api/connections/c1/materialize") {
+        return json([
+          { source: { resource: "entities", key: "e1" }, data: { tags: ["KIDS", "CONSUMABLE"] } },
+        ]);
+      }
+      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+      if (url === "/api/templates/tpl") return json(testDetail);
+      if (url === "/api/printers") return json([]);
+      if (url.startsWith("/api/render/label") && method === "POST") return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      if (url === "/api/batch" && method === "POST") {
+        submittedBatch = JSON.parse(String(init?.body)) as { labels: Array<{ data: Record<string, unknown> }> };
+        return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf" } });
+      }
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+    fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
+
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    const getRowCells = () => {
+      const rows = within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null);
+      return within(rows[0]).getAllByRole("gridcell");
+    };
+
+    // Type vertical into orientation cell
+    fireEvent.doubleClick(getRowCells()[1]);
+    const orientEditor = await screen.findByLabelText("edit orientation");
+    fireEvent.change(orientEditor, { target: { value: "vertical" } });
+    fireEvent.blur(orientEditor);
+
+    // Row is unrefused and tags cell still read-only over its array
+    await waitFor(() => expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled());
+    expect(within(grid).getByText("KIDS, CONSUMABLE")).toBeInTheDocument();
+    fireEvent.doubleClick(within(grid).getByText("KIDS, CONSUMABLE"));
+    expect(screen.queryByLabelText("edit tags")).toBeNull();
+
+    // Submit while vertical: orientation is vertical and tags is absent
+    submittedBatch = null;
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+      expect(submittedBatch).not.toBeNull();
+    });
+    expect(submittedBatch!.labels[0].data.orientation).toBe("vertical");
+    expect(submittedBatch!.labels[0].data.tags).toBeUndefined();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled());
+
+    // Type horizontal into orientation cell
+    fireEvent.doubleClick(getRowCells()[1]);
+    const orientEditor2 = await screen.findByLabelText("edit orientation");
+    fireEvent.change(orientEditor2, { target: { value: "horizontal" } });
+    fireEvent.blur(orientEditor2);
+
+    // Submit while horizontal: tags submitted with mapped array unchanged and unflattened
+    submittedBatch = null;
+    await waitFor(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^download$/i }));
+      expect(submittedBatch).not.toBeNull();
+    });
+    expect(submittedBatch!.labels[0].data.orientation).toBe("horizontal");
+    expect(submittedBatch!.labels[0].data.tags).toEqual(["KIDS", "CONSUMABLE"]);
+  });
+});
+
