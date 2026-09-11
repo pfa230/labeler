@@ -293,6 +293,27 @@ impl AppError {
         )
     }
 
+    pub fn width_bounds_inverted(
+        min: f32,
+        max: f32,
+        unit: &str,
+        min_param: Option<&str>,
+        max_param: Option<&str>,
+    ) -> Self {
+        let max_part = match max_param {
+            Some(param) => format!("format.width.max {max} {unit} (parameter '{param}')"),
+            None => format!("format.width.max {max} {unit}"),
+        };
+        let min_part = match min_param {
+            Some(param) => format!("format.width.min {min} {unit} (parameter '{param}')"),
+            None => format!("format.width.min {min} {unit}"),
+        };
+        Self::invalid_request(
+            Reason::WidthBoundsInverted,
+            format!("{max_part} is below {min_part}"),
+        )
+    }
+
     pub fn template_invalid(reason: Reason, message: impl Into<String>) -> Self {
         Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,

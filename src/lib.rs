@@ -17592,4 +17592,364 @@ layout:
         assert_eq!(failures3[0]["code"], "TemplateInvalid");
         assert_eq!(failures3[0]["reason"], "param_default_unresolvable");
     }
+
+    // Issue 235: dynamic width max resolved below min tests
+    #[tokio::test]
+    async fn http_render_dynamic_width_max_below_min_repro_and_ordered_cases() {
+        let repro_yaml = r#"
+name: Issue 235 Repro
+unit: mm
+dpi: 200
+format:
+  type: single
+  width:
+    min: 10.0
+    max: "{max_width}"
+  height: 18.1
+params:
+  - name: max_width
+    type: length
+    default: 120.0
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [5, 5]
+    font_size: 8
+"#;
+
+        let (app, _state) = test_app_with_custom_templates(vec![("issue_235_repro", repro_yaml)]);
+
+        let post_render = |data: serde_json::Value| {
+            let app = app.clone();
+            async move {
+                let req = req_post_json(
+                    "/api/render/label?format=png",
+                    &serde_json::json!({
+                        "template": "issue_235_repro",
+                        "data": data
+                    })
+                    .to_string(),
+                );
+                app.oneshot(req).await.unwrap()
+            }
+        };
+
+        // Task 1.1: max_width: 5 -> 400 InvalidRequest, width_bounds_inverted, message naming max_width, 5, 10
+        // Against unchanged tree, this fails with 500 Internal (panic envelope).
+        let res = post_render(serde_json::json!({ "max_width": 5 })).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "width_bounds_inverted");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(
+            msg.contains("max_width") && msg.contains("5") && msg.contains("10"),
+            "message must name max_width, 5, and 10: {msg}"
+        );
+
+        // GET /api/health on the same app asserts 200 (service kept serving)
+        let health_res = app.clone().oneshot(req_get("/api/health")).await.unwrap();
+        assert_eq!(health_res.status(), StatusCode::OK);
+
+        // Task 1.2: ordered cases against repro template
+        // max_width: 10 asserts 200 (equal bounds render)
+        let res_equal = post_render(serde_json::json!({ "max_width": 10 })).await;
+        assert_eq!(res_equal.status(), StatusCode::OK);
+
+        // max_width: 0 asserts 422 UnsupportedLayoutItem, dimension_exceeds_limit (dimension check precedes ordering check)
+        let res_zero = post_render(serde_json::json!({ "max_width": 0 })).await;
+        assert_eq!(res_zero.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_zero = body_json(res_zero).await;
+        assert_eq!(body_zero["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(
+            body_zero["error"]["details"]["reason"],
+            "dimension_exceeds_limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_render_dynamic_width_other_reference_shapes() {
+        let tpl_min_ref = r#"
+name: Min Ref
+unit: mm
+dpi: 200
+format:
+  type: single
+  width:
+    min: "{min_width}"
+    max: 60.0
+  height: 18.1
+params:
+  - name: min_width
+    type: length
+    default: 10.0
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [5, 5]
+    font_size: 8
+"#;
+
+        let tpl_both_refs = r#"
+name: Both Refs
+unit: mm
+dpi: 200
+format:
+  type: single
+  width:
+    min: "{lo}"
+    max: "{hi}"
+  height: 18.1
+params:
+  - name: lo
+    type: length
+    default: 10.0
+  - name: hi
+    type: length
+    default: 50.0
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [5, 5]
+    font_size: 8
+"#;
+
+        let (app, _state) = test_app_with_custom_templates(vec![
+            ("tpl_min_ref", tpl_min_ref),
+            ("tpl_both_refs", tpl_both_refs),
+        ]);
+
+        // min_width: 80 -> 400 width_bounds_inverted naming min_width, 80 and 60
+        // Against unchanged tree, fails with 500 (panic envelope).
+        let req1 = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "tpl_min_ref",
+                "data": { "min_width": 80 }
+            })
+            .to_string(),
+        );
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::BAD_REQUEST);
+        let body1 = body_json(res1).await;
+        assert_eq!(body1["error"]["code"], "InvalidRequest");
+        assert_eq!(body1["error"]["details"]["reason"], "width_bounds_inverted");
+        let msg1 = body1["error"]["message"].as_str().unwrap();
+        assert!(
+            msg1.contains("min_width") && msg1.contains("80") && msg1.contains("60"),
+            "message must contain min_width, 80, and 60: {msg1}"
+        );
+
+        // lo: 30, hi: 20 -> 400 width_bounds_inverted naming lo, hi, 30 and 20
+        // Against unchanged tree, fails with 500 (panic envelope).
+        let req2 = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "tpl_both_refs",
+                "data": { "lo": 30, "hi": 20 }
+            })
+            .to_string(),
+        );
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::BAD_REQUEST);
+        let body2 = body_json(res2).await;
+        assert_eq!(body2["error"]["code"], "InvalidRequest");
+        assert_eq!(body2["error"]["details"]["reason"], "width_bounds_inverted");
+        let msg2 = body2["error"]["message"].as_str().unwrap();
+        assert!(
+            msg2.contains("lo")
+                && msg2.contains("hi")
+                && msg2.contains("30")
+                && msg2.contains("20"),
+            "message must contain lo, hi, 30, and 20: {msg2}"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_render_dynamic_width_defaults() {
+        let tpl_defaults = r#"
+name: Defaults Inverted
+unit: mm
+dpi: 200
+format:
+  type: single
+  width:
+    min: 10.0
+    max: "{max_width}"
+  height: 18.1
+params:
+  - name: max_width
+    type: length
+    default: 5.0
+layout:
+  - type: text
+    value: "Hi"
+    at: [0, 0]
+    size: [4, 4]
+    font_size: 8
+"#;
+
+        let (app, _state) =
+            test_app_with_custom_templates(vec![("tpl_defaults_inverted", tpl_defaults)]);
+
+        // Omitted max_width uses default 5.0 -> 400 width_bounds_inverted naming max_width, 5, 10
+        // Against unchanged tree, fails with 500 (panic envelope).
+        let req1 = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "tpl_defaults_inverted",
+                "data": {}
+            })
+            .to_string(),
+        );
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::BAD_REQUEST);
+        let body1 = body_json(res1).await;
+        assert_eq!(body1["error"]["code"], "InvalidRequest");
+        assert_eq!(body1["error"]["details"]["reason"], "width_bounds_inverted");
+        let msg1 = body1["error"]["message"].as_str().unwrap();
+        assert!(
+            msg1.contains("max_width") && msg1.contains("5") && msg1.contains("10"),
+            "message must contain max_width, 5, and 10: {msg1}"
+        );
+
+        // Supplying max_width: 20 -> 200 OK
+        let req2 = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "tpl_defaults_inverted",
+                "data": { "max_width": 20 }
+            })
+            .to_string(),
+        );
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_render_dynamic_width_precedence_over_measurement() {
+        let tpl_precedence = r#"
+name: Precedence
+unit: mm
+dpi: 200
+format:
+  type: single
+  width:
+    min: 10.0
+    max: "{max_width}"
+  height: 18.1
+params:
+  - name: max_width
+    type: length
+    default: 120.0
+  - name: w
+    type: length
+    default: 5.0
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: ["{w}", 5]
+    font_size: 8
+"#;
+
+        let (app, _state) =
+            test_app_with_custom_templates(vec![("tpl_precedence", tpl_precedence)]);
+
+        // max_width: 5, w: 0 asserts 400 width_bounds_inverted (not size_invalid)
+        // Against unchanged tree, measurement runs before clamp and this fails with 422 size_invalid.
+        let req1 = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "tpl_precedence",
+                "data": { "max_width": 5, "w": 0 }
+            })
+            .to_string(),
+        );
+        let res1 = app.clone().oneshot(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::BAD_REQUEST);
+        let body1 = body_json(res1).await;
+        assert_eq!(body1["error"]["code"], "InvalidRequest");
+        assert_eq!(body1["error"]["details"]["reason"], "width_bounds_inverted");
+
+        // max_width: 40, w: 0 asserts 422 UnsupportedLayoutItem, size_invalid
+        let req2 = req_post_json(
+            "/api/render/label?format=png",
+            &serde_json::json!({
+                "template": "tpl_precedence",
+                "data": { "max_width": 40, "w": 0 }
+            })
+            .to_string(),
+        );
+        let res2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body2 = body_json(res2).await;
+        assert_eq!(body2["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(body2["error"]["details"]["reason"], "size_invalid");
+    }
+
+    #[tokio::test]
+    async fn http_batch_dynamic_width_inverted_bounds() {
+        let repro_yaml = r#"
+name: Issue 235 Batch Repro
+unit: mm
+dpi: 200
+format:
+  type: single
+  width:
+    min: 10.0
+    max: "{max_width}"
+  height: 18.1
+params:
+  - name: max_width
+    type: length
+    default: 120.0
+layout:
+  - type: text
+    value: "Hello"
+    at: [0, 0]
+    size: [5, 5]
+    font_size: 8
+"#;
+
+        let (app, _state) = test_app_with_custom_templates(vec![("issue_235_batch", repro_yaml)]);
+
+        // POST /api/batch with two labels: max_width: 40 then max_width: 5
+        // assert status 422, JSON content-type, error.code BatchInvalid, and
+        // error.details.failures holding exactly one entry at index 1 with code InvalidRequest, reason width_bounds_inverted.
+        // Against unchanged tree, fails with 500 (panic envelope).
+        let req = req_post_json(
+            "/api/batch",
+            &serde_json::json!({
+                "template": "issue_235_batch",
+                "labels": [
+                    { "data": { "max_width": 40 } },
+                    { "data": { "max_width": 5 } }
+                ],
+                "mode": "download"
+            })
+            .to_string(),
+        );
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            content_type.contains("application/json"),
+            "content-type must be json, got {content_type}"
+        );
+        let body = body_json(res).await;
+        assert_eq!(body["error"]["code"], "BatchInvalid");
+        let failures = body["error"]["details"]["failures"].as_array().unwrap();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0]["index"], 1);
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(failures[0]["reason"], "width_bounds_inverted");
+    }
 }
