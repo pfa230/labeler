@@ -4,8 +4,8 @@ pub const MAX_RENDER_DPI: u32 = 1200;
 
 use crate::errors::AppError;
 use crate::models::{
-    resolve_coord, DynamicDimension, Fit, LabelInput, Layout, LayoutItem, ParamSpec, Placement,
-    Point, Position, Rotation, Shape, Stroke, TemplateFormat,
+    resolve_coord, DynamicDimension, DynamicValue, Fit, LabelInput, Layout, LayoutItem, ParamSpec,
+    Placement, Point, Position, Rotation, Shape, Stroke, TemplateFormat,
 };
 use crate::reason::Reason;
 use crate::templates::{TemplateContent, TemplateDefinition};
@@ -787,6 +787,20 @@ fn compile_label_source(
 
         check_dimension_limit(min_w, unit, max_dim_mm, "width min")?;
         check_dimension_limit(max_w, unit, max_dim_mm, "width max")?;
+
+        if min_w > max_w {
+            let min_param = match min.as_ref() {
+                Some(DynamicValue::Ref(p)) => Some(p.as_str()),
+                _ => None,
+            };
+            let max_param = match max.as_ref() {
+                Some(DynamicValue::Ref(p)) => Some(p.as_str()),
+                _ => None,
+            };
+            return Err(AppError::width_bounds_inverted(
+                min_w, max_w, unit, min_param, max_param,
+            ));
+        }
 
         let probe = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
             .with_instants(&resolved.instants);
