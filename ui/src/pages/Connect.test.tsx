@@ -304,7 +304,7 @@ describe("Connect", () => {
     renderConnect();
     await browseSelectMaterialize();
     const grid = screen.getByRole("grid", { name: /label rows/i });
-    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("Drill")).toBeInTheDocument();
   });
 
   it("renders a preview for the selected row and keeps actions enabled on preview error", async () => {
@@ -1381,7 +1381,7 @@ describe("Connect", () => {
       fireEvent.click(addBtn);
 
       const grid = await screen.findByRole("grid", { name: /label rows/i });
-      expect(within(grid).getByText("Drill")).toBeInTheDocument();
+      expect(within(grid).getByDisplayValue("Drill")).toBeInTheDocument();
       expect(within(grid).queryByText("Hammer")).not.toBeInTheDocument();
     });
 
@@ -1700,7 +1700,7 @@ describe("Connect: datetime parameters", () => {
     fireEvent.click(addButton);
 
     const grid = await screen.findByRole("grid", { name: /label rows/i });
-    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("Drill")).toBeInTheDocument();
     expect(within(grid).getByText("KIDS")).toBeInTheDocument();
   });
 
@@ -1854,7 +1854,7 @@ describe("Connect: datetime parameters", () => {
     fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
 
     const grid = await screen.findByRole("grid", { name: /label rows/i });
-    expect(within(grid).getByText("Drill")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("Drill")).toBeInTheDocument();
     expect(screen.getByLabelText("map tags")).toHaveValue("");
     expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
   });
@@ -2240,15 +2240,11 @@ describe("issue-385: connector grid shows fields of every variant", () => {
 
     const row1Cells = within(dataRows[0]).getAllByRole("gridcell");
     // columns: [preview(0), orientation(1), tags(2), location(3), status(4), actions(5)]
-    fireEvent.doubleClick(row1Cells[2]);
-    const tagsEditor = await screen.findByLabelText("edit tags");
+    const tagsEditor = within(row1Cells[2]).getByLabelText("edit tags");
     expect(tagsEditor).toBeInTheDocument();
-    fireEvent.blur(tagsEditor);
 
-    fireEvent.doubleClick(row1Cells[3]);
-    const locationEditor = await screen.findByLabelText("edit location");
+    const locationEditor = within(row1Cells[3]).getByLabelText("edit location");
     expect(locationEditor).toBeInTheDocument();
-    fireEvent.blur(locationEditor);
 
     // Neither tags nor location reports an error on either row
     expect(screen.queryByLabelText(/tags required/i)).toBeNull();
@@ -2426,10 +2422,8 @@ describe("issue-385: connector grid shows fields of every variant", () => {
     // columns: [preview(0), orientation(1), subtitle(2), tracking_url(3), status(4), actions(5)]
 
     // Subtitle cell of vertical row is editable
-    fireEvent.doubleClick(row2Cells[2]);
-    const subEditor = await screen.findByLabelText("edit subtitle");
+    const subEditor = within(row2Cells[2]).getByLabelText("edit subtitle");
     fireEvent.change(subEditor, { target: { value: "typed-sub" } });
-    fireEvent.blur(subEditor);
 
     // It is not validated (even though subtitle is required on horizontal, row 2 is vertical)
     expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled();
@@ -2446,10 +2440,8 @@ describe("issue-385: connector grid shows fields of every variant", () => {
     const getRow2 = () => within(grid).getAllByRole("row").filter((r) => r.getAttribute("aria-rowindex") !== null)[1];
     const getRow2Cells = () => within(getRow2()).getAllByRole("gridcell");
 
-    fireEvent.doubleClick(getRow2Cells()[1]);
-    const orientEditor = await screen.findByLabelText("edit orientation");
+    const orientEditor = within(getRow2Cells()[1]).getByLabelText("edit orientation");
     fireEvent.change(orientEditor, { target: { value: "horizontal" } });
-    fireEvent.blur(orientEditor);
 
     // Submit while horizontal: subtitle is present with typed-sub
     submittedBatch = null;
@@ -2461,10 +2453,8 @@ describe("issue-385: connector grid shows fields of every variant", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: /^download$/i })).toBeEnabled());
 
     // Switch row 2 back to vertical: value kept, absent from submitted data
-    fireEvent.doubleClick(getRow2Cells()[1]);
-    const orientEditor2 = await screen.findByLabelText("edit orientation");
+    const orientEditor2 = within(getRow2Cells()[1]).getByLabelText("edit orientation");
     fireEvent.change(orientEditor2, { target: { value: "vertical" } });
-    fireEvent.blur(orientEditor2);
 
     submittedBatch = null;
     await waitFor(() => {
@@ -2473,7 +2463,7 @@ describe("issue-385: connector grid shows fields of every variant", () => {
       expect(submittedBatch!.labels[1].data.subtitle).toBeUndefined();
     });
     // The value remains visible in the cell
-    expect(within(getRow2()).getByText("typed-sub")).toBeInTheDocument();
+    expect(within(getRow2()).getByDisplayValue("typed-sub")).toBeInTheDocument();
   });
 
   it("orders every column by declaration in inputs.all and validates in declaration order (3.4)", async () => {

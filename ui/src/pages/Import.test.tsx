@@ -110,8 +110,9 @@ describe("CSV Import screen", () => {
   it("loads a CSV into the grid and reports the expanded total", async () => {
     renderPage();
     await loadTemplateAndCsv();
-    expect(await screen.findByText("1")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument();
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByDisplayValue("1")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("2")).toBeInTheDocument();
     expect(screen.getByText(/2 labels/i)).toBeInTheDocument();
   });
 
@@ -123,7 +124,7 @@ describe("CSV Import screen", () => {
     const fileInput = (await screen.findByLabelText(/csv file/i)) as HTMLInputElement;
     const file = new File(["sku,color\n7,blue\n"], "labels.csv", { type: "text/csv" });
     fireEvent.change(fileInput, { target: { files: [file] } });
-    expect(await screen.findByText("7")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("7")).toBeInTheDocument();
   });
 
   it("loads a CSV dropped onto the dropzone", async () => {
@@ -134,14 +135,16 @@ describe("CSV Import screen", () => {
     const zone = await screen.findByLabelText(/csv dropzone/i);
     const file = new File(["sku,color\n8,red\n"], "labels.csv", { type: "text/csv" });
     fireEvent.drop(zone, { dataTransfer: { files: [file] } });
-    expect(await screen.findByText("8")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("8")).toBeInTheDocument();
   });
 
   it("posts a download batch for all resolved rows and saves the file", async () => {
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     renderPage();
     await loadTemplateAndCsv();
-    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).not.toBeDisabled());
+    fireEvent.click(download);
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
     expect(body.template).toBe("t1");
@@ -161,7 +164,7 @@ describe("CSV Import screen", () => {
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
     fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } }); // no color column
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByText("1");
+    await screen.findByDisplayValue("1");
     const download = await screen.findByRole("button", { name: /download/i });
     await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
@@ -217,8 +220,8 @@ describe("CSV Import screen", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^print$/i }));
     // index 3 with copies=2 maps to source row 1 (sku=2), NOT row 0/row 3: assert it lands on the sku=2 row.
     const failedRow = (await screen.findByText(/failed: boom/i)).closest('[role="row"]') as HTMLElement;
-    expect(within(failedRow).getByText("2")).toBeInTheDocument();
-    expect(within(failedRow).queryByText("1")).not.toBeInTheDocument();
+    expect(within(failedRow).getByDisplayValue("2")).toBeInTheDocument();
+    expect(within(failedRow).queryByDisplayValue("1")).not.toBeInTheDocument();
   });
 
   it("maps a 422 BatchInvalid failure to its row and shows a form error", async () => {
@@ -231,10 +234,12 @@ describe("CSV Import screen", () => {
     vi.stubGlobal("fetch", fetchMock);
     renderPage();
     await loadTemplateAndCsv();
-    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).not.toBeDisabled());
+    fireEvent.click(download);
     // index 0 maps to the first CSV row (sku=1): the annotation lands on that row.
     const failedRow = (await screen.findByText(/failed: missing sku/i)).closest('[role="row"]') as HTMLElement;
-    expect(within(failedRow).getByText("1")).toBeInTheDocument();
+    expect(within(failedRow).getByDisplayValue("1")).toBeInTheDocument();
     // a form-level error in the sticky action bar (not the row annotation, which reads "failed: missing sku").
     expect(screen.getByText("missing sku", { selector: "span" })).toBeInTheDocument();
   });
@@ -260,25 +265,27 @@ describe("CSV Import screen", () => {
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
     fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
     // Data columns render; no template means no option controls and no Print/Download.
-    expect(await screen.findByText("1")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("1")).toBeInTheDocument();
     // Choosing a template reveals the action bar; the loaded rows persist.
     fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
     expect(await screen.findByRole("button", { name: /download/i })).toBeInTheDocument();
-    expect(screen.getByText("1")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("1")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("2")).toBeInTheDocument();
   });
 
   it("keeps the CSV rows across a template switch", async () => {
     renderPage();
     await loadTemplateAndCsv();
-    expect(await screen.findByText("1")).toBeInTheDocument();
+    const grid = await screen.findByRole("grid", { name: /label rows/i });
+    expect(within(grid).getByDisplayValue("1")).toBeInTheDocument();
     // Switch back to no template and to t1 again: rows survive (no remount discards them).
     fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "" } });
-    expect(screen.getByText("1")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("1")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
-    expect(await screen.findByText("1")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("1")).toBeInTheDocument();
+    expect(within(grid).getByDisplayValue("2")).toBeInTheDocument();
   });
 
   it("preserves a row's raw CSV field across a no-template edit then template pick", async () => {
@@ -289,10 +296,8 @@ describe("CSV Import screen", () => {
     fireEvent.change(csv, { target: { value: "sku,color\n1,blue\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     // Edit the sku cell while still template-less: this commits the displayed field map for the row.
-    fireEvent.doubleClick(await screen.findByText("1")); // double-click is how the grid enters edit mode
     const skuCell = (await screen.findByLabelText("edit sku")) as HTMLInputElement;
     fireEvent.change(skuCell, { target: { value: "9" } });
-    fireEvent.blur(skuCell);
     // Now pick t1 (which declares color) and submit; the original raw color ("blue") must survive the edit.
     fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "t1" } });
     const download = await screen.findByRole("button", { name: /download/i });
@@ -311,8 +316,9 @@ describe("CSV Import screen", () => {
     const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
     fireEvent.change(csv, { target: { value: "sku\n1\n" } });
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
-    await screen.findByLabelText(/copies/i);
-    fireEvent.click(await screen.findByRole("button", { name: /download/i }));
+    const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).not.toBeDisabled());
+    fireEvent.click(download);
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
     expect(body.labels[0]).toEqual({ data: { sku: "1" } });
@@ -463,25 +469,22 @@ describe("CSV Import screen", () => {
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByLabelText(/copies/i);
 
-    // Confirm the cell shows the first line and the line-count marker
-    expect(await screen.findByText("line one")).toBeInTheDocument();
-    expect(screen.getByText("+1")).toBeInTheDocument();
-
-    // Edit it with Shift+Enter
-    fireEvent.doubleClick(screen.getByText("line one"));
+    // Confirm the cell shows the textarea with value and the line-count marker
     const textarea = (await screen.findByLabelText("edit message")) as HTMLTextAreaElement;
     expect(textarea.tagName).toBe("TEXTAREA");
-    fireEvent.keyDown(textarea, { key: "Enter", shiftKey: true });
-    fireEvent.change(textarea, { target: { value: "first line\nsecond line\nthird line" } });
-    fireEvent.blur(textarea);
+    expect(textarea.value).toBe("line one\nline two");
+    expect(screen.getByText("+1")).toBeInTheDocument();
 
-    await waitFor(() => expect(screen.queryByLabelText("edit message")).toBeNull());
+    // Edit it
+    fireEvent.change(textarea, { target: { value: "first line\nsecond line\nthird line" } });
+
     // Confirm updated display has '+2' marker
-    expect(await screen.findByText("first line")).toBeInTheDocument();
+    expect(textarea.value).toBe("first line\nsecond line\nthird line");
     expect(screen.getByText("+2")).toBeInTheDocument();
 
     // Submit download and confirm submitted payload has the newlines intact
     const download = await screen.findByRole("button", { name: /download/i });
+    await waitFor(() => expect(download).not.toBeDisabled());
     fireEvent.click(download);
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
     const body = JSON.parse((lastCall("/api/batch")![1] as RequestInit).body as string);
@@ -579,7 +582,7 @@ describe("CSV Import screen: datetime parameters", () => {
     await loadCsv("");
 
     const download = await screen.findByRole("button", { name: /download/i });
-    expect(download).not.toBeDisabled();
+    await waitFor(() => expect(download).not.toBeDisabled());
 
     fireEvent.click(download);
     await waitFor(() => expect(countCalls("/api/batch")).toBe(1));
@@ -736,7 +739,7 @@ describe("CSV Import screen: datetime parameters", () => {
     await screen.findByLabelText(/copies/i);
 
     // csvFields contains "tags" but displayedFields must filter it out
-    expect(await screen.findByText("123")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("123")).toBeInTheDocument();
     expect(screen.queryByText("tags")).toBeNull();
     // The grid must not show an inert column for the list field
     expect(screen.queryByText("red;blue")).toBeNull();
@@ -801,7 +804,7 @@ describe("CSV Import screen: datetime parameters", () => {
     fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
     await screen.findByLabelText(/copies/i);
 
-    expect(await screen.findByText("123")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("123")).toBeInTheDocument();
     const download = await screen.findByRole("button", { name: /download/i });
     // If the `if (input.control === "list") continue` guard regresses, every row is flagged
     // as missing `tags` and Download is disabled — ordinary import is blocked.
@@ -1076,10 +1079,8 @@ describe("issue-385: CSV import grid shows fields of every variant", () => {
     // Row 1: tracking_url is editable
     const row1Cells = within(dataRows[0]).getAllByRole("gridcell");
     // columns: preview(0), orientation(1), subtitle(2), tracking_url(3), status(4), actions(5)
-    fireEvent.doubleClick(row1Cells[3]);
-    const trackingInput1 = await screen.findByLabelText("edit tracking_url");
+    const trackingInput1 = within(row1Cells[3]).getByLabelText("edit tracking_url");
     expect(trackingInput1).toBeInTheDocument();
-    fireEvent.blur(trackingInput1);
 
     // Row 2 (vertical): invalid only for missing tracking_url
     await waitFor(() => {
@@ -1089,9 +1090,7 @@ describe("issue-385: CSV import grid shows fields of every variant", () => {
 
     // Row 2: subtitle is editable
     const row2Cells = within(dataRows[1]).getAllByRole("gridcell");
-    fireEvent.doubleClick(row2Cells[2]);
-    const subtitleInput2 = await screen.findByLabelText("edit subtitle");
+    const subtitleInput2 = within(row2Cells[2]).getByLabelText("edit subtitle");
     expect(subtitleInput2).toBeInTheDocument();
-    fireEvent.blur(subtitleInput2);
   });
 });
