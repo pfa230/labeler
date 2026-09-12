@@ -1123,73 +1123,127 @@ that branch; and a mark on the cell would say only what the row's own values alr
 decision, not an omission: giving such a cell a presentation of its own is a change to this
 requirement, made deliberately, and not a liberty an implementation takes.
 
-A grid cell's **editor** follows that same reported `control`, and so does the cell at rest. Which
-editor opens SHALL be decided from `control` alone, on the entry the grid holds for that row and that
-name, and no cell SHALL fall back to a free-text editor for a control that has one:
+A grid cell SHALL render its **control** directly and always on, through the column's `cell` template
+rather than through an overlay editor opened on a gesture. No double click, no F2, and no other gesture
+is required to make a cell editable; the control in the cell is the editor and the cell accepts typing
+with no prior click. Which control the cell shows SHALL be decided from `control` alone, on the entry
+the grid holds for that row and that name, and no cell SHALL fall back to a free-text control for a
+control that has one:
 
-- `text` SHALL be edited in a single-line text control.
-- `textarea` SHALL be edited in a control that accepts a line break.
-- `select` SHALL be edited in a control whose choices are the entry's `values`, one standing for
-  nothing chosen, and the value the cell currently holds where that is neither of those, and nothing
-  else, so a value outside `values` cannot be entered by typing. The retained choice shows a value a
-  CSV import or a connector delivered rather than hiding it behind a blank control, and it offers
-  nothing the cell did not already hold.
-- `checkbox` SHALL be edited in a tick box, over the three states below.
-- `integer` and `number` SHALL be edited in a numeric control carrying the entry's `min` and `max`
-  where it publishes them, stepping by 1 for `integer` and unconstrained for `number`, and reporting
-  itself invalid while it holds a value outside those bounds or one that is not a number.
-- `date` SHALL be edited in a date control, and `datetime` in a date-and-time control.
-- `image` SHALL open no editor, on the same terms as `list`: a per-cell file chooser is the wrong
+- `text` SHALL be a single-line text control.
+- `textarea` SHALL be a control that accepts a line break.
+- `select` SHALL be a control whose choices are the entry's `values`, one standing for nothing chosen,
+  and the value the cell currently holds where that is neither of those, and nothing else, so a value
+  outside `values` cannot be entered by typing. The retained choice shows a value a CSV import or a
+  connector delivered rather than hiding it behind a blank control, and it offers nothing the cell did
+  not already hold.
+- `checkbox` SHALL be a tick box, over the three states below.
+- `integer` and `number` SHALL be a numeric control carrying the entry's `min` and `max` where it
+  publishes them, stepping by 1 for `integer` and unconstrained for `number`, and reporting itself
+  invalid while it holds a value outside those bounds or one that is not a number.
+- `date` SHALL be a date control, and `datetime` a date-and-time control.
+- `image` SHALL render no control, on the same terms as `list`: a per-cell file chooser is the wrong
   shape for bulk editing, and free text was never an editor for a data URI, so an operator sets an
   image on the print form. That is not the inertness above: the name is in the row's list, and its
-  value is held, validated and submitted like any other. Only the editor is withheld.
+  value is held, validated and submitted like any other. Only the control is withheld.
 
 `slider` SHALL be ignored by a grid. A range presentation cannot carry a readable value in a dense
 table cell, so an `integer` or `number` entry takes the plain numeric control whatever its `slider`
 flag says. The print form is untouched by this and keeps honoring the flag.
 
-**Every grid cell editor SHALL answer Enter and Escape itself.** Enter commits the edit, Escape
-abandons it, and moving focus away commits. The grid around an open editor reads a bubbled Enter as an
-abandonment and a bubbled Escape as its own hotkey, so an editor letting either key through would
-discard the edit it was asked to commit. `textarea` alone adds Shift+Enter, which inserts a newline and
-commits nothing; Enter in a `textarea` SHALL NOT insert a newline. A grid owns Enter for commit, an
-operator reaches for it out of habit, and one that silently broke the line instead would cost a row of
-typing with no way back. A newline the operator enters SHALL reach the submitted `data` unaltered.
+**Keyboard** Tab and Shift+Tab SHALL walk the cells in DOM order and that is the whole keyboard story.
+No custom focus code, no Enter-moves-down, no arrow navigation between cells: arrow keys move the caret
+inside the field the operator is in. The grid windows its rows, so Tab reaches the end of the rendered
+window and stops there rather than scrolling on, and that is accepted. This is a loss against the
+previous double-click editor where arrow keys walked cells until a gesture opened an editor; the store's
+hotkey dispatch treats a focused INPUT/TEXTAREA as `isInput` and its arrow handlers return early, so
+always-on inputs and arrow-key cell navigation cannot both exist. A newline the operator enters into a
+`textarea` cell SHALL reach the submitted `data` unaltered; Enter in a `textarea` inserts a newline.
 
-**An editor SHALL NOT alter a value it cannot display.** A cell can hold a value its control has no
-form for: a `select` cell holding a value outside `values`, or a `date` cell holding an offset-bearing
-RFC 3339 instant, both of which a CSV import and a connector can deliver and neither of which the
-grid's validation refuses. Opening such a cell's editor and committing without an explicit change SHALL
-leave the held value exactly as it was, so a value the operator never touched cannot be destroyed by a
-focus.
+The grid store's installed handlers still call `preventDefault()` for ArrowUp/ArrowDown before returning
+when `isInput` is true, and `isInput` excludes `SELECT`, so without suppression textarea vertical
+navigation and number stepping would be blocked and select arrows would invoke grid navigation. LabelGrid
+SHALL prevent the grid from consuming control keystrokes: each always-on control SHALL stop propagation
+of ArrowUp/ArrowDown/ArrowLeft/ArrowRight (and Home/End where relevant) so the document-level hotkey
+listener never receives them, and LabelGrid SHALL intercept the store's `hotkey` action and suppress it
+when the event target is an INPUT, TEXTAREA, or SELECT inside an always-on cell. Arrow keys then move
+the caret/value inside the control rather than the grid focus.
 
-**The cell at rest SHALL present its value by that same `control`**, so that what the grid displays and
-what it will edit describe one thing. A `checkbox` cell SHALL draw a tick box that is not itself
-operable, carrying an accessible name naming the field and the state it shows; a `select` cell SHALL
-show the chosen option; an `image` cell SHALL show that it holds an image rather than the data URI
-itself; every other control SHALL show the value as held. Three rules already stated take precedence,
-in this order: a cell for a name neither the row's list nor `inputs.all` reports is inert; a cell holding a value its
-control has no form for shows that value as text, rather than misreporting it as a state the control
-can hold; and the marker below for an empty invalid cell replaces the presentation entirely.
+**Clicks and focus inside an always-on control SHALL NOT be stolen by the grid.** The vendor's click
+handler exempts only `closest("input")` and otherwise dispatches `focus-cell` (`react-grid/dist/index.es.js:1487`),
+which then focuses the cell wrapper (`react-grid/dist/index.es.js:223`); the wrapper also handles
+bubbling `focus` and can refocus itself (`react-grid/dist/index.es.js:249`). With installed SVAR 2.7.3 a
+click on a focused custom textarea moved `document.activeElement` from `TEXTAREA` to
+`DIV[role=gridcell]`. The keyboard suppression above does not address clicks, and `focus-cell` carries
+only `row`, `column`, and `eventSource` (vendor dispatch at `:1489`, official API at
+`docs.svar.dev/react/grid/api/actions/focus-cell/`), so inspecting an event target is unsupported.
+LabelGrid SHALL ensure pointer and focus do not move to the wrapper: each always-on control SHALL stop
+propagation of `mousedown`/`click` and of `onFocus` (bubbling focus) so neither the click dispatch nor
+the wrapper's focus handler runs for that control. The control then retains focus and remains operable
+after initial mount, subsequent clicks, and Tab/Shift+Tab.
+
+**A control SHALL NOT alter a value it cannot display, and SHALL present it with an operable
+replacement control.** A cell can hold a value its native control has no form for: a `select` cell
+holding a value outside `values`; a `date`/`datetime` cell holding an offset-bearing RFC 3339 instant
+(e.g., `2026-09-01T12:00:00Z`) which `input type=date`/`datetime-local` displays as empty; an
+`integer`/`number` cell holding a non-numeric string; a `checkbox` cell holding a malformed value; or
+any `text`/`textarea` cell whose next paragraph would otherwise apply. All are values a CSV import or
+connector can deliver and that grid validation does not refuse. Restoring the general text fallback
+dropped from `spec.md:1170`, the cell SHALL render the operable control in its empty/unset visual
+state (date/number shows empty, checkbox shows unset, select shows with retained option) **plus** an
+adjacent text adornment showing the stored raw value (`title`/`aria-describedby` and visible text), so
+what the native control displays (empty) does not misrepresent what will submit. The adornment and the
+control coexist in the same always-on cell. Rendering or focusing the cell without an explicit change
+SHALL leave the stored value exactly as it was; an explicit change (typing, selecting, checking) SHALL
+replace the stored value with the control's new value, clearing the adornment, after which normal
+validation applies.
+
+**Appearance** An editable cell SHALL draw a bordered input on the surface colour at rest, not on hover
+or focus, so that editable and read-only cells are told apart by looking, without clicking anything. A
+read-only cell — a `list` entry, an `image` entry, and every cell while `disabled` (a batch is in
+flight) — SHALL render as plain text. Per-row editability continues to come from `cellInput`, not from
+the column; a cell for which `cellInput` returns no entry SHALL render as read-only. `registerInlineEditor`
+and the column `editor` predicate are removed; the column's `cell` is the only rendering path and
+commits travel the existing `update-cell` intercept or `onRowsChange` directly, which is the same data
+flow the vendor documents for an external editor.
+
+**Accessibility of the editable grid.** SVAR derives each cell wrapper's `aria-readonly` directly from
+the column `editor` property (`react-grid/dist/index.es.js:256`), so removing `editor` would mark every
+data cell as read-only in the accessibility tree. `aria-readonly` describes cells where editing is
+disabled under the WAI-ARIA grid pattern. LabelGrid SHALL synchronize each data-cell wrapper's
+`aria-readonly` with actual per-row editability: `false` for operable controls (has `control` and
+`cellInput` returns an entry and not `list`/`image` and not `disabled`), and `true` for missing
+entries, `list`, `image`, and `disabled`. The value SHALL reflect transitions into and out of `disabled`
+without a remount. The obsolete `editor` mechanism SHALL remain removed.
 
 **An unset `checkbox` or `select` cell SHALL show that nothing is chosen**, distinguishably from
-`false` and from the first option, and its editor SHALL offer a gesture returning it to that state.
+`false` and from the first option, and its control SHALL offer a gesture returning it to that state.
 This is the rule the opening block states for an entry with no `default`, reaching the one screen that
 could previously not express it. A cell holding the empty string for either control is unset. For a
 `select` the returning gesture SHALL be an offered choice standing for nothing chosen. For a
 `checkbox` it SHALL be a third activation, cycling unset, checked, unchecked and back to unset,
-because a cell editor cannot carry a second control: Tab is the grid's own commit-and-move, so a
-separate clearing control beside the tick box could not be reached by keyboard at all.
+because a cell cannot carry a second control: Tab is the grid's own commit-and-move, so a separate
+clearing control beside the tick box could not be reached by keyboard at all.
 
-An empty cell whose row reports an error against that name SHALL keep showing the marker naming that
-error, whatever its control, because that is what tells an operator which cell blocks the run. An
-unset tick box in its place would say less.
+An empty cell whose row reports an error against that name SHALL keep its control operable alongside
+the marker naming that error, because the marker is what tells an operator which cell blocks the run
+and the control is what lets them repair it. The marker SHALL be surfaced as an adjacent adornment
+with an accessible name/description (`aria-describedby`/`title` plus visual `⚠ <error>`) rather than
+replacing the control; an unset tick box or empty choice in its place would say less, and a marker
+alone would leave an initially invalid required cell — and any cell cleared during editing — with no
+way to type a value while `Connect.tsx:226`/`Import.tsx:155` keep the run blocked.
 
-A cell SHALL show that its value holds a line break rather than rendering it as one collapsed line,
-so that a two-line value is distinguishable from the same words written with a space, and so that an
-operator can tell the cell holds more than the row has room to show. This applies to every cell whose
-value holds a newline, not only to one whose control is `textarea`: a CSV import and a connector both
-deliver such a value into a cell the operator never opens.
+A cell whose stored value holds a line break SHALL indicate continuation rather than rendering as one
+collapsed line, for **every** control — including an editable `text` control holding an imported
+multiline value. A CSV import and a connector both deliver such values into cells the operator never
+opens, and `input type=text` strips newlines from its displayed value (verified `first\nsecond` shows as
+`firstsecond`). For a `text` cell whose stored value holds a newline, the editable cell SHALL remain an
+operable single-line input showing the first line truncated with a `+N` adornment and `title` holding the
+full stored value, alongside the input; the stored value SHALL retain the newline until an explicit edit
+replaces it, and the row SHALL submit the stored newline value unaltered if the operator leaves the
+control without typing. A `textarea` cell, and any read-only cell, SHALL show the same `first line +N`
+indication with `title` as before. In all cases the value is distinguishable from the same words written
+with a space and the operator can tell the cell holds more than the row shows.
 
 No screen SHALL treat a label as complete, or allow it to be submitted, while the list for that
 label's current values has been requested and not yet received. A stale list would otherwise report
@@ -1423,19 +1477,25 @@ outcome is the editable cell above.*
 
 #### Scenario: A newline typed into a grid cell reaches the request
 
-- **WHEN** the operator edits a cell whose control is `textarea` and presses Shift+Enter between two
+- **WHEN** the operator types into a cell whose control is `textarea` and inserts a newline between two
   words
 - **THEN** the cell's value carries a newline at that point, and the row submits it unaltered
 
 #### Scenario: Enter commits a grid cell rather than breaking the line
 
 - **WHEN** the operator presses Enter while editing a cell whose control is `textarea`
-- **THEN** the edit is committed and no newline is inserted
+- **THEN** the cell's value inserts a newline, because the cell's control is always on and Enter is not
+  a commit gesture
+
+*This scenario's name is historical. `openspec validate --strict` refuses a `MODIFIED` block that drops a scenario name, so the name outlives the rule it described; the normative outcome is the newline above.*
 
 #### Scenario: Escape abandons a grid cell edit
 
 - **WHEN** the operator types into a cell whose control is `textarea` and presses Escape
-- **THEN** the cell holds the value it held before the edit
+- **THEN** the cell keeps the value it held after the typing, because the control is always on and
+  Escape is not an abandon gesture; the grid does not act on the key
+
+*This scenario's name is historical. `openspec validate --strict` refuses a `MODIFIED` block that drops a scenario name, so the name outlives the rule it described; the normative outcome is the always-on behaviour above.*
 
 #### Scenario: A cell holding a newline is distinguishable from one holding a space
 
@@ -1444,27 +1504,49 @@ outcome is the editable cell above.*
 - **THEN** the two cells render differently, and the first shows that its value continues past what
   the cell displays
 
+#### Scenario: An editable text cell holding a newline shows continuation and preserves the value
+
+- **WHEN** a `text` cell (control `text`) holds `first\nsecond` from a CSV import and is rendered as an
+  editable always-on input
+- **THEN** the cell shows an operable single-line input displaying `first` with a `+1` adornment and
+  `title` holding `first\nsecond`, and the row submits `first\nsecond` unaltered if the operator leaves
+  without an explicit edit; an explicit edit replaces the stored value
+
+#### Scenario: A date cell holding an offset-bearing instant shows text plus an operable control
+
+- **WHEN** a `date` cell holds `2026-09-01T12:00:00Z` which `input type=date` cannot represent
+- **THEN** the cell shows an operable date control in its empty state plus an adjacent text adornment
+  showing `2026-09-01T12:00:00Z` (`title`/`aria-describedby`); focusing or rendering without an explicit
+  change leaves the stored value as `2026-09-01T12:00:00Z` and the row submits it, while picking a date
+  replaces it
+
+#### Scenario: A numeric and checkbox cell holding an unrepresentable value shows text plus an operable control
+
+- **WHEN** an `integer` cell holds `abc` and a `checkbox` cell holds `maybe`, each unrepresentable by its
+  native control
+- **THEN** each cell shows its operable control in its empty/unset state plus an adjacent text adornment
+  showing the stored raw value, and rendering without an explicit change preserves that raw value for
+  submission; an explicit change (typing a number / cycling the checkbox) replaces it
+
 #### Scenario: A select cell offers the values the entry declares and nothing else
 
-- **WHEN** the operator opens the editor of a grid cell holding no value, whose entry has control
-  `select` with `values` of `small`, `medium` and `large`
-- **THEN** the editor is a control offering exactly those three choices plus one standing for nothing
-  chosen, and no other value can be entered into the cell by typing
+- **WHEN** the grid renders a cell whose entry has control `select` with `values` of `small`, `medium`
+  and `large` and which holds no value
+- **THEN** the cell shows a control offering exactly those three choices plus one standing for nothing
+  chosen, at rest and without any click, and no other value can be entered into the cell by typing
 
 #### Scenario: A select cell keeps a value its choices do not carry
 
-- **WHEN** a CSV import puts `enormous` into that cell and the operator opens its editor and commits
-  without choosing anything
-- **THEN** the editor offers `enormous` alongside `small`, `medium`, `large` and the choice standing
-  for nothing chosen, and nothing else; the cell still holds `enormous`; and the row submits
-  `enormous`, which the render refuses on the same terms it does today
+- **WHEN** a CSV import puts `enormous` into that cell
+- **THEN** the cell shows a control offering `enormous` alongside `small`, `medium`, `large` and the
+  choice standing for nothing chosen, and nothing else; the cell still holds `enormous`; and the row
+  submits `enormous`, which the render refuses on the same terms it does today
 
 #### Scenario: A checkbox cell is toggled rather than typed
 
-- **WHEN** the operator opens the editor of a cell whose entry has control `checkbox` and which holds
-  no value, and activates the tick box
-- **THEN** the cell holds a true value, the row submits it, and the cell at rest draws a ticked box
-  rather than the text `true`
+- **WHEN** the grid renders a cell whose entry has control `checkbox` and which holds no value
+- **THEN** the cell shows a tick box at rest, and activating it makes the cell hold a true value, the
+  row submits it, and the cell draws a ticked box rather than the text `true`
 
 #### Scenario: A checkbox cell can be returned to unset
 
@@ -1483,53 +1565,141 @@ outcome is the editable cell above.*
 #### Scenario: An integer cell enforces the bounds its entry publishes
 
 - **WHEN** the entry for `copies` has control `integer` with `min: 1` and `max: 9`, and the operator
-  types `20` into its editor
-- **THEN** the editor carries those bounds, reports the value it holds as invalid, and cannot be
+  types `20` into its control
+- **THEN** the control carries those bounds, reports the value it holds as invalid, and cannot be
   stepped past `9`
 
 #### Scenario: An integer cell steps by one where a number cell does not
 
 - **WHEN** one entry has control `integer` and another has control `number`, and neither publishes
   bounds
-- **THEN** the integer editor steps by 1, and the number editor accepts a fractional value such as
+- **THEN** the integer control steps by 1, and the number control accepts a fractional value such as
   `2.5`
 
 #### Scenario: A date cell and a datetime cell open the controls their entries name
 
-- **WHEN** the operator opens the editor of a cell whose entry has control `date`, and then one whose
-  entry has control `datetime`
-- **THEN** the first is a date control and the second a date-and-time control, in place of the
-  free-text control both opened before
+- **WHEN** the grid renders a cell whose entry has control `date`, and one whose entry has control
+  `datetime`
+- **THEN** the first shows a date control and the second a date-and-time control at rest, in place of
+  any free-text control
 
 #### Scenario: An editor does not destroy a value it cannot display
 
-- **WHEN** a `date` cell holds `2026-09-01T12:00:00Z`, which its control has no form for, and the
-  operator opens the editor and commits without typing
-- **THEN** the cell still holds `2026-09-01T12:00:00Z`
+- **WHEN** a `date` cell holds `2026-09-01T12:00:00Z`, which its control has no form for
+- **THEN** the cell shows an operable date control in its empty state plus an adjacent text adornment
+  showing `2026-09-01T12:00:00Z`, and rendering/focusing without an explicit change leaves the value as
+  `2026-09-01T12:00:00Z`
+
+*This scenario's name is historical. `openspec validate --strict` refuses a `MODIFIED` block that drops a scenario name, so the name outlives the rule it described; the normative outcome is the always-on preservation above.*
 
 #### Scenario: An image cell opens no editor
 
-- **WHEN** the operator double-clicks a cell whose entry has control `image` and holds a data URI
-- **THEN** no editor opens, the cell shows that it holds an image rather than the data URI, and the row
-  still submits the value the cell holds
+- **WHEN** the operator focuses a cell whose entry has control `image` and holds a data URI
+- **THEN** no control appears, the cell shows that it holds an image rather than the data URI, and the
+  row still submits the value the cell holds
+
+*This scenario's name is historical. `openspec validate --strict` refuses a `MODIFIED` block that drops a scenario name, so the name outlives the rule it described; the normative outcome is the always-on read-only cell above.*
 
 #### Scenario: A grid ignores a slider flag the print form honors
 
 - **WHEN** an entry with control `number` carries `slider: true` and publishes `min` and `max`
-- **THEN** its grid cell is edited in the plain numeric control, while the print form still renders a
+- **THEN** its grid cell shows the plain numeric control, while the print form still renders a
   range control for the same entry
 
 #### Scenario: An empty invalid cell keeps its marker whatever its control
 
 - **WHEN** a required `checkbox` cell and a required `select` cell are both empty and the row reports
   `required` against each
-- **THEN** each cell shows the marker naming that error, rather than an unset tick box or an empty
-  choice
+- **THEN** each cell shows its control (an unset tick box / a select with the `"(none)"` choice) alongside
+  the marker naming that error, with the diagnostic surfaced via `aria-describedby`/`title` and visual
+  `⚠ <error>`, rather than the marker replacing the control
+
+#### Scenario: An initially invalid required cell can be filled
+
+- **WHEN** a row is rendered whose required `text` cell is empty and reports `required`, showing its
+  control alongside `⚠`, and the operator types a value into that control
+- **THEN** the row's data updates, the marker clears on the next validation, and the row becomes
+  submittable
+
+#### Scenario: Clearing then refilling a required cell restores the row
+
+- **WHEN** a row's required `text` cell holds a value, the operator clears it (leaving the control
+  empty with `⚠` alongside), and then types a new value
+- **THEN** the first clear makes the row invalid with the marker alongside the still-editable control,
+  and the retyped value clears the marker and makes the row submittable again
 
 #### Scenario: Escape abandons an edit in a control that is not a text box
 
-- **WHEN** the operator chooses a different option in a `select` cell's editor and presses Escape
-- **THEN** the cell holds the value it held before the edit, and the grid does not act on the key
+- **WHEN** the operator changes the option in a `select` cell's control
+- **THEN** the cell holds the newly chosen value, because the control is always on and Escape is not an
+  abandon gesture; the grid does not act on the key
+
+*This scenario's name is historical. `openspec validate --strict` refuses a `MODIFIED` block that drops a scenario name, so the name outlives the rule it described; the normative outcome is the always-on behaviour above.*
+
+#### Scenario: A grid cell is editable without a double click
+
+- **WHEN** the Connect grid and the Import grid render a cell whose entry has control `text`
+- **THEN** the cell shows a text control at rest, and typing into it with no prior click or double click
+  updates the row's data and is submitted
+
+#### Scenario: Every control type renders its control at rest
+
+- **WHEN** the grid renders cells for entries with controls `text`, `textarea`, `select`, `checkbox`,
+  `integer`, `number`, `date` and `datetime`
+- **THEN** each cell shows its corresponding control at rest, without any gesture, and the control
+  reflects the cell's current value
+
+#### Scenario: A list cell and a disabled cell render no control
+
+- **WHEN** the grid renders a cell whose entry has control `list`, and when the same grid is rendered
+  with `disabled` true while a batch is in flight
+- **THEN** neither cell shows an editing control; both render as plain text (a `list` cell showing the
+  display text or `—`, a disabled cell showing the held value), while an editable cell in the same grid
+  with `disabled` false shows its control
+
+#### Scenario: Tab moves focus between editable cells in DOM order
+
+- **WHEN** the grid renders a row with two editable cells and the operator presses Tab while focused in
+  the first cell's control
+- **THEN** focus moves to the next editable cell's control in DOM order, and Shift+Tab moves it back;
+  arrow keys move the caret inside the focused field rather than between cells
+
+#### Scenario: Arrow keys inside always-on controls are not consumed by the grid
+
+- **WHEN** the operator presses ArrowUp/ArrowDown inside a focused `textarea` control, ArrowUp/ArrowDown
+  inside a focused `integer`/`number` control, and ArrowUp/ArrowDown inside a focused `select` control
+- **THEN** the textarea caret moves vertically, the number control steps its value, and the select control
+  navigates its options, without the grid moving focus to another cell and without `preventDefault`
+  blocking the native behaviour
+
+#### Scenario: Click inside textarea and select retains control focus
+
+- **WHEN** the operator clicks inside a focused `textarea` control and inside a focused `select` control
+  in the grid
+- **THEN** `document.activeElement` remains the `TEXTAREA`/`SELECT` (not `DIV[role=gridcell]`), the control
+  remains operable, and the wrapper's bubbling focus handler does not refocus the cell
+
+#### Scenario: Initial focus lands on the first editable control
+
+- **WHEN** a grid with no preview column is freshly mounted with one row whose first data cell is
+  editable (`text`)
+- **THEN** focus is on that `text` control without requiring a click, and subsequent clicks inside
+  `textarea`/`select` and Tab/Shift+Tab keep focus on the intended control rather than the wrapper
+
+#### Scenario: The grid cell wrapper exposes correct aria-readonly
+
+- **WHEN** the grid renders an editable `text` cell, a cell for a missing entry, a `list` cell, an `image`
+  cell, and when `disabled` becomes true and then false again
+- **THEN** the editable cell's wrapper has `aria-readonly="false"` while the missing-entry, `list`,
+  `image`, and `disabled` wrappers have `aria-readonly="true"`, and the values update on the
+  `disabled` transition without a remount
+
+#### Scenario: Editable cells are visually distinct from read-only cells
+
+- **WHEN** the grid renders an editable `text` cell and a read-only `list` cell, and the same grid while
+  `disabled`
+- **THEN** the editable cell draws a bordered input on the surface colour at rest, and the read-only
+  cells render as plain text, distinguishable without hover or focus
 
 #### Scenario: A declared default starts deferred and is not sent
 
