@@ -641,13 +641,13 @@ export function LabelGrid(props: LabelGridProps) {
 
   const initialFocusDone = useRef(false);
   useEffect(() => {
-    if (!initialFocusDone.current && !onSelectRow && !disabled && rows.length > 0) {
-      const firstControl = viewport.current?.querySelector<HTMLElement>(
-        '[role="gridcell"] input:not([type="radio"]):not([disabled]), [role="gridcell"] textarea:not([disabled]), [role="gridcell"] select:not([disabled])'
-      );
-      if (firstControl) {
-        initialFocusDone.current = true;
-        firstControl.focus();
+    if (!initialFocusDone.current && rows.length > 0) {
+      initialFocusDone.current = true;
+      if (!onSelectRow && !disabled) {
+        const firstControl = viewport.current?.querySelector<HTMLElement>(
+          '[role="gridcell"] input:not([type="radio"]):not([disabled]), [role="gridcell"] textarea:not([disabled]), [role="gridcell"] select:not([disabled])'
+        );
+        firstControl?.focus();
       }
     }
   }, [onSelectRow, disabled, rows]);

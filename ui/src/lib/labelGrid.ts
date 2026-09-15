@@ -37,13 +37,30 @@ export interface ResolvedLabel {
 export function resolveLabels(
   rows: LabelGridRow[],
   copies: number,
+  dataFor: (row: LabelGridRow) => Record<string, ParamValue>,
 ): ResolvedLabel[] {
   const out: ResolvedLabel[] = [];
   for (const row of rows) {
-    const label: ResolvedLabel = { data: row.data };
+    const label: ResolvedLabel = { data: dataFor(row) };
     for (let i = 0; i < copies; i += 1) out.push(label);
   }
   return out;
+}
+
+export function sheetPreviewBlock(
+  invalidPositions: number[],
+  total: number,
+): string | undefined {
+  if (invalidPositions.length === 1) {
+    return `Fix row ${invalidPositions[0]} to preview the sheet.`;
+  }
+  if (invalidPositions.length > 1) {
+    return `Fix rows ${invalidPositions.join(", ")} to preview the sheet.`;
+  }
+  if (total > MAX_BATCH_LABELS) {
+    return "Over the 500-label limit; reduce the batch to preview the sheet.";
+  }
+  return undefined;
 }
 
 // Map an index in the expanded label array back to its source row index (for annotating failures).

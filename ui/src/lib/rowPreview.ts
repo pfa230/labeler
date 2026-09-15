@@ -4,13 +4,11 @@ import type { PreviewState } from "../components/PreviewPane";
 
 export interface RowPreviewInput {
   templateId: string;
-  format: "single" | "sheet";
   label?: ResolvedLabel;
-  startSlot?: number;
 }
 
 export function useRowPreview(input: RowPreviewInput): PreviewState {
-  const key = JSON.stringify([input.templateId, input.format, input.label ?? null, input.startSlot ?? 0]);
+  const key = JSON.stringify([input.templateId, input.label ?? null]);
   const [state, setState] = useState<PreviewState>({ loading: false });
   const urlRef = useRef<string | undefined>(undefined);
 
@@ -21,16 +19,8 @@ export function useRowPreview(input: RowPreviewInput): PreviewState {
     (async () => {
       setState({ loading: true });
       try {
-        const single = input.format === "single";
-        const path = single ? "/api/render/label" : "/api/batch";
-        const body = single
-          ? { template: input.templateId, ...input.label }
-          : {
-              template: input.templateId,
-              mode: "download",
-              labels: [input.label],
-              ...(input.startSlot ? { start_slot: input.startSlot } : {}),
-            };
+        const path = "/api/render/label";
+        const body = { template: input.templateId, ...input.label };
         const res = await fetch(path, {
           method: "POST",
           headers: { "content-type": "application/json" },

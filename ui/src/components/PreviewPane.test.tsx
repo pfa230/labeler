@@ -35,4 +35,18 @@ describe("PreviewPane", () => {
     render(<PreviewPane name="L" format="single" preview={{ error: "boom", loading: false }} />);
     expect(screen.getByText("Preview failed: boom")).toBeInTheDocument();
   });
+
+  it("renders blocked state without object, img, or preview failed prefix", () => {
+    const { container } = render(
+      <PreviewPane
+        name="S"
+        format="sheet"
+        preview={{ blocked: "Fix row 2 to preview the sheet.", loading: false }}
+      />,
+    );
+    expect(screen.getByText("Fix row 2 to preview the sheet.")).toBeInTheDocument();
+    expect(screen.queryByText(/Preview failed/)).toBeNull();
+    expect(container.querySelector("object")).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+  });
 });

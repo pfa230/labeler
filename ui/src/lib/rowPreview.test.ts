@@ -17,7 +17,7 @@ describe("useRowPreview", () => {
     const fetchMock = vi.fn(async () => new Response(new Blob([new Uint8Array([1])]), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const { result } = renderHook(() =>
-      useRowPreview({ templateId: "t", format: "single", label: { data: { title: "x" } } }),
+      useRowPreview({ templateId: "t", label: { data: { title: "x" } } }),
     );
     await waitFor(() => expect(result.current.url).toBe("blob:x"));
     expect(fetchMock).toHaveBeenCalledWith(
@@ -29,7 +29,7 @@ describe("useRowPreview", () => {
   it("is idle with no selected label", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    const { result } = renderHook(() => useRowPreview({ templateId: "t", format: "single" }));
+    const { result } = renderHook(() => useRowPreview({ templateId: "t" }));
     expect(result.current.loading).toBe(false);
     expect(result.current.url).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -40,7 +40,7 @@ describe("useRowPreview", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { result, rerender } = renderHook(
       (label: { data: { title: string } } | undefined) =>
-        useRowPreview({ templateId: "t", format: "single", label }),
+        useRowPreview({ templateId: "t", label }),
       { initialProps: { data: { title: "x" } } },
     );
     await waitFor(() => expect(result.current.url).toBe("blob:x"));
