@@ -44,10 +44,19 @@ type StubConnection = {
 
 type StubOptions = {
   renderLabel?: () => Response;
+  batch?: (body: Record<string, unknown>) => Response;
   connections?: StubConnection[];
   connectionsError?: boolean;
   settings?: Record<string, { value: unknown; is_default: boolean }>;
   settingsError?: boolean;
+  templates?: Array<{ id: string; name: string; description: string; unit: string; dpi: number; format: { type: string } }>;
+  templateDetail?: unknown;
+  templateDetails?: Record<string, unknown>;
+  browseRows?: Array<{ id: { resource: string; key: string }; cells: Record<string, string> }>;
+  materializeData?: Record<string, string>;
+  inputsResponse?: (body: unknown) => Promise<Response> | Response;
+  inputsSpec?: Array<{ name: string; control: string; required?: boolean }>;
+  printers?: Array<{ id: string; name: string }>;
 };
 
 function stub(opts: StubOptions = {}) {
@@ -73,19 +82,35 @@ function stub(opts: StubOptions = {}) {
     const url = typeof input === "string" ? input : input.toString();
     const method = (init?.method ?? "GET").toUpperCase();
     if (url.includes("/inputs")) {
+      if (opts.inputsResponse) return opts.inputsResponse(init?.body);
       const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
       const labels = parsedBody.labels ?? [{ data: {} }];
-      return json({ inputs: labels.map(() => [{ name: "name", control: "text" }]) });
+      return json({
+        inputs: labels.map(() => opts.inputsSpec ?? [{ name: "name", control: "text" }]),
+      });
     }
     if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
-    if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
+    if (url.startsWith("/api/connections/") && url.endsWith("/browse")) {
+      const rows = opts.browseRows ?? [
+        { id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } },
+        { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
+      ];
+      return json({ rows, next_cursor: null, has_more: false, count: rows.length });
+    }
     if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) {
       const parsed = init?.body ? JSON.parse(String(init.body)) : null;
       const requestedRows: Array<{ resource: string; key: string }> = parsed?.rows ?? [
         { resource: "entities", key: "e1" },
         { resource: "entities", key: "e2" },
       ];
-      const allData: Record<string, string> = { e1: "Drill", e2: "Hammer" };
+      const allData: Record<string, string> = {
+        e1: "Drill",
+        e2: "Hammer",
+        e3: "Saw",
+        e4: "Wrench",
+        e5: "Pliers",
+        ...(opts.materializeData ?? {}),
+      };
       return json(
         requestedRows.map((r) => ({
           source: { resource: r.resource, key: r.key },
@@ -160,14 +185,29 @@ function stub(opts: StubOptions = {}) {
       };
       return new Response(null, { status: 204 });
     }
-    if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-    if (url === "/api/templates/tpl") return json(templateDetail);
-    if (url === "/api/printers") return json([]);
+    if (url === "/api/templates") {
+      if (opts.templates) return json({ templates: opts.templates });
+      return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
+    }
+    if (url.startsWith("/api/templates/")) {
+      const id = url.slice("/api/templates/".length);
+      if (opts.templateDetails && opts.templateDetails[id]) return json(opts.templateDetails[id]);
+      if (opts.templateDetail) return json(opts.templateDetail);
+      if (id === "tpl") return json(templateDetail);
+    }
+    if (url === "/api/printers") return json(opts.printers ?? []);
     if (url.startsWith("/api/render/label") && method === "POST") {
       if (opts.renderLabel) return opts.renderLabel();
       return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
     }
-    if (url === "/api/batch" && method === "POST") return new Response(new Blob(["%PDF"]), { status: 200, headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="tpl.zip"' } });
+    if (url === "/api/batch" && method === "POST") {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (opts.batch) return opts.batch(body);
+      return new Response(new Blob(["%PDF"]), {
+        status: 200,
+        headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="tpl.pdf"' },
+      });
+    }
     throw new Error(`unexpected fetch: ${url} ${method}`);
   });
 
@@ -2735,6 +2775,369 @@ describe("issue-385: connector grid shows fields of every variant", () => {
     });
     expect(submittedBatch!.labels[0].data.orientation).toBe("horizontal");
     expect(submittedBatch!.labels[0].data.tags).toEqual(["KIDS", "CONSUMABLE"]);
+  });
+});
+
+describe("issue-386: sheet preview", () => {
+  const sheetTemplateDetail = {
+    id: "sheet-tpl",
+    name: "Sheet",
+    description: "",
+    unit: "mm",
+    dpi: 300,
+    format: {
+      type: "sheet",
+      width: 210,
+      height: 297,
+      positions: Array.from({ length: 30 }, () => ({ x: 0, y: 0 })),
+    },
+    inputs: {
+      all: [{ name: "name", control: "text", required: true }],
+      default: [{ name: "name", control: "text", required: true }],
+    },
+  };
+
+  type BatchPayload = {
+    mode?: string;
+    template?: string;
+    start_slot?: number;
+    labels?: Array<{ data: Record<string, unknown> }>;
+  };
+
+  async function selectSheetAndMaterialize(opts?: StubOptions, selectCount = 2) {
+    fetchMock = stub({
+      templates: [
+        { id: "sheet-tpl", name: "Sheet", description: "", unit: "mm", dpi: 300, format: { type: "sheet" } },
+        { id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } },
+      ],
+      templateDetails: {
+        "sheet-tpl": sheetTemplateDetail,
+        tpl: templateDetail,
+      },
+      inputsSpec: [{ name: "name", control: "text", required: true }],
+      ...opts,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "sheet-tpl" } });
+    for (let i = 1; i <= selectCount; i++) {
+      fireEvent.click(await screen.findByLabelText(`select entities:e${i}`));
+    }
+    fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+  }
+
+  it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/batch preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
+    let capturedBatchBodies: BatchPayload[] = [];
+    await selectSheetAndMaterialize({
+      batch: (body) => {
+        capturedBatchBodies.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
+    capturedBatchBodies = [];
+
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText(/start slot/i), { target: { value: "1" } });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
+    const previewBody = capturedBatchBodies[0];
+    expect(previewBody.mode).toBe("download");
+    expect(previewBody.template).toBe("sheet-tpl");
+    expect(previewBody.start_slot).toBe(1);
+    expect(previewBody.labels).toEqual([
+      { data: { name: "Drill" } },
+      { data: { name: "Drill" } },
+      { data: { name: "Drill" } },
+      { data: { name: "Hammer" } },
+      { data: { name: "Hammer" } },
+      { data: { name: "Hammer" } },
+    ]);
+    expect(screen.getByLabelText(/Sheet preview/i).tagName).toBe("OBJECT");
+
+    capturedBatchBodies = [];
+    const downloadBtn = screen.getByRole("button", { name: /^download$/i });
+    fireEvent.click(downloadBtn);
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
+    const downloadBody = capturedBatchBodies[0];
+    expect(downloadBody.labels).toEqual(previewBody.labels);
+    expect(downloadBody.start_slot).toEqual(previewBody.start_slot);
+  });
+
+  it("5.2 Sheet template renders no input[name=\"preview-row\"]; a single template renders one radio per row and the existing selected-row preview tests stay green", async () => {
+    fetchMock = stub({
+      templates: [
+        { id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } },
+        { id: "sheet-tpl", name: "Sheet", description: "", unit: "mm", dpi: 300, format: { type: "sheet" } },
+      ],
+      templateDetails: {
+        tpl: templateDetail,
+        "sheet-tpl": sheetTemplateDetail,
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+    expect(document.querySelectorAll('input[name="preview-row"]').length).toBe(2);
+
+    fireEvent.change(screen.getByLabelText(/template/i), { target: { value: "sheet-tpl" } });
+    await waitFor(() => {
+      expect(screen.queryByRole("grid", { name: /label rows/i })).toBeNull();
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /add 2 rows/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+    expect(document.querySelectorAll('input[name="preview-row"]').length).toBe(0);
+  });
+
+  it("5.3 Sheet template with one row missing a required value: no /api/batch request, no <object>, pane reads Fix row N to preview the sheet.; filling the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
+    let capturedBatchBodies: BatchPayload[] = [];
+    await selectSheetAndMaterialize({
+      batch: (body) => {
+        capturedBatchBodies.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBeGreaterThan(0));
+    capturedBatchBodies = [];
+
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit name/i });
+    fireEvent.change(textboxes[1], { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Fix row 2 to preview the sheet.")).toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(document.querySelector("object")).toBeNull();
+    expect(capturedBatchBodies.length).toBe(0);
+
+    fireEvent.change(textboxes[1], { target: { value: "Wrench" } });
+    await waitFor(() => {
+      expect(capturedBatchBodies.length).toBe(1);
+    });
+    expect(capturedBatchBodies[0].labels).toEqual([
+      { data: { name: "Drill" } },
+      { data: { name: "Wrench" } },
+    ]);
+    await waitFor(() => {
+      expect(document.querySelector("object")).not.toBeNull();
+    });
+  });
+
+  it("5.4 Sheet template with a 5-row grid whose rows 2 and 5 are invalid: pane reads exactly Fix rows 2, 5 to preview the sheet. and the text does not begin with Preview failed", async () => {
+    await selectSheetAndMaterialize();
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    for (let i = 0; i < 3; i++) {
+      const dupButtons = within(grid).getAllByRole("button", { name: /duplicate row/i });
+      fireEvent.click(dupButtons[0]);
+      await waitFor(() => {
+        expect(within(grid).getAllByRole("button", { name: /duplicate row/i }).length).toBe(3 + i);
+      });
+    }
+
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit name/i });
+    expect(textboxes.length).toBe(5);
+
+    fireEvent.change(textboxes[1], { target: { value: "" } });
+    fireEvent.change(textboxes[4], { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Fix rows 2, 5 to preview the sheet.")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Preview failed/)).toBeNull();
+  });
+
+  it("5.5 Sheet template with 2 rows and copies set to 300: no /api/batch request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
+    let capturedBatchBodies: BatchPayload[] = [];
+    await selectSheetAndMaterialize({
+      batch: (body) => {
+        capturedBatchBodies.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBeGreaterThan(0));
+    capturedBatchBodies = [];
+
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "300" } });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Over the 500-label limit; reduce the batch to preview the sheet."),
+      ).toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(capturedBatchBodies.length).toBe(0);
+  });
+
+  it("5.6 Pending precedence: hold the inputs endpoint open for one row whose fallback (inputs.default) marks a required entry missing that its resolved inputs do not carry; while held, the pane reads as rendering, names no row and no batch request is sent; resolving the inputs sends one batch request holding every row", async () => {
+    let resolveInputs!: (res: Response) => void;
+    const inputsPromise = new Promise<Response>((resolve) => {
+      resolveInputs = resolve;
+    });
+
+    let batchCalled = false;
+    const tplWithFallbackRequired = {
+      ...sheetTemplateDetail,
+      inputs: {
+        all: [
+          { name: "name", control: "text" },
+          { name: "extra_req", control: "text", required: true },
+        ],
+        default: [
+          { name: "name", control: "text" },
+          { name: "extra_req", control: "text", required: true },
+        ],
+      },
+    };
+
+    fetchMock = stub({
+      templates: [
+        { id: "sheet-tpl", name: "Sheet", description: "", unit: "mm", dpi: 300, format: { type: "sheet" } },
+      ],
+      templateDetails: {
+        "sheet-tpl": tplWithFallbackRequired,
+      },
+      inputsResponse: () => inputsPromise,
+      batch: () => {
+        batchCalled = true;
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await screen.findByRole("option", { name: "Home" });
+    fireEvent.change(await screen.findByLabelText(/^connection$/i), { target: { value: "c1" } });
+    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "sheet-tpl" } });
+    fireEvent.click(await screen.findByLabelText("select entities:e1"));
+    fireEvent.click(await screen.findByRole("button", { name: /add .* row/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+
+    await waitFor(() => {
+      expect(screen.getByText("rendering preview…")).toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(screen.queryByText(/Fix row/i)).toBeNull();
+    expect(batchCalled).toBe(false);
+
+    resolveInputs(
+      json({
+        inputs: [[{ name: "name", control: "text" }]],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(batchCalled).toBe(true);
+    });
+  });
+
+  it("5.7 Single template: select row 2, clear a required value in it, and stub /api/render/label to return a non-2xx envelope; row 2 stays the row requested, the pane shows Preview failed: with the service's message, and Download is disabled", async () => {
+    let shouldFailRender = false;
+
+    fetchMock = stub({
+      templates: [
+        { id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } },
+      ],
+      templateDetails: {
+        tpl: {
+          ...templateDetail,
+          inputs: {
+            all: [{ name: "name", control: "text", required: true }],
+            default: [{ name: "name", control: "text", required: true }],
+          },
+        },
+      },
+      inputsSpec: [{ name: "name", control: "text", required: true }],
+      renderLabel: () => {
+        if (shouldFailRender) {
+          return new Response(JSON.stringify({ error: { message: "cannot render empty label" } }), {
+            status: 422,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnect();
+    await browseSelectMaterialize();
+
+    fireEvent.click(screen.getByLabelText("preview row 2"));
+
+    shouldFailRender = true;
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit name/i });
+    fireEvent.change(textboxes[1], { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Preview failed: cannot render empty label")).toBeInTheDocument();
+    });
+
+    const radio2 = screen.getByLabelText("preview row 2") as HTMLInputElement;
+    expect(radio2.checked).toBe(true);
+    expect(screen.getByRole("button", { name: /^download$/i })).toBeDisabled();
+  });
+
+  it("5.8 Sheet template: a settled edit to a cell, then to copies, then to start slot, each sends one batch request carrying the new labels count or start_slot; a re-render with the batch unchanged sends none", async () => {
+    const batchCalls: BatchPayload[] = [];
+    await selectSheetAndMaterialize({
+      printers: [{ id: "p1", name: "Printer 1" }],
+      batch: (body) => {
+        batchCalls.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(batchCalls.length).toBe(1));
+    expect(batchCalls[0]?.labels?.[0]?.data?.name).toBe("Drill");
+
+    // 1. Settled edit to a cell
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit name/i });
+    fireEvent.change(textboxes[0], { target: { value: "Cordless Drill" } });
+
+    await waitFor(() => expect(batchCalls.length).toBe(2));
+    expect(batchCalls[1]?.labels?.[0]?.data?.name).toBe("Cordless Drill");
+
+    // 2. Edit copies
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "2" } });
+    await waitFor(() => expect(batchCalls.length).toBe(3));
+    expect(batchCalls[2]?.labels?.length).toBe(4);
+
+    // 3. Edit start slot
+    fireEvent.change(screen.getByLabelText(/start slot/i), { target: { value: "3" } });
+    await waitFor(() => expect(batchCalls.length).toBe(4));
+    expect(batchCalls[3].start_slot).toBe(3);
+
+    // 4. Re-render with batch unchanged
+    fireEvent.change(screen.getByLabelText(/^printer$/i), { target: { value: "p1" } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(batchCalls.length).toBe(4);
   });
 });
 

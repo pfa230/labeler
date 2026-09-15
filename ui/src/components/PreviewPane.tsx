@@ -2,6 +2,7 @@ export interface PreviewState {
   url?: string;
   error?: string;
   loading: boolean;
+  blocked?: string;
 }
 
 export function PreviewPane({
@@ -20,18 +21,21 @@ export function PreviewPane({
       style={{ background: "var(--surface)", borderColor: "var(--border)" }}
     >
       {preview.loading && <p style={{ color: "var(--muted)" }}>rendering preview…</p>}
-      {!preview.loading && preview.error && (
+      {!preview.loading && preview.blocked && (
+        <p style={{ color: "var(--bad)" }}>{preview.blocked}</p>
+      )}
+      {!preview.loading && !preview.blocked && preview.error && (
         <p style={{ color: "var(--bad)" }}>Preview failed: {preview.error}</p>
       )}
-      {!preview.loading && !preview.error && preview.url && !isSheet && (
+      {!preview.loading && !preview.blocked && !preview.error && preview.url && !isSheet && (
         <img src={preview.url} alt={`${name} preview`} className="max-h-96 max-w-full" />
       )}
-      {!preview.loading && !preview.error && preview.url && isSheet && (
+      {!preview.loading && !preview.blocked && !preview.error && preview.url && isSheet && (
         <object data={preview.url} type="application/pdf" className="h-96 w-full" aria-label={`${name} preview`}>
           <a href={preview.url}>Open sheet preview</a>
         </object>
       )}
-      {!preview.loading && !preview.error && !preview.url && (
+      {!preview.loading && !preview.blocked && !preview.error && !preview.url && (
         <p style={{ color: "var(--muted)" }}>Fill the required fields to preview.</p>
       )}
     </div>

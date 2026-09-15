@@ -1094,3 +1094,450 @@ describe("issue-385: CSV import grid shows fields of every variant", () => {
     expect(subtitleInput2).toBeInTheDocument();
   });
 });
+
+describe("issue-386: sheet preview", () => {
+  const sheetDetail = {
+    id: "sheet-tpl",
+    name: "Sheet",
+    description: "",
+    unit: "mm",
+    dpi: 300,
+    format: {
+      type: "sheet",
+      width: 210,
+      height: 297,
+      positions: Array.from({ length: 30 }, () => ({ x: 0, y: 0 })),
+    },
+    inputs: {
+      all: [{ name: "sku", control: "text", required: true }],
+      default: [{ name: "sku", control: "text", required: true }],
+    },
+  };
+
+  const importTemplates = [
+    { id: "sheet-tpl", name: "Sheet", description: "", unit: "mm", dpi: 300, format: sheetDetail.format },
+    { id: "t1", name: "Tag", description: "", unit: "mm", dpi: 300, format: detail.format },
+  ];
+
+  type BatchPayload = {
+    mode?: string;
+    template?: string;
+    start_slot?: number;
+    labels?: Array<{ data: Record<string, unknown> }>;
+  };
+
+  type StubOpts = {
+    batch?: (body: Record<string, unknown>) => Response;
+    renderLabel?: () => Response;
+    templateDetails?: Record<string, unknown>;
+    inputsResponse?: (body: unknown) => Promise<Response> | Response;
+  };
+
+  function stubSheetFetch(opts?: StubOpts) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = (init?.method ?? "GET").toUpperCase();
+
+      if (url.includes("/inputs")) {
+        if (opts?.inputsResponse) return opts.inputsResponse(init?.body ? JSON.parse(String(init.body)) : null);
+        const parsedBody = init?.body ? JSON.parse(String(init.body)) : { labels: [] };
+        const labels = parsedBody.labels ?? [{ data: {} }];
+        return json({
+          inputs: labels.map(() => [
+            { name: "sku", control: "text", required: true },
+          ]),
+        });
+      }
+
+      if (url === "/api/templates") {
+        return json({ templates: importTemplates });
+      }
+
+      if (url.startsWith("/api/templates/")) {
+        const id = url.slice("/api/templates/".length);
+        if (opts?.templateDetails && opts.templateDetails[id]) return json(opts.templateDetails[id]);
+        if (id === "sheet-tpl") return json(sheetDetail);
+        if (id === "t1") return json(detail);
+      }
+
+      if (url.startsWith("/api/printers")) return json(printers);
+
+      if (url.startsWith("/api/render/label") && method === "POST") {
+        if (opts?.renderLabel) return opts.renderLabel();
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      }
+
+      if (url.startsWith("/api/batch") && method === "POST") {
+        const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<string, unknown>;
+        if (opts?.batch) return opts.batch(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      }
+
+      throw new Error(`unexpected fetch: ${url} ${method}`);
+    });
+  }
+
+  async function loadSheetAndCsv(csvText = "sku\n1\n2\n", opts?: StubOpts) {
+    fetchMock = stubSheetFetch(opts);
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Sheet" });
+    fireEvent.change(picker, { target: { value: "sheet-tpl" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: csvText } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+  }
+
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("5.1 Sheet template with 2 valid rows, copies 3 and start slot 1: one POST /api/batch preview request with 6 labels in row order and start_slot: 1; activating Download then sends a body whose labels and start_slot deep-equal the preview's", async () => {
+    let capturedBatchBodies: BatchPayload[] = [];
+    await loadSheetAndCsv("sku\n1\n2\n", {
+      batch: (body) => {
+        capturedBatchBodies.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
+    capturedBatchBodies = [];
+
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText(/start slot/i), { target: { value: "1" } });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
+    const previewBody = capturedBatchBodies[0];
+    expect(previewBody.mode).toBe("download");
+    expect(previewBody.template).toBe("sheet-tpl");
+    expect(previewBody.start_slot).toBe(1);
+    expect(previewBody.labels).toEqual([
+      { data: { sku: "1" } },
+      { data: { sku: "1" } },
+      { data: { sku: "1" } },
+      { data: { sku: "2" } },
+      { data: { sku: "2" } },
+      { data: { sku: "2" } },
+    ]);
+    expect(screen.getByLabelText(/Sheet preview/i).tagName).toBe("OBJECT");
+
+    capturedBatchBodies = [];
+    const downloadBtn = screen.getByRole("button", { name: /^download$/i });
+    fireEvent.click(downloadBtn);
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBe(1));
+    const downloadBody = capturedBatchBodies[0];
+    expect(downloadBody.labels).toEqual(previewBody.labels);
+    expect(downloadBody.start_slot).toEqual(previewBody.start_slot);
+  });
+
+  it("5.2 Sheet template renders no input[name=\"preview-row\"]; a single template renders one radio per row and the existing selected-row preview tests stay green; no template chosen keeps radios", async () => {
+    fetchMock = stubSheetFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    // 1. With no template chosen: load CSV, grid keeps radios
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+    expect(document.querySelectorAll('input[name="preview-row"]').length).toBe(2);
+
+    // 2. Select single template: renders one radio per row
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    fireEvent.change(picker, { target: { value: "t1" } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('input[name="preview-row"]').length).toBe(2);
+    });
+
+    // 3. Select sheet template: renders no radios
+    fireEvent.change(picker, { target: { value: "sheet-tpl" } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('input[name="preview-row"]').length).toBe(0);
+    });
+  });
+
+  it("switching template to a sheet template leaves focus on the picker", async () => {
+    fetchMock = stubSheetFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+
+    picker.focus();
+    expect(document.activeElement).toBe(picker);
+
+    fireEvent.change(picker, { target: { value: "sheet-tpl" } });
+    await waitFor(() => {
+      expect(document.querySelectorAll('input[name="preview-row"]').length).toBe(0);
+    });
+
+    expect(document.activeElement).toBe(picker);
+  });
+
+  it("5.3 Sheet template with one row missing a required value: no /api/batch request, no <object>, pane reads Fix row N to preview the sheet.; filling the cell sends one batch request holding every row and the pane embeds the PDF", async () => {
+    let capturedBatchBodies: BatchPayload[] = [];
+    await loadSheetAndCsv("sku\n1\n2\n", {
+      batch: (body) => {
+        capturedBatchBodies.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBeGreaterThan(0));
+    capturedBatchBodies = [];
+
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit sku/i });
+    fireEvent.change(textboxes[1], { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Fix row 2 to preview the sheet.")).toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(document.querySelector("object")).toBeNull();
+    expect(capturedBatchBodies.length).toBe(0);
+
+    fireEvent.change(textboxes[1], { target: { value: "3" } });
+    await waitFor(() => {
+      expect(capturedBatchBodies.length).toBe(1);
+    });
+    expect(capturedBatchBodies[0].labels).toEqual([
+      { data: { sku: "1" } },
+      { data: { sku: "3" } },
+    ]);
+    await waitFor(() => {
+      expect(document.querySelector("object")).not.toBeNull();
+    });
+  });
+
+  it("5.4 Sheet template with a 5-row grid whose rows 2 and 5 are invalid: pane reads exactly Fix rows 2, 5 to preview the sheet. and the text does not begin with Preview failed", async () => {
+    await loadSheetAndCsv();
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    for (let i = 0; i < 3; i++) {
+      const dupButtons = within(grid).getAllByRole("button", { name: /duplicate row/i });
+      fireEvent.click(dupButtons[0]);
+      await waitFor(() => {
+        expect(within(grid).getAllByRole("button", { name: /duplicate row/i }).length).toBe(3 + i);
+      });
+    }
+
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit sku/i });
+    expect(textboxes.length).toBe(5);
+
+    fireEvent.change(textboxes[1], { target: { value: "" } });
+    fireEvent.change(textboxes[4], { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Fix rows 2, 5 to preview the sheet.")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Preview failed/)).toBeNull();
+  });
+
+  it("5.5 Sheet template with 2 rows and copies set to 300: no /api/batch request and the pane reads Over the 500-label limit; reduce the batch to preview the sheet.", async () => {
+    let capturedBatchBodies: BatchPayload[] = [];
+    await loadSheetAndCsv("sku\n1\n2\n", {
+      batch: (body) => {
+        capturedBatchBodies.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(capturedBatchBodies.length).toBeGreaterThan(0));
+    capturedBatchBodies = [];
+
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "300" } });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Over the 500-label limit; reduce the batch to preview the sheet."),
+      ).toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(capturedBatchBodies.length).toBe(0);
+  });
+
+  it("5.6 Pending precedence: hold the inputs endpoint open for one row whose fallback (inputs.default) marks a required entry missing that its resolved inputs do not carry; while held, the pane reads as rendering, names no row and no batch request is sent; resolving the inputs sends one batch request holding every row", async () => {
+    let resolveInputs!: (res: Response) => void;
+    const inputsPromise = new Promise<Response>((resolve) => {
+      resolveInputs = resolve;
+    });
+
+    let batchCalled = false;
+    const tplWithFallbackRequired = {
+      ...sheetDetail,
+      inputs: {
+        all: [
+          { name: "sku", control: "text" },
+          { name: "extra_req", control: "text", required: true },
+        ],
+        default: [
+          { name: "sku", control: "text" },
+          { name: "extra_req", control: "text", required: true },
+        ],
+      },
+    };
+
+    fetchMock = stubSheetFetch({
+      templateDetails: {
+        "sheet-tpl": tplWithFallbackRequired,
+      },
+      inputsResponse: () => inputsPromise,
+      batch: () => {
+        batchCalled = true;
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Sheet" });
+    fireEvent.change(picker, { target: { value: "sheet-tpl" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku\n1\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+
+    await waitFor(() => {
+      expect(screen.getByText("rendering preview…")).toBeInTheDocument();
+    });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(screen.queryByText(/Fix row/i)).toBeNull();
+    expect(batchCalled).toBe(false);
+
+    resolveInputs(
+      json({
+        inputs: [[{ name: "sku", control: "text" }]],
+      }),
+    );
+
+    await waitFor(() => {
+      expect(batchCalled).toBe(true);
+    });
+  });
+
+  it("5.7 Single template: select row 2, clear a required value in it, and stub /api/render/label to return a non-2xx envelope; row 2 stays the row requested, the pane shows Preview failed: with the service's message, and Download is disabled", async () => {
+    let shouldFailRender = false;
+
+    fetchMock = stubSheetFetch({
+      templateDetails: {
+        t1: {
+          ...detail,
+          inputs: {
+            all: [{ name: "sku", control: "text", required: true }],
+            default: [{ name: "sku", control: "text", required: true }],
+          },
+        },
+      },
+      renderLabel: () => {
+        if (shouldFailRender) {
+          return new Response(JSON.stringify({ error: { message: "cannot render empty label" } }), {
+            status: 422,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    const picker = (await screen.findByLabelText(/template/i)) as HTMLSelectElement;
+    await screen.findByRole("option", { name: "Tag" });
+    fireEvent.change(picker, { target: { value: "t1" } });
+    const csv = (await screen.findByLabelText(/paste csv/i)) as HTMLTextAreaElement;
+    fireEvent.change(csv, { target: { value: "sku\n1\n2\n" } });
+    fireEvent.click(screen.getByRole("button", { name: /load csv/i }));
+    await screen.findByRole("grid", { name: /label rows/i });
+
+    fireEvent.click(screen.getByLabelText("preview row 2"));
+
+    shouldFailRender = true;
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit sku/i });
+    fireEvent.change(textboxes[1], { target: { value: "" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("Preview failed: cannot render empty label")).toBeInTheDocument();
+    });
+
+    const radio2 = screen.getByLabelText("preview row 2") as HTMLInputElement;
+    expect(radio2.checked).toBe(true);
+    expect(screen.getByRole("button", { name: /^download$/i })).toBeDisabled();
+  });
+
+  it("5.8 Sheet template: a settled edit to a cell, then to copies, then to start slot, each sends one batch request carrying the new labels count or start_slot; a re-render with the batch unchanged sends none", async () => {
+    const batchCalls: BatchPayload[] = [];
+    await loadSheetAndCsv("sku\n1\n2\n", {
+      batch: (body) => {
+        batchCalls.push(body);
+        return new Response(new Blob(["%PDF"]), {
+          status: 200,
+          headers: { "content-type": "application/pdf" },
+        });
+      },
+    });
+
+    await waitFor(() => expect(batchCalls.length).toBe(1));
+    expect(batchCalls[0]?.labels?.[0]?.data?.sku).toBe("1");
+
+    // 1. Settled edit to a cell
+    const grid = screen.getByRole("grid", { name: /label rows/i });
+    const textboxes = within(grid).getAllByRole("textbox", { name: /edit sku/i });
+    fireEvent.change(textboxes[0], { target: { value: "99" } });
+
+    await waitFor(() => expect(batchCalls.length).toBe(2));
+    expect(batchCalls[1]?.labels?.[0]?.data?.sku).toBe("99");
+
+    // 2. Edit copies
+    fireEvent.change(screen.getByLabelText(/copies/i), { target: { value: "2" } });
+    await waitFor(() => expect(batchCalls.length).toBe(3));
+    expect(batchCalls[2]?.labels?.length).toBe(4);
+
+    // 3. Edit start slot
+    fireEvent.change(screen.getByLabelText(/start slot/i), { target: { value: "3" } });
+    await waitFor(() => expect(batchCalls.length).toBe(4));
+    expect(batchCalls[3].start_slot).toBe(3);
+
+    // 4. Re-render with batch unchanged (e.g. change printer)
+    fireEvent.change(screen.getByLabelText(/^printer$/i), { target: { value: "p1" } });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(batchCalls.length).toBe(4);
+  });
+});

@@ -9,11 +9,12 @@ import { datetimeCellError } from "../lib/templateFields";
 import { defaultMapping, mappedConnectorKeys, rowsFromMaterialized, validateMapping, type FieldMapping } from "../lib/connectorRows";
 import {
   MAX_BATCH_LABELS, expandedCount, sourceRowForExpandedIndex,
-  duplicateRow, removeRow, type LabelGridRow,
+  duplicateRow, removeRow, resolveLabels, sheetPreviewBlock, type LabelGridRow,
 } from "../lib/labelGrid";
 import { LabelGrid } from "../components/LabelGrid";
 import { PreviewPane } from "../components/PreviewPane";
 import { useRowPreview } from "../lib/rowPreview";
+import { useSheetPreview } from "../lib/sheetPreview";
 import { useBatchRowInputs, pruneDataForSubmit } from "../lib/labelInputs";
 import { ApiError, saveBlob, submitBatch } from "../api/client";
 import { useToast } from "../app/toast-context";
@@ -243,21 +244,36 @@ function Composer({
   const firstValidId = rows.find((r) => !rowInvalid(r))?.id;
   const resolvedSelectedId = rows.some((r) => r.id === selectedRowId) ? selectedRowId : firstValidId;
 
+  const dataFor = (r: LabelGridRow) =>
+    pruneDataForSubmit(r.data, getRowInputs(r.id) ?? detail.inputs.default);
+
   // Build the resolved label for the selected row using the same resolution the submit path uses.
   const selRow = rows.find((r) => r.id === resolvedSelectedId);
-  const previewData = selRow
-    ? pruneDataForSubmit(selRow.data, getRowInputs(selRow.id) ?? detail.inputs.default)
-    : undefined;
+  const previewData = selRow ? dataFor(selRow) : undefined;
   const previewLabel = previewData ? { data: previewData } : undefined;
 
-  const preview = useRowPreview({
-    templateId: detail.id,
-    format: isSheet ? "sheet" : "single",
-    label: previewLabel,
-    startSlot: isSheet ? startSlot : undefined,
-  });
   const total = expandedCount(rows.length, copies);
   const overCap = total > MAX_BATCH_LABELS;
+
+  const invalidPositions = viewRows.flatMap((row, index) => (rowInvalid(row) ? [index + 1] : []));
+  const blocked = sheetPreviewBlock(invalidPositions, total);
+
+  const sheetPreview = useSheetPreview(
+    { templateId: detail.id, labels: resolveLabels(rows, copies, dataFor), startSlot },
+    isSheet && rows.length > 0 && !rowsPending && !blocked,
+  );
+  const rowPreview = useRowPreview({
+    templateId: detail.id,
+    label: isSheet ? undefined : previewLabel,
+  });
+
+  const preview = isSheet
+    ? rowsPending
+      ? { loading: true }
+      : blocked
+        ? { loading: false, blocked }
+        : sheetPreview
+    : rowPreview;
 
   const addRows = async () => {
     if (selected.length === 0 || mappingErrors.length > 0) return;
@@ -294,10 +310,7 @@ function Composer({
     const submittedCopies = copies;
     const idForExpandedIndex = (index: number): string | undefined => submittedIds[sourceRowForExpandedIndex(index, submittedCopies)];
     try {
-      const labels = rowsRef.current.flatMap((r) => {
-        const pruned = pruneDataForSubmit(r.data, getRowInputs(r.id) ?? detail.inputs.default);
-        return Array.from({ length: submittedCopies }, () => ({ data: pruned }));
-      });
+      const labels = resolveLabels(rowsRef.current, submittedCopies, dataFor);
       const r = await submitBatch({
         template: detail.id, labels, mode,
         ...(mode === "print" ? { printer } : {}),
@@ -397,8 +410,8 @@ function Composer({
             onDuplicate={(id) => { commitRows(duplicateRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
             onRemove={(id) => { commitRows(removeRow(rowsRef.current, id).map((r) => ({ ...r, annotation: undefined }))); setFormError(null); }}
             disabled={busy}
-            selectedRowId={resolvedSelectedId}
-            onSelectRow={setSelectedRowId}
+            selectedRowId={isSheet ? undefined : resolvedSelectedId}
+            onSelectRow={isSheet ? undefined : setSelectedRowId}
           />
 
           <PreviewPane name={detail.name} format={isSheet ? "sheet" : "single"} preview={preview} />

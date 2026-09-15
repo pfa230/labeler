@@ -3,6 +3,7 @@ import {
   MAX_BATCH_LABELS,
   expandedCount,
   resolveLabels,
+  sheetPreviewBlock,
   sourceRowForExpandedIndex,
   duplicateRow,
   removeRow,
@@ -23,15 +24,29 @@ describe("labelGrid logic", () => {
     expect(MAX_BATCH_LABELS).toBe(500);
   });
 
-  it("resolveLabels expands copies adjacently", () => {
-    const rows = [row("a", { sku: "1" }), row("b", { sku: "2" })];
-    const out = resolveLabels(rows, 2);
+  it("resolveLabels applies dataFor and expands copies adjacently", () => {
+    const rows = [row("a", { sku: "1", extra: "drop" }), row("b", { sku: "2", extra: "drop" })];
+    const out = resolveLabels(rows, 2, (r) => ({ sku: r.data.sku }));
     expect(out).toEqual([
       { data: { sku: "1" } },
       { data: { sku: "1" } },
       { data: { sku: "2" } },
       { data: { sku: "2" } },
     ]);
+  });
+
+  it("sheetPreviewBlock returns spec messages in priority order", () => {
+    expect(sheetPreviewBlock([2], 2)).toBe("Fix row 2 to preview the sheet.");
+    expect(sheetPreviewBlock([2, 5], 10)).toBe("Fix rows 2, 5 to preview the sheet.");
+    expect(sheetPreviewBlock([], 501)).toBe(
+      "Over the 500-label limit; reduce the batch to preview the sheet.",
+    );
+    // Invalid rows take precedence over the cap
+    expect(sheetPreviewBlock([2], 501)).toBe("Fix row 2 to preview the sheet.");
+    expect(sheetPreviewBlock([2, 5], 600)).toBe("Fix rows 2, 5 to preview the sheet.");
+    // Valid and within cap
+    expect(sheetPreviewBlock([], 500)).toBeUndefined();
+    expect(sheetPreviewBlock([], 10)).toBeUndefined();
   });
 
   it("sourceRowForExpandedIndex maps an expanded index back to its source row", () => {
