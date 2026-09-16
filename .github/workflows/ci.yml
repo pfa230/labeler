@@ -33,7 +33,7 @@ jobs:
       #   cache - it otherwise adds Swatinem/rust-cache on top of the explicit actions/cache step
       #     right below, two cache implementations over the same directories.
       - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
           cache: false
