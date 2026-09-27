@@ -711,8 +711,9 @@ consults the page format.
 
 2. **Shrink.** A `font_size` range picks the largest size in `[min, max]` at which the broken block
    fits the box height **and every line step 1 broke it into fits the box width**, in 0.5 pt steps, including the
-   ink reservation the *Vertical fitting reserves the ink each alignment can expose* requirement
-   defines for the item's `alignment.vertical`. The text SHALL be re-broken at each candidate's glyph advances, as today's
+   reservation the *Vertical fitting reserves the ink each alignment can expose* requirement
+   computes, for the item's `alignment.vertical`, from the outer ink of the lines broken at that
+   candidate. The text SHALL be re-broken at each candidate's glyph advances, as today's
    `largest_fitting_font` does; the emitted breaks are the ones from the selected size, not breaks
    frozen at `font_size.max`. A word too wide for the box at one candidate is therefore a reason to
    try a smaller size, not a break to place inside the word. A fixed `font_size` skips this step.
@@ -753,19 +754,27 @@ while a left-aligned one was given the laid-out width.
 | fits once shortened | render the shortened form | `text_does_not_fit` |
 | cannot fit however short | `text_does_not_fit` | `text_does_not_fit` |
 
-Shortening has two independent paths. Lines that do not fit the block are dropped, and the marker is
-appended to the last retained line; a line that is wider than the box is shortened where it sits,
+Shortening has two independent paths. Lines are dropped from the end of the block, the block kept
+being the longest leading run of lines that fits the box height in the form it will be emitted, and
+the marker is appended to the last retained line; a line that is wider than the box is shortened where it sits,
 whether or not anything was dropped. Either path trims characters until the line and the marker fit.
 The marker reports the **field**, not the line it sits on: it is appended whenever any line was
 dropped, whether that line carried glyphs or was blank, and for a dropped line it lands at the end
 of the last retained line whatever that line holds. A value whose every line is shown, unshortened, carries no marker.
-The shortest form it can produce is the marker alone, so shortening succeeds whenever `...` fits the
-box width and the box holds at least one line, and fails otherwise. Two cases therefore reach the
-third row, and neither is a separate rule:
+The shortest form it can produce across the box is the marker alone. Down the box there is no single
+shortest form, because a run's height depends on the ink at its edges and dropping a line changes
+which ink that is: a longer run can fit where a shorter one does not, as when the first line's deep
+descender lies inside a two-line block and below a one-line block. Shortening therefore succeeds
+whenever `...` fits the box width and at least one leading run of lines, each judged in the form it
+would be emitted with its own reservation, fits the box height, and fails otherwise. Every run SHALL
+be judged before the item is refused; no run, the first line alone included, is refused on its own
+account while a longer one fits. Height is shortened by whole lines only: characters are trimmed to
+meet the box width, never to shed an accent or a descender. Two cases therefore reach the third row,
+and neither is a separate rule:
 
 - the box is narrower than `...` itself, so there is nothing shorter to produce;
-- the box is shorter than one line at the chosen size, since a line's height comes from the font size
-  and the line count is already at its floor of one.
+- no leading run of lines, from the whole block down to its first line, fits the box height at the
+  chosen size in its emitted form, reservation included.
 
 An over-wide **line** is shortened in place, wherever it sits in the block: a line wider than the
 box at the chosen size is trimmed until it and the marker fit, independently of the dropped-lines
@@ -779,20 +788,24 @@ fit either. Under `fail` it fails as soon as the content overflows, marker or no
 Clipping SHALL NOT be an outcome of the policy: a box that cannot hold the shortest representable
 form of its content is an error, not a label with half a glyph on it.
 
-The policy SHALL be evaluated against the **metric model** ADR-0045, ADR-0050 and
-`openspec/changes/archive/2026-08-28-issue-245-center-ink-reserve` define: the
-cap-height-to-baseline line box plus the ink reservation for the item's `alignment.vertical`,
-including `center`, and not against glyph outlines. Widening that model widens what the policy
-refuses, and both effects are intended: a `center`-aligned item whose block fits its box but whose
+The policy SHALL be evaluated against the **measured block** the *Vertical fitting reserves the ink
+each alignment can expose* requirement defines: the cap-height-to-baseline metric block plus the
+reservation computed from the outer ink of the lines being judged, for the item's
+`alignment.vertical`, including `center`. Size selection, the line budget and the `fail` verdict SHALL each judge
+that one quantity on the lines it is deciding about, so none of them can accept a block another
+refuses. A `center`-aligned item whose metric block fits its box but whose
 block plus reservation does not SHALL be shortened under `ellipsis` and SHALL raise
-`text_does_not_fit` under `fail`, and a box that cannot hold one line plus its reservation at the
-chosen size SHALL raise `text_does_not_fit` under either.
+`text_does_not_fit` under `fail`, and a box that no leading run of lines fits, each run in its emitted form
+with its own reservation, SHALL raise `text_does_not_fit` under either. Because the reservation
+follows the emitted ink, the verdict for one box can differ between two values of the same width and
+line count: a box one cap height tall holds `HELIX` and refuses `Égypt`.
 
-One ADR-0050 consequence stands and is not superseded: a glyph inking outside the font's own
-ascender/descender band can still clip at any alignment. That is ink leaving a box the metric model
-says it fits in, which no policy evaluated on metrics can see. Centred text clipping in a slot
-shorter than `1.21 × font_size` is no longer one of them: such a slot is now an overflow, and the
-policy resolves it.
+A glyph the rendering font supplies is measured wherever it inks, so the ADR-0050 consequence that a
+glyph outside the font's ascender/descender band may clip is superseded: `Å` and `Ǻ`, which ink above
+Inter's ascender, are reserved for like any other accent. One gap remains. A character the rendering
+font does not map is drawn by Typst from a fallback font the measurement does not read, so its
+position is measured from the rendering font's own missing-glyph outline rather than from what is
+drawn, and its ink may clip. Handling it is #254's scope, not this requirement's.
 
 This requirement supersedes the frozen `docs/SPEC.md` §3.1 bullet "Blank first/last lines are dropped
 before rendering, so a leading or trailing newline does not push the visible text off centre; interior
@@ -927,7 +940,8 @@ truncates with an ellipsis if it still overflows", generalising both to every fo
 #### Scenario: An empty value is one empty line
 
 - **WHEN** a `text` receives an empty value in a box that holds at least one line
-- **THEN** it is laid out as one line carrying no glyphs, and its intrinsic height is one line box
+- **THEN** it is laid out as one line carrying no glyphs, and its intrinsic height is one line box:
+  one cap height, with no reservation, because a line carrying no glyphs carries no ink
 - **AND** its intrinsic width is zero, so a hugging parent reserves height without reserving width
 
 #### Scenario: A whitespace-only line keeps its line box
@@ -984,6 +998,22 @@ truncates with an ellipsis if it still overflows", generalising both to every fo
 - **THEN** the render fails with reason `text_does_not_fit`
 - **AND** the same item with `overflow: ellipsis` drops or shortens lines until the block plus its
   reservation fits, or fails if no such form exists
+
+#### Scenario: A longer run fits where the first line alone does not
+
+- **WHEN** a `center`-aligned `wrap: false` `text` with a fixed `font_size` of 20, `line_spacing: 0.5`, `overflow: ellipsis` and a box 28 pt tall and wide enough for every line with the marker renders `g\u0323\nHELIX\nHELIX` (a `g` carrying a combining dot below)
+- **THEN** it keeps two lines, the second ending in `...`: the three-line block needs about 34.55 pt, the two-line emitted form about 24.83 pt, because the first line's dot lies inside it, and the one-line form about 31.45 pt, because centring it must reserve twice the dot's depth
+- **AND** the render is not refused, although the first line alone does not fit
+- **AND** its ink is contained, as the *Vertical fitting reserves the ink each alignment can expose* requirement defines containment
+
+#### Scenario: A box's verdict follows the ink the value carries
+
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` of 20, `overflow: fail` and a box as wide
+  as either value needs and exactly `cap_height(20 pt)` tall renders `HELIX`, and then `Égypt`
+- **THEN** `HELIX` renders, because none of its glyphs inks above cap height or below the baseline
+- **AND** `Égypt` fails with reason `text_does_not_fit`, and fails the same way under
+  `overflow: ellipsis`, because its one line is the only run there is, and it carries an accent and a
+  descender the box cannot hold, and shortening never trims characters to shed them
 
 ### Requirement: The size vocabulary is a number, `content`, or `fill`
 
@@ -1163,144 +1193,147 @@ withdrawn slug fails the test if it is reintroduced, just as an undocumented add
 
 ### Requirement: Vertical fitting reserves the ink each alignment can expose
 
-A text line's metric box runs cap-height to baseline, so accented capitals ink above it and
-descenders ink below it, and every layout item is drawn into a clipped box of its resolved size. For
-a text item of `n` lines at a candidate font size `s`, the renderer SHALL define, from the metrics of
-the font instance it will render with:
+A text line's metric box runs cap height to baseline, so accented capitals ink above it and descenders ink below it, and every layout item is drawn into a clipped box of its resolved size. What a block needs beyond its metric box is the ink its own lines carry past its outer edges, and the renderer SHALL measure that rather than assume it. For a block of `n` lines at a candidate font size `s`, drawn with the font instance the renderer will render them with, the renderer SHALL define:
 
-- `u` = ascent overflow = `max(0, typographic_ascender − cap_height) / units_per_em`
-- `d` = descent overflow = `max(0, −typographic_descender) / units_per_em`
 - `pitch(s)` = `line_spacing × s`, where `line_spacing` is the item's authored value or 1.2 when absent (`text-line-spacing`)
 - `leading(s)` = `pitch(s) − cap_height(s)`, the paragraph leading the renderer emits for the item; between lines only
 - `metric_block(n, s)` = `cap_height(s) + (n − 1) × pitch(s)`, leading between lines only
-- `reserve(vertical)` = `u + d` for `top` and `bottom`, and `2 × max(u, d)` for `center`
+- `baseline_i(s)` = `cap_height(s) + (i − 1) × pitch(s)`, the depth of line `i`'s baseline below the block's metric top, for `i` from 1 to `n`
+- `rise_i` and `fall_i`: how far line `i`'s highest ink lies above its baseline and its lowest ink below it. They SHALL be taken from the outlines of the glyphs line `i` is drawn with, meaning the line as the renderer shapes it: divided, as the renderer divides it, into segments of one writing direction and one script, where a character of no specific script (a combining mark, a digit, punctuation, a space) joins the segment around it, and each segment shaped on its own, at that font instance and size, with every glyph at its shaped position and vertical offsets included. A line that draws no ink, because it is blank or holds only spaces, contributes to neither.
+- `a` = outer ink above = `max(0, maxᵢ(rise_i − baseline_i(s)))`: how far the block's highest ink rises above its metric top
+- `d` = outer ink below = `max(0, maxᵢ(baseline_i(s) + fall_i) − metric_block(n, s))`: how far its lowest ink falls below its last baseline
+- `reserve(vertical)` = `a + d` for `top` and `bottom`, and `2 × max(a, d)` for `center`
+
+The font instance is the one the item renders with: the item's weight on the `wght` axis and `s` on the `opsz` axis, re-read at every candidate size, because the outlines move with both axes. The reservation SHALL come from that instance's outlines and the lines being judged, and from nothing else: not from a constant, a tolerance margin, a font-wide band or a sample of rendered pixels.
+
+Only **outer** ink is reserved. Ink between the block's metric top and its last baseline is inside the box the fit already charges, whichever line draws it, so a descender on a first line or an accent on a last line reserves nothing while the pitch keeps it inside. The maxima run over every line, not only the first and the last, so a pitch small enough to push an interior line's ink past the block's edge is still measured.
 
 A one-line block is one cap-height box whatever the pitch, so `metric_block(1, s)` is pitch-independent and the `text-line-spacing` single-line no-op holds at the fitting level with no special case.
 
-A block of `n` lines at size `s` SHALL be treated as fitting a box of height `H` when
-`metric_block(n, s) + reserve(vertical) × s ≤ H`, and the same reservation SHALL bound the number of
-lines kept, at
-`max(1, floor((H − reserve(vertical) × s + leading(s)) / pitch(s)))`. The floor of
-one is not a containment claim: a box that cannot hold one line plus its reservation is refused by
-the one-line check before the budget is consulted, so the budget never has to describe a block of no
-lines.
+A block of `n` lines at size `s` SHALL be treated as fitting a box of height `H` when `metric_block(n, s) + reserve(vertical) ≤ H`, both terms computed on those `n` lines at size `s`. Every judgement of height SHALL use this one comparison, each on the lines it is deciding about:
 
-The fit comparison and the one-line check carry the renderer's existing tolerance of 0.01 pt; the
-budget's own division carries none. Every containment guarantee in this requirement is therefore
-bounded by that tolerance: ink at the very edge of the declared band may sit up to 0.01 pt outside
-the box. At 180 dpi that is one fortieth of a pixel, enough to change an antialiased edge pixel's
-coverage and not enough to cut a stroke.
+- **size selection** judges the lines broken at each candidate size;
+- **the `ellipsis` line budget** keeps the largest `k`, from `n` down to 1, whose emitted form fits, where the emitted form of `k` lines is the first `k` lines with every over-wide line shortened in place and, when `k < n`, the marker appended to the `k`-th. The reservation is computed on that emitted form, the marker's glyphs included, because dropping or shortening a line changes the ink the block carries. Fitting is not monotonic in `k`, so the item SHALL be refused only when no `k` fits; there is no separate one-line check that could refuse it first. The previous closed-form budget `max(1, floor((H − reserve × s + leading(s)) / pitch(s)))` and its one-line floor are retired: the reserve is no longer known until the surviving lines are;
+- **the `overflow: fail` verdict** judges the lines broken at the chosen size;
+- **the intrinsic height** is `metric_block(n, s) + reserve(vertical)` on the lines finally emitted.
 
-`center` SHALL reserve twice the larger overflow rather than their sum, because the block is centred
-on its metric box: the slack `(H − metric_block) / 2` left on each side must absorb the overflow on
-that side alone. For a font whose two overflows are equal the two quantities are the same number.
+The fit comparison carries the renderer's existing tolerance of 0.01 pt, and since every judgement above is that comparison, each carries it. Every containment guarantee in this requirement is therefore bounded by that tolerance: ink may sit up to 0.01 pt outside the box. At 180 dpi that is one fortieth of a pixel, enough to change an antialiased edge pixel's coverage and not enough to cut a stroke.
 
-The reservation SHALL be applied identically whether the size was chosen from a `font_size` range or
-written as a fixed number. A fixed size cannot shrink, so on a fixed-size item the reservation is
-visible in the line count and in the verdict of the item's `overflow` policy, never in the size.
+**Containment** SHALL be judged against an unclipped reference and never against a second clipped render, because a clipped render in a taller box clips an under-reserved accent exactly as the exact box does. An item's ink is contained when the same label, rendered with nothing changed but that item's clip removed and with the item's box placed clear of every label edge so no ink it draws can leave the page, puts no ink in any raster row lying wholly outside the item's box. The rows each box edge falls in are the item's own rows, and are where the tolerance above lands. Removing only the clip keeps the text at the same raster phase as the clipped render, so the reference shows exactly the ink the clip would have cut.
 
-Placement inside a resolved box is unchanged by the reservation: a `top`- or `bottom`-aligned block
-SHALL be inset at its aligned edge by that edge's own overflow (`u` for `top`, `d` for `bottom`) so
-the ink there lands inside the slot, and a `center`-aligned block SHALL be inset by nothing, because
-centring the metric box already places the reserved slack on both sides.
+`center` SHALL reserve twice the larger outer ink rather than the sum, because the block is centred on its metric box: the slack `(H − metric_block) / 2` left on each side must absorb the outer ink on that side alone. A block whose outer ink is on one side only, such as `É` alone, therefore reserves twice that ink when centred and once when `top`-aligned.
 
-The reservation is nevertheless part of the item's **intrinsic height**, for every alignment, because
-that height is the room the block needs and clipped ink is not room it has. An item asking for a
-`content` height therefore resolves a box taller by `reserve(vertical) × s` than its metric block,
-and its content sits centred, top-inset or bottom-inset within that taller box as its alignment says.
-This is what `top` and `bottom` already do; extending the reservation to `center` extends this with
-it, and a `center`-aligned `content`-height item consequently occupies more of its frame than before
-and places its ink higher above its anchor. An item whose height is authored, or comes from `fill` or
-`to`, is unaffected: its box is decided without reference to the intrinsic.
+The reservation SHALL be applied identically whether the size was chosen from a `font_size` range or written as a fixed number. A fixed size cannot shrink, so on a fixed-size item the reservation is visible in the line count and in the verdict of the item's `overflow` policy, never in the size.
 
-The guarantee is bounded by the font's declared band. The renderer SHALL NOT measure per-string glyph
-bounds to decide a size or a placement, because that would make position and spacing depend on which
-glyphs the data happens to carry, and a batch would then render at inconsistent heights. A glyph that
-inks outside the font's own ascender/descender band MAY therefore still be clipped, at any alignment
-and at any size the fitter chooses.
+Because the reservation follows the ink, two values of the same width and line count can fit at different sizes, keep different numbers of lines, and resolve different `content` heights. That is the intended outcome, and it replaces the rule this requirement previously stated, that per-string glyph bounds SHALL NOT decide a size or a placement. What stays independent of the glyphs is where a `center`-aligned baseline sits, which the *Vertical alignment places a fixed metric box, inset only by the ink the block carries past its aligned edge* requirement owns, together with every other placement rule. That requirement reads the same `a` and `d` from the same emitted lines as the fit.
 
-This requirement supersedes, in the frozen `docs/SPEC.md` §3.1, the "**`top` and `bottom` inset the
-block so its ink stays inside the slot**" bullet, the "**Two limits worth knowing**" bullet, and the
-definition of the `overflow` term in the wrapped line-count formula
-`floor((H − overflow + leading) / (cap_height + leading))`. The rest of §3.1 — what
-`alignment.vertical` aligns, the fixed metric box and the `top` schema default — is unchanged and
-remains authoritative. Its blank-edge lines bullet is **not**: the text-layout requirement above
-supersedes it, so a blank first or last line is emitted rather than dropped, and this requirement's
-reservation applies to the block that includes it. The Typst-default leading (`0.65em`) the previous
-revision of this requirement inherited is retired: `leading(s)` above is derived from the authored
-pitch, and the pitch itself comes from the `text-line-spacing` capability, which owns its default.
+The reservation is part of the item's **intrinsic height** for every alignment, because that height is the room the block needs and clipped ink is not room it has. An item asking for a `content` height therefore resolves a box of `metric_block(n, s) + reserve(vertical)`, and its content sits within that box as its alignment says. An item whose height is authored, or comes from `fill` or `to`, is unaffected: its box is decided without reference to the intrinsic.
 
-#### Scenario: A centred block auto-shrunk into a tight box keeps its descenders
+The guarantee covers every glyph the rendering font supplies, wherever it inks, including those that rise above the font's ascender or fall below its descender. A character the rendering font does not map is outside it, as the text-layout requirement states: Typst draws that character from a fallback font the measurement does not read, and it is #254's scope.
 
-- **WHEN** a 24 mm tape template whose `center`-aligned, `wrap: true` `text` item is 120 mm wide
-  and fills the full 18.1 mm printable height, with `font_size: { min: 10, max: 32 }`, renders a
-  value carrying a descender that breaks to exactly two lines at 24.0 pt and again at 21.0 pt, such
-  as "Kitchen Utensils and a much longer second line here"
-- **THEN** the chosen size is 21.0 pt, the largest 0.5 pt step whose
-  `metric_block(2, s) + 2 × max(u, d) × s` fits 51.31 pt
-- **AND** the two stated candidates decide it on height alone: line count does not increase as size
-  falls, so a value that is two lines at both ends is two lines at every candidate between them, and
-  every larger candidate fails on height at whatever count it breaks to — two lines at 24.5 pt
-  already demand 59.04 pt of the box's 51.31 pt
-- **AND** in the rendered PNG the descender of `g` is a closed stroke, where the same template and
-  value before this requirement cut it mid-stroke on the box's final raster row
-
-#### Scenario: A centred item with headroom is unaffected
-
-- **WHEN** a `center`-aligned text item rendering a single line, a value with no line breaks that fits
-  its box width at `font_size.max`, sits in a box whose height is authored, `fill` or `to` with
-  `metric_block(1, max) + 2 × max(u, d) × max ≤ H`
-- **THEN** the size the fitter chooses is decided by width alone, exactly as before
-- **AND** the rendered output is byte-identical to what the same template and data produced before this
-  requirement, because a one-line block carries no pitch term
-
-#### Scenario: A centred multiline block's line budget counts the reserve
-
-- **WHEN** a `center`-aligned `wrap: true` text item at a fixed `font_size` sits in a box that
-  holds one line plus its reservation, so the one-line check passes, and wraps to more lines than
-  `max(1, floor((H − 2 × max(u, d) × s + leading(s)) / pitch(s)))`
-- **THEN** the lines beyond that budget are dropped and the last kept line is ellipsized, or the
-  render fails, according to the item's `overflow` policy
-- **AND** the kept block's ink, accents and descenders included, is inside the box to within the
-  0.01 pt tolerance above
-
-#### Scenario: A centred item asking for a content height grows by the reservation
-
-- **WHEN** a `center`-aligned `text` with `size: [content, content]` is laid out at size `s`
-- **THEN** its resolved box height is `metric_block(n, s) + 2 × max(u, d) × s`
-- **AND** its metric block is centred in that box, so the block sits `max(u, d) × s` higher above the
-  item's anchor than it did before this requirement
-- **AND** its declared-band ink is contained rather than centred: the gaps above and below it are
-  `max(u, d) × s − u × s` and `max(u, d) × s − d × s`, which are equal only when `u = d`
-- **AND** a `top`-aligned item in the same position is unchanged, because its intrinsic already
-  carried `u + d`
-
-#### Scenario: An asymmetric font reserves twice its larger overflow
-
-- **WHEN** a font supplied through `LABELER_FONTS_DIR` has a descent overflow larger than its ascent
-  overflow, and a `center`-aligned item is height-bound in it
-- **THEN** the reservation is twice the descent overflow, not the sum of the two
-- **AND** the fitted block's descenders are inside the box
+This requirement supersedes, in the frozen `docs/SPEC.md` §3.1, the "**`top` and `bottom` inset the block so its ink stays inside the slot**" bullet, the "**Two limits worth knowing**" bullet, and the definition of the `overflow` term in the wrapped line-count formula `floor((H − overflow + leading) / (cap_height + leading))`. The paragraph they sit under, "**What `alignment.vertical` aligns.**", and its lowercase bullet are superseded by the alignment requirement named above, and the blank-edge bullet by the text-layout requirement. The Typst-default leading (`0.65em`) an earlier revision of this requirement inherited is retired: `leading(s)` above is derived from the authored pitch, and the pitch itself comes from the `text-line-spacing` capability, which owns its default.
 
 #### Scenario: Aligned edges are unchanged
 
-- **WHEN** a single-line `top`- or `bottom`-aligned text item is fitted and rendered
-- **THEN** it reserves `u + d` as before, and is inset at its aligned edge by that edge's overflow
-- **AND** the rendered output is byte-identical to what the same template and data produced before this
-  requirement, because a one-line block carries no pitch term
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` of 20 and `overflow: fail` renders `HELIX` in a box exactly `cap_height(20 pt)` tall
+- **THEN** it renders, because its reservation is zero
+- **AND** before this requirement the same template was refused with `text_does_not_fit`, having reserved 0.4824em it did not use
+- **AND** this scenario keeps its name from the superseded version, which held `top` and `bottom` to the font's bands; they now reserve the value's own ink, so the aligned edges do change
+
+#### Scenario: Auto-shrink sees the emitted ink
+
+- **WHEN** a `top`-aligned `text` with a `font_size` range renders `HELIX` and then `HÉLIX`, in a box wide enough for either at the range's maximum and too short for either there
+- **THEN** `HÉLIX` settles at a smaller size than `HELIX`, because the two values have the same advances and only `HÉLIX` carries ink above cap height
+- **AND** `HÉLIX`'s ink, its accent included, is contained
+
+#### Scenario: A centred block auto-shrunk into a tight box keeps its descenders
+
+- **WHEN** a 24 mm tape template whose `center`-aligned, `wrap: true` `text` item is 120 mm wide and fills the full 18.1 mm printable height, with `font_size: { min: 10, max: 32 }`, renders a value carrying a descender that breaks to two lines, such as "Kitchen Utensils and a much longer second line here"
+- **THEN** the chosen size is the largest 0.5 pt step at which `metric_block(2, s) + 2 × max(a, d)` fits 51.31 pt, with `a` and `d` measured on the two lines broken at that step
+- **AND** the block's ink is contained, the descender of `g` included, where the same template and value before #245 cut that descender mid-stroke on the box's final raster row
+
+#### Scenario: A centred multiline block's line budget counts the reserve
+
+- **WHEN** a `center`-aligned `wrap: false` `text` with a fixed `font_size` and `overflow: ellipsis` sits in a box exactly `metric_block(3, s)` tall and wide enough for each line with the marker, and renders `HELIX\nHELIX\nHELIX`, and then `HELIX\nHELIX\nHELgX`
+- **THEN** the first value keeps all three lines and carries no marker, because its reservation is zero
+- **AND** the second keeps two lines, the second ending in `...`, because its three-line form must reserve twice the depth of `g` and its two-line emitted form, marker included, fits
+- **AND** with `overflow: fail` the first renders and the second fails with reason `text_does_not_fit`
+- **AND** in each render that succeeds the kept block's ink is contained
+
+#### Scenario: Ink between the lines reserves nothing
+
+- **WHEN** a `top`-aligned two-line `text` with `size: [content, content]` at the default pitch is laid out at size `s` with `Hg\nÉH`, and then with `ÉH\nHg`
+- **THEN** `Hg\nÉH` resolves a box exactly `metric_block(2, s)` tall
+- **AND** `ÉH\nHg` resolves a box `metric_block(2, s) + a + d` tall, `a` being `É`'s accent height above cap height and `d` the depth of `g`
+
+#### Scenario: A centred item asking for a content height grows by the reservation
+
+- **WHEN** a `text` with `size: [content, content]` is laid out at size `s` with `HELIX`, and then with `Égypt`, first `top`-aligned and then `center`-aligned
+- **THEN** `HELIX` resolves a box exactly `cap_height(s)` tall under either alignment
+- **AND** `top`-aligned `Égypt` resolves `cap_height(s) + a + d`, its ink reaching the box's top and bottom edges and contained
+- **AND** `center`-aligned `Égypt` resolves `cap_height(s) + 2 × max(a, d)` with its metric block centred, so the gaps between its ink and the box's edges are `max(a, d) − a` above and `max(a, d) − d` below
+- **AND** this scenario keeps its name from the superseded version, where the growth was the font's bands whatever the value
+
+#### Scenario: An asymmetric font reserves twice its larger overflow
+
+- **WHEN** a `text` with `size: [content, content]` is laid out at size `s` with `É`, which inks above cap height and not below the baseline
+- **THEN** `center`-aligned it resolves `cap_height(s) + 2a`, and `top`-aligned `cap_height(s) + a`
+- **AND** this scenario keeps its name from the superseded version, where the asymmetry had to come from a font supplied through `LABELER_FONTS_DIR`; it now comes from the value, so the bundled font shows it
+
+#### Scenario: The reservation is read from the instance rendered
+
+- **WHEN** a `top`-aligned `text` with `size: [content, content]` and a fixed `font_size` renders `É` at `font_weight: 400`, and then at `font_weight: 700`
+- **THEN** each resolved height is `cap_height(s)` plus the accent's height above cap height in the outlines of that weight's instance at that size
+- **AND** the two heights differ, as the two instances' accents do
 
 #### Scenario: A glyph outside the declared band still clips
 
-- **WHEN** a string containing a glyph that inks above the font's ascender or below its descender is
-  rendered into a box the fitter judged to fit
-- **THEN** that glyph may be clipped, at any `alignment.vertical`
-- **AND** the fitted size is the same as for a string of the same width without such a glyph
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` renders `Ǻ`, whose ink rises above Inter's typographic ascender, in a box exactly as tall as its intrinsic height
+- **THEN** the render succeeds and the glyph's ink is contained
+- **AND** before this requirement the reservation stopped at the ascender and the top of the glyph was clipped
+- **AND** this scenario keeps its name from the superseded version, under which such a glyph could clip; a glyph the font supplies no longer does, and the one remaining clip is the unmapped character below
+
+#### Scenario: A value of ten thousand lines is shortened like a value of three
+
+- **WHEN** a `top`-aligned `wrap: false` `text` with a fixed `font_size`, `overflow: ellipsis` and a box holding two lines at that size renders a value of 10,000 short lines
+- **THEN** it keeps the first two lines, the second ending in `...`, and the render completes
+- **AND** no line is measured for ink more than twice in reaching that answer, and a line whose baseline would lie more than 0.01 pt below the box's bottom edge is not measured for ink at all, since no run containing it can fit within the fit comparison's tolerance, because every line's hard break is laid out and the budget's work must grow with the line count rather than with its square
+
+#### Scenario: The metric cutoff honours the fit tolerance
+
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` of 20 and `overflow: fail` renders `HELIX`, whose metric block is 14.55078125 pt and whose reservation is zero, in a box 14.54578125 pt tall, and then in a box 14.53578125 pt tall
+- **THEN** it renders in the first box, 0.005 pt short of its metric block and within the 0.01 pt tolerance, and fails with reason `text_does_not_fit` in the second, 0.015 pt short
+- **AND** the same two boxes give the same two outcomes under `overflow: ellipsis`, so the line budget's cutoff before measuring ink accepts and refuses exactly where the fit comparison does
+
+#### Scenario: A mark after a change of script is measured in its own segment
+
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` of 20 renders `αH\u0301` (a Greek alpha, then `H` carrying a combining acute) in a box exactly as tall as its intrinsic height
+- **THEN** it is inset at the top by exactly what `H\u0301` alone is inset by, because the renderer shapes the Latin segment `H\u0301` on its own and places the acute over the `H`
+- **AND** its ink is contained
+- **AND** a measurement shaping the line as a single segment places the acute 393 font units lower in the bundled font, under-reserving by 3.84 pt at this size, which is the clip this scenario exists to refuse
+
+#### Scenario: A character the font does not map is outside the guarantee
+
+- **WHEN** a `text` renders a value containing a character the rendering font has no glyph for
+- **THEN** the item is fitted and rendered, and is not refused on that character's account
+- **AND** its reservation at that position is the one the rendering font's own missing-glyph outline calls for, whatever the fallback glyph Typst draws there inks, which is #254's scope
+
+#### Scenario: A centred item with headroom is unaffected
+
+- **WHEN** a `center`-aligned text item rendering a single line, a value with no line breaks that fits its box width at `font_size.max`, sits in a box whose height is authored, `fill` or `to`, and that box is tall enough at `font_size.max` for both the measured reservation and the font-band reservation before this requirement: `metric_block(1, max) + 2 × max(a, d) ≤ H` and `metric_block(1, max) + 2 × max(u, d_font) × max ≤ H`, with `u` and `d_font` the font's ascent and descent overflows that revision reserved
+- **THEN** the size the fitter chooses is decided by width alone, exactly as before, and the item resolves the same box, size and lines it did before
+- **AND** the rendered output is byte-identical to what the same template and data produced before this requirement, because a centred block's placement never read the reservation
+
+#### Scenario: A height-bound centred item picks a larger size
+
+- **WHEN** a `center`-aligned `text` item with ample width and `font_size: { min: 10, max: 20 }` renders `HELIX` in a box 16 pt tall
+- **THEN** it renders at 20 pt, because its metric block of 14.55 pt fits with nothing reserved
+- **AND** before this requirement the same template and value rendered at 13.0 pt, the largest step at which `1.2099 × s ≤ 16`, so its output changes, and the unchanged-output scenario above does not cover it
 
 #### Scenario: The default pitch tightens existing multi-line items
 
 - **WHEN** a two-line `wrap: true` item declaring no `line_spacing` renders with the bundled font at its fitted size `s`
-- **THEN** its metric block is `cap_height(s) + 1.2 × s`, not the `2 × cap_height(s) + 0.65 × s` the previous revision reserved
-- **AND** a height-bound item with a `font_size` range settles at a size no smaller than before, because the reservation never grows under that font
+- **THEN** its metric block is `cap_height(s) + 1.2 × s`, not the `2 × cap_height(s) + 0.65 × s` an earlier revision reserved
 
 ### Requirement: A dynamic width's resolved bounds are ordered
 
@@ -1434,3 +1467,58 @@ requires of its frame the smallest extent that contains it" already states.
 - **THEN** the response is `422` with `error.code` `BatchInvalid`, `error.details.failures` holds
   exactly one entry, at `index` `1`, with `code` `InvalidRequest` and `reason`
   `width_bounds_inverted`, and no PDF or ZIP is produced
+
+### Requirement: Vertical alignment places a fixed metric box, inset only by the ink the block carries past its aligned edge
+
+`alignment.vertical` SHALL position a text block's **metric box** inside the item's resolved box. The metric box runs from the first line's cap-height top to the last line's baseline, with baselines `pitch(s)` apart, exactly as the *Vertical fitting reserves the ink each alignment can expose* requirement defines `metric_block(n, s)`. A blank line has a line box like any other, so a blank first line's cap-height top is still the block's metric top. The box is Typst's default line box, cap height to baseline: the one CSS `text-box-trim` and Figma's vertical trim use, and the convention Pango, Pillow, TeX (`\strut`) and Flutter (`StrutStyle`) follow.
+
+With `a` and `d` the emitted block's outer ink above and below, as the fitting requirement defines them:
+
+- **`center`** SHALL centre the metric box in the item's box and inset nothing. A centred baseline is therefore a function of the box, the font size, the pitch and the line count, and never of which glyphs the lines carry: two values rendered at the same size and line count in the same box share every baseline.
+- **`top`** SHALL place the metric top `a` below the box's top edge. A block with no ink above its metric top sits flush, its metric top on the box's top edge.
+- **`bottom`** SHALL place the last baseline `d` above the box's bottom edge. A block with no ink below its last baseline sits flush, its last baseline on the box's bottom edge.
+
+The inset SHALL be computed from the same emitted lines, at the same size and on the same font instance, as that item's fit and intrinsic height, so the block placed is the block the fit judged and no placement insets by more than the fit reserved. The edge a block is not aligned to needs no inset of its own: the fit reserved `a + d` for `top` and `bottom`, so the ink at the far edge lands inside the box as well.
+
+The inset SHALL never be negative. A block whose ink falls short of its aligned metric edge is not moved toward that edge: `ace`, whose ink tops out near x-height, sits top-aligned exactly where `HELIX` does, its ink below the top edge by the gap between cap height and the top of that ink. What is aligned is the metric box, not the ink box. Centring each string's own ink box, which #127 shipped and #133 reverted, SHALL NOT be restored at any alignment.
+
+What this costs is stated rather than hidden. A `top`- or `bottom`-aligned baseline moves between two values when one of them inks past the aligned metric edge, and by exactly that ink: `HELIX` and `Émile` top-aligned at one size differ by the height of `É`'s accent above cap height. In the bundled Inter that covers accented capitals, the dots of `i` and `j`, and the overshoot of round capitals and figures such as `O` and `0`, which rise about 0.01em above cap height. A value whose ink stays inside the metric box at the aligned edge never moves.
+
+This requirement supersedes, in the frozen `docs/SPEC.md` §3.1, the paragraph "**What `alignment.vertical` aligns.**" in full and the "**Lowercase-only text sits lower in its slot than all-caps.**" bullet in full. The other bullets under that paragraph were already superseded: the inset and limits bullets by the fitting requirement, and the blank-edge bullet by *Text is laid out against the box it will get, and what does not fit is authored*. The "**`alignment.vertical` on auto-length items.**" paragraph, which makes `top` the default, is unaffected and remains authoritative.
+
+#### Scenario: Unaccented capitals sit flush with the top edge
+
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` of 20 renders `HELIX` in a box taller than its cap height
+- **THEN** its metric top sits on the box's top edge, with no inset, where before this requirement it was inset by 0.2412em (4.82 pt)
+- **AND** in the rendered PNG the item's first inked raster row is within one row of the box's top edge
+
+#### Scenario: An accented capital is inset by its own accent and stays whole
+
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` of 20 renders `Émile` in a box exactly as tall as its intrinsic height
+- **THEN** its metric top is inset by the height `É`'s accent rises above cap height in the font instance rendered, and not by 0.2412em
+- **AND** its ink, the accent included, is contained, as the *Vertical fitting reserves the ink each alignment can expose* requirement defines containment
+
+#### Scenario: A descender is inset by its own depth and stays whole
+
+- **WHEN** a `bottom`-aligned `text` with a fixed `font_size` of 20 renders `gyp` in a box exactly as tall as its intrinsic height
+- **THEN** its baseline is inset by the depth of its lowest descender in the font instance rendered, and not by 0.2412em
+- **AND** its ink, the descenders included, is contained, as the *Vertical fitting reserves the ink each alignment can expose* requirement defines containment
+
+#### Scenario: A centred baseline does not follow the glyphs
+
+- **WHEN** one `center`-aligned `text` with a fixed `font_size` renders `HELIX`, `Émile`, `testj` and `gyp` in turn, in a box tall enough for each at that size
+- **THEN** no inset is emitted for any of them, and all four renders put the baseline on the same raster row
+- **AND** their ink sits at different distances from the box's top and bottom edges, because the metric box is centred and not the ink box
+
+#### Scenario: A block is never pulled toward its aligned edge
+
+- **WHEN** a `top`-aligned `text` with a fixed `font_size` renders `ace` and then `HELIX` in the same box
+- **THEN** both put the baseline on the same raster row
+- **AND** `ace`'s first inked row lies below the box's top edge, by the gap between cap height and the top of its own ink, rather than on it
+
+#### Scenario: Ink between the lines moves nothing
+
+- **WHEN** a `top`-aligned two-line `text` at the default pitch renders `Hg\nÉH`, and then `ÉH\nHg`
+- **THEN** `Hg\nÉH` is emitted with no inset, because its accent lies below the block's metric top and its descender above the block's last baseline
+- **AND** `ÉH\nHg` is inset at the top by `É`'s accent height
+- **AND** rendered `bottom`-aligned, `ÉH\nHg` is inset at the bottom by the depth of `g` and `Hg\nÉH` is not inset

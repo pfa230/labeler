@@ -670,8 +670,8 @@ fn pad_block(body: &str, pad: f32, vertical: crate::models::VerticalAlign) -> St
         return body.to_string();
     }
     match vertical {
-        VerticalAlign::Top => format!("#pad(top: {pad:.2}pt)[{body}]"),
-        VerticalAlign::Bottom => format!("#pad(bottom: {pad:.2}pt)[{body}]"),
+        VerticalAlign::Top => format!("#pad(top: {pad}pt)[{body}]"),
+        VerticalAlign::Bottom => format!("#pad(bottom: {pad}pt)[{body}]"),
         VerticalAlign::Center => body.to_string(),
     }
 }
@@ -2237,11 +2237,12 @@ impl<'a> RenderContext<'a> {
             args.text_fit.font_size_pt
         );
 
-        let body = pad_block(
-            &body,
-            helpers::pad_pt(weight, args.text_fit.font_size_pt, args.alignment.vertical)?,
-            args.alignment.vertical,
-        );
+        let pad = match args.alignment.vertical {
+            crate::models::VerticalAlign::Top => args.text_fit.a,
+            crate::models::VerticalAlign::Bottom => args.text_fit.d,
+            crate::models::VerticalAlign::Center => 0.0,
+        };
+        let body = pad_block(&body, pad, args.alignment.vertical);
 
         let inner = format!("#align({})[{body}]", typst_alignment(args.alignment));
         let top = args.pbox.y + args.pbox.h;
@@ -2698,12 +2699,45 @@ mod tests {
         assert!(src.contains("weight: 700"), "no weight in source: {src}");
     }
 
-    /// The emitted pad is `pad_em × size` for the aligned edge — the *placement* constant. Not
-    /// `overflow_em`: for `top` and `bottom` the fitter's reservation is twice this and never reaches the source (#124).
+    /// The emitted pad is the measured ink past the aligned edge for the instance rendered.
     #[test]
     fn the_emitted_pad_is_the_aligned_edge_metric() {
-        // 0.2412em at 20pt = 4.82pt, and in Inter the top and bottom pads are the same 494 units —
-        // a coincidence of this font, not a shared constant.
+        let face = super::helpers::instance(400, 20.0).expect("face");
+        let pitch = super::helpers::line_pitch(20.0, super::helpers::DEFAULT_LINE_SPACING);
+        let edgy_ink = super::helpers::measure_block_ink(&face, &["Édgy"], 20.0, pitch);
+        let gjpqy_ink = super::helpers::measure_block_ink(&face, &["gjpqy"], 20.0, pitch);
+
+        let helix = text_source_aligned(
+            None,
+            Some(60.0),
+            FontSize::Fixed(20.0),
+            "HELIX",
+            VerticalAlign::Top,
+        );
+        assert!(
+            !helix.contains("#pad"),
+            "top-aligned HELIX must not pad: {helix}"
+        );
+
+        let top = text_source_aligned(
+            None,
+            Some(60.0),
+            FontSize::Fixed(20.0),
+            "Édgy",
+            VerticalAlign::Top,
+        );
+        assert!(
+            top.contains(&format!("#pad(top: {}pt)", edgy_ink.a)),
+            "unexpected top pad for Édgy: {top}"
+        );
+        // É's accent, 1928 − 1490 units at wght 400 and opsz 20 [fontTools], not the 4.82 pt band.
+        let accent = (1928.0 - 1490.0) / 2048.0 * 20.0;
+        assert!(
+            (edgy_ink.a - accent).abs() < 1e-3,
+            "Édgy top pad {}",
+            edgy_ink.a
+        );
+
         let bottom = text_source_aligned(
             None,
             Some(60.0),
@@ -2712,17 +2746,10 @@ mod tests {
             VerticalAlign::Bottom,
         );
         assert!(
-            bottom.contains("#pad(bottom: 4.82"),
-            "unexpected source: {bottom}"
+            bottom.contains(&format!("#pad(bottom: {}pt)", gjpqy_ink.d)),
+            "unexpected bottom pad for gjpqy: {bottom}"
         );
-        let top = text_source_aligned(
-            None,
-            Some(60.0),
-            FontSize::Fixed(20.0),
-            "Édgy",
-            VerticalAlign::Top,
-        );
-        assert!(top.contains("#pad(top: 4.82"), "unexpected source: {top}");
+
         let centered = text_source_aligned(
             None,
             Some(60.0),
@@ -4668,47 +4695,6 @@ layout:
         t
     }
 
-    fn ink_pixels(png: &[u8]) -> u64 {
-        let img = image::load_from_memory(png).expect("decode").to_luma8();
-        img.pixels().map(|p| (255 - p.0[0]) as u64).sum()
-    }
-
-    /// Clipping removes ink, so the same string at the same size must put the same ink on the page in
-    /// a generous slot and in a tight one. Fixed `font_size` throughout: that bypasses the fitter, so
-    /// this tests the *placement* pad alone — which is the half that fixes #124's reported defect.
-    /// The reservation half is covered by the fitting tests in helpers.rs.
-    #[test]
-    fn ink_survives_a_tight_slot_at_top_and_bottom_alignment() {
-        for (text, vertical) in [
-            ("Édgy", VerticalAlign::Top),
-            ("gjpqy", VerticalAlign::Bottom),
-            ("Édgy", VerticalAlign::Bottom),
-            ("gjpqy", VerticalAlign::Top),
-        ] {
-            // The control is a *centered* render in a roomy slot, not a taller slot at the same
-            // alignment: bottom alignment puts the baseline on the slot floor however tall the slot
-            // is, so an aligned control would clip exactly as much as the subject and the comparison
-            // would be blind. Centered in 30mm, nothing can be cut.
-            let generous = ink_pixels(&render_tape(&tape_of_height(
-                text,
-                VerticalAlign::Center,
-                12.0,
-                30.0,
-            )));
-            // 5.3mm just holds the 12pt ink band (1.21em = 5.12mm): enough room for the glyphs, but
-            // only if the block is inset. Unpadded, the baseline sits on the slot edge and the
-            // descenders or accents fall outside. A slot smaller than the band cannot be saved by
-            // placement at a fixed font size, which is what the fitter reservation is for.
-            let tight = ink_pixels(&render_tape(&tape_of_height(text, vertical, 12.0, 5.3)));
-            let loss = (generous as f64 - tight as f64) / generous as f64;
-            assert!(
-                loss < 0.005,
-                "{text} {vertical:?}: the tight slot lost {:.1}% of the ink",
-                loss * 100.0
-            );
-        }
-    }
-
     /// Count bands of inked rows separated by at least one blank row — i.e. how many lines of text
     /// actually landed on the page.
     fn ink_bands(png: &[u8]) -> usize {
@@ -4993,10 +4979,11 @@ layout:
 
             // 3. Verify intrinsic measurement matches predicted height
             let measured_h_mm = measured[0].intrinsic[1].expect("text measured height");
+            let lines: Vec<&str> = text.split('\n').collect();
             let expected_h_pt = super::helpers::block_height_with_align_for_test(
                 weight,
                 font_pt,
-                expected_lines,
+                &lines,
                 VerticalAlign::Top,
             );
             let expected_h_mm = super::helpers::pt_to_units_for_test(expected_h_pt, "mm");
@@ -5005,52 +4992,6 @@ layout:
                 "{label}: measured {measured_h_mm}mm, expected {expected_h_mm}mm"
             );
         }
-    }
-
-    /// Guards the other two `alignment.vertical` values (ADR-0030 honours them literally), so a
-    /// centering fix cannot hardcode centre.
-    ///
-    /// #124 turned "pinned to the edge" into "inset by the font's ink overflow", so this asserts the
-    /// *metric* inset rather than contact. It deliberately does not require the ink to touch the
-    /// slot edge: the pad is `ascender − cap_height` / `|descender|`, which overshoots `test`'s
-    /// actual glyphs, so demanding contact would fail a correct implementation and push it toward
-    /// glyph-dependent placement — the thing ADR-0050 rejects.
-    #[test]
-    fn autolength_text_top_and_bottom_pin_to_slot_edges() {
-        let (top_first, top_last, height) = ink_rows(&render_tape(&autolength_tape(
-            "test",
-            false,
-            VerticalAlign::Top,
-            12.0,
-        )));
-        let (bottom_first, bottom_last, _) = ink_rows(&render_tape(&autolength_tape(
-            "test",
-            false,
-            VerticalAlign::Bottom,
-            12.0,
-        )));
-        // The pad is 0.2412em at 12pt = 2.89pt of an 18mm-tall tape rendered at `height` rows, plus
-        // the cap-height gap `test` leaves under the ascender line. Bound it generously above and
-        // require it to be non-zero below: zero would mean the pad never reached this path.
-        let px_per_pt = height as f32 / super::helpers::units_to_pt_for_test(20.0, "mm");
-        let pad_px = 0.2412 * 12.0 * px_per_pt;
-        assert!(
-            top_first as f32 >= pad_px * 0.5,
-            "top-aligned ink must be inset by the pad, got row {top_first} (pad ≈ {pad_px:.1}px)"
-        );
-        assert!(
-            (top_first as f32) < pad_px * 3.0,
-            "top-aligned ink is far below the pad, got row {top_first} (pad ≈ {pad_px:.1}px)"
-        );
-        let bottom_gap = (height - 1 - bottom_last) as f32;
-        assert!(
-            bottom_gap >= pad_px * 0.5 && bottom_gap < pad_px * 3.0,
-            "bottom-aligned ink must be inset by the pad, got gap {bottom_gap} (pad ≈ {pad_px:.1}px)"
-        );
-        assert!(
-            bottom_first > top_last,
-            "bottom alignment must sit below top alignment ({bottom_first} vs {top_last})"
-        );
     }
 
     /// #137: the catalog index lists the request fields a template needs. `{vars.*}` and
@@ -6244,6 +6185,995 @@ layout:
         compile_probe(&source).pages()[0].frame.width().to_pt() as f32
     }
 
+    /// Label-level tests for the measured ink reservation (#392). Expected values come from what
+    /// Typst laid out or rasterised, or from the fontTools/HarfBuzz figures in the change's design,
+    /// never from the measurement under test; the calibration is the one place the two meet.
+    mod measured_ink {
+        use super::{fitted_pt, no_datetime, no_settings, parse_and_validate};
+        use crate::errors::AppError;
+        use crate::models::VerticalAlign;
+        use crate::templates::TemplateContent;
+        use std::collections::HashMap;
+        use typst::layout::{Frame, FrameItem, Point, Transform};
+
+        const DPI: u32 = 180;
+        /// Inter's cap height at 20 pt: 1490 of 2048 units.
+        const CAP_20: f64 = 1490.0 / 2048.0 * 20.0;
+        /// How far `É`'s accent rises above cap height at wght 400, opsz 20: 1928 − 1490 units.
+        const E_ACCENT_20: f64 = (1928.0 - 1490.0) / 2048.0 * 20.0;
+        /// Inter's typographic ascender above cap height at 20 pt, which the old top band stopped at.
+        const OLD_TOP_BAND_20: f64 = (1984.0 - 1490.0) / 2048.0 * 20.0;
+
+        fn mm(pt: f64) -> String {
+            format!("{:.9}", pt * 25.4 / 72.0)
+        }
+
+        /// A one-item label, 120 × 80 mm at 180 dpi, whose text box is 100 mm wide at (10, 10) mm,
+        /// clear of every edge. `height` is YAML (`content` or millimetres), and `extra` adds keys
+        /// to the item.
+        fn label(
+            value: &str,
+            vertical: &str,
+            font_size: &str,
+            height: &str,
+            extra: &str,
+        ) -> TemplateContent {
+            label_at(value, vertical, font_size, height, 10.0, extra)
+        }
+
+        fn label_at(
+            value: &str,
+            vertical: &str,
+            font_size: &str,
+            height: &str,
+            y_mm: f64,
+            extra: &str,
+        ) -> TemplateContent {
+            let value = serde_json::to_string(value).expect("json string");
+            let yaml = format!(
+                "name: Ink\nunit: mm\ndpi: {DPI}\nformat: {{ type: single, width: 120, height: 80 }}\nlayout:\n  - type: text\n    value: {value}\n    at: [10, {y_mm:.6}]\n    size: [100, {height}]\n    font_size: {font_size}\n    alignment: {{ horizontal: left, vertical: {vertical} }}\n{extra}"
+            );
+            parse_and_validate(&yaml).expect("valid template")
+        }
+
+        fn compiled(t: &TemplateContent) -> Result<crate::render::CompiledSource, AppError> {
+            let (settings, datetime) = (no_settings(), no_datetime());
+            let env = crate::render::RenderEnv {
+                settings: &settings,
+                datetime: &datetime,
+            };
+            crate::render::compile_label_source(t, &HashMap::new(), &env)
+        }
+
+        fn length_pt(s: &str) -> f64 {
+            let s = s.trim();
+            let (value, per_unit) = if let Some(v) = s.strip_suffix("mm") {
+                (v, 72.0 / 25.4)
+            } else if let Some(v) = s.strip_suffix("pt") {
+                (v, 1.0)
+            } else if let Some(v) = s.strip_suffix("in") {
+                (v, 72.0)
+            } else {
+                panic!("no unit on length {s:?}")
+            };
+            value.parse::<f64>().expect("a number") * per_unit
+        }
+
+        fn between<'s>(s: &'s str, start: &str, end: &str) -> &'s str {
+            let from = s.find(start).unwrap_or_else(|| panic!("{start:?} in {s}")) + start.len();
+            let to = s[from..]
+                .find(end)
+                .unwrap_or_else(|| panic!("{end:?} in {s}"))
+                + from;
+            &s[from..to]
+        }
+
+        /// The first line of the one top-level item in `source` whose source holds `needle`, with
+        /// its clipped box's top and height in page points. An item runs from its `#place` line to
+        /// the next one, since a text item's body spans lines.
+        fn item_box<'s>(source: &'s str, needle: &str) -> (&'s str, f64, f64) {
+            let starts: Vec<usize> = source
+                .match_indices("#place(top + left, dx: ")
+                .map(|(i, _)| i)
+                .filter(|&i| i == 0 || source.as_bytes()[i - 1] == b'\n')
+                .collect();
+            let items: Vec<&str> = starts
+                .iter()
+                .enumerate()
+                .map(|(k, &i)| &source[i..starts.get(k + 1).copied().unwrap_or(source.len())])
+                .filter(|item| item.contains(needle))
+                .collect();
+            assert_eq!(items.len(), 1, "one item holding {needle:?} in {source}");
+            let line = items[0].lines().next().expect("a line");
+            assert!(line.contains("clip: true"), "an unclipped item: {line}");
+            let top = length_pt(between(line, "dy: ", ")[#box("));
+            let height = length_pt(between(line, ", height: ", ", clip: true)"));
+            (line, top, height)
+        }
+
+        /// The inset emitted at `edge` (`top` or `bottom`), if any.
+        fn emitted_pad(source: &str, edge: &str) -> Option<f64> {
+            let key = format!("#pad({edge}: ");
+            let from = source.find(&key)? + key.len();
+            let to = source[from..].find(')')? + from;
+            Some(length_pt(&source[from..to]))
+        }
+
+        /// The lines a text item emits, in order.
+        fn emitted_lines(source: &str) -> Vec<String> {
+            let re = regex::Regex::new(r#"#text\("((?:[^"\\]|\\.)*)"\)"#).expect("regex");
+            re.captures_iter(source).map(|c| c[1].to_string()).collect()
+        }
+
+        /// The first page's RGBA bytes, one row of `width` pixels after another.
+        fn raster(source: String, files: &[(String, Vec<u8>)]) -> (usize, Vec<u8>) {
+            let doc = crate::render::compile_paged(source, files.to_vec()).expect("compile");
+            let pixmap = typst_render::render(
+                &doc.pages()[0],
+                &crate::render::render_options(DPI as f32 / 72.0),
+            );
+            (pixmap.width() as usize, pixmap.data().to_vec())
+        }
+
+        /// Containment as the layout-sizing spec defines it (task 6.1). The label is rendered twice
+        /// from the same source, once as emitted and once with only the item's `clip: true` removed.
+        /// Both pages grow by one inch on every side, which moves the item's box clear of every label
+        /// edge by exactly `DPI` raster rows, so the text keeps the raster phase it has when emitted.
+        /// Whatever the unclipped render adds in a row wholly outside the item's box is ink the clip
+        /// cut; judging that difference rather than all ink keeps other items out of the verdict.
+        fn containment(
+            source: &str,
+            files: &[(String, Vec<u8>)],
+            needle: &str,
+        ) -> Result<(), String> {
+            let (line, top, height) = item_box(source, needle);
+            let page = source
+                .lines()
+                .find(|l| l.starts_with("#set page("))
+                .expect("a page setup");
+            let re =
+                regex::Regex::new(r"^#set page\(width: (.+), height: (.+), margin: 0(?:mm|in)\)$")
+                    .expect("regex");
+            let caps = re
+                .captures(page)
+                .unwrap_or_else(|| panic!("page setup {page}"));
+            let grown = format!(
+                "#set page(width: {} + 144pt, height: {} + 144pt, margin: 72pt)",
+                &caps[1], &caps[2]
+            );
+            let clipped = source.replacen(page, &grown, 1);
+            let unclipped =
+                clipped.replacen(line, &line.replacen("clip: true", "clip: false", 1), 1);
+            assert_ne!(clipped, unclipped, "the item's clip was not removed");
+            let (clipped, unclipped) = (raster(clipped, files), raster(unclipped, files));
+
+            let scale = f64::from(DPI) / 72.0;
+            let (top_px, bottom_px) = ((72.0 + top) * scale, (72.0 + top + height) * scale);
+            let stride = clipped.0 * 4;
+            for (y, (a, b)) in clipped
+                .1
+                .chunks(stride)
+                .zip(unclipped.1.chunks(stride))
+                .enumerate()
+            {
+                let above = (y + 1) as f64 <= top_px;
+                let below = y as f64 >= bottom_px;
+                if (above || below) && a != b {
+                    let side = if above { "above" } else { "below" };
+                    return Err(format!(
+                        "the clip cut ink in raster row {y}, wholly {side} the box ({top_px:.2}..{bottom_px:.2})"
+                    ));
+                }
+            }
+            Ok(())
+        }
+
+        fn assert_contained(t: &TemplateContent) {
+            let c = compiled(t).expect("compile label");
+            containment(&c.source, &c.files, "#text(\"").unwrap_or_else(|e| panic!("{e}"));
+        }
+
+        /// One glyph as Typst laid it out, in page points with y down: the baseline of the nearest
+        /// enclosing frame that has one, and the top and bottom of its outline. Typst inlines each
+        /// line frame into its paragraph's, which keeps the first line's baseline, so the baseline
+        /// is the glyph's own only in a one-line block; the tests read it from nothing else.
+        #[derive(Debug, Clone, Copy)]
+        struct LaidGlyph {
+            baseline: f64,
+            /// Where its text item sits: the line's baseline less any vertical offset Typst moved
+            /// into the item.
+            item: f64,
+            top: f64,
+            bottom: f64,
+        }
+
+        /// Walk the frame tree, accumulating every group transform and item position down to each
+        /// text item (design Decision 3a). Each glyph's outline is bounded from that item's font at
+        /// that item's size and placed at the item's position plus the glyph's `x_offset` and the
+        /// advances before it. `Glyph::y_offset` is never read: Typst moves a glyph's vertical offset
+        /// into its text item's position and emits the glyph with zero (`typst-layout`
+        /// `src/inline/shaping.rs:358,429`), so reading it would miss a positioned mark.
+        fn walk(frame: &Frame, ts: Transform, baseline: Option<f64>, out: &mut Vec<LaidGlyph>) {
+            let baseline = if frame.has_baseline() {
+                Some(Point::with_y(frame.baseline()).transform(ts).y.to_pt())
+            } else {
+                baseline
+            };
+            for (pos, item) in frame.items() {
+                match item {
+                    FrameItem::Group(group) => walk(
+                        &group.frame,
+                        ts.pre_concat(Transform::translate(pos.x, pos.y))
+                            .pre_concat(group.transform),
+                        baseline,
+                        out,
+                    ),
+                    FrameItem::Text(text) => {
+                        let baseline = baseline.expect("a text item sits in a line frame");
+                        let mut x = pos.x;
+                        for glyph in &text.glyphs {
+                            let gx = x + glyph.x_offset.at(text.size);
+                            x += glyph.x_advance.at(text.size);
+                            let Some((bottom, top)) = crate::render::helpers::glyph_ink(
+                                text.font.ttf(),
+                                ttf_parser::GlyphId(glyph.id),
+                            ) else {
+                                continue;
+                            };
+                            let y = |units: f32| {
+                                Point::new(gx, pos.y - text.font.to_em(units).at(text.size))
+                                    .transform(ts)
+                                    .y
+                                    .to_pt()
+                            };
+                            out.push(LaidGlyph {
+                                baseline,
+                                item: y(0.0),
+                                top: y(top),
+                                bottom: y(bottom),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        fn laid_out(t: &TemplateContent) -> Vec<LaidGlyph> {
+            let c = compiled(t).expect("compile label");
+            let doc = crate::render::compile_paged(c.source, c.files).expect("compile");
+            let mut out = Vec::new();
+            walk(&doc.pages()[0].frame, Transform::identity(), None, &mut out);
+            assert!(!out.is_empty(), "no glyphs laid out");
+            out
+        }
+
+        /// The highest ink above the baseline and the lowest below it, over a one-line block.
+        fn laid_rise_fall(glyphs: &[LaidGlyph]) -> (f64, f64) {
+            glyphs.iter().fold((f64::MIN, f64::MIN), |(r, f), g| {
+                (r.max(g.baseline - g.top), f.max(g.bottom - g.baseline))
+            })
+        }
+
+        fn baselines(glyphs: &[LaidGlyph]) -> Vec<f64> {
+            let mut out: Vec<f64> = Vec::new();
+            for g in glyphs {
+                if !out.iter().any(|b| (b - g.baseline).abs() < 1e-6) {
+                    out.push(g.baseline);
+                }
+            }
+            out
+        }
+
+        fn row(pt: f64) -> i64 {
+            (pt * f64::from(DPI) / 72.0).floor() as i64
+        }
+
+        /// First and last rows of the rendered PNG carrying ink.
+        fn ink_rows(t: &TemplateContent) -> (u32, u32) {
+            let png = crate::render::render_single_label(
+                t,
+                &HashMap::new(),
+                &no_settings(),
+                &no_datetime(),
+            )
+            .expect("render label");
+            let img = image::load_from_memory(&png).expect("decode").to_luma8();
+            let inked: Vec<u32> = (0..img.height())
+                .filter(|&y| (0..img.width()).any(|x| img.get_pixel(x, y).0[0] < 128))
+                .collect();
+            (inked[0], inked[inked.len() - 1])
+        }
+
+        // ---- 3. Calibration against Typst's own frame ----
+
+        /// A single line's rise and fall as Typst laid it out through the real renderer, at a fixed
+        /// size in a box far larger than it needs.
+        fn typst_line_ink(value: &str, weight: u16) -> (f64, f64) {
+            let t = label(
+                value,
+                "top",
+                "20",
+                "40",
+                &format!("    font_weight: {weight}\n    overflow: fail\n"),
+            );
+            laid_rise_fall(&laid_out(&t))
+        }
+
+        /// Each line's rise and fall as Typst laid out a block of `lines` through the real renderer.
+        /// Typst inlines line frames, so line `i`'s baseline is the first line's plus `i − 1`
+        /// pitches, the stacking `block_height_matches_typst_layout` pins, and each glyph belongs to
+        /// the line whose baseline its text item sits nearest.
+        fn typst_block_ink(lines: &[&str]) -> Vec<Option<(f64, f64)>> {
+            let t = label(
+                &lines.join("\n"),
+                "top",
+                "20",
+                "70",
+                "    wrap: false\n    overflow: fail\n",
+            );
+            let glyphs = laid_out(&t);
+            let (first, pitch) = (glyphs[0].baseline, 24.0);
+            let mut out = vec![None; lines.len()];
+            for g in glyphs {
+                let i = ((g.item - first) / pitch).round() as usize;
+                let baseline = first + i as f64 * pitch;
+                let (rise, fall) = (baseline - g.top, g.bottom - baseline);
+                out[i] = Some(out[i].map_or((rise, fall), |(r, f): (f64, f64)| {
+                    (r.max(rise), f.max(fall))
+                }));
+            }
+            out
+        }
+
+        /// The measurement shapes the block as Typst does, as one paragraph: a run of characters of
+        /// no specific script belongs to the run around it, across the line break. `0́` before `α`
+        /// is shaped in a Greek run, where Inter leaves the acute unraised; alone, the acute is
+        /// raised 393 units.
+        #[test]
+        fn the_block_measurement_matches_typsts_frame() {
+            let face = crate::render::helpers::instance(400, 20.0).expect("face");
+            for lines in [
+                &["0\u{0301}", "α"][..],
+                &["α", "0\u{0301}"],
+                &["0\u{0301}", "HELIX"],
+                &["HELIX", "Émile"],
+                &["g\u{0323}", "HELIX", "gyp"],
+                &["αH\u{0301}", "H\u{0301}α"],
+                &["12:30", "1:1"],
+                &["ПриветHello", "0\u{0301}", "Привет"],
+            ] {
+                let typst = typst_block_ink(lines);
+                let measured = crate::render::helpers::line_inks(&face, lines, 20.0);
+                for (i, (t, m)) in typst.iter().zip(&measured).enumerate() {
+                    let (rise, fall) = t.expect("Typst inked the line");
+                    let m = m.expect("measured ink");
+                    assert!(
+                        (f64::from(m.rise) - rise).abs() <= 0.01 && (f64::from(m.fall) - fall).abs() <= 0.01,
+                        "{lines:?} line {i}: measured rise {} fall {}, Typst laid out rise {rise} fall {fall}",
+                        m.rise,
+                        m.fall
+                    );
+                }
+            }
+            // The oracle tells the paragraph from lines shaped apart.
+            let alone =
+                crate::render::helpers::shape_line_ink(&face, "0\u{0301}", 20.0).expect("ink");
+            let (paragraph_rise, _) = typst_block_ink(&["0\u{0301}", "α"])[0].expect("ink");
+            assert!(
+                f64::from(alone.rise) - paragraph_rise > 3.0,
+                "alone {} vs in the paragraph {paragraph_rise}",
+                alone.rise
+            );
+        }
+
+        /// A generic line takes the script of the line after it, so `0́` over `α` reserves only the
+        /// ink its Greek run draws: its block fits a 40 pt box that shaping the lines apart, with
+        /// the acute raised, would refuse at about 43 pt.
+        #[test]
+        fn a_line_of_no_script_is_measured_in_the_run_it_joins() {
+            let t = label(
+                "0\u{0301}\nα",
+                "top",
+                "20",
+                &mm(40.0),
+                "    wrap: false\n    overflow: fail\n",
+            );
+            crate::render::render_single_label(&t, &HashMap::new(), &no_settings(), &no_datetime())
+                .expect("0́ over α fits 40 pt");
+            assert_contained(&t);
+        }
+
+        #[test]
+        fn the_line_measurement_matches_typsts_frame() {
+            let face = crate::render::helpers::instance(400, 20.0).expect("face");
+            for value in [
+                "HELIX",
+                "Émile",
+                "E\u{0301}",
+                "12:30",
+                "αH\u{0301}",
+                "ПриветHello",
+                "g\u{0323}",
+                "Ǻ",
+                "gyp",
+                "...",
+                "g É",
+            ] {
+                let (rise, fall) = typst_line_ink(value, 400);
+                let measured =
+                    crate::render::helpers::shape_line_ink(&face, value, 20.0).expect("ink");
+                assert!(
+                    (f64::from(measured.rise) - rise).abs() <= 0.01
+                        && (f64::from(measured.fall) - fall).abs() <= 0.01,
+                    "{value:?}: measured rise {} fall {}, Typst laid out rise {rise} fall {fall}",
+                    measured.rise,
+                    measured.fall
+                );
+            }
+        }
+
+        /// The calibration can tell a segmented measurement from a whole-line one: shaping `αH́` as
+        /// one buffer leaves the acute unpositioned, 393 units (3.84 pt at 20 pt) below where Typst
+        /// puts it.
+        #[test]
+        fn the_calibration_refuses_whole_line_shaping() {
+            let face = crate::render::helpers::instance(400, 20.0).expect("face");
+            let value = "αH\u{0301}";
+            let (typst_rise, _) = typst_line_ink(value, 400);
+
+            let segmented =
+                crate::render::helpers::shape_line_ink(&face, value, 20.0).expect("ink");
+            assert!((f64::from(segmented.rise) - typst_rise).abs() <= 0.01);
+
+            let mut buffer = rustybuzz::UnicodeBuffer::new();
+            buffer.push_str(value);
+            buffer.guess_segment_properties();
+            buffer.set_flags(rustybuzz::BufferFlags::REMOVE_DEFAULT_IGNORABLES);
+            let glyphs = rustybuzz::shape(&face, &[], buffer);
+            let top_units = glyphs
+                .glyph_infos()
+                .iter()
+                .zip(glyphs.glyph_positions())
+                .filter_map(|(info, pos)| {
+                    face.glyph_bounding_box(ttf_parser::GlyphId(info.glyph_id as u16))
+                        .map(|b| f64::from(b.y_max) + f64::from(pos.y_offset))
+                })
+                .fold(f64::MIN, f64::max);
+            let whole_line_rise = top_units / 2048.0 * 20.0;
+            let miss = typst_rise - whole_line_rise;
+            assert!(miss > 0.01, "whole-line shaping must fail the calibration");
+            assert!(
+                (miss - 3.84).abs() < 0.01,
+                "whole-line shaping misses by {miss} pt"
+            );
+        }
+
+        // ---- 6. The containment oracle, proved by sabotage ----
+
+        /// Ink moved one row past an edge shows in the row beyond only by the part of a row the edge
+        /// leaves uncovered, which is nothing when the edge sits at the bottom of its row. So each
+        /// label is first moved to put the edge under test mid-row, and the sabotage is then visible
+        /// by construction rather than by luck of the raster phase.
+        #[test]
+        fn the_containment_oracle_catches_one_row_of_cut_ink() {
+            let scale = f64::from(DPI) / 72.0;
+            let row_pt = 1.0 / scale;
+            for (value, vertical, edge) in [("É", "top", "top"), ("gyp", "bottom", "bottom")] {
+                let probe =
+                    compiled(&label(value, vertical, "20", "content", "")).expect("compile");
+                let (_, top, height) = item_box(&probe.source, "#text(\"");
+                let edge_px = (72.0 + if edge == "top" { top } else { top + height }) * scale;
+                let raise_pt = (edge_px.floor() + 0.5 - edge_px) / scale;
+                let y_mm = 10.0 - raise_pt * 25.4 / 72.0;
+                let c = compiled(&label_at(value, vertical, "20", "content", y_mm, ""))
+                    .expect("compile");
+                containment(&c.source, &c.files, "#text(\"").expect("the emitted pad contains it");
+
+                let pad = emitted_pad(&c.source, edge).expect("a pad");
+                let emitted = format!("#pad({edge}: ");
+                let at = c.source.find(&emitted).expect("pad") + emitted.len();
+                let end = c.source[at..].find(')').expect("pad end") + at;
+                let sabotaged =
+                    format!("{}{}pt{}", &c.source[..at], pad - row_pt, &c.source[end..]);
+                let err = containment(&sabotaged, &c.files, "#text(\"")
+                    .expect_err("a pad one raster row short must fail containment");
+                assert!(
+                    err.contains(&format!(
+                        "wholly {}",
+                        if edge == "top" { "above" } else { "below" }
+                    )),
+                    "{value}: {err}"
+                );
+            }
+        }
+
+        // ---- 7. Vertical alignment places a fixed metric box ----
+
+        #[test]
+        fn unaccented_capitals_sit_flush_with_the_top_edge() {
+            let t = label("HELIX", "top", "20", "20", "");
+            let c = compiled(&t).expect("compile");
+            assert_eq!(emitted_pad(&c.source, "top"), None, "{}", c.source);
+            let (_, box_top, _) = item_box(&c.source, "#text(\"");
+            let glyphs = laid_out(&t);
+            let metric_top = glyphs[0].baseline - CAP_20;
+            assert!(
+                (metric_top - box_top).abs() <= 0.01,
+                "metric top {metric_top} pt, box top {box_top} pt"
+            );
+            let edge_px = box_top * f64::from(DPI) / 72.0;
+            let (first, _) = ink_rows(&t);
+            assert!(
+                (f64::from(first) - edge_px).abs() <= 1.0,
+                "first inked row {first}, box top edge at row {edge_px:.2}"
+            );
+        }
+
+        #[test]
+        fn an_accented_capital_is_inset_by_its_own_accent_and_stays_whole() {
+            let t = label("Émile", "top", "20", "content", "");
+            let c = compiled(&t).expect("compile");
+            let pad = emitted_pad(&c.source, "top").expect("a top pad");
+            assert!(
+                (pad - E_ACCENT_20).abs() < 1e-3,
+                "pad {pad} pt, accent {E_ACCENT_20} pt"
+            );
+            let glyphs = laid_out(&t);
+            let (rise, _) = laid_rise_fall(&glyphs);
+            assert!(
+                (rise - CAP_20 - pad).abs() <= 0.01,
+                "Typst laid the accent {rise} pt high"
+            );
+            let (_, box_top, _) = item_box(&c.source, "#text(\"");
+            assert!((glyphs[0].baseline - CAP_20 - box_top - pad).abs() <= 0.01);
+            assert_contained(&t);
+        }
+
+        #[test]
+        fn a_descender_is_inset_by_its_own_depth_and_stays_whole() {
+            let t = label("gyp", "bottom", "20", "content", "");
+            let c = compiled(&t).expect("compile");
+            let pad = emitted_pad(&c.source, "bottom").expect("a bottom pad");
+            let glyphs = laid_out(&t);
+            let (_, fall) = laid_rise_fall(&glyphs);
+            assert!(
+                (pad - fall).abs() <= 0.01,
+                "pad {pad} pt, lowest descender {fall} pt"
+            );
+            let (_, box_top, box_h) = item_box(&c.source, "#text(\"");
+            assert!((box_top + box_h - glyphs[0].baseline - pad).abs() <= 0.01);
+            assert_contained(&t);
+        }
+
+        #[test]
+        fn a_centred_baseline_does_not_follow_the_glyphs() {
+            let mut rows = Vec::new();
+            let mut ink = Vec::new();
+            for value in ["HELIX", "Émile", "testj", "gyp"] {
+                let t = label(value, "center", "20", "40", "");
+                let c = compiled(&t).expect("compile");
+                assert!(!c.source.contains("#pad("), "{value}: {}", c.source);
+                let b = baselines(&laid_out(&t));
+                assert_eq!(b.len(), 1, "{value}");
+                rows.push(row(b[0]));
+                ink.push((value, ink_rows(&t)));
+            }
+            assert!(rows.iter().all(|r| *r == rows[0]), "baseline rows {rows:?}");
+            for (i, (a, ink_a)) in ink.iter().enumerate() {
+                for (b, ink_b) in &ink[i + 1..] {
+                    assert_ne!(ink_a, ink_b, "{a} and {b} leave the same ink gaps");
+                }
+            }
+        }
+
+        #[test]
+        fn a_block_is_never_pulled_toward_its_aligned_edge() {
+            let helix = label("HELIX", "top", "20", "20", "");
+            let ace = label("ace", "top", "20", "20", "");
+            let (helix_glyphs, ace_glyphs) = (laid_out(&helix), laid_out(&ace));
+            assert_eq!(
+                row(baselines(&helix_glyphs)[0]),
+                row(baselines(&ace_glyphs)[0]),
+                "HELIX and ace must share a baseline row"
+            );
+            let (_, box_top, _) = item_box(&compiled(&ace).expect("compile").source, "#text(\"");
+            let (rise, _) = laid_rise_fall(&ace_glyphs);
+            let gap = CAP_20 - rise;
+            assert!(gap > 3.0, "ace inks {gap} pt below cap height");
+            let scale = f64::from(DPI) / 72.0;
+            let (first, _) = ink_rows(&ace);
+            assert!(
+                (f64::from(first) - (box_top + gap) * scale).abs() <= 1.0,
+                "ace's first inked row {first} must lie {gap} pt below the top edge at row {:.2}",
+                box_top * scale
+            );
+        }
+
+        #[test]
+        fn ink_between_the_lines_moves_nothing() {
+            let extra = "    wrap: false\n";
+            let top = |v: &str| {
+                compiled(&label(v, "top", "20", "30", extra))
+                    .expect("compile")
+                    .source
+            };
+            let bottom = |v: &str| label(v, "bottom", "20", "30", extra);
+
+            assert_eq!(emitted_pad(&top("Hg\nÉH"), "top"), None);
+            let pad = emitted_pad(&top("ÉH\nHg"), "top").expect("a top pad");
+            assert!((pad - E_ACCENT_20).abs() < 1e-3, "top pad {pad} pt");
+
+            let t = bottom("ÉH\nHg");
+            let pad = emitted_pad(&compiled(&t).expect("compile").source, "bottom")
+                .expect("a bottom pad");
+            let (_, g_depth) = typst_line_ink("Hg", 400);
+            assert!(
+                (pad - g_depth).abs() <= 0.01,
+                "bottom pad {pad} pt, g falls {g_depth} pt"
+            );
+            let source = compiled(&bottom("Hg\nÉH")).expect("compile").source;
+            assert_eq!(emitted_pad(&source, "bottom"), None, "{source}");
+        }
+
+        // ---- 8. Vertical fitting reserves the ink each alignment can expose ----
+
+        /// Proof: refused before #392, which reserved 0.4824em that `HELIX` does not use.
+        #[test]
+        fn aligned_edges_are_unchanged() {
+            let t = label("HELIX", "top", "20", &mm(CAP_20), "    overflow: fail\n");
+            crate::render::render_single_label(&t, &HashMap::new(), &no_settings(), &no_datetime())
+                .expect("HELIX renders in a box one cap height tall");
+        }
+
+        /// Proof: before #392 both values reserved the same font band and settled at one size.
+        #[test]
+        fn auto_shrink_sees_the_emitted_ink() {
+            let range = "{ min: 10, max: 30 }";
+            let helix = label("HELIX", "top", range, &mm(16.0), "");
+            let accented = label("HÉLIX", "top", range, &mm(16.0), "");
+            let helix_size = fitted_pt(&compiled(&helix).expect("compile").source);
+            let accented_size = fitted_pt(&compiled(&accented).expect("compile").source);
+            assert!(
+                accented_size < helix_size,
+                "HÉLIX settles at {accented_size} pt, HELIX at {helix_size} pt"
+            );
+            // 22 pt: the largest step with 1490/2048 × s ≤ 16.01 pt, nothing reserved.
+            assert_eq!(helix_size, 22.0);
+            assert_contained(&accented);
+        }
+
+        #[test]
+        fn a_centred_multiline_blocks_line_budget_counts_the_reserve() {
+            let height = mm(CAP_20 + 2.0 * 24.0);
+            let t = |value: &str, overflow: &str| {
+                label(
+                    value,
+                    "center",
+                    "20",
+                    &height,
+                    &format!("    wrap: false\n    overflow: {overflow}\n"),
+                )
+            };
+            let plain = t("HELIX\nHELIX\nHELIX", "ellipsis");
+            assert_eq!(
+                emitted_lines(&compiled(&plain).expect("compile").source),
+                ["HELIX"; 3]
+            );
+            assert_contained(&plain);
+
+            let descender = t("HELIX\nHELIX\nHELgX", "ellipsis");
+            assert_eq!(
+                emitted_lines(&compiled(&descender).expect("compile").source),
+                ["HELIX", "HELIX..."]
+            );
+            assert_contained(&descender);
+
+            let plain_fail = t("HELIX\nHELIX\nHELIX", "fail");
+            assert_contained(&plain_fail);
+            let Err(err) = compiled(&t("HELIX\nHELIX\nHELgX", "fail")) else {
+                panic!("the descender overflows under fail");
+            };
+            assert_eq!(err.reason(), Some("text_does_not_fit"));
+        }
+
+        /// Proof: before #392 `Hg\nÉH` reserved the font's bands on top of its metric block.
+        #[test]
+        fn ink_between_the_lines_reserves_nothing() {
+            let box_h = |value: &str| {
+                let t = label(value, "top", "20", "content", "    wrap: false\n");
+                item_box(&compiled(&t).expect("compile").source, "#text(\"").2
+            };
+            let metric_block_2 = CAP_20 + 24.0;
+            let inner = box_h("Hg\nÉH");
+            assert!(
+                (inner - metric_block_2).abs() < 0.005,
+                "Hg\\nÉH resolves {inner} pt"
+            );
+
+            let outer = label("ÉH\nHg", "top", "20", "content", "    wrap: false\n");
+            let (_, g_depth) = typst_line_ink("Hg", 400);
+            let got = item_box(&compiled(&outer).expect("compile").source, "#text(\"").2;
+            let want = metric_block_2 + E_ACCENT_20 + g_depth;
+            assert!(
+                (got - want).abs() < 0.01,
+                "ÉH\\nHg resolves {got} pt, want {want} pt"
+            );
+        }
+
+        #[test]
+        fn a_centred_item_asking_for_a_content_height_grows_by_the_reservation() {
+            let resolved = |value: &str, vertical: &str| {
+                let t = label(value, vertical, "20", "content", "");
+                let c = compiled(&t).expect("compile");
+                let (_, top, h) = item_box(&c.source, "#text(\"");
+                (t, top, h)
+            };
+            for vertical in ["top", "center"] {
+                let (_, _, h) = resolved("HELIX", vertical);
+                assert!(
+                    (h - CAP_20).abs() < 0.005,
+                    "{vertical} HELIX resolves {h} pt"
+                );
+            }
+
+            let (top_t, _, top_h) = resolved("Égypt", "top");
+            let (rise, fall) = laid_rise_fall(&laid_out(&top_t));
+            let (a, d) = (rise - CAP_20, fall);
+            assert!(
+                a > 4.0 && d > 3.0,
+                "Égypt inks {a} pt above and {d} pt below"
+            );
+            assert!(
+                (top_h - (CAP_20 + a + d)).abs() < 0.01,
+                "top Égypt resolves {top_h} pt"
+            );
+            assert_contained(&top_t);
+
+            let (centre_t, box_top, centre_h) = resolved("Égypt", "center");
+            let m = a.max(d);
+            assert!(
+                (centre_h - (CAP_20 + 2.0 * m)).abs() < 0.01,
+                "centred Égypt resolves {centre_h} pt"
+            );
+            let glyphs = laid_out(&centre_t);
+            let ink_top = glyphs.iter().map(|g| g.top).fold(f64::MAX, f64::min);
+            let ink_bottom = glyphs.iter().map(|g| g.bottom).fold(f64::MIN, f64::max);
+            assert!(
+                ((ink_top - box_top) - (m - a)).abs() < 0.01,
+                "gap above {}",
+                ink_top - box_top
+            );
+            assert!(
+                ((box_top + centre_h - ink_bottom) - (m - d)).abs() < 0.01,
+                "gap below {}",
+                box_top + centre_h - ink_bottom
+            );
+            assert_contained(&centre_t);
+        }
+
+        #[test]
+        fn an_asymmetric_font_reserves_twice_its_larger_overflow() {
+            let resolved = |vertical: &str| {
+                let t = label("É", vertical, "20", "content", "");
+                item_box(&compiled(&t).expect("compile").source, "#text(\"").2
+            };
+            let (centre, top) = (resolved("center"), resolved("top"));
+            assert!(
+                (centre - (CAP_20 + 2.0 * E_ACCENT_20)).abs() < 0.005,
+                "centred {centre} pt"
+            );
+            assert!((top - (CAP_20 + E_ACCENT_20)).abs() < 0.005, "top {top} pt");
+        }
+
+        /// Proof: before #392 both weights reserved the same font band.
+        #[test]
+        fn the_reservation_is_read_from_the_instance_rendered() {
+            let resolved = |weight: u16| {
+                let t = label(
+                    "É",
+                    "top",
+                    "20",
+                    "content",
+                    &format!("    font_weight: {weight}\n"),
+                );
+                item_box(&compiled(&t).expect("compile").source, "#text(\"").2
+            };
+            let (regular, bold) = (resolved(400), resolved(700));
+            assert!(
+                bold - regular > 0.05,
+                "the two instances resolve {regular} and {bold} pt"
+            );
+            // fontTools on the bundled font: É tops out at 1928 units at wght 400 and 1939.7 at 700.
+            assert!(
+                (regular - (CAP_20 + E_ACCENT_20)).abs() < 0.01,
+                "wght 400 resolves {regular} pt"
+            );
+            let bold_accent = (1939.7 - 1490.0) / 2048.0 * 20.0;
+            assert!(
+                (bold - (CAP_20 + bold_accent)).abs() < 0.01,
+                "wght 700 resolves {bold} pt"
+            );
+        }
+
+        /// Proof: before #392 the reservation stopped at Inter's ascender and cut `Ǻ`'s top.
+        #[test]
+        fn a_glyph_outside_the_declared_band_still_clips() {
+            let t = label("Ǻ", "top", "20", "content", "");
+            crate::render::render_single_label(&t, &HashMap::new(), &no_settings(), &no_datetime())
+                .expect("Ǻ renders");
+            assert_contained(&t);
+            let pad =
+                emitted_pad(&compiled(&t).expect("compile").source, "top").expect("a top pad");
+            assert!(pad > OLD_TOP_BAND_20 + 2.0, "Ǻ inset by {pad} pt");
+        }
+
+        #[test]
+        fn a_mark_after_a_change_of_script_is_measured_in_its_own_segment() {
+            let pad = |value: &str| {
+                let t = label(value, "top", "20", "content", "");
+                emitted_pad(&compiled(&t).expect("compile").source, "top").expect("a top pad")
+            };
+            let (mixed, alone) = (pad("αH\u{0301}"), pad("H\u{0301}"));
+            assert_eq!(
+                mixed, alone,
+                "αH́ is inset by {mixed} pt, H́ alone by {alone} pt"
+            );
+            assert!((alone - E_ACCENT_20).abs() < 0.01, "H́ inset by {alone} pt");
+            assert_contained(&label("αH\u{0301}", "top", "20", "content", ""));
+        }
+
+        #[test]
+        fn a_character_the_font_does_not_map_is_outside_the_guarantee() {
+            let t = label("H\u{4E2D}", "top", "20", "content", "    overflow: fail\n");
+            crate::render::render_single_label(&t, &HashMap::new(), &no_settings(), &no_datetime())
+                .expect("an unmapped character is fitted and rendered, not refused");
+            // Inter's .notdef inks from −416 to 1856 units [fontTools].
+            let notdef_a = (1856.0 - 1490.0) / 2048.0 * 20.0;
+            let notdef_d = 416.0 / 2048.0 * 20.0;
+            let h = item_box(&compiled(&t).expect("compile").source, "#text(\"").2;
+            assert!(
+                (h - (CAP_20 + notdef_a + notdef_d)).abs() < 0.01,
+                "resolves {h} pt"
+            );
+        }
+
+        /// *A centred item with headroom is unaffected*: its box fits both the font bands and the
+        /// measured ink at `font_size.max`, so it resolves the same size, lines and box, and a
+        /// centred block's placement never read the reservation. The literal is this template's
+        /// source captured on the commit before #392 (`bf6d58a`).
+        #[test]
+        fn a_centred_item_with_headroom_is_unaffected() {
+            const BEFORE_392: &str = "#set page(width: 120mm, height: 80mm, margin: 0mm)\n#set text(font: \"Inter\")\n#place(top + left, dx: 10mm, dy: 50mm)[#box(width: 100mm, height: 20mm, clip: true)[#align(horizon + left)[#text(size: 14pt)[#set par(leading: 6.6144543pt)\n#text(\"Widget\u{a0}42\")]]]]\n";
+            let t = label("Widget 42", "center", "{ min: 8, max: 14 }", "20", "");
+            assert_eq!(compiled(&t).expect("compile").source, BEFORE_392);
+        }
+
+        // ---- 9.5. The #124 raster tests, restated for the measured reservation ----
+
+        /// Guards the other two `alignment.vertical` values (ADR-0030 honours them literally), so a
+        /// centering fix cannot hardcode centre. `test` inks nothing above cap height, so top
+        /// alignment emits no inset and puts its metric top on the slot edge; its round letters
+        /// overshoot the baseline, so bottom alignment is inset by exactly that overshoot as Typst
+        /// lays it out. Both stay whole.
+        #[test]
+        fn autolength_text_top_and_bottom_pin_to_slot_edges() {
+            let top = super::autolength_tape("test", false, VerticalAlign::Top, 12.0);
+            let c = compiled(&top).expect("compile");
+            assert_eq!(emitted_pad(&c.source, "top"), None, "{}", c.source);
+            let (_, box_top, _) = item_box(&c.source, "#text(\"");
+            let cap_12 = 1490.0 / 2048.0 * 12.0;
+            assert!((laid_out(&top)[0].baseline - cap_12 - box_top).abs() <= 0.01);
+            assert_contained(&top);
+
+            let bottom = super::autolength_tape("test", false, VerticalAlign::Bottom, 12.0);
+            let c = compiled(&bottom).expect("compile");
+            let pad = emitted_pad(&c.source, "bottom").expect("a bottom pad");
+            let glyphs = laid_out(&bottom);
+            let (_, fall) = laid_rise_fall(&glyphs);
+            assert!(
+                fall > 0.0 && (pad - fall).abs() <= 0.01,
+                "pad {pad} pt, overshoot {fall} pt"
+            );
+            let (_, box_top, box_h) = item_box(&c.source, "#text(\"");
+            assert!((box_top + box_h - glyphs[0].baseline - pad).abs() <= 0.01);
+            assert_contained(&bottom);
+        }
+
+        /// A slot tight enough that the metric box alone would cut accents or descenders keeps every
+        /// glyph whole at a fixed size, at either aligned edge, because the inset is the ink the
+        /// value carries. Judged against the unclipped reference: comparing ink against a roomier
+        /// render proves nothing when both are clipped alike.
+        #[test]
+        fn ink_survives_a_tight_slot_at_top_and_bottom_alignment() {
+            for (text, vertical) in [
+                ("Édgy", VerticalAlign::Top),
+                ("gjpqy", VerticalAlign::Bottom),
+                ("Édgy", VerticalAlign::Bottom),
+                ("gjpqy", VerticalAlign::Top),
+            ] {
+                assert_contained(&super::tape_of_height(text, vertical, 12.0, 5.3));
+            }
+        }
+
+        /// #245's tape under the measured reservation: 21.5 pt is the largest 0.5 pt step at which
+        /// the two lines broken there fit 18.1 mm (51.31 pt) with twice their larger outer ink, the
+        /// depth of the `g` on the last line. At 22 pt that sum is about 51.8 pt.
+        #[test]
+        fn center_aligned_multiline_auto_shrink_descender_fits_and_closes_stroke() {
+            let yaml = r#"
+name: Issue 245 Repro
+unit: mm
+dpi: 180
+format: { type: single, width: 120, height: 18.1 }
+layout:
+  - type: text
+    value: "Kitchen Utensils and a much longer second line here"
+    at: [0, 0]
+    size: [120, 18.1]
+    font_size:
+      min: 10
+      max: 32
+    wrap: true
+    alignment:
+      horizontal: center
+      vertical: center
+"#;
+            let template = parse_and_validate(yaml).expect("valid template");
+            let c = compiled(&template).expect("compile");
+            assert_eq!(fitted_pt(&c.source), 21.5);
+            assert_eq!(emitted_lines(&c.source).len(), 2, "{}", c.source);
+            assert_contained(&template);
+
+            // The rule, derived from what Typst lays out rather than from the measurement: at a
+            // fixed size, in a box tall enough to keep every line, the block needs its metric height
+            // plus twice its larger outer ink. 21.5 pt fits 18.1 mm and 22 pt does not.
+            let need = |size: f64| {
+                let fixed = yaml
+                    .replace("height: 18.1 }", "height: 80 }")
+                    .replace("size: [120, 18.1]", "size: [120, 60]")
+                    .replace(
+                        "font_size:\n      min: 10\n      max: 32",
+                        &format!("font_size: {size}"),
+                    );
+                let t = parse_and_validate(&fixed).expect("valid template");
+                let lines = emitted_lines(&compiled(&t).expect("compile").source).len();
+                assert_eq!(lines, 2, "at {size} pt");
+                let glyphs = laid_out(&t);
+                // The walker reports the first line's baseline for every glyph (see `LaidGlyph`).
+                let first = glyphs[0].baseline;
+                let cap = 1490.0 / 2048.0 * size;
+                let pitch = 1.2 * size;
+                let top = glyphs.iter().map(|g| g.top).fold(f64::MAX, f64::min);
+                let bottom = glyphs.iter().map(|g| g.bottom).fold(f64::MIN, f64::max);
+                let a = (first - cap - top).max(0.0);
+                let d = (bottom - (first + pitch)).max(0.0);
+                cap + pitch + 2.0 * a.max(d)
+            };
+            let slot = 18.1 * 72.0 / 25.4 + 0.01;
+            assert!(need(21.5) <= slot, "21.5 pt needs {} pt", need(21.5));
+            assert!(need(22.0) > slot, "22 pt needs {} pt", need(22.0));
+        }
+
+        // ---- 9. Text is laid out against the box it will get ----
+
+        /// Proof: before #392 the closed-form budget kept one line.
+        #[test]
+        fn a_longer_run_fits_where_the_first_line_alone_does_not() {
+            let t = label(
+                "g\u{0323}\nHELIX\nHELIX",
+                "center",
+                "20",
+                &mm(28.0),
+                "    wrap: false\n    line_spacing: 0.5\n    overflow: ellipsis\n",
+            );
+            let c =
+                compiled(&t).expect("a two-line run fits although the first line alone does not");
+            assert_eq!(emitted_lines(&c.source), ["g\u{0323}", "HELIX..."]);
+            assert_contained(&t);
+        }
+    }
+
     /// The fitter's block model must match what Typst lays out, or auto-shrink is guessing. One, two
     /// and three lines at authored leading values (0.5, 0.99, 1.2, 1.5): a per-line constant that folds
     /// leading in is right at n=1 and wrong by one leading per line after that (#96).
@@ -6842,12 +7772,15 @@ layout:
         );
     }
 
-    /// Task 3.6: Update expectations for fixtures affected by centered ink reservation.
+    /// Fitted sizes of the height-bound fixtures under the measured reservation (#392). Each is
+    /// centred, so it reserves twice its value's larger outer ink rather than the font's bands, and
+    /// a value without deep ink settles at or near its range's maximum.
     #[test]
     fn fixture_renders_reflect_new_centered_ink_reservation_numbers() {
         let (registry, _dir) = crate::templates::load_all_for_tests();
 
-        // 1. brother_24mm_printed_on: line 1 in 8.0mm box (max 24pt) fits at 18.5pt (down from 24.0pt)
+        // 1. brother_24mm_printed_on: line 1 in an 8.0mm box fits at its 24pt maximum: only the dot
+        // of `i` and the overshoot of round letters leave its metric box.
         let printed_on = registry
             .get("brother_24mm_printed_on")
             .expect("printed_on template");
@@ -6868,11 +7801,12 @@ layout:
             super::compile_label_source(printed_on, &data1, &env1).expect("compile printed_on");
         let size1 = fitted_pt(&compiled1.source);
         assert_eq!(
-            size1, 18.5,
-            "brother_24mm_printed_on line 1 must fit at 18.5pt (down from 24pt)"
+            size1, 24.0,
+            "brother_24mm_printed_on line 1 must fit at 24pt"
         );
 
-        // 2. brother_24mm_lines_divider: line 1 in 7.5mm box (max 20pt) fits at 17.5pt (down from 20.0pt)
+        // 2. brother_24mm_lines_divider: line 1 in a 7.5mm box (max 20pt) fits at 18pt, reserving
+        // twice the depth of `g`.
         let lines_divider = registry
             .get("brother_24mm_lines_divider")
             .expect("lines_divider template");
@@ -6887,11 +7821,11 @@ layout:
             .expect("compile lines_divider");
         let size2 = fitted_pt(&compiled2.source);
         assert_eq!(
-            size2, 17.5,
-            "brother_24mm_lines_divider line 1 must fit at 17.5pt (down from 20pt)"
+            size2, 18.0,
+            "brother_24mm_lines_divider line 1 must fit at 18pt"
         );
 
-        // 3. brother_24mm_multiline: 2-line wrapped text in 16.1mm box (max 32pt) fits at 18.5pt (down from 21.5pt with old leading)
+        // 3. brother_24mm_multiline: 2-line wrapped text in a 16.1mm box (max 32pt) fits at 19.5pt.
         let multiline = registry
             .get("brother_24mm_multiline")
             .expect("multiline template");
@@ -6908,8 +7842,8 @@ layout:
             super::compile_label_source(multiline, &data3, &env3).expect("compile multiline");
         let size3 = fitted_pt(&compiled3.source);
         assert_eq!(
-            size3, 18.5,
-            "brother_24mm_multiline 2-line text must fit at 18.5pt (down from 21.5pt)"
+            size3, 19.5,
+            "brother_24mm_multiline 2-line text must fit at 19.5pt"
         );
 
         // 4. avery5163_asset_tag:
@@ -6938,20 +7872,20 @@ layout:
             super::compile_label_source(avery, &data4, &env4).expect("compile avery5163");
         let src4 = &compiled4.source;
 
-        // {id} in horizontal orientation (0.35in box, max 22pt) fits at 20.5pt (down from 22.0pt)
+        // {id} in horizontal orientation (0.35in box) fits at its 22pt maximum.
         let id_idx = src4.find("\"A1\"").expect("id text in source");
         let size4_id = fitted_pt_at(src4, id_idx);
         assert_eq!(
-            size4_id, 20.5,
-            "avery5163_asset_tag {{id}} must fit at 20.5pt (down from 22pt)"
+            size4_id, 22.0,
+            "avery5163_asset_tag {{id}} must fit at 22pt"
         );
 
-        // {name} in horizontal orientation (0.4in box, max 24pt) fits at 23.5pt (down from 24.0pt)
+        // {name} in horizontal orientation (0.4in box) fits at its 24pt maximum.
         let name_idx = src4.find("Floor").expect("name text in source");
         let size4_name = fitted_pt_at(src4, name_idx);
         assert_eq!(
-            size4_name, 23.5,
-            "avery5163_asset_tag {{name}} must fit at 23.5pt (down from 24pt)"
+            size4_name, 24.0,
+            "avery5163_asset_tag {{name}} must fit at 24pt"
         );
 
         // {tags} / {description} in 0.65in box at fixed 12pt fits all 3 lines without ellipsizing under 1.2 pitch
@@ -9422,69 +10356,6 @@ layout:
         let pdf =
             render_sheet_pages(&template, &labels, 0, &no_settings(), &no_datetime()).unwrap();
         assert!(pdf.starts_with(b"%PDF"));
-    }
-
-    /// #245 acceptance: a centered multiline text item in an 18.1mm box reserves its ink
-    /// and fits at 21.0pt rather than 24.0pt, keeping its descender closed and off the final raster row.
-    #[test]
-    fn center_aligned_multiline_auto_shrink_descender_fits_and_closes_stroke() {
-        let item = LayoutItem::Text {
-            value: "Kitchen Utensils and a much longer second line here".to_string(),
-            placement: Placement::sized(
-                Position([0.0, 0.0]),
-                Size([SizeValue::fixed(120.0), SizeValue::fixed(18.1)]),
-            ),
-            font_size: FontSize::Range {
-                min: 10.0,
-                max: 32.0,
-            },
-            font_weight: None,
-            color: None,
-            wrap: true,
-            line_spacing: None,
-            alignment: crate::models::Alignment {
-                horizontal: HorizontalAlign::Center,
-                vertical: VerticalAlign::Center,
-            },
-            overflow: Overflow::Ellipsis,
-            when: None,
-        };
-        let src = render_test_items(&[item], (120.0, 18.1)).expect("render text item");
-        let size = fitted_pt(&src);
-        assert_eq!(size, 21.0, "fitted size after fix should be 21.0pt");
-
-        let yaml = r#"
-name: Issue 245 Repro
-unit: mm
-dpi: 180
-format: { type: single, width: 120, height: 18.1 }
-layout:
-  - type: text
-    value: "Kitchen Utensils and a much longer second line here"
-    at: [0, 0]
-    size: [120, 18.1]
-    font_size:
-      min: 10
-      max: 32
-    wrap: true
-    alignment:
-      horizontal: center
-      vertical: center
-"#;
-        let template = parse_and_validate(yaml).unwrap();
-        let png =
-            render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver()).unwrap();
-        let img = image::load_from_memory(&png).expect("decode").to_luma8();
-        let (w, h) = (img.width(), img.height());
-        let last_row = h - 1;
-        let inked_cols: Vec<u32> = (0..w)
-            .filter(|&x| img.get_pixel(x, last_row).0[0] < 128)
-            .collect();
-        assert!(
-            inked_cols.is_empty(),
-            "expected no ink on the final raster row {last_row}, but found {} inked pixels",
-            inked_cols.len()
-        );
     }
 
     /// Task 5.2: Render the four catalog tapes and confirm they are unchanged from the baseline.
