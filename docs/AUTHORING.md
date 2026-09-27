@@ -364,17 +364,12 @@ two values, which shorten the same things and differ only in when they give up:
 | fits once shortened | render the shortened form | `text_does_not_fit` |
 | cannot fit however short | `text_does_not_fit` | `text_does_not_fit` |
 
-Shortening keeps the lines that fit and appends `...` to the last, trimming characters until it fits.
-The marker alone is the shortest form there is, so `ellipsis` reaches the bottom row in exactly two
-cases: a box narrower than `...` itself, and a box shorter than one line at the chosen font size.
-Neither produces a half-drawn glyph — clipping is never an outcome of the policy, it is an error.
+Shortening keeps the longest leading run of lines that fits and appends `...` to the last, trimming characters until it fits the width. Height is shortened by whole lines only, never by trimming characters to shed an accent or a descender. The marker alone is the shortest form across the box, so `ellipsis` reaches the bottom row in exactly two cases: a box narrower than `...` itself, and a box that no leading run of lines fits at the chosen font size. Neither produces a half-drawn glyph: clipping is never an outcome of the policy, it is an error.
 
 `overflow` applies to every `font_size` spelling. A fixed size has nothing to shrink, so it reaches
 the policy sooner than a range does, but it runs the same one.
 
-The policy is judged on the metric model — the cap-height-to-baseline line box — not on glyph
-outlines, so it does not see ink that leaves a box the metrics say it fits in. The two standing cases
-are in §11.
+The policy is judged on the metric box, cap height to baseline, plus the ink the emitted lines carry past it: an accent above the first line's cap height, a descender below the last baseline. Ink between the lines lies inside the box and costs nothing. `top` and `bottom` reserve the ink above plus the ink below; `center` reserves twice the larger of the two, because centring splits the slack evenly. Two values of the same width can therefore fit at different sizes or keep different numbers of lines: a box one cap height tall holds `HELIX` and refuses `Égypt`. One case stays outside the guarantee: a character the font lacks is drawn from a fallback font the measurement does not read, and can clip (#254). §11 covers what this looks like on a label.
 
 ```yaml
 - type: text
@@ -797,16 +792,9 @@ never on the message text ([SPEC §10.1](SPEC.md#101-detailsreason)). Everything
 
 Two visual failures that return `200` and still need fixing:
 
-**Text is smaller than expected.** A `font_size` range shrank it to fit. The box is too small, or on a
-`top`/`bottom`-aligned item the ink reservation ate the room: those alignments inset the block by the
-font's overflow at that edge so descenders and accents cannot clip, which costs height
-([ADR-0050](adr/0050-ink-reservation-at-slot-edges.md)). `center` is not inset, and can still clip in
-a slot shorter than about `1.21 × font_size`.
+**Text is smaller than expected.** A `font_size` range shrank it to fit. The box is too small for the value, counting the ink it carries past its metric box: accents above the first line, descenders below the last. `top` and `bottom` reserve both, and `center` reserves twice the larger, so a centred `Égypt` shrinks at least as far as a top-aligned one. A value without accents or descenders, such as `HELIX`, reserves nothing and fits at the size its cap height allows.
 
-**Lowercase text sits lower in its slot than all-caps.** Vertical alignment positions a fixed metric
-box running cap-height to baseline, so the space above the baseline is reserved whether or not the
-string uses it. This is inherent to baseline alignment and is what every other renderer produces
-([ADR-0045](adr/0045-vertical-text-alignment.md)).
+**Lowercase text sits lower in its slot than all-caps.** Vertical alignment positions a fixed metric box running cap height to baseline, and never pulls a block toward its edge because its ink falls short: top-aligned `ace` sits exactly where `HELIX` does, its ink below the top edge by the gap between cap height and x-height. This is inherent to baseline alignment and is what every other renderer produces ([ADR-0045](adr/0045-vertical-text-alignment.md)). `top` and `bottom` inset a block only by the ink the value carries past that edge, so `HELIX` sits flush with the top while `Émile` sits lower by its accent: a top- or bottom-aligned baseline moves between values when one of them inks past the edge. `center` keeps a glyph-independent baseline, shared by every value at one size and line count in one box, so use it where baselines must not move between labels.
 
 ---
 

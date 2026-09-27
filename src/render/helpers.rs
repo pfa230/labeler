@@ -8,9 +8,12 @@ use qrcode::render::svg;
 use qrcode::{EcLevel, QrCode};
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::str::FromStr as _;
 use std::sync::OnceLock;
 use typst_as_lib::typst_kit_options::TypstKitFontOptions;
+use unicode_script::{Script, UnicodeScript as _};
 
 /// In-place global luminance threshold of premultiplied-RGBA bytes to pure black/white (slice 1: no
 /// dithering). Typst pages render opaque (alpha 255), so premultiplied == straight and Rec.601 luma is
@@ -627,11 +630,11 @@ fn font_bytes() -> Result<&'static [u8], AppError> {
 /// font size. Typst sets both automatically (typst-library `text/font/variations.rs`), and measuring
 /// the default instance instead is what made bold text overflow and large text shrink needlessly.
 /// Out-of-range values normalise against the axis, so this clamps as Typst's do.
-fn instance(weight: u16, size_pt: f32) -> Result<ttf_parser::Face<'static>, AppError> {
+pub(super) fn instance(weight: u16, size_pt: f32) -> Result<rustybuzz::Face<'static>, AppError> {
     let mut face = load_face(font_bytes()?)?;
     face.set_variation(WGHT, f32::from(weight));
     face.set_variation(OPSZ, size_pt);
-    Ok(face)
+    Ok(rustybuzz::Face::from_face(face))
 }
 
 fn break_lines(
@@ -651,8 +654,60 @@ fn break_lines(
     }
 }
 
+/// The renderer's fit tolerance. Every judgement of height compares against `H + FIT_EPS_PT`, the
+/// metric cutoffs before any shaping included, or one of them refuses a block another accepts.
+const FIT_EPS_PT: f32 = 0.01;
+
+fn fits_height(needed_pt: f32, height_pt: f32) -> bool {
+    needed_pt <= height_pt + FIT_EPS_PT
+}
+
+/// The width half of the same judgement, shared by the fit and the line budget so a line the fit
+/// accepts as it stands is never shortened by the budget.
+fn fits_width(face: &ttf_parser::Face, line: &str, size_pt: f32, width_pt: f32) -> bool {
+    text_width(face, line, size_pt) <= width_pt + FIT_EPS_PT
+}
+
+/// A block of lines judged against its box at one size.
+struct Judgement {
+    ink: BlockInk,
+    fits: bool,
+}
+
+/// Judge `lines` as broken. `None` when they cannot fit whatever their ink: a line is over-wide, or
+/// the metric block alone overflows the height. Nothing is shaped then, which is what keeps a
+/// ten-thousand-line value from being measured when its metric block already says no (Decision 4).
+fn judge_lines(
+    face: &rustybuzz::Face<'_>,
+    lines: &[String],
+    size_pt: f32,
+    line_spacing: Option<f32>,
+    bounds_pt: (f32, f32),
+    vertical: VerticalAlign,
+) -> Option<Judgement> {
+    let (width_pt, height_pt) = bounds_pt;
+    if !lines
+        .iter()
+        .all(|line| fits_width(face, line, size_pt, width_pt))
+    {
+        return None;
+    }
+    let metric_h = metric_block_height(face, size_pt, lines.len(), line_spacing);
+    if !fits_height(metric_h, height_pt) {
+        return None;
+    }
+    let pitch = line_pitch(size_pt, resolve_line_spacing(line_spacing));
+    let ink = block_ink(
+        &line_inks(face, lines, size_pt),
+        cap_height(face, size_pt),
+        pitch,
+    );
+    let fits = fits_height(metric_h + ink.reserve(vertical), height_pt);
+    Some(Judgement { ink, fits })
+}
+
 fn text_fits(
-    face: &ttf_parser::Face,
+    face: &rustybuzz::Face<'_>,
     segments: &[&str],
     wrap: bool,
     size_pt: f32,
@@ -660,19 +715,8 @@ fn text_fits(
     bounds_pt: (f32, f32),
     vertical: VerticalAlign,
 ) -> bool {
-    let (width_pt, height_pt) = bounds_pt;
-    const EPS: f32 = 0.01;
-    let lines = break_lines(face, segments, wrap, size_pt, width_pt);
-    let h = block_height(face, size_pt, lines.len(), line_spacing, vertical);
-    if h > height_pt + EPS {
-        return false;
-    }
-    for line in &lines {
-        if text_width(face, line, size_pt) > width_pt + EPS {
-            return false;
-        }
-    }
-    true
+    let lines = break_lines(face, segments, wrap, size_pt, bounds_pt.0);
+    judge_lines(face, &lines, size_pt, line_spacing, bounds_pt, vertical).is_some_and(|j| j.fits)
 }
 
 /// Largest font in [min_size, max_size] (0.5pt steps) at which `text` fits the box, else min_size.
@@ -696,7 +740,7 @@ pub(super) fn largest_fitting_font(
     };
     let mut size = max_size;
     while size >= min_size - f32::EPSILON {
-        // opsz tracks the size Typst would render this candidate at.
+        // opsz tracks the size Typst would render this candidate at, and the ink moves with it.
         face.set_variation(OPSZ, size);
         if text_fits(
             &face,
@@ -721,6 +765,10 @@ pub struct TextFit {
     pub width_units: f32,
     pub height_units: f32,
     pub line_spacing: Option<f32>,
+    /// The emitted block's outer ink above its metric top and below its last baseline, in points:
+    /// what `top` and `bottom` inset by, measured on the lines in `lines`.
+    pub a: f32,
+    pub d: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -776,21 +824,20 @@ pub(super) fn layout_text(
 
     // Step 3: Break & Overflow at chosen_size
     let raw_lines = break_lines(&face, &segments, item.wrap, chosen_size, width_pt);
-
-    let fits = text_fits(
+    let judged = judge_lines(
         &face,
-        &segments,
-        item.wrap,
+        &raw_lines,
         chosen_size,
         item.line_spacing,
         (width_pt, height_pt),
         vertical,
     );
 
-    let emitted_raw = if fits {
-        raw_lines
-    } else {
-        match item.overflow {
+    let (emitted_raw, ink) = match judged {
+        Some(Judgement {
+            fits: true, ink, ..
+        }) => (raw_lines, ink),
+        judged => match item.overflow {
             Overflow::Fail => {
                 return Err(AppError::unsupported_layout_item(
                     Reason::TextDoesNotFit,
@@ -808,42 +855,26 @@ pub(super) fn layout_text(
                         ),
                     ));
                 }
-                let line_1_h = block_height(&face, chosen_size, 1, item.line_spacing, vertical);
-                if line_1_h > height_pt + 0.01 {
-                    return Err(AppError::unsupported_layout_item(
+                line_budget(
+                    &face,
+                    &raw_lines,
+                    judged.is_some(),
+                    chosen_size,
+                    line_pitch(chosen_size, resolve_line_spacing(item.line_spacing)),
+                    (width_pt, height_pt),
+                    vertical,
+                )
+                .ok_or_else(|| {
+                    AppError::unsupported_layout_item(
                         Reason::TextDoesNotFit,
                         format!(
-                            "at {path}: box height {}{unit} is shorter than one line at font size {chosen_size}pt",
+                            "at {path}: no leading run of lines fits box height {}{unit} at font size {chosen_size}pt",
                             box_size.1
                         ),
-                    ));
-                }
-
-                let spacing = resolve_line_spacing(item.line_spacing);
-                let p = line_pitch(chosen_size, spacing);
-                let lead = derived_leading(&face, chosen_size, spacing);
-                let max_lines = ((height_pt - overflow_em(&face, vertical) * chosen_size + lead)
-                    / p)
-                    .floor()
-                    .max(1.0) as usize;
-
-                let mut lines = raw_lines;
-                let any_dropped = lines.len() > max_lines;
-                if any_dropped {
-                    lines.truncate(max_lines);
-                }
-
-                let last = lines.len().saturating_sub(1);
-                for (index, line) in lines.iter_mut().enumerate() {
-                    if text_width(&face, line, chosen_size) > width_pt
-                        || (any_dropped && index == last)
-                    {
-                        *line = ellipsize(&face, line, chosen_size, width_pt);
-                    }
-                }
-                lines
+                    )
+                })?
             }
-        }
+        },
     };
 
     // Step 4: Intrinsic metrics and emission
@@ -851,13 +882,8 @@ pub(super) fn layout_text(
     let block_h_pt = if emitted_count == 0 {
         0.0
     } else {
-        block_height(
-            &face,
-            chosen_size,
-            emitted_count,
-            item.line_spacing,
-            vertical,
-        )
+        metric_block_height(&face, chosen_size, emitted_count, item.line_spacing)
+            + ink.reserve(vertical)
     };
     let max_w_pt = emitted_raw
         .iter()
@@ -878,6 +904,8 @@ pub(super) fn layout_text(
         width_units,
         height_units,
         line_spacing: item.line_spacing,
+        a: ink.a,
+        d: ink.d,
     })
 }
 
@@ -954,15 +982,8 @@ fn typo_ascender(face: &ttf_parser::Face) -> f32 {
     )
 }
 
-fn typo_descender(face: &ttf_parser::Face) -> f32 {
-    f32::from(
-        face.typographic_descender()
-            .unwrap_or_else(|| face.descender()),
-    )
-}
-
 /// Typst's line box runs cap-height to baseline (`text/mod.rs` top/bottom edge defaults).
-fn cap_height(face: &ttf_parser::Face, size: f32) -> f32 {
+pub(super) fn cap_height(face: &ttf_parser::Face, size: f32) -> f32 {
     let upem = f32::from(face.units_per_em());
     // Falls back to the *typographic* ascender, as Typst does, not the hhea one. Only differs for a
     // font supplied through LABELER_FONTS_DIR, which is exactly what the bundled-font tests cannot see.
@@ -974,55 +995,521 @@ fn cap_height(face: &ttf_parser::Face, size: f32) -> f32 {
     cap / upem * size
 }
 
-/// Ink above the cap-height line, as a fraction of the em: where accents live.
-fn ascent_overflow_em(face: &ttf_parser::Face) -> f32 {
-    let upem = f32::from(face.units_per_em());
-    let cap = face
-        .capital_height()
-        .filter(|v| *v > 0)
-        .map(f32::from)
-        .unwrap_or_else(|| typo_ascender(face));
-    ((typo_ascender(face) - cap) / upem).max(0.0)
+/// How far one line's ink rises above its baseline and falls below it, in points.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct LineInk {
+    pub rise: f32,
+    pub fall: f32,
 }
 
-/// Ink below the baseline, as a fraction of the em: where descenders live.
-fn descent_overflow_em(face: &ttf_parser::Face) -> f32 {
-    (-typo_descender(face) / f32::from(face.units_per_em())).max(0.0)
+/// A block's outer ink (design Decision 1): `a` above its metric top and `d` below its last
+/// baseline, in points, each floored at zero. Ink between the two is inside the metric box.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct BlockInk {
+    pub a: f32,
+    pub d: f32,
 }
 
-/// The inset the renderer emits at the aligned edge, so ink stays inside the clipped slot (#124).
-fn pad_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
-    match vertical {
-        VerticalAlign::Top => ascent_overflow_em(face),
-        VerticalAlign::Bottom => descent_overflow_em(face),
-        VerticalAlign::Center => 0.0,
-    }
-}
-
-/// The pad in points, for callers outside this module: `render/mod.rs` has no `Face` and `instance`
-/// stays private.
-pub(super) fn pad_pt(weight: u16, size: f32, vertical: VerticalAlign) -> Result<f32, AppError> {
-    // Short-circuit before touching the font. Center pads nothing, and loading the measurement face
-    // here would give a centered fixed-size render a new way to fail — it would start depending on
-    // InterVariable being present and carrying the wght/opsz axes to emit source it does not use.
-    if matches!(vertical, VerticalAlign::Center) {
-        return Ok(0.0);
-    }
-    let face = instance(weight, size)?;
-    Ok(pad_em(&face, vertical) * size)
-}
-
-/// What the *fitter* holds back so ink falling outside the cap-height line box cannot clip:
-/// `Top` and `Bottom` reserve both overflows because padding the aligned edge pushes the opposite
-/// edge toward the slot floor/ceiling; `Center` reserves twice the larger overflow because the metric
-/// block is centred and the slack on each side must absorb the overflow on that side (#245).
-fn overflow_em(face: &ttf_parser::Face, vertical: VerticalAlign) -> f32 {
-    match vertical {
-        VerticalAlign::Top | VerticalAlign::Bottom => {
-            ascent_overflow_em(face) + descent_overflow_em(face)
+impl BlockInk {
+    /// What the fit holds back for this ink. `top` and `bottom` inset the aligned edge and push the
+    /// far edge's ink the same way, so they need both; `center` splits the slack evenly, so each side
+    /// must absorb its own ink alone (#245).
+    pub(super) fn reserve(self, vertical: VerticalAlign) -> f32 {
+        match vertical {
+            VerticalAlign::Top | VerticalAlign::Bottom => self.a + self.d,
+            VerticalAlign::Center => 2.0 * self.a.max(self.d),
         }
-        VerticalAlign::Center => 2.0 * ascent_overflow_em(face).max(descent_overflow_em(face)),
     }
+}
+
+/// Running maxima of a block's ink terms over its lines so far: the highest `rise_i − baseline_i`
+/// and the deepest `baseline_i + fall_i`, with `baseline_i` measured down from the metric top.
+#[derive(Debug, Clone, Copy, Default)]
+struct InkExtent {
+    above: f32,
+    depth: Option<f32>,
+}
+
+impl InkExtent {
+    fn with_line(self, ink: Option<LineInk>, baseline: f32) -> Self {
+        match ink {
+            None => self,
+            Some(ink) => InkExtent {
+                above: self.above.max(ink.rise - baseline),
+                depth: Some(
+                    self.depth
+                        .map_or(baseline + ink.fall, |d| d.max(baseline + ink.fall)),
+                ),
+            },
+        }
+    }
+
+    /// The outer ink of a block whose last baseline, and so whose metric block, is `last_baseline`.
+    fn block(self, last_baseline: f32) -> BlockInk {
+        BlockInk {
+            a: self.above.max(0.0),
+            d: self.depth.map_or(0.0, |d| (d - last_baseline).max(0.0)),
+        }
+    }
+}
+
+/// Depth of line `i`'s baseline (1-based) below the block's metric top: `metric_block(i, s)`.
+fn baseline(cap: f32, pitch: f32, i: usize) -> f32 {
+    cap + (i as f32 - 1.0) * pitch
+}
+
+fn block_ink(inks: &[Option<LineInk>], cap: f32, pitch: f32) -> BlockInk {
+    inks.iter()
+        .enumerate()
+        .fold(InkExtent::default(), |ext, (idx, ink)| {
+            ext.with_line(*ink, baseline(cap, pitch, idx + 1))
+        })
+        .block(baseline(cap, pitch, inks.len().max(1)))
+}
+
+/// Each line's ink as Typst draws the block (design Decision 2), in order. Typst collects an
+/// item's lines as one paragraph, joined by `\n` (`typst-layout` `src/inline/collect.rs`), runs
+/// BiDi and script segmentation over the whole of it, shapes each run as one buffer, and only then
+/// cuts it into lines, so a line's glyphs can depend on its neighbours: a run of characters of no
+/// specific script takes the script of the first line after it that has one. This reproduces that
+/// pipeline rather than shaping lines apart. `None` for a line that draws no ink.
+pub(super) fn line_inks(
+    face: &rustybuzz::Face<'_>,
+    lines: &[impl AsRef<str>],
+    size_pt: f32,
+) -> Vec<Option<LineInk>> {
+    if lines.iter().all(|line| line.as_ref().is_empty()) {
+        return vec![None; lines.len()];
+    }
+    #[cfg(test)]
+    SHAPED_LINES.with(|count| {
+        count.set(count.get() + lines.iter().filter(|l| !l.as_ref().is_empty()).count())
+    });
+
+    // The text the emitter writes: its spaces are no-break spaces, which shape as their own glyph.
+    let forms: Vec<String> = lines.iter().map(|l| to_nonbreaking(l.as_ref())).collect();
+    let text = forms.join("\n");
+    let runs = shape_paragraph(face, &text);
+
+    let scale = size_pt / face.units_per_em() as f32;
+    let mut first_run = 0;
+    let mut start = 0;
+    let mut inks = Vec::with_capacity(forms.len());
+    for form in &forms {
+        // A mandatory break's line runs up to its `\n`, which is trimmed before shaping
+        // (`linebreak.rs` `Breakpoint::trim`, `line.rs` `collect_range`).
+        let line = start..start + form.len();
+        start = line.end + 1;
+        while runs.get(first_run).is_some_and(|run| run.end <= line.start) {
+            first_run += 1;
+        }
+        let mut extent: Option<(f32, f32)> = None;
+        for run in runs[first_run..]
+            .iter()
+            .take_while(|run| run.start < line.end)
+        {
+            let sliced = line.start.max(run.start)..line.end.min(run.end);
+            if sliced.is_empty() {
+                continue;
+            }
+            let reshaped;
+            let glyphs = if run.start == sliced.start && sliced.end == run.end {
+                &run.glyphs[..]
+            } else if let Some(glyphs) = run.slice_safe_to_break(&text, sliced.clone()) {
+                glyphs
+            } else {
+                // `ShapedText::reshape`: a run cut where it is not safe to break is shaped again,
+                // on the line's piece alone and with the run's direction.
+                reshaped = shape_run(face, &text, sliced, run.ltr);
+                &reshaped.glyphs[..]
+            };
+            for (bottom, top) in glyphs.iter().filter_map(|g| g.ink) {
+                extent = Some(extent.map_or((bottom, top), |(b, t)| (b.min(bottom), t.max(top))));
+            }
+        }
+        inks.push(extent.map(|(bottom, top)| LineInk {
+            rise: top * scale,
+            fall: -bottom * scale,
+        }));
+    }
+    inks
+}
+
+/// The `ellipsis` line budget (Decision 4): the emitted form of the largest leading run of lines
+/// that fits, with its outer ink, or `None` when no run does. The emitted form of `k` lines is the
+/// first `k` with every over-wide line shortened in place and, when `k < n`, the marker on line `k`.
+///
+/// Fitting is not monotonic in `k`, so every `k` is tried downward from the last line whose baseline
+/// the box admits, and each try measures its own emitted block, because a line's ink can depend on
+/// the lines after it. No line past that cutoff is measured, and the search stops within
+/// (largest reservation) / pitch tries, since every step down frees a pitch of height: the work
+/// grows with the line count, not its square. `whole_judged` says the block as broken was already
+/// measured and refused, so `k = n` needs no second measurement.
+fn line_budget(
+    face: &rustybuzz::Face<'_>,
+    raw_lines: &[String],
+    whole_judged: bool,
+    size_pt: f32,
+    pitch: f32,
+    bounds_pt: (f32, f32),
+    vertical: VerticalAlign,
+) -> Option<(Vec<String>, BlockInk)> {
+    let (width_pt, height_pt) = bounds_pt;
+    let n = raw_lines.len();
+    let cap = cap_height(face, size_pt);
+    let k_metric = (1..=n)
+        .take_while(|&k| fits_height(baseline(cap, pitch, k), height_pt))
+        .count();
+    let forms: Vec<String> = raw_lines[..k_metric]
+        .iter()
+        .map(|raw| {
+            if fits_width(face, raw, size_pt, width_pt) {
+                raw.clone()
+            } else {
+                ellipsize(face, raw, size_pt, width_pt)
+            }
+        })
+        .collect();
+
+    for k in (1..=k_metric).rev() {
+        if k == n && whole_judged {
+            continue;
+        }
+        let mut emitted = forms[..k].to_vec();
+        if k < n {
+            emitted[k - 1] = ellipsize(face, &raw_lines[k - 1], size_pt, width_pt);
+        }
+        let ink = block_ink(&line_inks(face, &emitted, size_pt), cap, pitch);
+        if fits_height(baseline(cap, pitch, k) + ink.reserve(vertical), height_pt) {
+            return Some((emitted, ink));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+thread_local! {
+    static SHAPED_LINES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many lines `shape_line_ink` has shaped on this thread since the last call (task 2.2). Per
+/// thread, because the test harness runs tests concurrently and layout never leaves the caller's.
+#[cfg(test)]
+pub(super) fn take_shaped_lines() -> usize {
+    SHAPED_LINES.with(|count| count.replace(0))
+}
+
+/// The vertical extent of a glyph's outline in font units, `(bottom, top)`, exact for the instance
+/// `face` holds. `ttf_parser::Face::glyph_bounding_box` truncates a variable instance's bounds to
+/// integers, which drops the bold `É`'s accent from 1939.7 units to 1939: 0.025 pt at 72 pt, past
+/// the fit's 0.01 pt tolerance. Tracing the outline keeps the fraction, and each curve's own
+/// extremum counts, not its control points. `None` for a glyph with no outline, such as a space.
+pub(super) fn glyph_ink(face: &ttf_parser::Face, glyph: ttf_parser::GlyphId) -> Option<(f32, f32)> {
+    struct Extent {
+        last: f32,
+        bottom: f32,
+        top: f32,
+    }
+    impl Extent {
+        fn add(&mut self, y: f32) {
+            self.bottom = self.bottom.min(y);
+            self.top = self.top.max(y);
+        }
+        /// Where a curve's derivative `a·t² + b·t + c` vanishes inside the segment. The roots use
+        /// the form that does not cancel when `a` is small beside `b`.
+        fn add_turning_points(&mut self, (a, b, c): (f32, f32, f32), at: impl Fn(f32) -> f32) {
+            let disc = b * b - 4.0 * a * c;
+            let roots = if a == 0.0 {
+                [(b != 0.0).then(|| -c / b), None]
+            } else if disc < 0.0 {
+                [None, None]
+            } else {
+                let q = -0.5 * (b + b.signum() * disc.sqrt());
+                [(q != 0.0).then(|| q / a), (q != 0.0).then(|| c / q)]
+            };
+            for t in roots.into_iter().flatten().filter(|t| *t > 0.0 && *t < 1.0) {
+                self.add(at(t));
+            }
+        }
+    }
+    impl ttf_parser::OutlineBuilder for Extent {
+        fn move_to(&mut self, _: f32, y: f32) {
+            self.add(y);
+            self.last = y;
+        }
+        fn line_to(&mut self, _: f32, y: f32) {
+            self.add(y);
+            self.last = y;
+        }
+        fn quad_to(&mut self, _: f32, y1: f32, _: f32, y: f32) {
+            let p0 = self.last;
+            self.add_turning_points((0.0, 2.0 * (p0 - 2.0 * y1 + y), 2.0 * (y1 - p0)), |t| {
+                let u = 1.0 - t;
+                u * u * p0 + 2.0 * u * t * y1 + t * t * y
+            });
+            self.add(y);
+            self.last = y;
+        }
+        fn curve_to(&mut self, _: f32, y1: f32, _: f32, y2: f32, _: f32, y: f32) {
+            let p0 = self.last;
+            let (q0, q1, q2) = (y1 - p0, y2 - y1, y - y2);
+            self.add_turning_points((q0 - 2.0 * q1 + q2, 2.0 * (q1 - q0), q0), |t| {
+                let u = 1.0 - t;
+                u * u * u * p0 + 3.0 * u * u * t * y1 + 3.0 * u * t * t * y2 + t * t * t * y
+            });
+            self.add(y);
+            self.last = y;
+        }
+        fn close(&mut self) {}
+    }
+    let mut extent = Extent {
+        last: 0.0,
+        bottom: f32::INFINITY,
+        top: f32::NEG_INFINITY,
+    };
+    face.outline_glyph(glyph, &mut extent)?;
+    (extent.bottom <= extent.top).then_some((extent.bottom, extent.top))
+}
+
+/// Typst's `is_generic_script`, copied verbatim (`typst-layout` `src/inline/shaping.rs`).
+fn is_generic_script(script: Script) -> bool {
+    matches!(script, Script::Unknown | Script::Common | Script::Inherited)
+}
+
+/// Typst's `is_compatible`, copied verbatim.
+fn is_compatible(a: Script, b: Script) -> bool {
+    is_generic_script(a) || is_generic_script(b) || a == b
+}
+
+/// One glyph as Typst's `shape_segment` leaves it: the text it stands for, whether a line may begin
+/// or end at it without reshaping, and its outline's vertical extent in font units, moved by its
+/// shaped `y_offset`.
+#[derive(Debug, Clone, Copy)]
+struct ShapedGlyph {
+    start: usize,
+    end: usize,
+    safe_to_break: bool,
+    ink: Option<(f32, f32)>,
+}
+
+/// A run of the paragraph shaped as one buffer: Typst's `ShapedText`, reduced to what ink needs.
+struct ShapedRun {
+    start: usize,
+    end: usize,
+    ltr: bool,
+    glyphs: Vec<ShapedGlyph>,
+}
+
+impl ShapedRun {
+    /// Typst's `ShapedText::slice_safe_to_break`, copied: the glyphs standing for `range` when both
+    /// of its ends are safe to break.
+    fn slice_safe_to_break(&self, text: &str, range: Range<usize>) -> Option<&[ShapedGlyph]> {
+        let (mut start, mut end) = (range.start, range.end);
+        if !self.ltr {
+            std::mem::swap(&mut start, &mut end);
+        }
+        let left = self.find_safe_to_break(text, start)?;
+        let right = self.find_safe_to_break(text, end)?;
+        Some(&self.glyphs[left..right])
+    }
+
+    /// Typst's `ShapedText::find_safe_to_break`, copied.
+    fn find_safe_to_break(&self, text: &str, text_index: usize) -> Option<usize> {
+        let len = self.glyphs.len();
+        if text_index == self.start {
+            return Some(if self.ltr { 0 } else { len });
+        } else if text_index == self.end {
+            return Some(if self.ltr { len } else { 0 });
+        }
+        let found = self.glyphs.binary_search_by(|g| {
+            let ordering = g.start.cmp(&text_index);
+            if self.ltr {
+                ordering
+            } else {
+                ordering.reverse()
+            }
+        });
+        let mut idx = match found {
+            Ok(idx) => idx,
+            // A `\n` has no glyph, and breaking before one is safe.
+            Err(idx) => {
+                return (idx > 0
+                    && self.glyphs[idx - 1].end == text_index
+                    && text[text_index..].starts_with('\n'))
+                .then_some(idx);
+            }
+        };
+        let dec = if self.ltr {
+            usize::checked_sub
+        } else {
+            usize::checked_add
+        };
+        while let Some(next) = dec(idx, 1) {
+            if self.glyphs.get(next).is_none_or(|g| g.start != text_index) {
+                break;
+            }
+            idx = next;
+        }
+        self.glyphs[idx]
+            .safe_to_break
+            .then_some(idx + usize::from(!self.ltr))
+    }
+}
+
+/// Typst shapes no run of only newlines, tabs or default ignorables (`shape_segment`).
+fn draws_nothing(text: &str) -> bool {
+    text.chars()
+        .all(|c| c == '\n' || c == '\t' || typst::text::is_default_ignorable(c))
+}
+
+/// Typst's `shape_range` over a whole paragraph (`src/inline/shaping.rs`): BiDi levels, then runs of
+/// one level and one script, where a character of no specific script joins the run around it, each
+/// run shaped on its own. `Smart::Auto` script throughout: labeler never sets `text.script`.
+fn shape_paragraph(face: &rustybuzz::Face<'_>, text: &str) -> Vec<ShapedRun> {
+    let bidi = unicode_bidi::BidiInfo::new(text, Some(unicode_bidi::Level::ltr()));
+    let mut runs = Vec::new();
+    let mut prev_level = unicode_bidi::Level::ltr();
+    let mut prev_script = Script::Unknown;
+    let mut cursor = 0;
+    for i in 0..text.len() {
+        if !text.is_char_boundary(i) {
+            continue;
+        }
+        let level = bidi.levels[i];
+        let curr_script = text[i..]
+            .chars()
+            .next()
+            .map_or(Script::Unknown, |c| c.script());
+        if level != prev_level || !is_compatible(curr_script, prev_script) {
+            if cursor < i {
+                runs.push(shape_run(face, text, cursor..i, prev_level.is_ltr()));
+            }
+            cursor = i;
+            prev_level = level;
+            prev_script = curr_script;
+        } else if is_generic_script(prev_script) {
+            prev_script = curr_script;
+        }
+    }
+    runs.push(shape_run(
+        face,
+        text,
+        cursor..text.len(),
+        prev_level.is_ltr(),
+    ));
+    runs
+}
+
+/// Typst's `shape_segment` on `text[range]`, with the bundled font as the only family. The buffer
+/// takes Typst's default language, `en` (labeler sets none), and no features: `features()` adds one
+/// only when a text setting departs from HarfBuzz's defaults, and the emitted source sets none.
+fn shape_run(face: &rustybuzz::Face<'_>, text: &str, range: Range<usize>, ltr: bool) -> ShapedRun {
+    let base = range.start;
+    let segment = &text[range.clone()];
+    let mut glyphs: Vec<ShapedGlyph> = Vec::new();
+    if !draws_nothing(segment) {
+        let mut buffer = rustybuzz::UnicodeBuffer::new();
+        buffer.push_str(segment);
+        buffer.set_language(rustybuzz::Language::from_str("en").expect("valid language tag"));
+        buffer.set_direction(if ltr {
+            rustybuzz::Direction::LeftToRight
+        } else {
+            rustybuzz::Direction::RightToLeft
+        });
+        buffer.guess_segment_properties();
+        buffer.set_flags(rustybuzz::BufferFlags::REMOVE_DEFAULT_IGNORABLES);
+        let shaped = rustybuzz::shape(face, &[], buffer);
+        let (infos, positions) = (shaped.glyph_infos(), shaped.glyph_positions());
+
+        let glyph = |i: usize| {
+            // The glyph's text runs to the next cluster in logical order.
+            let step: isize = if ltr { 1 } else { -1 };
+            let mut k = i;
+            let end = loop {
+                match k
+                    .checked_add_signed(step)
+                    .and_then(|n| infos.get(n).map(|g| (n, g)))
+                {
+                    None => break base + segment.len(),
+                    Some((n, next)) if next.cluster == infos[i].cluster => k = n,
+                    Some((_, next)) => break base + next.cluster as usize,
+                }
+            };
+            // The outline is the instance `set_variation` selected, not the default master. A glyph
+            // with no outline, such as a space, contributes nothing.
+            let offset = positions[i].y_offset as f32;
+            ShapedGlyph {
+                start: base + infos[i].cluster as usize,
+                end,
+                safe_to_break: !infos[i].unsafe_to_break(),
+                ink: glyph_ink(face, ttf_parser::GlyphId(infos[i].glyph_id as u16))
+                    .map(|(bottom, top)| (bottom + offset, top + offset)),
+            }
+        };
+
+        let mut i = 0;
+        while i < infos.len() {
+            if infos[i].glyph_id != 0 {
+                glyphs.push(glyph(i));
+            } else {
+                // A sequence the font lacks: Typst trims the half-shaped cluster before it and
+                // shapes the sequence again with the next family. Newlines, tabs and ignorables
+                // draw nothing there either. Anything else is drawn by a fallback font this does not
+                // read (#254), so it measures as this font's `.notdef`.
+                let k = i;
+                while infos.get(i + 1).is_some_and(|info| info.glyph_id == 0) {
+                    i += 1;
+                }
+                let start = infos[if ltr { k } else { i }].cluster as usize;
+                let end = if ltr {
+                    i.checked_add(1)
+                } else {
+                    k.checked_sub(1)
+                }
+                .and_then(|last| infos.get(last))
+                .map_or(segment.len(), |info| info.cluster as usize);
+                let remove = base + start..base + end;
+                while glyphs.last().is_some_and(|g| remove.contains(&g.start)) {
+                    glyphs.pop();
+                }
+                if !draws_nothing(&segment[start..end]) {
+                    glyphs.extend((k..=i).map(glyph));
+                }
+            }
+            i += 1;
+        }
+    }
+    ShapedRun {
+        start: range.start,
+        end: range.end,
+        ltr,
+        glyphs,
+    }
+}
+
+/// One line's ink as Typst draws it on its own: `line_inks` for a one-line block.
+#[cfg(test)]
+pub(super) fn shape_line_ink(
+    face: &rustybuzz::Face<'_>,
+    line: &str,
+    size_pt: f32,
+) -> Option<LineInk> {
+    line_inks(face, &[line], size_pt).pop().flatten()
+}
+
+/// The outer ink of `lines` set at `pitch_pt`, each line shaped on `face` at `size_pt`.
+#[cfg(test)]
+pub(super) fn measure_block_ink(
+    face: &rustybuzz::Face<'_>,
+    lines: &[impl AsRef<str>],
+    size_pt: f32,
+    pitch_pt: f32,
+) -> BlockInk {
+    block_ink(
+        &line_inks(face, lines, size_pt),
+        cap_height(face, size_pt),
+        pitch_pt,
+    )
 }
 
 pub(super) const DEFAULT_LINE_SPACING: f32 = 1.2;
@@ -1067,18 +1554,20 @@ fn metric_block_height(
     cap_height(face, size) + (n - 1.0) * pitch
 }
 
-/// The reserved demand: the metric block height Typst lays out plus the ink reservation for the
-/// item's vertical alignment.
-fn block_height(
-    face: &ttf_parser::Face,
+/// The reserved demand: the metric block height Typst lays out plus the reservation for the ink
+/// `lines` carry, for the item's vertical alignment. Layout judges through `judge_lines`, which
+/// keeps the per-line ink for the line budget; this is the same sum for tests that want a number.
+#[cfg(test)]
+pub(super) fn block_height(
+    face: &rustybuzz::Face<'_>,
     size: f32,
-    lines: usize,
+    lines: &[impl AsRef<str>],
     line_spacing: Option<f32>,
     vertical: VerticalAlign,
 ) -> f32 {
-    // The overflow is read off *this* face, already instanced at the candidate size: the metrics move
-    // with the opsz axis, so a ratio captured earlier would belong to a different instance.
-    metric_block_height(face, size, lines, line_spacing) + overflow_em(face, vertical) * size
+    let pitch = line_pitch(size, resolve_line_spacing(line_spacing));
+    let ink = measure_block_ink(face, lines, size, pitch);
+    metric_block_height(face, size, lines.len(), line_spacing) + ink.reserve(vertical)
 }
 
 #[cfg(test)]
@@ -1102,7 +1591,7 @@ pub(crate) fn block_height_with_spacing_for_test(
 pub(crate) fn block_height_with_align_for_test(
     weight: u16,
     size: f32,
-    lines: usize,
+    lines: &[impl AsRef<str>],
     vertical: VerticalAlign,
 ) -> f32 {
     let face = instance(weight, size).expect("face");
@@ -1114,7 +1603,7 @@ pub(crate) fn block_height_with_align_for_test(
 pub(crate) fn block_height_with_align_and_spacing_for_test(
     weight: u16,
     size: f32,
-    lines: usize,
+    lines: &[impl AsRef<str>],
     line_spacing: Option<f32>,
     vertical: VerticalAlign,
 ) -> f32 {
@@ -1126,11 +1615,6 @@ pub(crate) fn block_height_with_align_and_spacing_for_test(
 pub(crate) fn text_width_for_test(weight: u16, size: f32, text: &str) -> f32 {
     let face = instance(weight, size).expect("face");
     text_width(&face, text, size)
-}
-
-#[cfg(test)]
-pub(crate) fn units_to_pt_for_test(value: f32, unit: &str) -> f32 {
-    units_to_pt(value, unit)
 }
 
 #[cfg(test)]
@@ -1535,26 +2019,38 @@ mod helpers_tests {
         );
     }
 
-    /// Task 9.2's second irreducible case: shortening a line cannot buy vertical room, so a box
-    /// shorter than one line at the chosen size is refused rather than cut through the middle.
+    /// *A box too short for one line cannot be shortened*: shortening a line cannot buy vertical
+    /// room, so `ellipsis` refuses once no leading run fits, which here is every run. There is no
+    /// separate one-line floor: the refusal is the search coming up empty.
     #[test]
     fn layout_text_ellipsis_refuses_a_box_shorter_than_one_line() {
         let align = Alignment {
             horizontal: HorizontalAlign::Left,
             vertical: VerticalAlign::Center,
         };
+        for overflow in [Overflow::Ellipsis, Overflow::Fail] {
+            let err = test_layout(
+                "ABC",
+                &FontSize::Fixed(20.0),
+                false,
+                align.clone(),
+                overflow,
+                (40.0, 2.0),
+            )
+            .expect_err("a box shorter than one line cannot be shortened");
+            assert_eq!(err.reason(), Some("text_does_not_fit"));
+        }
         let err = test_layout(
             "ABC",
-            &FontSize::Fixed(12.0),
+            &FontSize::Fixed(20.0),
             false,
             align,
             Overflow::Ellipsis,
-            (50.0, 0.5),
+            (40.0, 2.0),
         )
-        .expect_err("a box shorter than one line cannot be ellipsized");
-        assert_eq!(err.reason(), Some("text_does_not_fit"));
+        .expect_err("refused");
         assert!(
-            err.message_text().contains("shorter than one line"),
+            err.message_text().contains("no leading run of lines fits"),
             "got {}",
             err.message_text()
         );
@@ -1719,7 +2215,9 @@ mod helpers_tests {
         .unwrap();
         assert_eq!(m.lines, vec![String::new()]);
         assert_eq!(m.width_units, 0.0);
-        assert!(m.height_units > 0.0);
+        // One cap height at the 10 pt maximum, with no reservation: a blank line carries no ink.
+        let cap = super::pt_to_units(1490.0 / 2048.0 * 10.0, "mm");
+        assert!((m.height_units - cap).abs() < 1e-5, "{} mm", m.height_units);
     }
 
     #[test]
@@ -1801,7 +2299,7 @@ mod helpers_tests {
         let face = super::instance(400, 10.0).unwrap();
         let msg_w_pt = super::text_width(&face, "message", 10.0);
         let msg_w_mm = super::pt_to_units(msg_w_pt, "mm");
-        let line_1_h_pt = super::block_height(&face, 10.0, 1, None, VerticalAlign::Top);
+        let line_1_h_pt = super::block_height(&face, 10.0, &["message"], None, VerticalAlign::Top);
         let line_1_h_mm = super::pt_to_units(line_1_h_pt, "mm");
 
         // Box is wide enough for "message" (msg_w_mm + 0.1) but not "message..."
@@ -1832,7 +2330,7 @@ mod helpers_tests {
         let face = super::instance(400, 10.0).unwrap();
         let dot_w_pt = super::text_width(&face, "...", 10.0);
         let dot_w_mm = super::pt_to_units(dot_w_pt, "mm");
-        let line_1_h_pt = super::block_height(&face, 10.0, 1, None, VerticalAlign::Top);
+        let line_1_h_pt = super::block_height(&face, 10.0, &["message"], None, VerticalAlign::Top);
         let line_1_h_mm = super::pt_to_units(line_1_h_pt, "mm");
 
         // Box is tall enough for 1 line, wide enough for "..."
@@ -1864,57 +2362,19 @@ mod helpers_tests {
         assert_eq!(m.lines, vec!["line1", "line2"]);
     }
 
-    /// Task 3.3: a center-aligned multiline item at a fixed font_size whose box holds three
-    /// metric lines but only two reserved ones keeps two lines and ellipsizes.
-    #[test]
-    fn layout_text_center_aligned_multiline_line_budget_reserves_overflow() {
-        let align = Alignment {
-            horizontal: HorizontalAlign::Left,
-            vertical: VerticalAlign::Center,
-        };
-        // At 10pt in Inter:
-        // metric_block(3, 10.0) = 3 * 7.275 + 2 * 6.5 = 34.83pt
-        // reserved demand(2, 10.0, Center) = 2 * 7.275 + 6.5 + 4.824 = 25.875pt
-        // reserved demand(3, 10.0, Center) = 34.83 + 4.824 = 39.65pt
-        // In a 36.0pt box (12.7mm): holds 3 metric lines, but only 2 reserved lines.
-        let box_h_mm = super::pt_to_units(36.0, "mm");
-        let m = test_layout(
-            "Line 1\nLine 2\nLine 3",
-            &FontSize::Fixed(10.0),
-            true,
-            align,
-            Overflow::Ellipsis,
-            (100.0, box_h_mm),
-        )
-        .unwrap();
-        assert_eq!(
-            m.lines.len(),
-            2,
-            "expected 2 lines kept out of 3 under the reserved budget, got {:?}",
-            m.lines
-        );
-        assert!(
-            m.lines[1].ends_with("..."),
-            "expected second line to be ellipsized, got {}",
-            m.lines[1]
-        );
-    }
-
-    /// Task 3.4: a center-aligned item with overflow: fail whose metric block fits but whose block plus
-    /// reservation does not returns 422 text_does_not_fit, and one whose box cannot hold one line plus
-    /// the reservation returns 422 under ellipsis too.
     #[test]
     fn layout_text_center_aligned_refusals() {
         let align = Alignment {
             horizontal: HorizontalAlign::Left,
             vertical: VerticalAlign::Center,
         };
-        // Case 1: 3-line block in a 36.0pt (12.7mm) box with overflow: fail.
-        // Metric block (34.83pt) fits within 36.0pt, but reserved demand (39.65pt) does not.
-        let box_h_mm = super::pt_to_units(36.0, "mm");
+        // Case 1: 3-line block with descenders where block plus reservation exceeds box.
+        let face = super::instance(400, 20.0).unwrap();
+        let box_h_pt = super::metric_block_height(&face, 20.0, 3, None);
+        let box_h_mm = super::pt_to_units(box_h_pt, "mm");
         let err_fail = test_layout(
-            "Line 1\nLine 2\nLine 3",
-            &FontSize::Fixed(10.0),
+            "gyp\ngyp\ngyp",
+            &FontSize::Fixed(20.0),
             true,
             align.clone(),
             Overflow::Fail,
@@ -1923,12 +2383,11 @@ mod helpers_tests {
         .expect_err("overflow: fail must reject when block plus reservation exceeds box");
         assert_eq!(err_fail.reason(), Some("text_does_not_fit"));
 
-        // Case 2: 1-line item in a box shorter than one line plus reservation (e.g. 8.0pt = 2.822mm).
-        // 1 metric line = 7.275pt (< 8.0pt), but 1 reserved line = 12.099pt (> 8.0pt).
-        let short_box_mm = super::pt_to_units(8.0, "mm");
+        // Case 2: 1-line item in a box shorter than one line (e.g. 5.0pt).
+        let short_box_mm = super::pt_to_units(5.0, "mm");
         let err_ellipsis = test_layout(
             "One line",
-            &FontSize::Fixed(10.0),
+            &FontSize::Fixed(20.0),
             false,
             align,
             Overflow::Ellipsis,
@@ -1939,7 +2398,7 @@ mod helpers_tests {
         assert!(
             err_ellipsis
                 .message_text()
-                .contains("shorter than one line"),
+                .contains("no leading run of lines fits"),
             "got {}",
             err_ellipsis.message_text()
         );
@@ -2113,7 +2572,13 @@ mod helpers_tests {
         assert!(super::units_to_pt(box_w, "mm") < long_word_w);
 
         // Box height is tall enough for 2 lines at 10pt
-        let h_2_lines_pt = super::block_height(&face, 10.0, 2, None, VerticalAlign::Top);
+        let h_2_lines_pt = super::block_height(
+            &face,
+            10.0,
+            &["Refrigeration", "ok"],
+            None,
+            VerticalAlign::Top,
+        );
         let box_h = super::pt_to_units(h_2_lines_pt + 2.0, "mm");
 
         let m = test_layout(
@@ -2143,52 +2608,199 @@ mod helpers_tests {
         );
     }
 
-    /// Task 3.5: a center-aligned text with a content height resolves a box taller by the
-    /// reservation, and its top-aligned twin is unchanged.
-    #[test]
-    fn layout_text_center_aligned_content_height_includes_reservation() {
-        let center_align = Alignment {
-            horizontal: HorizontalAlign::Left,
-            vertical: VerticalAlign::Center,
-        };
-        let top_align = Alignment {
+    fn top() -> Alignment {
+        Alignment {
             horizontal: HorizontalAlign::Left,
             vertical: VerticalAlign::Top,
-        };
-        let m_center = test_layout(
-            "Sample text",
-            &FontSize::Fixed(10.0),
-            false,
-            center_align,
-            Overflow::Ellipsis,
-            (100.0, 50.0),
-        )
-        .unwrap();
-        let m_top = test_layout(
-            "Sample text",
-            &FontSize::Fixed(10.0),
-            false,
-            top_align,
-            Overflow::Ellipsis,
-            (100.0, 50.0),
-        )
-        .unwrap();
+        }
+    }
 
-        let face = super::instance(400, 10.0).unwrap();
-        let expected_h_pt = super::cap_height(&face, 10.0)
-            + super::overflow_em(&face, VerticalAlign::Center) * 10.0;
-        let expected_h_mm = super::pt_to_units(expected_h_pt, "mm");
+    /// Inter's cap height at `size`: 1490 of 2048 units.
+    fn cap_pt(size: f32) -> f32 {
+        1490.0 / 2048.0 * size
+    }
 
-        assert!(
-            (m_center.height_units - expected_h_mm).abs() < 1e-4,
-            "center content height {} should match expected reserved height {}",
-            m_center.height_units,
-            expected_h_mm
-        );
+    /// *A value of ten thousand lines is shortened like a value of three*: the budget shapes the
+    /// lines a run can hold and one marker form per run tried, and nothing shapes a block its
+    /// metric height already refuses.
+    #[test]
+    fn a_value_of_ten_thousand_lines_is_shortened_like_a_value_of_three() {
+        let value = vec!["HELIX"; 10_000].join("\n");
+        let segments: Vec<&str> = value.split('\n').collect();
+        let two_lines = cap_pt(10.0) + 12.0 + 1.0;
+        let face = super::instance(400, 10.0).expect("face");
+        super::take_shaped_lines();
+        assert!(!super::text_fits(
+            &face,
+            &segments,
+            false,
+            10.0,
+            None,
+            (super::units_to_pt(100.0, "mm"), two_lines),
+            VerticalAlign::Top,
+        ));
         assert_eq!(
-            m_center.height_units, m_top.height_units,
-            "center and top alignments should resolve identical intrinsic height in symmetric font"
+            super::take_shaped_lines(),
+            0,
+            "text_fits shaped a block its metric refuses"
         );
+
+        let fit = test_layout(
+            &value,
+            &FontSize::Fixed(10.0),
+            false,
+            top(),
+            Overflow::Ellipsis,
+            (100.0, super::pt_to_units(two_lines, "mm")),
+        )
+        .expect("two lines fit");
+        let shaped = super::take_shaped_lines();
+        assert_eq!(fit.lines, ["HELIX", "HELIX..."]);
+        assert!(shaped <= 4, "the budget shaped {shaped} lines");
+
+        // A pitch small enough that every baseline lies in the box, which is still too short for
+        // the last line's `g`: each line is shaped once for the fit and the budget reuses it.
+        let value = vec!["Hg"; 10_000].join("\n");
+        let metric = cap_pt(10.0) + 9_999.0 * 5.0;
+        let fit = layout_text(
+            super::TextLayoutItem {
+                raw_text: &value,
+                font_size: &FontSize::Fixed(10.0),
+                font_weight: None,
+                wrap: false,
+                line_spacing: Some(0.5),
+                alignment: top(),
+                overflow: Overflow::Ellipsis,
+            },
+            (100.0, super::pt_to_units(metric + 1.0, "mm")),
+            "mm",
+            "layout[0]",
+        )
+        .expect("a shorter run fits");
+        let shaped = super::take_shaped_lines();
+        assert_eq!(fit.lines.len(), 9_999);
+        assert_eq!(fit.lines[9_998], "Hg...");
+        assert!(
+            (10_000..=20_000).contains(&shaped),
+            "{shaped} lines shaped for 10,000"
+        );
+    }
+
+    /// *The metric cutoff honours the fit tolerance*: 20 pt `HELIX` has a 14.55078125 pt metric
+    /// block and no ink outside it, so both cutoffs sit exactly where the fit comparison does.
+    #[test]
+    fn the_metric_cutoff_honours_the_fit_tolerance() {
+        for overflow in [Overflow::Fail, Overflow::Ellipsis] {
+            let fit = |height_pt: f32| {
+                test_layout(
+                    "HELIX",
+                    &FontSize::Fixed(20.0),
+                    false,
+                    top(),
+                    overflow,
+                    (100.0, super::pt_to_units(height_pt, "mm")),
+                )
+            };
+            let inside = fit(cap_pt(20.0) - 0.005).expect("0.005 pt short fits within tolerance");
+            assert_eq!(inside.lines, ["HELIX"]);
+            let err = fit(cap_pt(20.0) - 0.015).expect_err("0.015 pt short is refused");
+            assert_eq!(err.reason(), Some("text_does_not_fit"));
+        }
+
+        // The same boundary inside the line budget. Line 1 is too wide, so the fit declines the
+        // block as broken and only the budget's cutoff decides whether line 2 can be kept. Neither
+        // run inks outside its metric box: the marker's dots sit a pitch above the last baseline.
+        let budget = |height_pt: f32| {
+            test_layout(
+                "HELIXHELIXHELIXHELIX\nHELIX",
+                &FontSize::Fixed(20.0),
+                false,
+                top(),
+                Overflow::Ellipsis,
+                (30.0, super::pt_to_units(height_pt, "mm")),
+            )
+            .expect("a run fits")
+        };
+        let two_lines = cap_pt(20.0) + 24.0;
+        let inside = budget(two_lines - 0.005);
+        assert_eq!(inside.lines.len(), 2, "{:?}", inside.lines);
+        assert!(inside.lines[0].ends_with("..."));
+        assert_eq!(inside.lines[1], "HELIX");
+        let outside = budget(two_lines - 0.015);
+        assert_eq!(outside.lines.len(), 1, "{:?}", outside.lines);
+        assert!(outside.lines[0].ends_with("..."));
+    }
+
+    /// A tab draws nothing in Typst, which shapes no run of tabs or default ignorables and sends
+    /// an unmapped tab inside a run back through that same rule, so it reserves nothing:
+    /// bottom-aligned `HELIX` over a tab, or with one inside it, is not inset.
+    #[test]
+    fn a_line_of_tabs_carries_no_ink() {
+        for value in ["HELIX\n\t", "HELIX\tX"] {
+            let fit = test_layout(
+                value,
+                &FontSize::Fixed(20.0),
+                false,
+                Alignment {
+                    horizontal: HorizontalAlign::Left,
+                    vertical: VerticalAlign::Bottom,
+                },
+                Overflow::Fail,
+                (100.0, 30.0),
+            )
+            .expect("fits");
+            assert_eq!((fit.a, fit.d), (0.0, 0.0), "{value:?}");
+        }
+    }
+
+    /// *A height-bound centred item picks a larger size*: `HELIX` inks nothing outside its metric
+    /// box, so 20 pt fits a 16 pt box that the font bands held to 13 pt.
+    #[test]
+    fn a_height_bound_centred_item_picks_a_larger_size() {
+        let fit = test_layout(
+            "HELIX",
+            &FontSize::Range {
+                min: 10.0,
+                max: 20.0,
+            },
+            false,
+            Alignment {
+                horizontal: HorizontalAlign::Center,
+                vertical: VerticalAlign::Center,
+            },
+            Overflow::Ellipsis,
+            (200.0, super::pt_to_units(16.0, "mm")),
+        )
+        .expect("fits");
+        assert_eq!(fit.font_size_pt, 20.0);
+    }
+
+    /// *A box's verdict follows the ink the value carries*: one cap height holds `HELIX` and
+    /// refuses `Égypt`, and shortening never trims characters to shed an accent or a descender.
+    #[test]
+    fn a_boxs_verdict_follows_the_ink_the_value_carries() {
+        let cap_box = (100.0, super::pt_to_units(cap_pt(20.0), "mm"));
+        test_layout(
+            "HELIX",
+            &FontSize::Fixed(20.0),
+            false,
+            top(),
+            Overflow::Fail,
+            cap_box,
+        )
+        .expect("HELIX fits one cap height");
+        for overflow in [Overflow::Fail, Overflow::Ellipsis] {
+            let err = test_layout(
+                "Égypt",
+                &FontSize::Fixed(20.0),
+                false,
+                top(),
+                overflow,
+                cap_box,
+            )
+            .expect_err("Égypt's accent and descender do not fit one cap height");
+            assert_eq!(err.reason(), Some("text_does_not_fit"));
+        }
     }
 }
 
@@ -2338,45 +2950,63 @@ mod interpolate_tests {
 #[cfg(test)]
 mod measurement_tests {
     use super::{
-        cap_height, instance, largest_fitting_font, load_face, overflow_em, pad_em, pad_pt,
-        text_width, units_to_pt, FitBox,
+        cap_height, glyph_ink, instance, largest_fitting_font, line_pitch, load_face,
+        measure_block_ink, resolve_line_spacing, shape_line_ink, text_width, typo_ascender,
+        units_to_pt, BlockInk, FitBox,
     };
     use crate::models::VerticalAlign;
 
+    const UPEM: f32 = 2048.0;
+    /// `É`'s accent above cap height at wght 400, opsz 20: 1928 − 1490 units [fontTools].
+    const E_ACCENT_20: f32 = (1928.0 - 1490.0) / UPEM * 20.0;
+
+    /// The reservation is the ink the lines carry outside the cap-height-to-baseline box, read
+    /// from the instance: `HELIX` carries none, `É` its accent and nothing below, and `Édgy` its
+    /// accent above and its descenders below.
     #[test]
     fn overflow_is_the_ink_outside_the_cap_height_line() {
-        let face = instance(400, 14.0).expect("face");
-        let top = pad_em(&face, VerticalAlign::Top);
-        let bottom = pad_em(&face, VerticalAlign::Bottom);
-        // Inter: cap 1490, ascender 1984, descender -494 of 2048. Both pads work out to 494 units —
-        // the same number by coincidence, not because they are the same quantity.
-        assert!((top - 0.2412).abs() < 0.001, "top pad {top}");
-        assert!((bottom - 0.2412).abs() < 0.001, "bottom pad {bottom}");
+        let face = instance(400, 20.0).expect("face");
+        let pitch = line_pitch(20.0, resolve_line_spacing(None));
+        let helix = measure_block_ink(&face, &["HELIX"], 20.0, pitch);
+        assert_eq!(helix, BlockInk { a: 0.0, d: 0.0 });
+        for vertical in [
+            VerticalAlign::Top,
+            VerticalAlign::Bottom,
+            VerticalAlign::Center,
+        ] {
+            assert_eq!(helix.reserve(vertical), 0.0);
+        }
 
-        // The fit reservation is both overflows: neither one pad, nor the 1.21em band.
-        let both = overflow_em(&face, VerticalAlign::Top);
-        assert!((both - (top + bottom)).abs() < 1e-6, "overflow {both}");
-        assert!((both - 0.4824).abs() < 0.001, "overflow {both}");
+        let e = measure_block_ink(&face, &["É"], 20.0, pitch);
+        assert!((e.a - E_ACCENT_20).abs() < 1e-3, "É inks {} pt above", e.a);
+        assert_eq!(e.d, 0.0);
+        assert_eq!(e.reserve(VerticalAlign::Top), e.a);
+        assert_eq!(e.reserve(VerticalAlign::Bottom), e.a);
+        assert_eq!(e.reserve(VerticalAlign::Center), 2.0 * e.a);
 
-        // Center pads nothing (placement is unchanged), but reserves 2 * max(top, bottom) (#245).
-        assert_eq!(pad_em(&face, VerticalAlign::Center), 0.0);
-        let center_overflow = overflow_em(&face, VerticalAlign::Center);
+        let edgy = measure_block_ink(&face, &["Édgy"], 20.0, pitch);
         assert!(
-            (center_overflow - 2.0 * top.max(bottom)).abs() < 1e-6,
-            "center overflow {center_overflow}"
+            (edgy.a - E_ACCENT_20).abs() < 1e-3,
+            "Édgy inks {} pt above",
+            edgy.a
         );
+        // g alone falls 432–442 units across instances [fontTools]; y may fall further.
         assert!(
-            (center_overflow - 0.4824).abs() < 0.001,
-            "center overflow {center_overflow}"
+            edgy.d >= 432.0 / UPEM * 20.0,
+            "Édgy inks {} pt below",
+            edgy.d
         );
-
-        // pad_pt is the same number in points, for callers with no Face.
-        let pt = pad_pt(400, 20.0, VerticalAlign::Bottom).expect("pad_pt");
-        assert!((pt - bottom * 20.0).abs() < 1e-4, "pad_pt {pt}");
+        assert_eq!(edgy.reserve(VerticalAlign::Top), edgy.a + edgy.d);
+        assert_eq!(edgy.reserve(VerticalAlign::Bottom), edgy.a + edgy.d);
+        assert_eq!(
+            edgy.reserve(VerticalAlign::Center),
+            2.0 * edgy.a.max(edgy.d)
+        );
     }
 
-    /// A height-bound item must leave room for the ink outside the cap-height line: aligned and
-    /// centered items reserve ink room in the fitter, while placement pads only aligned edges (#245).
+    /// A height-bound item settles at the largest 0.5 pt step whose block plus reservation fits,
+    /// the reservation measured at that step's instance. `Hxy` inks below its baseline only, so
+    /// `bottom` reserves that depth once and `center` twice, and `center` settles smaller.
     #[test]
     fn a_height_bound_fit_reserves_the_overflow() {
         let fit = FitBox {
@@ -2384,39 +3014,90 @@ mod measurement_tests {
             height_units: 10.0,
             unit: "mm",
         };
-        let aligned = largest_fitting_font(
-            &["Hxy"],
-            false,
-            400,
-            None,
-            VerticalAlign::Bottom,
-            (6.0, 80.0),
-            fit,
-        );
-        let centered = largest_fitting_font(
-            &["Hxy"],
-            false,
-            400,
-            None,
-            VerticalAlign::Center,
-            (6.0, 80.0),
-            fit,
-        );
-        let face = instance(400, aligned).expect("face");
-        // In symmetric Inter, both alignments reserve the same 0.4824em, so they fit at the same size
-        assert_eq!(
-            aligned, centered,
-            "symmetric font reserves the same ink depth for bottom and center ({aligned} vs {centered})"
-        );
-        // Placement pad is 0.0 for center, while bottom is padded
-        assert_eq!(pad_em(&face, VerticalAlign::Center), 0.0);
-        assert!(pad_em(&face, VerticalAlign::Bottom) > 0.0);
+        let height = units_to_pt(10.0, "mm");
+        let settle =
+            |vertical| largest_fitting_font(&["Hxy"], false, 400, None, vertical, (6.0, 80.0), fit);
+        let need = |vertical, size: f32| {
+            let face = instance(400, size).expect("face");
+            let pitch = line_pitch(size, resolve_line_spacing(None));
+            cap_height(&face, size)
+                + measure_block_ink(&face, &["Hxy"], size, pitch).reserve(vertical)
+        };
+        for vertical in [VerticalAlign::Bottom, VerticalAlign::Center] {
+            let size = settle(vertical);
+            assert!(
+                need(vertical, size) <= height + 0.01,
+                "{vertical:?} at {size} pt"
+            );
+            assert!(
+                need(vertical, size + 0.5) > height + 0.01,
+                "{vertical:?} at {size} pt"
+            );
+        }
+        assert!(settle(VerticalAlign::Center) < settle(VerticalAlign::Bottom));
+    }
 
-        let need = cap_height(&face, aligned) + overflow_em(&face, VerticalAlign::Bottom) * aligned;
+    /// Task 2.3: one line's ink as Typst shapes it, against the fontTools/HarfBuzz figures in the
+    /// design, at the instance each figure was taken from.
+    #[test]
+    fn line_shaping_ink_figures_match_design_context() {
+        let size = 20.0;
+        let units = |pt: f32| pt * UPEM / size;
+        let face_400 = instance(400, size).expect("face");
+        let face_700 = instance(700, size).expect("face");
+        let ink = |face, line| shape_line_ink(face, line, size).expect("ink");
+
+        let helix = ink(&face_400, "HELIX");
+        assert_eq!(
+            helix.rise,
+            cap_height(&face_400, size),
+            "HELIX rises to cap height"
+        );
+        assert_eq!(helix.fall, 0.0);
+
+        assert!((units(ink(&face_400, "É").rise) - 1928.0).abs() < 0.1);
+        assert!((units(ink(&face_700, "É").rise) - 1939.7).abs() < 0.1);
+        assert!(ink(&face_400, "Ǻ").rise > typo_ascender(&face_400) / UPEM * size);
+        assert!((432.0..=442.0).contains(&units(ink(&face_400, "g").fall)));
+        assert!(ink(&face_400, "...").fall > 0.0);
+        // Composition: HarfBuzz composes E + U+0301 into the precomposed glyph.
+        assert_eq!(ink(&face_400, "E\u{0301}"), ink(&face_400, "É"));
+        // Segmentation: shaped as one buffer the acute stays at 1535; Typst shapes H́ on its own.
+        // HarfBuzz reports integer extents; the traced outline puts this acute at 1928.33.
+        assert!((units(ink(&face_400, "αH\u{0301}").rise) - 1928.0).abs() < 0.5);
+
+        // Contextual forms: between digits the colon becomes `colon.case`, raised clear of the
+        // baseline, where `colon`'s lower dot overshoots below it. So `1:1` inks no lower than `11`.
+        let ink_of =
+            |c| glyph_ink(&face_400, face_400.glyph_index(c).expect("mapped")).expect("ink");
+        assert!(ink_of(':').0 < ink_of('1').0);
+        assert_eq!(ink(&face_400, "1:1").fall, ink(&face_400, "11").fall);
+    }
+
+    /// Task 2.4: only the block's outer ink counts. In `Hg\nÉH` the descender sits above the last
+    /// baseline and the accent below the metric top; swapped, both leave the metric box.
+    #[test]
+    fn block_measurement_outer_ink() {
+        let size = 20.0;
+        let face = instance(400, size).expect("face");
+        let pitch = line_pitch(size, resolve_line_spacing(None));
+
+        let inner = measure_block_ink(&face, &["Hg", "ÉH"], size, pitch);
+        assert_eq!(inner, BlockInk { a: 0.0, d: 0.0 });
+
+        let outer = measure_block_ink(&face, &["ÉH", "Hg"], size, pitch);
+        let g = shape_line_ink(&face, "g", size).expect("ink");
+        assert!((outer.a - E_ACCENT_20).abs() < 1e-3, "a = {}", outer.a);
         assert!(
-            need <= units_to_pt(10.0, "mm") + 0.5,
-            "fitted {aligned}pt needs {need}pt in a {}pt slot",
-            units_to_pt(10.0, "mm")
+            (outer.d - g.fall).abs() < 1e-4,
+            "d = {}, g falls {}",
+            outer.d,
+            g.fall
+        );
+        assert_eq!(outer.reserve(VerticalAlign::Top), outer.a + outer.d);
+        assert_eq!(
+            outer.reserve(VerticalAlign::Center),
+            2.0 * outer.a.max(outer.d)
         );
     }
 
