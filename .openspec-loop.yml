@@ -1,7 +1,25 @@
-# What this project is, for the loop vendored at tools/openspec-loop/.
+impl_paths:
+  - src
+  - tests
+  - ui/src
 
-# Directories holding implementation. A commit touching one is subject to the plan gate.
-impl_paths: [src, ui/src]
+frozen_paths:
+  - docs/SPEC.md
+  - docs/adr
 
-# Files frozen against edits, named to every writing stage.
-frozen_paths: [docs/SPEC.md, docs/adr/]
+setup:
+  - npm ci
+  - npm --prefix ui ci
+
+tests:
+  - cargo fmt --check
+  - cargo clippy --all-targets --all-features -- -D warnings
+  - cargo test
+  - cargo build
+  - npm --prefix ui run lint
+  - npm --prefix ui run test
+  - npm --prefix ui run build
+
+delivery:
+  mode: commit
+  squash: true
