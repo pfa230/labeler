@@ -12,6 +12,8 @@
 
 ui/node_modules
 ui/dist
+/node_modules/
+/.openspec-loop.local.yml
 
 # Superpowers scratch: brainstorm specs, implementation plans, SDD ledgers (CLAUDE.md)
 /docs/superpowers/
@@ -32,17 +34,5 @@ ui/dist
 # Personal, machine-specific instructions. Loaded alongside CLAUDE.md, never committed.
 /CLAUDE.local.md
 
-# Agent run artifacts: logs, raw transcripts and resume ids, written by
-# .workflow/run-stage.sh into the worktree it runs in (#255).
+# Local agent run artifacts.
 .agent-runs/
-
-# Machine-local agent lineup for run-change.sh and apply.sh (#330). Which CLIs are
-# installed and authenticated is a property of this machine, not of labeler, so this
-# never arrives by checkout the way repo policy does.
-/.workflow/roles.local
-
-# The blocking-question protocol (#283): a stage that cannot decide something writes
-# QUESTIONS.md at its worktree root and stops, and the answers come back beside it.
-# Working state, never record: what a question settled belongs in the plan.
-/QUESTIONS.md
-/ANSWERS.md

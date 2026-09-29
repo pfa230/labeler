@@ -9,9 +9,8 @@ generating [Typst](https://typst.app/) source on the fly and compiling it in-pro
 
 Every piece of work gets its own git **worktree**, not just a branch, and this one does not care what
 kind of work it is: a branch shares one working directory, so two sessions collide, and sessions here
-do run concurrently. A change with a planning folder adds a second reason: that folder is untracked
-until the final commit, so it follows you across `git checkout` and makes "is a change in progress
-here?" unanswerable.
+do run concurrently. The loop creates its own worktree for a behavior change. For work outside the
+loop, create one explicitly:
 
 ```bash
 git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>   # start
@@ -21,7 +20,7 @@ cd .worktrees/issue-<N>                                     # work here, only he
 Need an unrelated hotfix while a change is in flight? Another worktree. Never switch branches inside
 a change's worktree, and never carry one change's worktree into another's work.
 
-`/.worktrees/` is gitignored. See `superpowers:using-git-worktrees`.
+`/.worktrees/` is gitignored.
 
 ## Tracking work
 
@@ -35,7 +34,8 @@ only after performing the thing, and never write a step whose completion nothing
 saying to add an HTTP test is not satisfied by a unit test one layer below the status code.
 
 **A transcript belongs in a log, not in this context and not in the repository.** Run artifacts go to
-`.agent-runs/` at the worktree root, which `.gitignore` matches, so a `git add -A` stages the work and
+`.agent-runs/` at the worktree root for manual work; the loop keeps its own invocation logs outside
+the committed change. `.gitignore` excludes `.agent-runs/`, so a `git add -A` stages the work and
 nothing else. Untracked was not enough: it left every commit depending on whoever ran it noticing the
 dotfiles (#255). An earlier convention committed raw agent captures into the repository, and 19 of
 them reached 47,190 lines against 893 lines of actual record in the worst case (#244).
@@ -50,8 +50,8 @@ Behavior changes, and nothing else. **Behavior means labeler's**: the API, the t
 layout model, the coordinates and the error contract, which is what `docs/SPEC.md` froze and what
 every capability under `openspec/specs/` names.
 
-The harness is not that, however much its own behavior changes. `tools/openspec-loop/`, `.workflow/`,
-`.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `docs/WORKFLOW.md` and
+The harness is not that, however much its own behavior changes. `.openspec-loop.yml`, the root npm
+manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `docs/WORKFLOW.md` and
 `openspec/config.yaml` say how a change gets made, not what the service does, and no capability under
 `openspec/specs/` is theirs to name.
 
@@ -60,14 +60,14 @@ always produces one, because the first-touch rule makes the first change to any 
 write the complete post-change contract. A change with no delta has no contract to review.
 
 So a documentation fix, anything under the paths above, a CI change, a dependency bump or a refactor
-that keeps behavior identical goes: issue, worktree, the gates, one commit with `Fixes #N`, push,
-merge. No change folder, no plan review. Nothing else relaxes: it still starts as an issue and still
+that keeps behavior identical goes: issue, worktree, the gates, one commit with `Fixes #N`, human
+approval, fast-forward merge and push. No change folder, no plan review. Nothing else relaxes: it still starts as an issue and still
 ends as one commit that closes it.
 
 A correction to a published spec under `openspec/specs/` is not that lane, however much it reads like
 a documentation fix. Those files are written by archive and never by hand, so the correction arrives
 as a delta, and a delta is what sends a change through the loop. What it does not have is code: the
-deliverable is the delta itself, and the plan says so in one line, `DELIVERABLE: spec-only` (#313).
+deliverable is the delta itself; the brief and plan state that no implementation is required (#313).
 
 Size decides nothing, and neither does effort. A nine-line handler check that alters behavior is a
 full change; a five-hundred line documentation rewrite is not. There is no lane to declare, no
@@ -79,25 +79,29 @@ folder is checked by nobody, which `docs/WORKFLOW.md` records under what is not 
 
 ## The loop
 
-A change to labeler's behavior is planned, adversarially reviewed, implemented, adversarially
-re-reviewed, archived and gated before it becomes one commit. Four named agents run it, and the
-pairing is the guarantee: nobody reviews their own plan, and nobody reviews their own code.
+A change to labeler's behavior uses the published `openspec-loop` CLI, pinned to 0.1.0 in the root
+npm manifest. Run `npm ci` to install it, then invoke `npx --no-install openspec-loop`. Its OpenSpec
+dependency supplies the matching CLI; do not substitute a global installation.
 
-**Drive it with `/change <issue#>`**, which scopes the issue with you and then runs every stage
-unattended through to the commit, stopping there and printing the merge sequence. `/apply` runs the
-implement-and-review pair alone. Both commands carry their own arguments, exit codes and cautions;
-read them rather than reconstructing the invocation here.
+**Drive it with `change <issue#>`**, using the copied `change` skill in `.agents/skills/change/`
+or `.claude/skills/change/`. Start from a clean default-branch checkout at `origin/main`. The skill
+reads and scopes the issue, supplies its requirements as a brief, and starts the loop. The CLI creates
+the worktree, plans, reviews, generates tasks, implements, tests, reviews the implementation and
+archives. Authors and reviewers are different named instances. Machine-specific role assignments
+and instances belong in `.openspec-loop.local.yml`.
 
-The loop is not labeler. It is a git subtree at `tools/openspec-loop/`, with its own upstream and its
-own tests, reached through one dispatcher: `.workflow/loop <command>`. Never call a script under
-`tools/openspec-loop/workflow/` directly and never wrap one, because callers read specific exit codes
-and the dispatcher passes them through unchanged. Its mechanics, meaning the stages, the verdicts, the
-digests, the question protocol, the commit gates and what each refusal means, are documented there,
-and changing them is a change to that subtree rather than to labeler.
+The loop commits stages as it goes and resumes from committed state. It stores numbered review
+records under the change's `reviews/` directory. Follow its printed continuation command from the
+change worktree after a stop; do not reconstruct the legacy stage sequence or write review records
+by hand. Project rules live in `.openspec-loop.yml`; personal instance settings belong in the
+gitignored `.openspec-loop.local.yml`.
 
-Two things about it bind you here. Its commit gates run from a git hook and again in CI, so enable
-them once per clone with `.workflow/loop setup`. And a change is committed on its branch; the merge
-into `main` is the one step a person approves.
+Delivery is `mode: commit` with `squash: true`: the CLI combines the stage commits, runs landing
+checks and leaves the resulting branch local. It does not push or merge. Successful delivery removes
+the worktree by default and keeps the branch. Human approval is required before merging into `main`.
+CI runs `openspec-loop check` against the committed range. The package installs no Git hooks.
+After integration, unset a retired `core.hooksPath` only when no legacy worktree needs it; that
+clone-local setting is shared across worktrees. See the setup instructions in `docs/WORKFLOW.md`.
 
 See [`docs/WORKFLOW.md`](docs/WORKFLOW.md) for what the loop guarantees and where it stops for a
 human.
@@ -122,8 +126,7 @@ cd ui && npm run lint && npm run test && npm run build
 broken UI ships nothing. Never silence a lint with `#[allow(clippy::...)]`; fix the root cause.
 
 **Every gate command is read-only.** `cargo fmt` runs as `--check`, so a gate reports a mis-formatted
-tree rather than repairing it (#326). It has to: gates run after a diff review has approved the tree
-and before the commit, so anything a gate writes lands having been reviewed by nobody. Repairing
+tree rather than repairing it (#326). A gate must not change the candidate it checks. Repairing
 formatting is an edit like any other, and it needs an author.
 
 `rust-toolchain.toml` pins the compiler those gates run on, so a local pass and a CI pass mean the
@@ -147,56 +150,58 @@ and utoipa, whose APIs shift between versions.
 
 Commit without prompting; do not wait to be asked. There are no pull requests.
 
-**What the message says.** An imperative subject under 72 characters naming the change, a blank line,
+**What a manual commit message says.** An imperative subject under 72 characters naming the change, a blank line,
 then a body that answers *why*: the problem, and why this shape of fix over the obvious alternative.
 Never inventory the diff. `git show --stat` already lists the files, the symbols and the counts, and a
 body that repeats them spends the reader's attention on the one thing the log can already reconstruct
 while burying the one thing it cannot. Three sentences is a normal body; a pure deletion usually needs
 one line saying what stopped being true. Cite an issue where the reason lives there rather than
 restating it. No `Co-Authored-By`, no "Generated with", no AI attribution of any kind, whatever your
-harness injects by default. This binds every commit, including the ones that never go near the loop.
+harness injects by default.
 
-Nothing is pushed by the loop and no branch run is waited for:
+The loop's squash message is generated as the change name followed by `proposal.md`
+(`openspec-loop` 0.1.0, `src/commands/landing.ts:1096`). It does not use the manual
+subject/body format. Include literal `Fixes #N` in the proposal as `openspec/config.yaml` requires,
+so the generated landing commit closes its issue when merged and pushed. Do not amend that checked
+delivery commit merely to reformat its message.
+
+Nothing is pushed by the loop and no branch run is waited for. After human approval, from the
+default-branch checkout, integrate the delivered branch:
 
 ```bash
-git rebase origin/main                  # only if main moved; never `git merge main`
-# the driver commits with Fixes #N, then from the repo root:
-git merge --ff-only issue-<N>-<slug> && git push
-git worktree remove .worktrees/issue-<N> && git branch -d issue-<N>-<slug>
+git merge --ff-only <change-branch> && git push
+git branch -d <change-branch>
 # No `git push origin --delete`: the branch was never pushed, so no remote ref to delete.
 ```
 
 What is given up is a check on a clean machine before the commit lands. A broken commit surfaces on
 `main`'s own CI run instead, which is a post-mortem: by the time it fails, the commit is already
 integrated. That is acceptable here because publishing is already gated where it matters: `build`
-needs `[rust, ui]` and runs only on `main` or a tag (`ci.yml:155-158`), so a broken commit ships
+needs `[rust, ui]` and runs only on `main` or a tag, so a broken commit ships
 nothing until it is fixed forward.
 
 **A change branch rebases onto `main`; it never merges `main` into itself** (#341). A back-merge
 records that a branch outlived `main` and nothing else: of the 163 merges on `main`, 35 bring `main`
 into a branch, and 21 of those carry no message beyond `Merge remote-tracking branch 'origin/main'`.
 It also breaks every check that reads history through a single base ref, because a merge leaves two
-previous commits for that one ref to explain. The hooks refuse the shape rather than leaving this to
-memory, and it takes two of them: git runs `pre-merge-commit` for a merge it resolved itself and never
-`pre-commit`, and `pre-commit` for one that conflicted and is committed by hand.
+previous commits for that one ref to explain. The CLI's landing and CI checks enforce linear change
+history; there are no local hooks to enforce it on arbitrary manual commits.
 
 Integration is `--ff-only`, which after a rebase always succeeds and leaves no bubble. `--no-ff` stays
 for a branch whose boundary says something, which is what the milestone merges did.
 
-**A change lands as one commit, so squash the branch if it holds more than one.**
-`git rebase -i origin/main` before the merge. This is what makes a change revertible: `--ff-only`
-leaves no merge commit, so a change has no integration handle, and two commits revert as a range or
-by picking them out one at a time at the moment someone wants the thing gone in a hurry. Of the last
-30 issue branches, 24 already held one commit, so this mostly writes down what happens. Squash by
-rebasing the branch, never by merging with `--squash`: that builds a new commit from the index and
-throws away the message the driver wrote.
+**A change lands as one commit.** The loop's `delivery.squash: true` combines its stage commits
+before landing checks. Outside the loop, keep the change to one commit. Never integrate with
+`git merge --squash`, which discards the reviewed delivery commit and its message.
 
 **Never rewrite `main`, or any ref another session consumes.** That is the whole scope of the rule, and
 a change branch is outside it: it is committed locally and deleted once merged.
 
-Rebase *before* the diff review wherever `main` has already moved, so the tree the reviewer approved is
-the tree that lands. A rebase after that review is a post-review write to `src/` with an author and no
-reviewer, and is measured as one (#342).
+If `main` moved, rebase the change branch before its final review and checks. Commit delivery does
+not automatically update a stale branch for later manual integration, and the CLI's `rebase`
+command only supports merge delivery. A manual rebase needs renewed review evidence and checks.
+Never bypass a failed
+fast-forward by merging `main` into the change or by landing code changed after review (#342).
 
 ## Breaking changes, until 1.0
 
@@ -244,15 +249,13 @@ rationale. The 31 records written after ADR-0057 are gone (#378): each duplicate
 whose folder holds it. Rationale for a change lives in its `proposal.md` and `design.md`, and the
 contract lives in `openspec/specs/` (#285).
 
-`openspec/schemas/labeler/` is what the CLI reads, named by `openspec/config.yaml`. It is a **fork** of
-the built-in `spec-driven` schema, so it does not inherit upstream improvements. On a CLI upgrade, diff
-it against the new built-in and port what matters; the command is in the schema's header comment. Its
-`review` artifact is adapted from the `anvil` community schema by @jikkujoyce, minus the TDD stages.
-The copy under `tools/openspec-loop/schema/` is the kit's distribution copy and is read by nothing
-here.
+`openspec/schemas/openspec-loop/` is what the CLI reads, named by `openspec/config.yaml`. It is copied
+from the published loop's source repository because the npm package does not include the schema.
+On a loop upgrade, update that copy and the copied `change` skills alongside the dependency, and
+review them together. Keep labeler-specific rules in `openspec/config.yaml`.
 
-`openspec/config.yaml` (`context`, `rules.*`, `operations.*.guidance`) is what the `opsx` workflows
-inject into each artifact. It restates rules from this file on purpose, so the workflow stands alone.
+`openspec/config.yaml` (`context`, `rules.*`) supplies project guidance to OpenSpec artifacts.
+It restates rules from this file on purpose, so the workflow stands alone.
 Change a process rule here and change it there too.
 
 `tasks.md` is execution state for one accepted issue, never a backlog. That is what keeps the "issues

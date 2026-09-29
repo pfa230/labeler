@@ -102,53 +102,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # The review gate diffs against the previous commit; depth 1 has no parent.
           fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
+          cache: npm
 
-      # Pinned to match the CLI that generated the committed skill/command files under .claude/,
-      # .agent/, .agents/ and .opencode/ (the 24 SKILL.md manifests record `generatedBy: 1.9.0`).
-      # To upgrade: bump this pin, run `openspec update --force`, and commit the regeneration.
-      - name: Install OpenSpec
-        run: npm install -g @fission-ai/openspec@1.9.0
+      - name: Install workflow dependencies
+        run: npm ci
 
       - name: Doctor
-        run: openspec doctor
+        run: npx --no-install openspec doctor
 
-      # Specs and active changes are well-formed against the spec-driven schema.
       - name: Validate specs and changes
-        run: openspec validate --all --strict --no-interactive
+        run: npx --no-install openspec validate --all --strict --no-interactive
 
-      # Archived changes have every task checked; catches a change archived while still incomplete.
       - name: Validate archived changes
-        run: openspec validate --archived --no-interactive
+        run: npx --no-install openspec validate --archived --no-interactive
 
-      # The gates are the only check on the review process, so a gate that quietly
-      # stops firing has to fail loudly somewhere. That is what these assert. The
-      # pre-commit hook does not run them; changing a gate script does.
-      - name: Workflow script tests
+      - name: Establish the default branch ref
         run: |
-          .workflow/loop test
+          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
-      # The same scripts the pre-commit hook runs, on what actually landed.
-      # Tool-agnostic: they judge files, never which agent produced them (#191).
-      - name: Review gate
+      - name: Check landing range
         run: |
-          base='${{ github.event.pull_request.base.sha || github.event.before }}'
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            base=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)
+            npx --no-install openspec-loop check --base "$base" --head-ref "$GITHUB_HEAD_REF" --target-ref "$GITHUB_BASE_REF"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            npx --no-install openspec-loop check --base HEAD^ --head-ref "$DEFAULT_BRANCH" --target-ref none
+          else
+            npx --no-install openspec-loop check --base "$GITHUB_EVENT_BEFORE" --head-ref "$GITHUB_REF_NAME" --target-ref none
           fi
-          mapfile -t files < <(git diff --name-only "$base" HEAD)
-          [ "${#files[@]}" -gt 0 ] || exit 0
-          # Here HEAD IS the commit under test, so the checks must measure against the
-          # base rather than their HEAD default, or they compare a file to itself.
-          export GATE_BASE_REF="$base"
-          .workflow/loop review-gate "$PWD" "${files[@]}"
-          .workflow/loop archive-check "$PWD" "${files[@]}"
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
 
   build:
     needs: [rust, ui]

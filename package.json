@@ -1,0 +1,7 @@
+{
+  "name": "labeler-workflow",
+  "private": true,
+  "devDependencies": {
+    "openspec-loop": "0.1.0"
+  }
+}
