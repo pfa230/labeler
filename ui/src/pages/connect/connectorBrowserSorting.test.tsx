@@ -4,8 +4,7 @@ import { useState } from "react";
 import { ConnectorBrowser } from "./ConnectorBrowser";
 import type { ConnectorSchema, DisplayRow, SelectedRow } from "../../api/connectors";
 
-// Tests requirement "A column header orders the loaded rows" in
-// openspec/changes/issue-170-connector-grid/specs/connector-browser/spec.md against the rendered
+// Tests that a column header orders the loaded rows (`connections` spec) against the rendered
 // grid: real row order and real aria-sort values, not the sort/filter comparators in isolation
 // (those are connectorSort.ts's own unit tests).
 

@@ -1,4 +1,4 @@
-//! Printer driver abstraction (ADR-0007). A configured printer's `kind` selects a driver that declares
+//! Printer driver abstraction. A configured printer's `kind` selects a driver that declares
 //! the artifact format it accepts and knows how to send it. Phase 1 ships one driver (`cups`, PDF over
 //! IPP); later families register here without touching the `/print` dispatch.
 

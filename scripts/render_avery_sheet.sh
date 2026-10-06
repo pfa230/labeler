@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Requires LABELER_API_TOKEN in the environment: all /api routes need auth (ADR-0017).
+# Requires LABELER_API_TOKEN in the environment: all /api routes need auth.
 # Create a token in the UI (Settings) and export it before running this script.
 HOST=${HOST:-http://localhost:8080}
 OUT=${OUT:-avery-sheet.pdf}

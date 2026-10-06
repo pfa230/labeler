@@ -53,7 +53,7 @@ pub struct AppError {
 pub struct BatchFailure {
     pub index: usize,
     pub code: &'static str,
-    /// Present exactly when the failure's code carries a reason (SPEC §10.1). A per-label failure
+    /// Present exactly when the failure's code carries a reason. A per-label failure
     /// can be a code outside the migrated four, so this is optional rather than required.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
@@ -77,7 +77,7 @@ impl AppError {
         }
     }
 
-    /// Build an error that carries a reason (ADR-0052). `extra` is merged alongside `reason` in
+    /// Build an error that carries a reason. `extra` is merged alongside `reason` in
     /// `details`; taking a `Map` rather than a `Value` makes a non-object `details` unrepresentable,
     /// so the merge cannot lose data. This is the only writer of both `details` and `reason` for a
     /// reasoned error, so the two cannot diverge.
@@ -104,7 +104,7 @@ impl AppError {
         self.status
     }
 
-    /// The `details.reason` slug, when this error carries one (SPEC §10.1).
+    /// The `details.reason` slug, when this error carries one.
     pub fn reason(&self) -> Option<&'static str> {
         self.reason.map(Reason::as_slug)
     }
@@ -377,7 +377,7 @@ impl AppError {
     ///
     /// `files` are bare filenames from the directory reading the decision was made on, never paths:
     /// the templates directory's location is server configuration. This code carries no
-    /// `details.reason` on purpose. ADR-0052 scopes `reason` to `RenderFailed`, `InvalidRequest`,
+    /// `details.reason` on purpose. `reason` is scoped to `RenderFailed`, `InvalidRequest`,
     /// `UnsupportedLayoutItem` and `TemplateInvalid`, and a `409` is none of them (#183, #184).
     pub fn template_id_collision(id: &str, files: Vec<String>, message: impl Into<String>) -> Self {
         Self::new(
@@ -566,7 +566,7 @@ impl From<TemplateRegistryError> for AppError {
 impl From<crate::connector::ConnectorError> for AppError {
     fn from(err: crate::connector::ConnectorError) -> Self {
         use crate::connector::ConnectorError::*;
-        // These codes sit outside the four that carry a `details.reason` (ADR-0052): they describe
+        // These codes sit outside the four that carry a `details.reason`: they describe
         // upstream transport, not a layout or request fault.
         let (status, code, message): (StatusCode, &'static str, String) = match err {
             AuthFailed => (
@@ -690,154 +690,51 @@ mod tests {
         assert_eq!(Reason::TextDoesNotFit.as_slug(), "text_does_not_fit");
     }
 
-    /// The SPEC §10.1 table is the published contract; the enum is what the code emits. If they
-    /// drift, clients switch on slugs that either no longer exist or were never documented. Checked
-    /// in both directions deliberately: an undocumented slug is as bad as a phantom one.
+    /// The reason table in the `errors` spec is the published contract; the enum is what the code
+    /// emits. If they drift, clients switch on slugs that either no longer exist or were never
+    /// documented, so the check runs in both directions.
     #[test]
     fn spec_documents_every_reason_and_invents_none() {
         use crate::reason::Reason;
         use std::collections::HashSet;
 
-        let spec = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/SPEC.md"))
-            .expect("read SPEC.md");
+        let spec = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/openspec/specs/errors/spec.md"
+        ))
+        .expect("read the errors spec");
         let section = spec
-            .split("### 10.1")
+            .split("### Requirement: Reason slugs")
             .nth(1)
-            .expect("SPEC.md must have a §10.1 reason section");
-        let section = section.split("\n## ").next().unwrap_or(section);
+            .expect("the errors spec must have a `Reason slugs` requirement");
+        let section = section.split("\n### ").next().unwrap_or(section);
 
-        // Column 2 is the slug, in backticks. The header cell reads "Reason" without backticks and
-        // the separator row has none either, so both drop out here.
-        let spec_table: HashSet<&str> = section
+        // A reason row is a table row whose first cell is a backticked slug.
+        let documented: HashSet<&str> = section
             .lines()
             .filter(|line| line.starts_with('|'))
-            .filter_map(|line| line.split('|').nth(2))
+            .filter_map(|line| line.split('|').nth(1))
             .map(str::trim)
             .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
             .collect();
-
         let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
 
-        // A reason added after `docs/SPEC.md` was frozen (ADR-0057) cannot be listed in §10.1, so its
-        // documented home is the OpenSpec spec that introduced it. Only `openspec/specs/**/spec.md`
-        // counts: a proposal, a design note, or an archived change folder records what was planned,
-        // not a published contract, and accepting one lets a reason ship documented nowhere a client
-        // reads (#164 diff review). The phantom half below still runs off the §10.1 table alone, so
-        // widening the undocumented half does not weaken it.
-        // Active deltas count too, otherwise a change that adds a reason cannot pass this
-        // test until archive publishes its delta, and the workflow demands clean gates
-        // before archiving (#217). A delta is not a plan: it is the text archive publishes
-        // verbatim, so a slug documented there is documented in the contract a step early.
-        // `changes/archive/` stays excluded, per the reasoning above.
-        let openspec_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("openspec");
-        let specs_dir = openspec_dir.join("specs");
-        let mut delta_dirs: Vec<std::path::PathBuf> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(openspec_dir.join("changes")) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() && path.file_name().and_then(|n| n.to_str()) != Some("archive") {
-                    delta_dirs.push(path.join("specs"));
-                }
-            }
-        }
-        fn scan_specs(dir: &std::path::Path, declared: &HashSet<&str>, out: &mut HashSet<String>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    scan_specs(&path, declared, out);
-                } else if path.file_name().and_then(|n| n.to_str()) == Some("spec.md") {
-                    let Ok(content) = std::fs::read_to_string(&path) else {
-                        continue;
-                    };
-                    for slug in declared {
-                        if content.contains(&format!("`{slug}`")) {
-                            out.insert((*slug).to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        fn scan_canonical_withdrawals(dir: &std::path::Path, out: &mut HashSet<String>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    scan_canonical_withdrawals(&path, out);
-                } else if path.file_name().and_then(|n| n.to_str()) == Some("spec.md") {
-                    let Ok(content) = std::fs::read_to_string(&path) else {
-                        continue;
-                    };
-                    let mut in_withdrawn_section = false;
-                    for line in content.lines() {
-                        if line.to_lowercase().contains("withdrawn") {
-                            in_withdrawn_section = true;
-                        } else if line.starts_with('#') {
-                            in_withdrawn_section = false;
-                        }
-                        if in_withdrawn_section && line.starts_with('|') {
-                            if let Some(cell) = line.split('|').nth(1) {
-                                let trimmed = cell.trim();
-                                if let Some(slug) =
-                                    trimmed.strip_prefix('`').and_then(|s| s.strip_suffix('`'))
-                                {
-                                    if slug != "Reason" && slug != "Slug" && !slug.is_empty() {
-                                        out.insert(slug.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut documented: HashSet<String> =
-            spec_table.iter().map(|slug| (*slug).to_string()).collect();
-        scan_specs(&specs_dir, &declared, &mut documented);
-        for delta in &delta_dirs {
-            scan_specs(delta, &declared, &mut documented);
-        }
-        let documented_refs: HashSet<&str> = documented.iter().map(String::as_str).collect();
-
-        let mut undocumented: Vec<_> = declared.difference(&documented_refs).collect();
+        let mut undocumented: Vec<_> = declared.difference(&documented).collect();
         undocumented.sort_unstable();
         assert!(
             undocumented.is_empty(),
-            "reasons documented in neither SPEC \u{a7}10.1 nor openspec/specs: {undocumented:?}"
+            "reasons missing from the errors spec: {undocumented:?}"
         );
 
-        // Canonical withdrawals check: canonical specs in `openspec/specs` can withdraw reasons.
-        let mut canonical_withdrawals = HashSet::new();
-        scan_canonical_withdrawals(&specs_dir, &mut canonical_withdrawals);
-        let canonical_withdrawn_refs: HashSet<&str> =
-            canonical_withdrawals.iter().map(String::as_str).collect();
-
-        let mut reintroduced: Vec<_> = declared.intersection(&canonical_withdrawn_refs).collect();
-        reintroduced.sort_unstable();
-        assert!(
-            reintroduced.is_empty(),
-            "reasons that were canonically withdrawn are present in Reason enum: {reintroduced:?}"
-        );
-
-        // Phantom check: §10.1 only, minus canonical withdrawals.
-        let mut phantom: Vec<_> = spec_table
-            .difference(&declared)
-            .filter(|slug| !canonical_withdrawn_refs.contains(*slug))
-            .collect();
+        let mut phantom: Vec<_> = documented.difference(&declared).collect();
         phantom.sort_unstable();
         assert!(
             phantom.is_empty(),
-            "SPEC \u{a7}10.1 documents reasons that do not exist: {phantom:?}"
+            "the errors spec documents reasons that do not exist: {phantom:?}"
         );
     }
 
-    /// Decision 4 of ADR-0052: a per-label failure carries `reason` exactly when its code is one of
+    /// A per-label failure carries `reason` exactly when its code is one of
     /// the migrated four. Both halves matter — a required field would contradict the scoping, and a
     /// missing one would leave the nested failures prose-discriminated.
     #[test]

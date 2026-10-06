@@ -104,7 +104,7 @@ Templates that supply images as data URIs (`image.name`) need no assets director
 
 ## Authentication
 
-Every `/api` route requires authentication (flat user accounts, ADR-0017). The first run is empty: open
+Every `/api` route requires authentication (flat user accounts). The first run is empty: open
 the UI and the first-run setup screen creates the first account, or seed it from the environment.
 
 - **First-run bootstrap.** Set `LABELER_INIT_USER` and `LABELER_INIT_PASSWORD` to create the first user
@@ -154,7 +154,7 @@ One named volume holds all state:
 
 **No templates are installed on first run.** A new deployment starts with an empty
 `{config}/templates/` and the Labels screen offers a catalog to install from. Nothing ships inside the
-image (ADR-0046, #137): templates live in the repo under `catalog/`, your browser downloads the one
+image (#137): templates live in the repo under `catalog/`, your browser downloads the one
 you pick, and the server validates and stores it. Everything in `{config}/templates/` is yours — add,
 edit and delete freely; nothing is re-injected on upgrade.
 

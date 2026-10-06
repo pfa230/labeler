@@ -117,9 +117,6 @@ jobs:
       - name: Validate specs and changes
         run: npx --no-install openspec validate --all --strict --no-interactive
 
-      - name: Validate archived changes
-        run: npx --no-install openspec validate --archived --no-interactive
-
   build:
     needs: [rust, ui]
     # Publishing is bound to main and tags. Change branches validate; they do not ship.

@@ -1,718 +1,518 @@
-# connections Specification
+# Connections
 
 ## Purpose
-Defines the connection record that binds Labeler to an upstream inventory system, its CRUD contract,
-and the two addresses a connection carries: the base URL Labeler fetches from and the optional public
-URL that Labeler puts into the links and QR codes it generates for people.
+
+Connections to upstream inventory systems and the connectors that read them: the connection record and its endpoints, the connector schema, browse, materialize and transform-preview contracts, field transforms, multi-valued fields, the default connection, and the Connections and Connect screens.
 
 ## Requirements
 
-### Requirement: Connection record
+### Requirement: Connection record and reads
 
-A connection SHALL be `{ id, connector, name, base_url, public_url, transforms, credential, enabled }`,
-persisted by the server. `public_url` SHALL be optional and default to absent. The credential SHALL
-never be returned by any endpoint; responses SHALL expose it only as the boolean `has_credential`;
-`transforms` SHALL be returned in full.
+A connection SHALL be stored by the server as `{ id, connector, name, base_url, public_url, credential, enabled, transforms }`, with a server-generated `id`. Every response SHALL represent it as `{ id, connector, name, base_url, public_url, enabled, has_credential, transforms }`: the credential SHALL never be returned, `has_credential` SHALL say whether one is stored, `public_url` SHALL be `null` when absent, and `transforms` SHALL be returned in full.
 
-This requirement supersedes the connection record shape in the frozen `docs/SPEC.md` §12
-("Integrations (connectors)"). Every other part of §12 remains authoritative. `transforms` is named
-here only so the record is stated whole: every rule about what a transform is, when it is accepted,
-and what it derives belongs to `connector-field-transforms`, which this requirement neither restates
-nor alters.
+`GET /api/connections` SHALL list every connection ordered by `name` (byte order), ties broken by `id`. `GET /api/connections/{id}` SHALL return one connection, or `404` for an unknown id.
 
-`GET /api/connections` SHALL list every connection ordered by `name`, ties broken by `id`, so the
-listed order is total: two connections sharing a name SHALL still list in the same order on every
-request. `GET /api/connections/{id}` SHALL return one, or `404` when the id is unknown.
-
-#### Scenario: Reading a connection
-
-- **WHEN** a client reads a connection through `GET /api/connections` or `GET /api/connections/{id}`
-- **THEN** the response contains `id`, `connector`, `name`, `base_url`, `public_url`, `transforms`,
-  `enabled`, and `has_credential`
-- **AND** it contains no credential value
-- **AND** `public_url` is `null` when the connection has none
-
-#### Scenario: Reading a connection that does not exist
-
-- **WHEN** a client requests `GET /api/connections/{id}` for an unknown id
-- **THEN** the response is `404`
-
-#### Scenario: Listing connections that share a name
+#### Scenario: Two connections share a name
 
 - **WHEN** two connections are both named `Homebox`, with ids `b` and `a`
-- **THEN** `GET /api/connections` lists `a` before `b`, on every request
+- **THEN** `GET /api/connections` lists `a` before `b` on every request
 
 ### Requirement: Creating a connection
 
-`POST /api/connections` SHALL accept
-`{ connector, name, base_url, public_url?, transforms?, credential, enabled? }` and return `201` with
-the created connection. A missing, `null`, or blank `public_url` SHALL store no
-public URL. A missing `enabled` SHALL default to `true`. An unknown `connector` SHALL be rejected with
-`400` and reason `connector_unknown`; a `credential` that is missing, `null`, or empty SHALL be
-rejected with `400` and reason `credential_required`.
+`POST /api/connections` SHALL accept `{ connector, name, base_url, public_url?, credential, enabled?, transforms? }` and return `201` with the created connection. A missing, `null` or blank `public_url` SHALL store none; a missing `enabled` SHALL default to `true`; a missing or `null` `transforms` SHALL store an empty list. The request SHALL be refused with `400`:
 
-This requirement supersedes the `POST /api/connections` payload description in the frozen
-`docs/SPEC.md` §12, alongside `connector-field-transforms`, which already superseded it to the extent
-of adding `transforms`. The handling of `transforms` on create stays that capability's.
-
-#### Scenario: Created with a public URL
-
-- **WHEN** a client posts a connection whose `public_url` is `https://homebox.example.com`
-- **THEN** the response is `201` and its `public_url` is `https://homebox.example.com`
+| Fault | `details.reason` |
+|---|---|
+| `connector` names no registered connector (only `homebox` exists) | `connector_unknown` |
+| a transform is rejected | `connection_transform_invalid` |
+| `credential` missing, `null` or `""` | `credential_required` |
+| `base_url` or `public_url` invalid | `base_url_invalid` / `public_url_invalid` |
 
 #### Scenario: Created without a public URL
 
-- **WHEN** a client posts a connection that omits `public_url`, or sends it as `null` or `""`
+- **WHEN** a client posts a connection whose `public_url` is omitted, `null` or `""`
 - **THEN** the response is `201` and its `public_url` is `null`
-
-#### Scenario: Created without a credential
-
-- **WHEN** a client posts a connection whose `credential` is missing, `null`, or `""`
-- **THEN** the response is `400` with `details.reason` `credential_required`
-
-#### Scenario: Created with an unknown connector
-
-- **WHEN** a client posts a connection whose `connector` is not a registered connector
-- **THEN** the response is `400` with `details.reason` `connector_unknown`
 
 ### Requirement: Updating a connection
 
-`PUT /api/connections/{id}` SHALL accept the same payload shape as create and return `200` with the
-updated connection, or `404` when the id is unknown. It SHALL update `name`, `base_url`, `public_url`,
-`enabled`, and, when one is supplied, `credential`. `connector` SHALL remain a required key of the
-payload and SHALL still never be applied, because a connection's connector is fixed at creation; but
-a payload whose `connector` is not exactly the stored one SHALL be rejected with `400` and
-`details.reason` `connector_immutable`, and SHALL change nothing. The comparison SHALL be exact
-equality against the stored value and SHALL NOT consult the connector registry, so a name that is not
-a registered connector is rejected by the same rule and carries the same reason rather than
-`connector_unknown`. The unknown-id `404` SHALL take precedence: a `PUT` to an id that does not exist
-SHALL be `404` whatever its `connector` says. Omitting `credential`, or sending it empty, SHALL keep
-the stored credential. For `public_url` the three input forms SHALL be distinguished: omitting the key
-keeps the stored value, sending `null` or a blank string clears it, and sending a URL replaces it.
-`transforms` is accepted on update under the rules stated by `connector-field-transforms`.
+`PUT /api/connections/{id}` SHALL accept the create payload and return `200` with the updated connection, or `404` for an unknown id; the `404` SHALL take precedence over every payload check, and SHALL also answer an update whose connection is gone when the service reads it back. It SHALL write `name`, `base_url` and `enabled`, and:
 
-Rejecting the mismatch rather than absorbing it is what makes the two parties agree: a client that
-sends a connector Labeler will not apply has a bug, and a `200` that changes nothing hides it.
+| Key | Omitted | `null` | Empty (`""` / `[]`) | Value |
+|---|---|---|---|---|
+| `credential` | keep | keep | keep | replace |
+| `public_url` | keep | clear | clear (blank too) | replace |
+| `transforms` | keep | clear | clear | replace |
 
-The rejection SHALL precede every check the update performs on the rest of the payload, so a payload
-carrying both a mismatched `connector` and an otherwise invalid field reports `connector_immutable`.
-It cannot precede reading the payload itself: a body that does not deserialize into the update shape
-is rejected by the request layer before any `connector` is available to compare, and SHALL NOT report
-`connector_immutable`. What that rejection does report is the request layer's, and this requirement
-does not specify it.
+`connector` SHALL be required and never written. When it differs from the stored value by exact comparison (case included, registry not consulted), the update SHALL fail with `400` and `details.reason` `connector_immutable`, change nothing, and take precedence over every other payload check. A body the request layer cannot deserialize SHALL fail there and never report `connector_immutable`.
 
-`connector_immutable` is a new entry in the error contract, and this requirement is its published
-home: the frozen `docs/SPEC.md` §10.1 is not edited, and its existing rows remain authoritative. The
-complete mapping is `code` `InvalidRequest`, status `400`, reason `connector_immutable`, raised when
-the `connector` in a `PUT /api/connections/{id}` payload differs from the stored connector of the
-connection being updated. The response body SHALL carry it in the standard error shape, as
-`error.code` `InvalidRequest` with `error.details.reason` `connector_immutable`.
+#### Scenario: Omitting public_url keeps it
 
-The `404` SHALL also cover the record ceasing to exist part-way through the update. The service
-SHALL answer `404` when the connection is absent at the point the handler builds its response from
-the stored record, on the same terms as an unknown id: the caller asked to update a connection that
-does not exist, and the outcome it is owed is the one the unknown-id case already gets. The service
-SHALL NOT answer that case with a `500`, and SHALL NOT fail to answer it.
+- **WHEN** a client updates a connection that has a public URL with a payload that omits `public_url`
+- **THEN** the response is `200` and `public_url` is unchanged
 
-Whether a request can reach that state is a property of how the service serialises its writes, and no
-requirement here promises one way or the other. What this requirement fixes is the answer, so that
-the endpoint's contract does not depend on that promise holding.
+#### Scenario: A mismatched connector outranks other faults
 
-This requirement supersedes the `PUT /api/connections/{id}` description in the frozen
-`docs/SPEC.md` §12, alongside `connector-field-transforms` for the `transforms` key.
+- **WHEN** a client updates a `homebox` connection with `connector` `Homebox` and `base_url` `not a url`
+- **THEN** the response is `400` with `details.reason` `connector_immutable`, and a later read shows the connection unchanged
 
-#### Scenario: Omitting public_url keeps the stored one
+#### Scenario: Unknown id with a mismatched connector
 
-- **WHEN** a client updates a connection that has a public URL, with a payload that omits `public_url`
-- **THEN** the response is `200` and the connection still has its previous `public_url`
-
-#### Scenario: Blanking public_url clears it
-
-- **WHEN** a client updates a connection that has a public URL, sending `public_url` as `null` or `""`
-- **THEN** the response is `200` and the connection's `public_url` is `null`
-
-#### Scenario: Setting a new public_url
-
-- **WHEN** a client updates a connection sending `public_url` as `https://homebox.example.com/`
-- **THEN** the response is `200` and the connection's `public_url` is `https://homebox.example.com`
-
-#### Scenario: Connector in an update payload is ignored
-
-- **WHEN** a client updates a connection sending the `connector` it already has
-- **THEN** the response is `200`, the rest of the payload is applied, and the connection's
-  `connector` is unchanged, the supplied value having been compared and never written
-
-#### Scenario: Updating with a connector that is not the stored one
-
-- **WHEN** a client updates a connection stored as `homebox`, sending `connector` as any other value,
-  whether that value names another registered connector, a name no connector has, or the stored name
-  in different case
-- **THEN** the response is `400` with `details.reason` `connector_immutable`, never
-  `connector_unknown`
-- **AND** a subsequent read shows the connection unchanged, including the fields the rejected payload
-  would otherwise have updated
-
-#### Scenario: A connector mismatch outranks a field the update itself rejects
-
-- **WHEN** a client updates a connection with a payload whose `connector` is not the stored one and
-  which also carries an invalid `base_url` such as `not a url`, an invalid `public_url`, or an
-  invalid transform rule
-- **THEN** the response is `400` with `error.code` `InvalidRequest` and `details.reason`
-  `connector_immutable`, rather than `base_url_invalid`, `public_url_invalid` or
-  `connection_transform_invalid`
-
-#### Scenario: A payload that is not a valid update body never reaches the comparison
-
-- **WHEN** a client sends a `PUT` body that cannot be read as an update payload at all, because it is
-  not valid JSON, omits a required key, or gives one the wrong type, and whose `connector` would also
-  have mismatched
-- **THEN** the request layer rejects it and the response does not report `connector_immutable`,
-  because the payload is rejected before any `connector` exists to compare
-
-#### Scenario: Updating a connection that does not exist
-
-- **WHEN** a client updates an unknown id
+- **WHEN** a client updates an id no connection has, with any `connector`
 - **THEN** the response is `404`
-
-#### Scenario: Updating an unknown id with a mismatched connector
-
-- **WHEN** a client updates an unknown id with a payload whose `connector` is also not the one any
-  connection holds
-- **THEN** the response is `404`, not `400`
-
-#### Scenario: The connection is gone when the updated record is read back
-
-- **WHEN** a client updates a connection that exists when the update is applied, and the connection is
-  absent by the time the service reads the stored record to build its response
-- **THEN** the response is `404`
-- **AND** the body is the standard error envelope, carrying `error.code` and `error.message`
-- **AND** the response is not `500` and the connection is not left half-reported
 
 ### Requirement: Deleting a connection
 
-`DELETE /api/connections/{id}` SHALL delete the connection and return `204`, or `404` when the id is
-unknown. When the deleted connection is the one named by the `default_connection_id` setting, the
-delete SHALL also clear that setting, so no stored default can outlive the connection it names.
-
-The two SHALL be one atomic operation: either the connection is gone and the setting is cleared, or
-neither happened. No reader SHALL ever observe a state in which the connection is deleted and the
-setting still names it, and a failure part-way SHALL leave the connection in place with its setting
-intact and SHALL report the failure rather than `204`. Deleting a connection that is not the default
-SHALL leave the setting untouched.
-
-This mirrors the cascade a template delete already performs on favorites, and is the only cleanup
-`default_connection_id` gets: a connection that is merely disabled keeps the setting, and the Connect
-page falls through to its fallback for as long as it stays disabled. The setting itself, its
-validation and the resolution order are specified by `default-connection`, which this requirement
-neither restates nor alters.
-
-This requirement supersedes the `DELETE /api/connections/{id}` row of the frozen `docs/SPEC.md` §12.
-
-#### Scenario: Deleting a connection
-
-- **WHEN** a client deletes an existing connection
-- **THEN** the response is `204` and the connection no longer appears in `GET /api/connections`
-
-#### Scenario: Deleting a connection that does not exist
-
-- **WHEN** a client deletes an unknown id
-- **THEN** the response is `404`
+`DELETE /api/connections/{id}` SHALL return `204`, or `404` for an unknown id. When `default_connection_id` names the deleted connection, the same atomic operation SHALL clear that setting: no reader SHALL observe the connection gone while the setting still names it, and a failure SHALL leave both intact and report the failure. Deleting any other connection SHALL leave the setting untouched; disabling a connection SHALL never clear it.
 
 #### Scenario: Deleting the default connection
 
-- **WHEN** `default_connection_id` names a connection and a client deletes that connection
-- **THEN** the response is `204`
-- **AND** `GET /api/settings` reports `default_connection_id` as `null` with `is_default: true`
-- **AND** no read of `GET /api/settings` at any point returns the deleted id while the connection is
-  already absent from `GET /api/connections`
-
-#### Scenario: Deleting a connection that is not the default
-
-- **WHEN** `default_connection_id` names one connection and a client deletes a different one
-- **THEN** the response is `204` and `default_connection_id` still names the first connection
+- **WHEN** `default_connection_id` names a connection and a client deletes it
+- **THEN** the response is `204` and `GET /api/settings` reports `default_connection_id` as `null` with `is_default: true`
 
 ### Requirement: Connection URL validation
 
-`base_url` and `public_url` SHALL each be validated the same way before storage: surrounding
-whitespace trimmed, parseable as an absolute URL, scheme `http` or `https`, a host present, and no
-query string, fragment, or embedded userinfo (`user:pass@`). Userinfo is rejected because a connection
-URL is printed into QR codes and rendered as a link, so credentials carried in it would end up on a
-physical label. Every trailing `/` SHALL be trimmed before storage, so `https://host/sub/path///` and
-`https://host/sub/path` store the same value. A rejected value SHALL produce `400` with
-`details.reason` `base_url_invalid` for `base_url` and `public_url_invalid` for `public_url`, and a
-message naming the rejected field. A save SHALL also be rejected for a bad transform, under the rules
-and the `connection_transform_invalid` reason stated by `connector-field-transforms`.
+`base_url` and `public_url` SHALL each be trimmed of surrounding whitespace and SHALL be accepted only when they parse as an absolute URL with scheme `http` or `https`, a host, and no query, fragment or userinfo. Every trailing `/` SHALL be removed before storage. A rejected value SHALL fail with `400`, `details.reason` `base_url_invalid` or `public_url_invalid`, and a message naming the field.
 
-This requirement supersedes the `base_url_invalid` row of the reason table in the frozen
-`docs/SPEC.md` §10.1 and extends it with `public_url_invalid`. The other rows remain authoritative.
+#### Scenario: Rejecting a malformed URL
 
-#### Scenario: Rejecting a malformed public URL
-
-- **WHEN** a client sends `public_url` as `not a url`, `ftp://host`, `http://`, `https://host?x=1`,
-  `https://host#f`, or `https://user:pass@host`
+- **WHEN** a client sends `public_url` as `not a url`, `ftp://host`, `http://`, `https://host?x=1`, `https://host#f` or `https://user:pass@host`
 - **THEN** the response is `400` with `details.reason` `public_url_invalid`
-
-#### Scenario: Rejecting a malformed base URL
-
-- **WHEN** a client sends `base_url` as `not a url` or `https://user:pass@host`
-- **THEN** the response is `400` with `details.reason` `base_url_invalid`
 
 #### Scenario: Normalizing a stored URL
 
-- **WHEN** a client sends `base_url` as `  http://homebox.lan:7745/  `
+- **WHEN** a client sends `base_url` as `  http://homebox.lan:7745///  `
 - **THEN** the stored and returned value is `http://homebox.lan:7745`
 
 ### Requirement: Generated links use the public URL
 
-Every URL Labeler generates for a person to open SHALL be built from the connection's `public_url`
-when it has one, and from `base_url` otherwise. This covers the `url` on a browsed row and the
-`item_url` and `location_url` fields materialized into label data, which is what a printed QR code
-encodes. A blank or whitespace-only stored `public_url` SHALL behave as absent. Requests Labeler
-itself makes to the upstream system SHALL always use `base_url`, never `public_url`.
-
-This requirement supersedes nothing in `docs/SPEC.md`, which does not specify how entity links are
-built.
+Every URL Labeler builds for a person to open (a browsed row's `url` and the `item_url` and `location_url` fields) SHALL be `<public_url>/entity/<url-encoded id>` when the connection has a non-blank `public_url`, and `<base_url>/entity/<id>` otherwise. Requests to the upstream SHALL always use `base_url`.
 
 #### Scenario: Public URL set
 
-- **WHEN** a connection has `base_url` `http://homebox:7745` and `public_url`
-  `https://homebox.example.com`, and a client browses or materializes a row for entity `e1`
-- **THEN** the row's `url` and any materialized `item_url` or `location_url` are
-  `https://homebox.example.com/entity/e1`
-- **AND** the upstream request Labeler made went to `http://homebox:7745`
+- **WHEN** a connection has `base_url` `http://homebox:7745` and `public_url` `https://homebox.example.com`, and entity `e1` is browsed or materialized
+- **THEN** its `url`, `item_url` and `location_url` are `https://homebox.example.com/entity/e1`, and the upstream request went to `http://homebox:7745`
 
-#### Scenario: Public URL absent
+### Requirement: Connector endpoints
 
-- **WHEN** a connection has `base_url` `http://homebox:7745` and no `public_url`, and a client browses
-  or materializes a row for entity `e1`
-- **THEN** the row's `url` and any materialized `item_url` or `location_url` are
-  `http://homebox:7745/entity/e1`
+`GET /api/connections/{id}/schema`, `POST /api/connections/{id}/browse`, `POST /api/connections/{id}/materialize` and `POST /api/connections/{id}/transforms/preview` SHALL answer `404` for an unknown connection, and `400` with `details.reason` `connection_connector_missing` when the stored connection's connector is not registered (the same applies to `PUT`). They SHALL use the stored `base_url` and credential, never values from the request.
 
-### Requirement: Connection management has its own route
+#### Scenario: Unknown connection
 
-Connection management SHALL live at `/connections` and its child routes, and SHALL render nowhere
-else.
+- **WHEN** a client browses a connection id that does not exist
+- **THEN** the response is `404`
 
-`/connections` SHALL list the connections in a table showing, for each, its name, connector, base URL,
-public URL, whether an API key is set, and whether it is enabled, with `-` for a connection that has
-no public URL, in the order `GET /api/connections` returns. Each row SHALL offer **Edit**, which opens
-`/connections/{id}`, and the page SHALL offer **Add connection**, which opens `/connections/new`. A
-list that is still loading, that failed to load, and that loaded holding no connection SHALL each be
-reported distinguishably, because a list that has not answered does not say the installation has no
-connections. `/connections` SHALL also carry the **Default connection** control, whose contract is
-stated by `default-connection`.
+### Requirement: Outbound requests are bounded
 
-`/connections/new` and `/connections/{id}` SHALL render the connection form, and SHALL NOT render the
-connections table beside it. The list and the form are two views of one route, never two panes of one
-screen.
+Every upstream request SHALL be an HTTP GET to `<base_url><path>` (a path in `base_url` is kept) carrying the credential as a bearer token, through one client with a 5 s connect timeout, a 20 s overall timeout, a streamed 8 MiB response cap, no redirect following and no proxy-environment use. Before connecting, the host SHALL be resolved and the request refused when any resolved address (IPv4-mapped IPv6 included) is loopback, link-local, unspecified or multicast; private LAN addresses SHALL be allowed. Error messages SHALL NOT carry the credential.
 
-Primary navigation SHALL carry a **Connections** item directly after **Connect**.
+Failures SHALL map to these error codes (statuses per `errors`):
 
-The Connect page SHALL render no connections table, no connection form and no default-connection
-control, and SHALL offer a link to `/connections`. When its connections list has loaded and holds no
-connection, the Connect page SHALL offer a call to action linking to `/connections/new`, which is the
-state in which the rest of that page has nothing to show. When that list failed to load, the page
-SHALL report the failure, and SHALL NOT offer the call to action: a list that did not answer does not
-say the installation has no connections. Both of the Connect page's links SHALL record their origin,
-which "Where a connection form returns to" carries onward.
+| Situation | `code` |
+|---|---|
+| upstream `401` or `403` | `ConnectorAuthFailed` |
+| upstream `429` | `RateLimited` |
+| refused address, unresolvable host, timeout, transport failure, materialize body that is not JSON | `ConnectorUnreachable` |
+| browse body that is not the expected JSON | `UpstreamSchemaMismatch` |
+| any other non-2xx status, response over 8 MiB | `Upstream` |
+| bad browse filter, bad cursor, invalid row key | `InvalidFilter` |
+| more than 200 rows to materialize | `BudgetExceeded` |
 
-The Settings page SHALL render no connections UI: no connections table, no connection form, no
-default-connection control, and no link or redirect standing in for any of them.
+#### Scenario: A loopback target is refused
 
-This requirement supersedes the frozen `docs/SPEC.md` §12 ("Using a connection (UI)") as far as that
-paragraph says where connections are added and edited, namely its first sentence. How the API key
-behaves is superseded by "The connection form is a page of its own"; the browse table by
-`connector-browser`; the opening of the Connect flow by `default-connection`.
+- **WHEN** a connection's `base_url` resolves to `127.0.0.1` or `169.254.169.254` and it is browsed
+- **THEN** no request is sent and the response carries `code` `ConnectorUnreachable`
+
+### Requirement: Connector schema
+
+`GET /api/connections/{id}/schema` SHALL return `{ version, resources, relationships }`.
+
+- A resource SHALL be `{ id, label, view, columns, filters, dynamic_source_prefix, fields_incomplete }`: `view` is `table` or `tree`; `dynamic_source_prefix` (string or `null`, always present) is the key prefix under which the connector accepts transform sources it does not enumerate; `fields_incomplete` (boolean, always present) is `true` when runtime discovery of the resource's fields failed.
+- A column (`FieldSpec`) SHALL be `{ key, label, ty, tier, multi_valued, transform_source }`, every key always present. `ty` is the display type: `text`, `number`, `money`, `date` or `badge`. `tier` is `cheap` (from the list call), `hydrated` (needs a per-row fetch) or `derived` (computed). `multi_valued` is `true` exactly when the column's value is a list of strings; `ty` is then its elements' type. `transform_source` is `true` exactly when the connector declares the column single-valued `text`, whatever its tier, and `false` for every transform-derived column.
+- A filter (`FilterSpec`) SHALL be `{ key, label, ty }` with `ty` `search`, `location_id` or `label_id`.
+- A relationship SHALL be `{ id, label, from, to }`, linking a row of resource `from` to the rows of `to` it contains.
+
+A failed field discovery SHALL NOT fail the schema request.
+
+#### Scenario: Every column declares its cardinality and source eligibility
+
+- **WHEN** a client reads any connection's schema
+- **THEN** every `FieldSpec` carries `multi_valued` and `transform_source`, `false` included
+
+### Requirement: Homebox connector
+
+The `homebox` connector SHALL report `version` `homebox-1`, the relationship `{ id: "location_children", label: "Contents", from: "locations", to: "entities" }`, and two `table` resources:
+
+| Resource (label) | Column | Label | `ty` | `tier` |
+|---|---|---|---|---|
+| `entities` (Items) | `name`, `description`, `assetId` | Name, Description, Asset ID | text | cheap |
+| | `quantity` / `purchasePrice` | Quantity / Price | number / money | cheap |
+| | `tags` (`multi_valued: true`) | Tags | text | cheap |
+| | `location` | Location | text | cheap |
+| | `manufacturer`, `modelNumber`, `serialNumber` | Manufacturer, Model, Serial | text | hydrated |
+| | `item_url` | Homebox URL | text | derived |
+| | `custom:<name>` per upstream custom field | `<name>` | text | hydrated |
+| `locations` (Locations) | `name`, `description` | Name, Description | text | cheap |
+| | `itemCount` | Items | number | cheap |
+| | `location_url` | Homebox URL | text | derived |
+
+`entities` SHALL carry the filters `q` (Search, `search`), `parent` (Location, `location_id`) and `tag` (Tags, `label_id`), `dynamic_source_prefix` `"custom:"`, and `fields_incomplete` `true` exactly when fetching `/api/v1/entities/fields` failed (its `custom:` columns are then absent). `locations` SHALL carry no filters, `dynamic_source_prefix` `null` and `fields_incomplete` `false`.
+
+Both resources SHALL be read from `/api/v1/entities` with `isLocation` `false` or `true`. `tags` SHALL be the names of the item's tags in upstream order, with no other tag attribute, and `[]` when it has none. `location` SHALL be the parent's name. `custom:<name>` SHALL be that custom field's `textValue`, else its `value`.
+
+#### Scenario: Discovery failure is reported
+
+- **WHEN** the upstream refuses the custom-field request
+- **THEN** the schema request succeeds and `entities` carries its declared columns and `fields_incomplete` `true`
+
+#### Scenario: A browsed row carries tag names
+
+- **WHEN** an item upstream carries the tags `KIDS` then `CONSUMABLE`
+- **THEN** its browsed `tags` cell is `["KIDS", "CONSUMABLE"]`
+
+### Requirement: Browse
+
+`POST /api/connections/{id}/browse` SHALL take `{ resource, filters?, parent?, cursor?, page_size? }`, where `filters` maps a filter key to a string or a list of strings and `parent` is `{ relationship, key }`, and SHALL return `{ rows, next_cursor, has_more, count }`. A row SHALL be `{ id: { resource, key }, cells, url? }`, where `url` links the row in the source system and a cell is a JSON string, a JSON number (for `number` and `money` columns) or a JSON array of strings (for a multi-valued column, `[]` when empty). Browse SHALL make no per-row upstream request.
+
+`page_size` SHALL default to 50 and be clamped to `1..=200`. `next_cursor` SHALL be an opaque signed token, present exactly when `has_more` is `true`, bound to the connector, connection, resource and effective filters and parent, and SHALL carry its page size forward. A cursor that is malformed, forged, issued before a restart, or presented with a different binding SHALL fail with `InvalidFilter`.
+
+For Homebox, `count` SHALL be the upstream total and `has_more` SHALL be `page × page_size < total`. Filters SHALL apply as follows, and anything else SHALL fail with `InvalidFilter`:
+
+- `q` and `parent`: one string each, trimmed, ignored when empty; `parent` filters by location id.
+- `tag`: a string or list; values trimmed, empties dropped, duplicates removed; each at most 64 bytes and at most 16 after deduplication.
+- the request `parent` (drill-down) filters by its `key` and SHALL NOT be combined with a `parent` filter.
+
+#### Scenario: Paging through a resource
+
+- **WHEN** a client browses `entities` and the upstream reports 120 items
+- **THEN** the response has 50 rows, `count` 120, `has_more` `true` and a `next_cursor`, and posting that cursor returns the next 50
+
+#### Scenario: A cursor reused with other filters
+
+- **WHEN** a client posts a cursor with a `q` filter different from the one it was issued for
+- **THEN** the response carries `code` `InvalidFilter`
+
+### Requirement: Materialize
+
+`POST /api/connections/{id}/materialize` SHALL take `{ rows: [{ resource, key }], fields, expansion: "as_listed" }` and return `[{ source, data }]` in request order, fetching each row's detail from `/api/v1/entities/{key}`. More than 200 rows SHALL fail with `BudgetExceeded`; an empty key, or a key containing `/` or starting with `.`, SHALL fail with `InvalidFilter`.
+
+`data` SHALL carry exactly the requested fields. A multi-valued field SHALL be a JSON array of strings (`[]` when empty); every other value SHALL be a JSON string, never a number: an upstream number is stringified, and a field the upstream lacks or holds as another JSON type is `""`. `item_url` and `location_url` are the generated row link; `location` is the parent's name; `custom:<name>` is that custom field's value or `""`.
+
+#### Scenario: A multi-valued field materializes as an array
+
+- **WHEN** a row is materialized for `fields: ["name", "quantity", "tags"]` and the item is untagged
+- **THEN** `data.name` and `data.quantity` are strings and `data.tags` is `[]`
+
+### Requirement: Field transforms on a connection
+
+A connection's `transforms` SHALL be an ordered list of `{ resource, source, pattern }`: `resource` is a resource id, `source` a field key of that resource, and `pattern` a regular expression whose named capture groups name the fields the rule derives. The stored order SHALL be preserved. An empty list SHALL change nothing about the schema, browse or materialize.
+
+#### Scenario: A connection round-trips its transforms
+
+- **WHEN** a connection is created with two transforms
+- **THEN** every read returns both, in the order supplied
+
+### Requirement: Transform validation
+
+`POST` and `PUT /api/connections` (and the transform preview) SHALL validate the whole list without contacting the upstream, and SHALL refuse it with `400`, `details.reason` `connection_transform_invalid`, a message `rule <index>: <cause>` naming the first offending rule by zero-based index (index 32 for an over-long list), and nothing stored, when:
+
+- the list holds more than 32 rules;
+- a `pattern` exceeds 512 bytes, does not compile, compiles to more than 65536 bytes, or declares no named group;
+- `resource` is not a resource of the connector;
+- `source` is neither a `transform_source` column of that resource nor a key starting with its `dynamic_source_prefix` (a prefixed key is accepted unproven);
+- a group name equals a column the connector declares for that resource, repeats within the rule, is derived by another rule on the same resource, or does not match `^[a-zA-Z0-9_-]+$`.
+
+The same name MAY be derived on two different resources. A connection whose upstream is unreachable SHALL still save valid transforms.
+
+#### Scenario: A multi-valued source is refused
+
+- **WHEN** a transform on `entities` sources `tags`
+- **THEN** the response is `400` with `details.reason` `connection_transform_invalid` and a message naming rule 0 and `tags`
+
+#### Scenario: A derived name that is not a bare token name
+
+- **WHEN** a transform derives `datetime.short_date`, `vars.site` or `printed_on:long_date`
+- **THEN** the save is refused, while a group named `datetime` is accepted
+
+#### Scenario: A source under the dynamic prefix
+
+- **WHEN** a transform on `entities` sources `custom:Internal SKU` that the upstream does not have
+- **THEN** the save succeeds and the rule never matches
+
+### Requirement: Derived fields
+
+For each rule whose `resource` names a schema resource, the schema SHALL add to that resource one column per capture-group name, keyed and labelled by the name, with `ty` `text`, `tier` `derived`, `multi_valued` `false` and `transform_source` `false`. A stored rule naming a resource the connector does not offer SHALL be inert.
+
+A rule SHALL derive fields for a row only when its source value is present, at most 8192 bytes, matched by the pattern, and every named group participates in the match; a participating group that captures nothing yields `""`. Otherwise the rule SHALL contribute nothing to that row: its derived keys are absent, never empty or the unsplit source, and the call and other rows and rules are unaffected. Rules SHALL read only the connector's own fields for the row, so no rule reads another's output.
+
+Browse SHALL add derived cells from the cells the connector produced, without fetching more. Materialize SHALL accept a derived name in `fields`, fetch the rule's `source` when needed without returning it unless requested, and apply rules only to rows of the rule's resource. A browsed derived cell SHALL equal what materialize produces for that row; browse MAY lack a cell that materialize produces when the source is a hydrated field.
+
+#### Scenario: A derived field is materialized without its source
+
+- **WHEN** a rule on `entities` derives `location_id` and `location_name` from `location` `BOX.123 | Motorcycle parts`, and that row is materialized for `fields: ["location_id"]`
+- **THEN** `data` is `{"location_id": "BOX.123"}`
+
+#### Scenario: Groups that do not all participate
+
+- **WHEN** a pattern with named groups in different alternation branches matches a row
+- **THEN** the row carries no field from that rule
+
+#### Scenario: A non-matching row among many
+
+- **WHEN** 200 rows are materialized and one row's source does not match
+- **THEN** the call succeeds and only that row lacks the derived keys
+
+### Requirement: Transform preview
+
+`POST /api/connections/{id}/transforms/preview` SHALL take `{ transforms, rule, page_size? }`, where `transforms` is a candidate list and `rule` the index of the rule to preview. A `rule` that indexes no entry SHALL fail with `400` and `details.reason` `request_body_invalid`; otherwise the whole list SHALL be validated as a save validates it, before any upstream request. It SHALL then browse the first page of the rule's resource with no filters, `page_size` defaulting to 10 and clamped to `1..=200`, evaluate at most that many rows, and evaluate the rule exactly as the read path does. Nothing SHALL be stored; upstream failures SHALL be reported as browse reports them.
+
+The response SHALL be `{ rule, resource, source, row_count, matched_count, rows }` with one entry per evaluated row in browse order: `{ id, source_value?, matched, value_truncated, derived? }`. `source_value` SHALL be present exactly when the row carries a text value for the source; `derived` (every captured name to its value) exactly when `matched` is `true`. Each reported value SHALL be cut to at most 512 bytes on a character boundary, setting `value_truncated` `true`; matching SHALL use the full value.
+
+#### Scenario: A rule that matches some rows
+
+- **WHEN** a rule is previewed over 10 rows, 7 of which match
+- **THEN** the response is `200` with `row_count` 10, `matched_count` 7 and 10 `rows` entries
+
+#### Scenario: An invalid rule elsewhere in the list
+
+- **WHEN** rule 0 is previewed and rule 1 declares no named group
+- **THEN** the response is `400` with `details.reason` `connection_transform_invalid`, the message names rule 1, and no upstream request is made
+
+#### Scenario: An over-returning upstream
+
+- **WHEN** a preview asks for 10 rows and the upstream returns 50
+- **THEN** `row_count` is 10
+
+### Requirement: The default connection setting
+
+`default_connection_id` SHALL be a known setting (see `settings`) whose in-code default is `null`. `PUT /api/settings/default_connection_id` with `{ "value": <string> }` SHALL trim the string, store it and reflect it back, and SHALL fail with `400` and `details.reason` `setting_value_invalid` when the value is not a string, is blank, or names no existing connection. A disabled connection SHALL be accepted. `DELETE` SHALL clear it with `204`. A stored, non-blank id that names no connection SHALL be reported as stored.
+
+#### Scenario: Setting the default
+
+- **WHEN** a client sends `{ "value": "  conn-1  " }` and `conn-1` exists
+- **THEN** the response is `200` with value `conn-1` and `is_default: false`
+
+#### Scenario: Rejecting an unusable value
+
+- **WHEN** a client sends `value` as `""`, `null`, a number, or an id no connection has
+- **THEN** the response is `400` with `details.reason` `setting_value_invalid`
+
+### Requirement: Connections page
+
+Primary navigation SHALL carry **Connections**, directly after **Connect**, opening `/connections`. `/connections` SHALL show **Add connection** (to `/connections/new`) and a table in API order with columns Name, Connector, Base URL, Public URL (`-` when none), API key (`set` / `none`), Enabled (`yes` / `no`) and an **Edit** link to `/connections/{id}`. It SHALL show `Loading connections...`, `Failed to load connections.` or `No connections configured.` in place of the table while loading, on failure, and when empty. Create, edit, enable and delete happen only in the form; the form routes render the form alone.
 
 #### Scenario: Listing connections
 
-- **WHEN** the operator opens `/connections` and the list loads holding a connection with no public
-  URL
-- **THEN** the table shows that connection's name, connector, base URL, `-` for its public URL,
-  whether its API key is set and whether it is enabled
-- **AND** the row offers **Edit**, and the page offers **Add connection**
+- **WHEN** the list loads holding a connection with no public URL
+- **THEN** its row shows `-` for Public URL and offers **Edit** and no delete
 
-#### Scenario: The list is never rendered beside the form
+### Requirement: Default-connection control
 
-- **WHEN** the operator is on `/connections/new` or on `/connections/{id}` for an existing connection
-- **THEN** no connections table is rendered
+`/connections` SHALL carry a **Default connection** select stating `The default connection applies to everyone on this instance.` It SHALL offer `(no default)`, which sends `DELETE /api/settings/default_connection_id`, and each connection as `<name> (<id>)`, suffixed ` (disabled)` when disabled, which sends `PUT` with that id. It SHALL show the stored default as selected; when the loaded list lacks the stored id, it SHALL show `<id> (unavailable)`, still clearable. While the list is loading or failed, or a write is pending, the select SHALL be disabled and SHALL NOT mark the stored id unavailable. Writing the default SHALL change nothing else.
 
-#### Scenario: Connect renders no connections UI
+#### Scenario: The stored default names no connection
 
-- **WHEN** the operator opens the Connect page
-- **THEN** it renders no connections table, no connection form and no default-connection control
-- **AND** it offers a link to `/connections`
+- **WHEN** the list loads and the stored id names no connection
+- **THEN** the control shows `<id> (unavailable)` and offers `(no default)`
 
-#### Scenario: Connect with no connections offers a way to create one
+#### Scenario: Deleting the default connection
 
-- **WHEN** the operator opens the Connect page and the connections list loads holding no connection
-- **THEN** the page offers a call to action linking to `/connections/new`
+- **WHEN** the operator deletes the default connection from its form
+- **THEN** they land on `/connections` and the control shows `(no default)` without a reload
 
-#### Scenario: Connect while the connections list is still loading
+### Requirement: Connection form
 
-- **WHEN** the operator opens the Connect page and the request for the connections list has not
-  answered
-- **THEN** no call to action for creating a connection is offered, because nothing yet says the
-  installation has none
+`/connections/new` (titled `New connection`) and `/connections/{id}` (titled `Edit <name>`) SHALL render a single-column form with a **Details** section (connector, fixed and not editable, `homebox` on create; name; base url; public url; api key as a password field; enabled, checked by default on create) and a **Field transforms** section, which on create SHALL hold only the text `Transform rules can be added after saving the connection.` The edit form SHALL be pre-filled from the stored connection, with an empty api key labelled `api key (leave blank to keep)`.
 
-#### Scenario: Connect when the connections list failed to load
+On **Save** the form SHALL trim every value and refuse, without a request, a blank name (`name must not be empty`), a base url or non-blank public url that is not a parseable `http`/`https` URL, and on create a blank api key (`api key is required`). It SHALL send `public_url: null` when blank, `credential` only when non-blank, and `transforms` only when the rule editor is live; create SHALL send no `transforms`. A save error SHALL be shown and toasted; one whose message starts `rule <n>:` SHALL be shown against rule `n`.
 
-- **WHEN** the operator opens the Connect page and the request for the connections list fails
-- **THEN** the page reports the failure, and offers no call to action for creating a connection
+The edit form SHALL offer **Delete**, which sends nothing until **Confirm**. Each entry into a form route SHALL be a fresh editor: navigating between entries, including back to the same id, SHALL show the destination's stored values with no draft, preview or message carried over, and a request still in flight SHALL change nothing on the new entry.
 
-#### Scenario: Settings has no connections UI
-
-- **WHEN** the operator opens the Settings page
-- **THEN** it renders no connections table, no connection form and no default-connection control, and
-  requests no connection list for one
-
-#### Scenario: Navigation offers Connections
-
-- **WHEN** the operator looks at the primary navigation
-- **THEN** a **Connections** item follows the **Connect** item, and it opens `/connections`
-
-#### Scenario: The connections list fails to load
-
-- **WHEN** the operator opens `/connections` and the request for the list fails
-- **THEN** the page reports the failure, and does not report that the installation has no connections
-
-### Requirement: The connection form is a page of its own
-
-`/connections/new` and `/connections/{id}` SHALL render the connection form as a single-column page
-form in titled sections: **Details**, then **Field transforms**.
-
-**Details** SHALL carry the connection's **connector**, which is fixed at creation and SHALL NOT be
-editable, **name**, **base url**, an optional **public url**, an **api key** and an **enabled**
-checkbox.
-
-**Field transforms** SHALL carry, for an existing connection, the ordered field-transform rule editor
-that submits the connection's `transforms`; for a new connection it SHALL carry no rule editor and
-SHALL say that rules are added after saving. What that editor offers, when it submits `transforms` and
-how a rule is previewed belong to `connector-field-transforms`, which this requirement neither
-restates nor overrides.
-
-The form SHALL be pre-filled from the stored connection when editing one, and SHALL submit
-`public_url` on every save so that clearing the field clears the stored value. A non-blank **base url**
-or **public url** SHALL be rejected in the form, without a request, when it is not a parseable
-`http`/`https` URL.
-
-The API key SHALL be write-only: the form SHALL present it as a password field, responses expose only
-`has_credential`, and saving an edit with the field left blank SHALL keep the stored key. Creating a
-connection with the field blank SHALL be rejected in the form, without a request.
-
-The form for an existing connection SHALL offer **Delete**, which SHALL require a confirming action
-before any request is sent. `/connections/new` SHALL offer no delete. Deleting, like creating,
-editing and enabling or disabling, is performed from the form and not from the list, so the list is a
-list and the editor is where a connection is changed.
-
-**Each entry into the form is its own editor.** The form's draft values, its rule editor, its previews
-and the request it has in flight belong to the entry the operator opened, and SHALL NOT carry across
-to another. Moving between `/connections/{id}` entries — pressing back or forward, or opening another
-connection — SHALL present the destination's own stored values with no draft, no preview and no
-validation message left from the entry departed, and this SHALL hold when the two entries name the
-same connection and when one of them is `/connections/new`. A save still in flight when the operator
-moves SHALL NOT reach the destination form: it belongs to the entry that started it, which is no
-longer the active view, so it SHALL neither navigate nor write anything into what is now on screen.
-It SHALL still maintain the cache, which "A connection write settles before Connect acts on it"
-requires of the write and not of the form.
-
-`/connections/{id}` SHALL be resolvable on a cold load, with no earlier visit to `/connections`. When
-the connections list has loaded and holds no connection with that id, the route SHALL render an
-explicit not-found state naming the id and linking back to `/connections`; it SHALL render neither an
-empty form nor a redirect. A list that is still loading SHALL render neither the not-found state nor a
-form, and a list that failed to load SHALL report that failure rather than the id being unknown:
-neither says the connection does not exist.
-
-This requirement supersedes the frozen `docs/SPEC.md` §12 ("Using a connection (UI)") as far as that
-paragraph says how the API key behaves, namely its second sentence. Where connections are added and
-edited is superseded by "Connection management has its own route".
-
-#### Scenario: Deep-linking to the editor
-
-- **WHEN** the operator loads `/connections/{id}` for an existing connection, having not visited
-  `/connections` first
-- **THEN** the form renders pre-filled from that connection, in the sections **Details** and **Field
-  transforms**
-
-#### Scenario: An unknown id
-
-- **WHEN** the operator loads `/connections/{id}` for an id no connection has, and the connections
-  list loads
-- **THEN** the page renders a not-found state naming that id and linking to `/connections`
-- **AND** no form is rendered and no redirect is performed
-
-#### Scenario: The connections list has not answered yet
-
-- **WHEN** the operator loads `/connections/{id}` and the request for the connections list has not
-  answered
-- **THEN** neither the not-found state nor a form is rendered
-
-#### Scenario: The connections list failed to load
-
-- **WHEN** the operator loads `/connections/{id}` and the request for the connections list fails
-- **THEN** the page reports that failure and does not report the id as unknown
-
-#### Scenario: Creating carries no rule editor
-
-- **WHEN** the operator opens `/connections/new`
-- **THEN** the **Field transforms** section carries no rule editor and says that rules are added after
-  saving
-
-#### Scenario: Setting a public URL
-
-- **WHEN** the operator edits a connection, types `https://homebox.example.com` into **public url**,
-  and saves
-- **THEN** the request body carries `public_url: "https://homebox.example.com"`
-- **AND** the row for that connection on `/connections` shows that public URL
+`/connections/{id}` SHALL resolve on a cold load: `Loading connections...` while the list loads, `Failed to load connections.` on failure, and `Connection "<id>" not found.` with a **Back to connections** link when the loaded list lacks the id.
 
 #### Scenario: Clearing a public URL
 
-- **WHEN** the operator edits a connection that has a public URL, empties the **public url** field,
-  and saves
-- **THEN** the request body carries `public_url: null`
-- **AND** the row for that connection on `/connections` shows `-`
+- **WHEN** the operator empties **public url** on a connection that has one and saves
+- **THEN** the request carries `public_url: null`
 
-#### Scenario: Rejecting an invalid public URL in the form
+#### Scenario: Keeping the stored API key
+
+- **WHEN** the operator saves an edit with **api key** blank
+- **THEN** the request carries no `credential`
+
+#### Scenario: An invalid URL in the form
 
 - **WHEN** the operator types `homebox.example.com` into **public url** and saves
 - **THEN** the form shows a validation error and sends no request
 
-#### Scenario: Leaving a public URL unset
-
-- **WHEN** the operator adds a connection and leaves **public url** empty
-- **THEN** the request body carries `public_url: null` and the connection is created
-
-#### Scenario: Keeping the stored API key
-
-- **WHEN** the operator edits a connection whose `has_credential` is `true`, leaves **api key** blank,
-  and saves
-- **THEN** the request body carries no credential and the stored key is kept
-
-#### Scenario: Creating a connection with no API key
-
-- **WHEN** the operator adds a connection and leaves **api key** empty
-- **THEN** the form shows a validation error and sends no request
-
-#### Scenario: Deleting takes a confirming action
-
-- **WHEN** the operator opens `/connections/{id}` and presses **Delete** once
-- **THEN** no delete request is sent until the operator confirms
-
-#### Scenario: The list offers no delete
-
-- **WHEN** the operator looks at a row on `/connections`
-- **THEN** it offers **Edit** and no delete
-
-#### Scenario: Moving between editors while a save is in flight
-
-- **WHEN** the operator opens `/connections/{b}`, edits its fields, presses **Save**, and before the
-  response arrives navigates back to `/connections/{a}`, which they had opened earlier
-- **THEN** the form shows connection `a`'s stored values, carrying none of `b`'s draft, previews or
-  validation messages
-- **AND** when `b`'s save succeeds it moves the operator nowhere and changes nothing in the form on
-  screen
-- **AND** it evicts the answers it affects all the same
-
-#### Scenario: Reopening the same connection is a fresh editor
-
-- **WHEN** the operator edits a field on `/connections/{id}` without saving, leaves, and opens
-  `/connections/{id}` again
-- **THEN** the form shows that connection's stored values, with the abandoned draft gone
-
 ### Requirement: Where a connection form returns to
 
-Connection management records where the operator came from, and every link along the path SHALL carry
-that origin forward, so that an operator who reached the form from the Connect page lands back on the
-Connect page whichever route they took to it.
+A form route SHALL honor an origin carried in router state as `from` only when it is a string starting with `/` but not `//` that resolves to the application's own origin. **Save** and **Cancel** SHALL navigate to an honored origin, else `/connections`; a successful delete SHALL navigate to `/connections`. The Connect page's **Manage connections** link and its empty-list call to action SHALL record `/connect`, and `/connections` SHALL pass the origin it received to its **Add connection** and **Edit** links. A write that completes after the operator left the entry that started it SHALL navigate nowhere.
 
-The origin SHALL be an in-app path carried in router state. It SHALL be honoured only when it is a
-string beginning with a single `/`; a value that is absent, is not a string, or begins with anything
-else SHALL be ignored and `/connections` used, so a value that reached the state from outside the
-application cannot decide where the operator lands. A protocol-relative `//host` is such a value.
+#### Scenario: Returning to Connect by way of the list
 
-Both of the Connect page's links SHALL record `/connect`: the link to `/connections`, and the
-empty-list call to action that opens `/connections/new` directly. The `/connections` page SHALL carry
-whatever origin it was reached with onto its own **Add connection** and **Edit** links, and SHALL
-record nothing when it was reached without one. So there are two complete paths and they agree:
-`/connect` → `/connections/new` returns to `/connect`, and `/connect` → `/connections` →
-`/connections/{id}` returns to `/connect`, while `/connections` reached from primary navigation or a
-bookmark sends its forms back to `/connections`.
-
-On a successful save, and on a cancel, the form SHALL navigate to the recorded origin when there is
-an honoured one, and to `/connections` otherwise.
-
-A successful delete SHALL navigate to `/connections` whatever origin was recorded: the origin was
-reached for a connection that no longer exists.
-
-**Only a form that is still the active view moves the operator.** The active view is the entry the
-write was started from, on the terms "The connection form is a page of its own" sets: another entry on
-the same route is a different view, not the same one. A write outlives the form that started it, and
-the operator may have gone somewhere of their own choosing while it was in flight; a completion
-arriving then SHALL move them nowhere. Returning them to the origin they left, or sending
-them to `/connections` after a delete, would overrule a navigation they made themselves and would land
-them on the page they had just chosen to leave. What the completion still does everywhere is maintain
-the cache, which "A connection write settles before Connect acts on it" requires of the write itself
-and not of the form: the two have different lifetimes, and only the navigation is the form's.
-
-#### Scenario: Saving a form reached from Connect's call to action
-
-- **WHEN** the operator follows the Connect page's empty-list call to action into `/connections/new`
-  and saves successfully
+- **WHEN** the operator follows **Manage connections** from Connect, presses **Edit**, and saves
 - **THEN** the application navigates to `/connect`
 
-#### Scenario: Saving a form reached from Connect by way of the list
+#### Scenario: An origin outside the application
 
-- **WHEN** the operator follows the Connect page's link to `/connections`, presses **Edit** on a
-  connection, and saves successfully
-- **THEN** the application navigates to `/connect`
+- **WHEN** the form is reached with `from` `https://elsewhere.example.com/` or `//elsewhere.example.com`
+- **THEN** **Save** and **Cancel** navigate to `/connections`
 
-#### Scenario: Cancelling a form reached from Connect by way of the list
+### Requirement: Transform rule editor
 
-- **WHEN** the operator follows the Connect page's link to `/connections`, presses **Add connection**,
-  and cancels
-- **THEN** the application navigates to `/connect`, and no save request was sent
+On the edit form the **Field transforms** section SHALL list the rules from `GET /api/connections/{id}/schema`-driven controls: a **resource** select over the schema's resource ids; a **source** select offering the resource's `transform_source` columns and, when `dynamic_source_prefix` is set, a `<prefix><name>` choice that reveals an input for the name alone (the source becomes prefix plus name); a **pattern** input; **Preview**; and **Remove**. **+ Add rule** SHALL append a rule on the first resource with its first `transform_source` column (else the prefix) and an empty pattern. Changing the resource SHALL reset the source likewise. A stored resource or source the schema does not offer SHALL be shown as `<value> (unavailable)` and kept. The editor SHALL show `Field list may be short; fields can still be specified by name.` when `fields_incomplete`, and `No transformable sources available for this resource.` when there is neither a source column nor a prefix.
 
-#### Scenario: Saving a form reached from the list on its own
+The editor SHALL be read-only, listing the stored rules with a reason, and the save SHALL omit `transforms`, while the schema request is failing (`Failed to load connector schema. Transform rules cannot be edited.`) or while the form's base url differs from the stored one or an api key is typed (`Connection details must be saved first.`); entering that state SHALL discard any preview result.
 
-- **WHEN** the operator opens `/connections` from primary navigation, presses **Add connection** or
-  **Edit**, and saves successfully
-- **THEN** the application navigates to `/connections`
+**Preview** SHALL post every rule in editor order with that rule's index. The panel SHALL show `Matched <m> of <n> rows` and, per row, `<resource>:<key>`, the source value or `(no source value)`, `(shortened)` when truncated, and the derived `name="value"` pairs, `(no captures)`, or `Did not match`. A refusal naming a rule SHALL be shown against that rule. Any edit to any rule SHALL discard displayed results, and only the response to the latest preview request of a rule over the unedited list SHALL ever be displayed.
 
-#### Scenario: Saving a form loaded cold
+#### Scenario: The source select offers exactly the accepted sources
 
-- **WHEN** the operator loads `/connections/{id}` directly, with no recorded origin, and saves
-  successfully
-- **THEN** the application navigates to `/connections`
+- **WHEN** the schema reports for `entities` `location` and `item_url` with `transform_source` `true`, `tags` and `location_id` with `false`, and prefix `custom:`
+- **THEN** the source select offers `location`, `item_url` and `custom:<name>`
 
-#### Scenario: A recorded origin that is not an in-app path
+#### Scenario: Editing the base url suspends the editor
 
-- **WHEN** the form is reached with a recorded origin that is not a string, or that does not begin
-  with a single `/`, such as `https://elsewhere.example.com/` or `//elsewhere.example.com`
-- **THEN** a save or a cancel navigates to `/connections`
+- **WHEN** the operator changes **base url** while a preview result is shown, then saves
+- **THEN** the result disappears, the rules are read-only with `Connection details must be saved first.`, and the request carries no `transforms`
 
-#### Scenario: Deleting ignores the recorded origin
+#### Scenario: A late response is discarded
 
-- **WHEN** the operator follows the Connect page's link into the form and deletes the connection, and
-  is still on the form when the delete succeeds
-- **THEN** the application navigates to `/connections`, not to `/connect`
+- **WHEN** the operator previews a rule, edits any rule, and the response then arrives
+- **THEN** nothing from it is displayed
 
-#### Scenario: A completion does not move an operator who has already left
+### Requirement: Connect resolves a connection per visit
 
-- **WHEN** the operator presses **Save** or confirms a delete, leaves the form by **Cancel** or by
-  primary navigation before the response arrives, and the request then succeeds
-- **THEN** the operator stays where they navigated to, and the completion moves them nowhere
-- **AND** the cache maintenance the write requires happens all the same
+On each visit the Connect page SHALL resolve, once, the connection named by `default_connection_id` when it exists and is enabled, else the first enabled connection in API order, else none; a failed settings read SHALL count as no default, and a failed connections read SHALL resolve none. It SHALL resolve only after both reads answered or failed and no connection-management write is in flight, and SHALL then select the connection as if picked, loading its schema and first browse page. Later refetches SHALL NOT re-resolve. Leaving the page ends the visit: a return resolves afresh and restores no hand-picked connection, rows, selection or composer.
 
-### Requirement: A connection write settles before Connect acts on it
+When a loaded list no longer offers the selected connection as enabled, the selection SHALL clear to `choose a connection`. Every change of selected connection, including that clearing, SHALL reset the row selection, the browse table and the composer. Picking a connection by hand SHALL NOT write `default_connection_id`.
 
-A **connection-management write** is a create, update or delete of a connection, or a write or clear
-of `default_connection_id`. Connection management and the Connect page never render together, so no
-such write needs to be delivered into a Connect page that is on screen when it starts. It does not
-follow that one cannot *finish* while Connect is on screen: **Cancel** and the primary navigation stay
-available while a request is in flight, and a write outlives the view that started it. Two rules
-together SHALL make what Connect presents agree with every write this browser has completed.
+#### Scenario: The stored default is disabled
 
-**A successful write SHALL evict every held answer it affects**, rather than marking it stale. Which
-answers a write affects is fixed:
+- **WHEN** the default names a disabled connection and another is enabled
+- **THEN** the first enabled connection is selected and its rows are requested without a click
 
-- a create, an update or a delete of a connection affects the connections list;
-- an update or a delete affects that connection's connector schema;
-- a delete affects the settings, because deleting the connection a stored `default_connection_id`
-  names clears that setting;
-- a write or a clear of `default_connection_id` affects the settings.
+#### Scenario: A later refetch does not move the operator
 
-A read of an affected answer SHALL be answered by a request started after the latest successful write
-affecting it. Marking stale is not enough, because a held copy is still served while its replacement
-is in flight, and a page that resolves the moment data is available resolves from that copy.
+- **WHEN** the operator works on a resolved connection and the settings refetch with a different default
+- **THEN** the selection, browse table and row selection are unchanged
 
-Nothing more is required. An answer that no completed write affects MAY be served from the copy
-already held: naming a default changes no connection, so the connections list held across it is still
-what the server would send. An answer held across a **failed** write MAY be served for the same
-reason, a failed write having changed nothing, and a write that fails SHALL evict nothing.
+#### Scenario: Another operator disables the selected connection
 
-That eviction is a property of the write and SHALL NOT depend on the view that started it still being
-on screen, because the case it exists for is precisely the one where that view is gone. It is
-therefore separate from the navigation the form performs, which "Where a connection form returns to"
-makes conditional on that form still being the active view: the two have different lifetimes and SHALL
-NOT be made one.
+- **WHEN** the connections list refetches without the selected connection enabled
+- **THEN** the picker shows `choose a connection` and no browse table, selection or composer remains
 
-**While a connection-management write is in flight, the Connect page SHALL act on nothing.** It SHALL
-resolve no connection, read no connector schema and browse no rows, and SHALL report that it is
-waiting. When the write settles, the page SHALL proceed from reads made afterwards. This SHALL hold
-however the operator got there, including leaving the form by **Cancel** or by primary navigation
-while the request is still in flight, and SHALL NOT depend on the form still being mounted.
+### Requirement: Connection writes settle before Connect acts
 
-The two rules replace the event that used to push a completed save into the page beside it. What the
-Connect page reads when it acts is stated by `default-connection`.
+A connection-management write is a connection create, update or delete, or a write or clear of `default_connection_id`. A successful write SHALL evict, not merely mark stale, the cached answers it affects: create, update and delete evict the connections list; update and delete evict that connection's schema; delete and default writes evict the settings. A failed write SHALL evict nothing. Eviction SHALL happen whether or not the view that started the write is still shown. While any such write is in flight, the Connect page SHALL show `Waiting...`, disable its picker, and resolve, read and browse nothing.
 
-Leaving the Connect page discards its connection-scoped state: the browse rows, the row selection and
-the composer do not survive the trip, and rows selected against a connection SHALL NOT reappear on
-return.
+#### Scenario: A saved rule shows on the next visit
 
-A return to Connect resolves afresh, and the connection the operator was browsing before the trip is
-not restored on their behalf (`default-connection`). The scenarios below therefore name the connection
-they are about as the one selected on the return, whether it is what resolved or the operator picked
-it in the picker; a save reaching a connection nobody has selected changes nothing on screen, because
-the page reads no schema and browses no rows for it.
+- **WHEN** the operator saves a rule deriving `location_id` and returns to Connect with that connection and resource selected
+- **THEN** the schema and rows are read after the save, and the table shows a `location_id` column
 
-#### Scenario: A save reaches Connect on the next visit
+#### Scenario: Leaving the form while a save is in flight
 
-- **WHEN** the operator edits the connection they were browsing to a different base URL, saves, and
-  returns to Connect with that connection selected
-- **THEN** the rows shown are browsed from the new upstream
+- **WHEN** the operator presses **Save**, then **Cancel** to Connect before the response
+- **THEN** Connect shows `Waiting...` until the save settles, then resolves from a list read after it, and the save does not move the operator
 
-#### Scenario: A save that changes only the credential
+### Requirement: Connect page layout
 
-- **WHEN** the operator saves the connection they were browsing with a new **api key** and nothing
-  else, and returns to Connect with that connection selected
-- **THEN** that connection's schema is requested and its rows are browsed again, the page having no
-  way to tell that the credential changed
+The Connect page SHALL show a **Connection** picker (`choose a connection` plus enabled connections by name) and a **Manage connections** link to `/connections`. It SHALL show `Failed to load connections.` when the list fails, and `No connections configured.` with an **Add connection** link to `/connections/new` when the loaded list is empty. Once a connection and its schema are loaded it SHALL show a **Template** picker (`choose a template`; `Couldn't load templates.` on failure; the empty-templates notice when there are none) and the browse table; once a template is chosen it SHALL show the composer. The label grid, preview, copies, start slot, printer and Print/Download under the composer are owned by `ui`.
 
-#### Scenario: No pre-write answer is presented
+#### Scenario: Nothing resolves
 
-- **WHEN** the operator saves a connection whose schema and whose connections list had already been
-  read, and returns to Connect with that connection selected
-- **THEN** the schema and the list the page acts on are the answers to requests made after the save,
-  and the copies read before it are presented at no point
+- **WHEN** no connection is enabled
+- **THEN** only the picker and **Manage connections** are shown, with no template picker, composer or browse table
 
-#### Scenario: Leaving the form by Cancel while the save is still in flight
+### Requirement: Field mapping and adding rows
 
-- **WHEN** the operator presses **Save**, presses **Cancel** before the response arrives, and lands on
-  the Connect page
-- **THEN** the Connect page resolves nothing, reads no schema and browses no rows until the save
-  settles
-- **AND** once it succeeds, the page resolves from a connections list read after it, and any schema it
-  then reads is read after it too
-- **AND** the operator is not moved off the Connect page by the save completing
+The composer's **Field mapping** SHALL offer, for each of the template's inputs, a select of `(blank)` and every column key of every schema resource, pre-filled with the same-named column when one exists and its cardinality fits. A multi-valued column SHALL map only to a `list` input and a single-valued column only to a non-`list` input; a mismatch SHALL show `Cannot map multi-valued column "<col>" to scalar parameter "<param>".` or `Cannot map scalar column "<col>" to list parameter "<param>".` and disable adding rows.
 
-#### Scenario: Leaving the form by primary navigation while a delete is in flight
+**Add `<n>` rows** SHALL be disabled with nothing selected. It SHALL refuse more than 200 selected rows (`Select at most 200 rows at a time.`) and a grid that would exceed 500 rows (`That would exceed the 500-row limit.`), then materialize the selection for the distinct mapped columns and append one grid row per result, each mapped input holding the materialized value (a list stays a list, in order) or `""` when absent, and each unmapped input `""`. In the grid a `list` cell SHALL be read-only, showing its elements joined with `", "`, or `—` when not a list or empty.
 
-- **WHEN** the operator confirms a delete and opens the Connect page from primary navigation before
-  the response arrives
-- **THEN** the Connect page acts on nothing until the delete settles, and then acts on a connections
-  list read after it, in which the deleted connection is absent
-- **AND** no request is made for the deleted connection's schema
-- **AND** the operator stays on the Connect page: the delete does not send them to `/connections`
+#### Scenario: A tag list prints on the label
 
-#### Scenario: A write that fails changes nothing
+- **WHEN** an item tagged `KIDS` then `CONSUMABLE` is added with `tags` mapped to a `list` input rendered as `{tags:join(', ')}`
+- **THEN** the batch carries `"tags": ["KIDS", "CONSUMABLE"]` and the label prints `KIDS, CONSUMABLE`
 
-- **WHEN** the operator saves a connection, leaves for the Connect page, and the save fails
-- **THEN** the Connect page proceeds once the request settles, on the answers held before it, which
-  the failed write did not change
+#### Scenario: A scalar column onto a list input
 
-#### Scenario: A write does not evict what it does not affect
+- **WHEN** the operator maps `name` to a `list` input
+- **THEN** the refusal names both and no rows can be added
 
-- **WHEN** the operator names a default on `/connections` and returns to the Connect page
-- **THEN** the settings the page resolves from are read after that write
-- **AND** the connections list may be the copy already held, that write having changed no connection
+#### Scenario: An incompatible same-named column is not pre-filled
 
-#### Scenario: A deleted connection leaves no held schema
+- **WHEN** the template declares a `string` input `tags` and the schema a multi-valued `tags`
+- **THEN** that input starts as `(blank)` with no refusal shown
 
-- **WHEN** the operator deletes a connection whose schema had been read
-- **THEN** no schema for that connection is still held, and no request is made for the deleted id
+### Requirement: Browse table
 
-#### Scenario: A row selection does not survive the trip
+The browse table SHALL show one tab per schema resource (the first selected), reset to the first page whenever the connection, resource, applied filters or drill-down parent change, and append further pages through **Load more** while `has_more`; a response superseded by a newer request SHALL be dropped. Each column shows its cell's display text: a list joined with `", "` in order (`""` when empty), any other value as text. The `name` cell SHALL link to the row's `url` in a new tab. When the resource is the `from` of a relationship, each row SHALL offer **Drill in**, which browses the relationship's `to` resource under that row and shows `in <name>` with a **clear** control.
 
-- **WHEN** the operator selects rows on Connect, follows the link to connection management, and
-  returns to Connect
-- **THEN** no row is selected, and none of the earlier rows is listed in a selection summary
+Each row SHALL have a selection checkbox; selection is by `resource:key` and SHALL survive sorting, filtering, drill-down and tab changes. At 200 selected rows every unselected checkbox SHALL be disabled. While anything is selected, a summary SHALL show `<n>/200 selected (<x> in this view, <y> elsewhere)`, where in this view counts selected rows among the loaded rows, with **Clear all**, **Clear hidden** when `y > 0`, and the selection grouped by resource label with a count and removable `<name> · <location>` chips.
+
+#### Scenario: A filtered-out row stays selected
+
+- **WHEN** a selected row is hidden by a column filter
+- **THEN** it stays selected, listed and counted in this view
+
+### Requirement: Column visibility
+
+A **Columns (`<shown>/<total>`)** control SHALL let the operator toggle each column, show **All**, or **Reset** to the opening set, and SHALL never hide the last visible column. The opening set SHALL be the resource's `cheap` columns plus its transform-derived columns (`tier` `derived` and `transform_source` `false`), or all columns when that is empty. The choice SHALL be stored in the browser per connection and resource, recording visible columns and hidden transform-derived columns: on restore, a transform-derived column is shown unless recorded hidden, other columns follow the recorded visible set, and an empty result falls back to the opening set. A choice recorded as a plain list of visible keys SHALL show every transform-derived column.
+
+#### Scenario: A resource opens with the columns a rule derived
+
+- **WHEN** a resource with no stored choice has `cheap` columns, `item_url` and a rule-derived `location_id`
+- **THEN** the `cheap` columns and `location_id` are shown, and `item_url` is not
+
+#### Scenario: A new derived column appears in a customized resource
+
+- **WHEN** the operator has hidden some columns and then saves a rule deriving a new name
+- **THEN** on the next visit the new column is shown and the hidden ones stay hidden
+
+### Requirement: Sorting loaded rows
+
+Each displayed column's header SHALL cycle ascending, descending, unsorted (the connector's order), one column at a time, with the state exposed visually and through `aria-sort`. `text` and `badge` columns compare display text case-insensitively; `number` and `money` compare finite numbers; `date` compares values matching ISO-8601 date or date-time. Absent, empty or uninterpretable cells, including multi-valued cells in non-text columns, SHALL sort after every value in both directions; ties keep the connector's order. The order SHALL cover rows appended later.
+
+#### Scenario: Uninterpretable values sort with the blanks
+
+- **WHEN** a `number` column holding 2, `n/a` and 10 is sorted ascending, then descending
+- **THEN** the orders are 2, 10, `n/a` and 10, 2, `n/a`
+
+#### Scenario: A multi-valued text column
+
+- **WHEN** a `tags` column holding `["KIDS", "CONSUMABLE"]`, `["ATTIC"]` and `[]` is sorted ascending
+- **THEN** the order is `ATTIC`, `KIDS, CONSUMABLE`, then the empty list
+
+### Requirement: Filtering loaded rows
+
+Every displayed column SHALL have a header filter (`Filter by <label>`) matching its display text case-insensitively as a substring, applied as the operator types, combined across columns with AND, and covering later pages, without a browse request. Hiding a column SHALL clear its filter. These filters SHALL be described once, for assistive technology too, as `Refine loaded rows` / `Narrow the rows already loaded, as you type.`
+
+A resource with filters SHALL present them in a `Source filters` group described as `Queries the connection and restricts the whole result. Takes effect on Apply.`; **Apply** sends the trimmed non-empty values and the tags (including one still typed). The `tag` filter is a chip input: Enter or **Add** appends a trimmed, unique tag, and `×` removes one.
+
+**Clear all filters** SHALL appear whenever any source or column filter is set and SHALL clear both kinds. Below the grid a status region SHALL show `Showing <shown> of <loaded> loaded rows` while a column filter is active and `Sorting and refining cover only the <loaded> rows loaded so far` while `has_more`, both replaced by `No loaded row matches. More rows can be loaded.` when a column filter matches nothing and `has_more`.
+
+#### Scenario: Filtering does not re-query
+
+- **WHEN** the operator types into a column filter
+- **THEN** no browse request is made and the cursor is unchanged
+
+#### Scenario: A multi-valued cell matches its display text
+
+- **WHEN** the operator types `kids, cons` into the `tags` filter
+- **THEN** the row showing `KIDS, CONSUMABLE` is shown
+
+### Requirement: View controls reset with the browsing context
+
+Switching resource tab SHALL clear the drill-down parent, the source filters, the sort and every column filter; drilling in and clearing the parent SHALL clear the sort and column filters (drilling also clears source filters). Sort and filters SHALL NOT survive leaving the page. A column that a refetched schema no longer offers SHALL stop ordering and narrowing the table without clearing its sort or filter, which resume if the column returns.
+
+#### Scenario: Switching resources
+
+- **WHEN** the operator sorts and filters one resource, then switches tab
+- **THEN** the second resource shows the connector's order with no filters
+
+#### Scenario: A sorted column is removed by a save
+
+- **WHEN** the operator sorts by a derived column and a refetched schema no longer offers it
+- **THEN** the rows show in the connector's order

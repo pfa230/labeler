@@ -3,15 +3,9 @@
 A template is one YAML file that describes one label. This guide walks from a blank file to a working
 label through worked examples, in the order the concepts actually bite.
 
-[`SPEC.md`](SPEC.md) is the normative reference for the behavior it documents: it states every rule
-precisely, organised by subsystem. This guide is organised by what you are trying to do, and links
-into the spec rather than restating it. Where this guide and the normative rules disagree, this guide
-is the bug.
-
-The normative rules live in two places. `SPEC.md` is frozen at commit `bc7b1ce` (2026-08-19, ADR-0057);
-behavior added or changed after that date lives in `openspec/specs/<capability>/spec.md`. To look a
-rule up: read `SPEC.md`, then check whether an `openspec/specs/` requirement names and supersedes that
-section. If one does, it wins for that section; otherwise `SPEC.md` holds.
+The normative rules live in [`openspec/specs/`](../openspec/specs/), one spec per domain. This guide is organised by
+what you are trying to do, and links into the spec rather than restating it. Where this guide and the
+spec disagree, this guide is the bug.
 
 Every worked example below is a template that ships in this repo, under `catalog/` or
 `tests/fixtures/templates/`, so the guide cannot drift from the shipped set, and every render shown
@@ -90,7 +84,7 @@ Directory structure relative to the templates root determines group membership:
 - `templates/Shipping/Pallets/my_label.yaml` belongs to nested group `Shipping/Pallets`.
 
 An invalid template is quarantined on load while other templates continue to serve. Full field table:
-[SPEC §3](SPEC.md#3-template-schema).
+[the `templates` spec](../openspec/specs/templates/spec.md).
 
 An unknown field at the top level, or on a layout item, is rejected — so a misspelled `paddding` on a
 container fails loudly. That guard does **not** reach inside the nested objects: a typo within
@@ -170,7 +164,7 @@ Three things to take from it.
 **The origin is bottom-left and y points up.** This is the first thing that surprises people, because
 most graphics APIs put the origin at the top-left. `at: [0.0, 0.0]` is the bottom-left corner of the
 frame; increasing `y` moves *up*. The renderer flips into Typst's top-left space for you
-([SPEC §6](SPEC.md#6-coordinate-system)).
+([the `layout` spec](../openspec/specs/layout/spec.md)).
 
 ```
  y
@@ -306,7 +300,7 @@ When omitted, a `container` defaults to `size: [fill, fill]`.
 ## 6. `max_w` and `max_h` are caps
 
 `max_w` and `max_h` bound the resolution of `content` and `fill` on their respective axes across validation,
-measurement, and rendering ([ADR-0053](adr/0053-max-bounds-cap.md), [#226](../openspec/changes/archive/2026-08-27-issue-226-unify-size-resolution)).
+measurement, and rendering.
 
 Two rules:
 
@@ -425,7 +419,7 @@ Text layout items support an optional `line_spacing` multiplier (default: `1.2`)
 ### Edge-relative coordinates
 
 A coordinate component that is **sign-negative** is measured inward from the frame's far edge instead
-of outward from its origin ([ADR-0051](adr/0051-edge-relative-and-corner-placement.md)):
+of outward from its origin:
 
 | Component | Sign | Measured from |
 | --- | --- | --- |
@@ -552,7 +546,7 @@ Shapes in the template model (`container` and `line`) support paint attributes:
 ### Conditional visibility (`when:`) and parameters
 
 Declare the parameters a template supports in `params:`, then gate containers (or any layout items)
-using `when:` conditions. This is how one template serves several layouts or optional elements (ADR-0055).
+using `when:` conditions. This is how one template serves several layouts or optional elements.
 
 ```yaml
 params:
@@ -705,7 +699,7 @@ removal must not resize the container, `trim` requires both container axes to be
 ### Rotation
 
 A container may set `rotate` to turn a portrait design onto a landscape slot: the "read by turning the
-label" layout ([ADR-0036](adr/0036-container-rotation.md)). The `vertical` branch of the asset tag is
+label" layout. The `vertical` branch of the asset tag is
 the same information authored in a 2×4 portrait canvas and rotated onto the 4×2 slot:
 
 ```yaml
@@ -754,8 +748,7 @@ the geometry is exact: anything that can be wrong about the layout is wrong then
 On an **auto-length** label the frame width is not known until the measure pre-pass runs, which needs
 the request's data. Load-time validation therefore checks the widest case: it bounds coordinates
 against `format.width.max`, so a template that could never fit is still rejected at startup. The
-render path then re-checks against the width this particular request actually resolved to
-([ADR-0051](adr/0051-edge-relative-and-corner-placement.md) §7).
+render path then re-checks against the width this particular request actually resolved to.
 
 The practical consequence:
 
@@ -773,7 +766,7 @@ or, on an auto-length label, it produced a width the layout cannot live in. Eith
 ## 11. Troubleshooting
 
 Four error codes carry a stable `details.reason` slug naming the specific cause; match on the slug,
-never on the message text ([SPEC §10.1](SPEC.md#101-detailsreason)). Everything else is identified by
+never on the message text ([the `errors` spec](../openspec/specs/errors/spec.md)). Everything else is identified by
 `code` alone. Every row below is a slug except `MissingField` and `InvalidEnumValue`, which are codes and carry no slug.
 
 | Reason / Code | What actually happened | Usual fix |
@@ -794,15 +787,13 @@ Two visual failures that return `200` and still need fixing:
 
 **Text is smaller than expected.** A `font_size` range shrank it to fit. The box is too small for the value, counting the ink it carries past its metric box: accents above the first line, descenders below the last. `top` and `bottom` reserve both, and `center` reserves twice the larger, so a centred `Égypt` shrinks at least as far as a top-aligned one. A value without accents or descenders, such as `HELIX`, reserves nothing and fits at the size its cap height allows.
 
-**Lowercase text sits lower in its slot than all-caps.** Vertical alignment positions a fixed metric box running cap height to baseline, and never pulls a block toward its edge because its ink falls short: top-aligned `ace` sits exactly where `HELIX` does, its ink below the top edge by the gap between cap height and x-height. This is inherent to baseline alignment and is what every other renderer produces ([ADR-0045](adr/0045-vertical-text-alignment.md)). `top` and `bottom` inset a block only by the ink the value carries past that edge, so `HELIX` sits flush with the top while `Émile` sits lower by its accent: a top- or bottom-aligned baseline moves between values when one of them inks past the edge. `center` keeps a glyph-independent baseline, shared by every value at one size and line count in one box, so use it where baselines must not move between labels.
+**Lowercase text sits lower in its slot than all-caps.** Vertical alignment positions a fixed metric box running cap height to baseline, and never pulls a block toward its edge because its ink falls short: top-aligned `ace` sits exactly where `HELIX` does, its ink below the top edge by the gap between cap height and x-height. This is inherent to baseline alignment and is what every other renderer produces. `top` and `bottom` inset a block only by the ink the value carries past that edge, so `HELIX` sits flush with the top while `Émile` sits lower by its accent: a top- or bottom-aligned baseline moves between values when one of them inks past the edge. `center` keeps a glyph-independent baseline, shared by every value at one size and line count in one box, so use it where baselines must not move between labels.
 
 ---
 
 ## Where to go next
 
-- [`SPEC.md`](SPEC.md) — the normative reference for every field, rule, and error code.
-- [`adr/`](adr/) — why each decision up to 2026-08-19 is the way it is; frozen, with newer reasoning
-  in the change that made it.
+- [`openspec/specs/`](../openspec/specs/) — the normative reference for every field, rule, and error code.
 - `catalog/` — the shipped starter templates, the best base to copy from.
 - `tests/fixtures/templates/` — templates that exist to demonstrate engine features (QR layouts,
   text wrapping, sheet options, rotation, edge-relative placement, interpolation).

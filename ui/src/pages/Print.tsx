@@ -7,7 +7,7 @@ export function Print() {
   const selected = templateId ?? "";
   const t = useTemplate(selected);
 
-  // The standalone picker page is gone: /print with no id goes to the grid (ADR-0038).
+  // The standalone picker page is gone: /print with no id goes to the grid.
   if (selected === "") return <Navigate to="/" replace />;
 
   return (

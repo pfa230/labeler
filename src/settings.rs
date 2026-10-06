@@ -1,5 +1,5 @@
 //! Typed application configuration (distinct from template `variables`). Defaults live here once and
-//! are resolved on read; only operator overrides are stored (see ADR-0024). Never interpolated.
+//! are resolved on read; only operator overrides are stored. Never interpolated.
 
 use crate::store::{Store, StoreError};
 use std::collections::BTreeMap;
@@ -186,7 +186,7 @@ pub async fn resolve_max_label_dimension_mm(store: &Store) -> Result<f32, Settin
 }
 
 /// Pure resolution: in-code default (None) when there is no override, else the stored id.
-/// Empty or whitespace-only stored text is corrupt (ADR-0024).
+/// Empty or whitespace-only stored text is corrupt.
 pub fn resolve_default_connection_id_from(
     stored: Option<String>,
 ) -> Result<Option<String>, SettingError> {

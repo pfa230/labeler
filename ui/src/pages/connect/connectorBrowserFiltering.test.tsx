@@ -3,9 +3,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ConnectorBrowser } from "./ConnectorBrowser";
 import type { ConnectorSchema } from "../../api/connectors";
 
-// Task 5.3: per-column filtering tests against the rendered grid. See
-// openspec/changes/issue-170-connector-grid/specs/connector-browser/spec.md, requirement
-// "A per-column filter narrows the loaded rows".
+// Per-column filtering tests against the rendered grid (`connections` spec).
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });

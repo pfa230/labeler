@@ -1,4 +1,4 @@
-//! Unified batch rendering (ADR-0011). Renders a list of resolved labels into either a download blob
+//! Unified batch rendering. Renders a list of resolved labels into either a download blob
 //! (ZIP for single templates, PDF for sheet) or a set of print artifacts. Pure/sync; the async print
 //! dispatch lives in the `/batch` handler.
 

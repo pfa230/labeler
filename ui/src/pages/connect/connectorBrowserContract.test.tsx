@@ -4,9 +4,7 @@ import { useState } from "react";
 import { ConnectorBrowser } from "./ConnectorBrowser";
 import type { ConnectorSchema, DisplayRow, SelectedRow } from "../../api/connectors";
 
-// Covers OpenSpec issue-170-connector-grid, requirement "The browse table's existing behavior is
-// preserved under the view controls" (openspec/changes/issue-170-connector-grid/specs/
-// connector-browser/spec.md). Sorting/filtering are new; everything in this file asserts that the
+// Covers the browse table's behavior under the view controls (`connections` spec). Sorting/filtering are new; everything in this file asserts that the
 // pre-existing contract around them (selection identity, the summary split, the materialize cap,
 // row links, and drill-down) still holds once they're active.
 
