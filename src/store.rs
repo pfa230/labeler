@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use utoipa::ToSchema;
 
-/// A configured printer (a "machine" instance, per ADR-0007). `config` is an opaque per-kind JSON blob
+/// A configured printer (a "machine" instance). `config` is an opaque per-kind JSON blob
 /// that the driver for `kind` parses.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Printer {

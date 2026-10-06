@@ -3363,7 +3363,7 @@ layout:
         assert_eq!(extent, 20.0, "a fixed-width text contributes its width");
     }
 
-    /// Spec §7. `measure_container_footprint` resolved this width with no fallback, so a
+    /// `measure_container_footprint` resolved this width with no fallback, so a
     /// right-anchored auto-width container errored in the pre-pass even though render handles it as
     /// `frame_width - left`. The child must resolve to the remainder, 60 - 30 = 30, at both passes —
     /// asserting the parent's 60mm footprint instead would pass against a full-frame fallback.
@@ -3663,7 +3663,7 @@ layout:
         );
     }
 
-    /// Spec §4.1. The Task 1 loosening admits this at load and it then fails at render, because the
+    /// The Task 1 loosening admits this at load and it then fails at render, because the
     /// container has no width left for a divider. Like the test above, this PASSES after Task 1 and
     /// before Task 5 — it is not a per-step regression guard. It is here to pin *how* such a
     /// template fails: the standard explained error, not a panic and not a corrupt page.
@@ -4296,8 +4296,7 @@ layout:
     /// Review finding (code-reviewer, post-Task-8): Step 4 of the task brief routed the container's
     /// fixed-branch height through `resolve_size(..., allow_auto_fill: false)`, which has no
     /// fallback for an auto height with no `max_h`. `size: [40, auto]` is a documented container
-    /// idiom (SPEC §4: "auto size resolves to `max_w`/`max_h` if present; for `container` it falls
-    /// back to the parent frame"), accepted by `validate()` and rendered fine by
+    /// idiom, accepted by `validate()` and rendered fine by
     /// `render_container_item` (which passes `allow_auto_fill: true`); only the measure pre-pass had
     /// been tightened, so every such container on a dynamic-width label started failing measurement
     /// with "size height is auto but no max_height provided".
@@ -5672,7 +5671,7 @@ layout:
         .collect();
         assert_eq!(
             found, expected,
-            "catalog contents changed; update this gate deliberately. ADR-0047 recorded the original set and is frozen, so it is not updated with it"
+            "catalog contents changed; update this gate deliberately"
         );
     }
 
@@ -7051,7 +7050,7 @@ layout:
 
         // ---- 9.5. The #124 raster tests, restated for the measured reservation ----
 
-        /// Guards the other two `alignment.vertical` values (ADR-0030 honours them literally), so a
+        /// Guards the other two `alignment.vertical` values (honoured literally), so a
         /// centering fix cannot hardcode centre. `test` inks nothing above cap height, so top
         /// alignment emits no inset and puts its metric top on the slot edge; its round letters
         /// overshoot the baseline, so bottom alignment is inset by exactly that overshoot as Typst
@@ -7693,8 +7692,7 @@ layout:
         );
     }
 
-    /// The render-time endpoint bound (`check_line`) is the mirror of the load-time one, per SPEC §7's
-    /// compile-time/render-time duplication. Load-time validation now rejects every template that
+    /// The render-time endpoint bound (`check_line`) is the mirror of the load-time one. Load-time validation now rejects every template that
     /// could reach it (a plain endpoint past `width.max` is rejected outright, and an edge-relative
     /// one sizes the label to its own inset), so it is exercised here at the context level.
     #[test]
@@ -7957,10 +7955,9 @@ layout:
     }
 
     /// A `to`-sized qr contributes nothing to the measured extent (it has no intrinsic content
-    /// width, ADR-0050 decision 11), so the label falls back to `width.min`. That only leaves room
+    /// width), so the label falls back to `width.min`. That only leaves room
     /// for the item when its own `at.x` fits inside the fallback: anchored at x=30 on a 10mm label
-    /// there is no box left to draw, and it errors rather than silently disappearing. Pins the §6
-    /// wording.
+    /// there is no box left to draw, and it errors rather than silently disappearing.
     #[test]
     fn a_to_sized_qr_anchored_past_the_fallback_width_errors() {
         let qr_at = |x: f32| TemplateContent {
@@ -10358,13 +10355,11 @@ layout:
         assert!(pdf.starts_with(b"%PDF"));
     }
 
-    /// Task 5.2: Render the four catalog tapes and confirm they are unchanged from the baseline.
+    /// Render the four catalog tapes and confirm they are unchanged from the baseline.
     #[test]
     fn catalog_brother_tapes_render_unchanged_from_baseline() {
         let (registry, _dir) = crate::templates::load_all_for_tests();
-        let archive_dir = std::path::Path::new(
-            "openspec/changes/archive/2026-08-27-issue-226-unify-size-resolution/renders",
-        );
+        let baseline_dir = std::path::Path::new("tests/fixtures/renders");
 
         for tape_id in [
             "brother_9mm",
@@ -10378,7 +10373,7 @@ layout:
             let png = render_single_label(template, &data, &no_settings(), &no_datetime())
                 .unwrap_or_else(|e| panic!("render {tape_id}: {e:?}"));
 
-            let baseline_path = archive_dir.join(format!("{tape_id}.png"));
+            let baseline_path = baseline_dir.join(format!("{tape_id}.png"));
             let baseline = std::fs::read(&baseline_path)
                 .unwrap_or_else(|e| panic!("missing baseline PNG {baseline_path:?}: {e}"));
             assert_eq!(

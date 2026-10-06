@@ -1,144 +1,36 @@
 schema: spec-driven
 
 context: |
-  Labeler is a stateless label-rendering REST service in Rust (axum). It loads YAML label templates
-  and renders a single label to PNG or a batch to PDF/ZIP by generating Typst source on the fly and
-  compiling it in-process with `typst-as-lib` (`typst-render` for PNG, `typst-pdf` for PDF).
+  Labeler is a stateless label-rendering REST service in Rust (axum) with a React UI. It renders YAML
+  label templates to PNG, PDF or ZIP through Typst. AGENTS.md holds the project rules; follow it.
 
-  Architecture. Request path: `api.rs` -> `render/`. Template path: `templates.rs` -> `parse.rs` ->
-  `raw.rs` -> `convert.rs`. Parsing is two-stage: YAML deserializes into `raw.rs` structs (all
-  `deny_unknown_fields`), then converts into the domain model via `TryFrom` in `convert.rs`. When
-  adding a layout field, update `raw.rs`, the matching `models.rs` type, and the `TryFrom` in
-  `convert.rs` together. Template coordinates use a bottom-left origin, y-up, in the template `unit`;
-  Typst uses top-left, so the renderer flips with `frame_height_units - top`. Size resolution in
-  `resolver.rs` is shared by load-time validation and render-time resolution; only the walk
-  supplying intrinsic sizes differs. Errors: `TemplateError` carries a parse/validation path
-  (a broken template is quarantined at load, not fatal to startup); `AppError` is the HTTP error and
-  serializes to `{ "error": { code, message, details } }`. Add new error kinds as `AppError`
-  constructors so `code` strings stay stable. Every model exposed in the API must be registered in
-  `openapi.rs`.
-
-  Specs. Freezing a file freezes no behavior: it says the file takes no further edits, not that what
-  it describes cannot change. `docs/SPEC.md` is FROZEN at commit bc7b1ce as the baseline reference
-  for behavior that existed on 2026-08-19. It is no longer edited. New and changed behavior is
-  specified in `openspec/specs/<capability-path>/spec.md`, which is where a change to behavior lands.
-  See `rules.specs` below for the precedence rule.
-
-  Decisions. `docs/adr/` is FROZEN at ADR-0057, like `docs/SPEC.md` and for the same reason. Never
-  write one and never add a row, and never open one for a rule that binds you now: an ADR records
-  what was decided on a date, not what holds today. The 31 records once written after ADR-0057 are
-  gone (#378); each duplicated a change folder that `openspec/changes/archive/` keeps permanently.
-  Why a change was made belongs in its `proposal.md` and `design.md`, kept in that same archive
-  (#285).
-
-  Tracker. GitHub issues and milestones are the sole live backlog. Every change corresponds to
-  exactly one open issue.
-
-  Simplicity. Minimal by design (KISS): every mechanism, option, field and check must serve a
-  concrete need of the accepted issue. No speculative configuration, plugin points, extra layers,
-  silent fallbacks, or generality for problems nobody has hit. When two designs both work, use the
-  one with fewer moving parts. After the last artifact or edit and before any summary, run a cut
-  pass: list each mechanism, option, check, field and task, and name the spec requirement or the
-  issue's explicit request it serves. Remove whatever names neither, and whatever duplicates what
-  the repository already has. For each item that stays, name its simpler version and the concrete
-  failure that version causes; when there is none, use the simpler version. Report the cut list
-  with the result.
-
-  Isolation. One change, one git worktree, one issue. Create the change's worktree from an
-  up-to-date `origin/main` and work only there. An unrelated hotfix gets its own worktree;
-  never switch branches inside a change's worktree.
-
-  Gates. Before committing, run every gate the diff touches: `cargo fmt --check`,
-  `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` for `src/` and
-  `tests/`; `npm --prefix ui run lint`, `npm --prefix ui run test`, `npm --prefix ui run build`
-  for `ui/src/`. Keep Rust build output local to each worktree.
-  Never silence a lint with `#[allow(clippy::...)]`; fix the root cause.
-  Templates are visual artifacts: a YAML edit that parses and renders without error is not proof the
-  label looks right. Use a render -> inspect -> fix loop against a PNG before calling a template done.
+  The spec is one capability per domain under `openspec/specs/`: templates, parameters, interpolation,
+  layout, text, rendering, errors, auth, printing, settings, connections, ui. Read only the domains a
+  change touches. Every error `reason` slug is listed once, in the `errors` spec's "Reason slugs"
+  table; a test keeps that table equal to `Reason::ALL`.
 
 rules:
   proposal:
-    - >-
-      Include `Fixes #N` for the GitHub issue this change implements in the first section.
-      Exactly one open issue per change.
-    - >-
-      Keep scope inside that issue's accepted scope. Work discovered mid-change that falls outside
-      it becomes a new GitHub issue, never an extra task here.
-    - >-
-      State when the whole deliverable is its delta under `specs/`, as for a correction to a
-      published spec. `openspec/specs/` is written by archive and never by hand. Changes without
-      a spec-level behavior change set `skip_specs: true` in their `.openspec.yaml`; do not invent
-      a capability for tooling, documentation or a behavior-preserving refactor.
-
+    - Include literal `Fixes #N` for the one GitHub issue this change implements.
+    - Stay inside that issue's scope. Work found outside it becomes a new issue, never an extra task.
+    - Changes with no behavior change set `skip_specs: true` in `.openspec.yaml`.
   specs:
-    - >-
-      `docs/SPEC.md` is frozen at commit bc7b1ce. Its sections stay authoritative until an OpenSpec
-      requirement explicitly supersedes them.
-    - >-
-      When a change touches behavior documented only in frozen `docs/SPEC.md`, write an ADDED
-      requirement containing the complete post-change contract, not the difference, and name the
-      exact `docs/SPEC.md` section it supersedes. Never write a MODIFIED delta against a requirement
-      that does not yet exist in `openspec/specs/`.
-    - >-
-      An ADDED requirement supersedes only the `docs/SPEC.md` section it names. Unrelated frozen
-      sections remain authoritative.
-    - >-
-      Once a requirement lives in `openspec/specs/`, later changes to it use MODIFIED as normal.
-    - >-
-      A delta spec is proposed truth. It becomes normative only after it is synced into
-      `openspec/specs/`.
-
+    - Put each delta in the existing domain capability it belongs to. Create a new capability only for a genuinely new domain.
+    - A requirement states one observable behavior with SHALL or MUST. Scenarios cover the cases that matter, not restatements.
+    - No rationale, history, issue numbers, implementation detail or explanation of a removed spelling. Rationale belongs in design.md.
+    - A rule has one home. Reference another domain's rule in a few words instead of restating it.
+    - A new or removed reason slug edits the `errors` "Reason slugs" table.
   design:
-    - >-
-      State the decision and why it was taken over the alternatives. This is the record: `docs/adr/`
-      is frozen and takes no new entries, so nothing else will carry the rationale.
-
+    - State the decision and why it beat the alternatives.
   tasks:
-    - >-
-      Tasks are execution steps for this change only. They are not a backlog, so never park future
-      work as an unchecked task. Open a GitHub issue instead.
-    - >-
-      Verify the affected behavior with appropriate tests. No task may claim a check passed
-      before it actually ran.
+    - Tasks are execution steps for this change only, never a backlog.
 
 operations:
   apply:
     guidance:
-      - >-
-        Check a task only after performing it. A checked box is a claim the next reader trusts
-        instead of redoing the work. A task saying to add an HTTP test is not satisfied by a unit
-        test one layer below the status code. Do not write a task whose completion nothing can
-        show, such as opening a rendered image.
-      - >-
-        A test that cannot fail is worse than no test. Assert on the value under test, not on the
-        fact that a call returned. Before accepting a test, name what would have to break for it
-        to fail.
-      - >-
-        Never edit `docs/SPEC.md`. It is frozen and archive cannot represent an edit to it.
-        Changed behavior belongs in this change's delta under `specs/`, then in the published
-        `openspec/specs/` after archive.
-      - >-
-        Stay inside the change's accepted scope. Widening a shared parser, loosening a type, or
-        changing behavior for inputs the issue never mentions is out of scope even when it makes
-        the new code simpler. Keep existing behavior and pin it with a test.
-
+      - Check a task only after performing it. Do not write a task whose completion nothing can show, such as opening a rendered image.
+      - A test that cannot fail is worse than no test. Before accepting one, name what would have to break for it to fail.
+      - Stay inside the change's scope. Do not widen a parser or change behavior for inputs the issue never mentions.
   archive:
     guidance:
-      - >-
-        Archive only after the tasks are complete and the gates pass. Sync every delta into
-        `openspec/specs/`; never archive without syncing. A change declaring `skip_specs: true`
-        has no deltas.
-      - >-
-        Commit the implementation, the published specs and the archived change folder as one
-        commit whose message includes `Fixes #N` and explains why the change is needed. Never add
-        AI attribution.
-      - >-
-        Integration requires human approval. Fast-forward the approved branch into the default
-        branch, then push. Never merge main into a change branch, never rewrite main or any ref
-        another session consumes. If main moved, rebase the change branch and rerun the gates
-        before integrating.
-      - >-
-        The `openspec-*` skills and `opsx` commands under `.claude/`, `.agent/`, `.agents/`
-        and `.opencode/` are generated by the OpenSpec CLI. Never hand-edit them. Upgrade the
-        CLI, run `openspec update --force`, review the generated trees, and commit regeneration
-        separately.
+      - After archiving, delete `openspec/changes/archive/`; git keeps the history. Then run the gates and commit the change as one commit with `Fixes #N`.

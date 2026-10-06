@@ -1,4 +1,4 @@
-//! The `details.reason` vocabulary (ADR-0052).
+//! The `details.reason` vocabulary.
 //!
 //! Each slug is API: clients switch on it, so renaming one is a breaking change. The macro keeps
 //! `ALL` structurally complete — a variant cannot be added without appearing in it, which is what
@@ -18,7 +18,7 @@ macro_rules! reasons {
             /// Every reason, in declaration order.
             pub const ALL: &'static [Reason] = &[$(Reason::$variant,)+];
 
-            /// The wire slug. Part of the API contract; see SPEC §10.1.
+            /// The wire slug. Part of the API contract; see the `errors` spec.
             pub fn as_slug(self) -> &'static str {
                 match self {
                     $(Reason::$variant => $slug,)+

@@ -14,7 +14,7 @@ RUN cargo build --release --locked
 FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS runtime
 # ca-certificates: the `ipp` printing path (reqwest 0.13 -> rustls-platform-verifier) uses the system
 # trust store for `ipps://` printers. distroless bundled certs; debian-slim does not. gosu drops the
-# entrypoint from root to PUID:PGID. See ADR-0029.
+# entrypoint from root to PUID:PGID.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates gosu \
     && rm -rf /var/lib/apt/lists/*
@@ -28,11 +28,11 @@ EXPOSE 8080
 ENV PORT=8080
 ENV LABELER_UI_DIR=/app/ui/dist
 # Homelab PUID/PGID model: the container starts as root, the entrypoint chowns the writable dirs to
-# PUID:PGID (default 1000) and drops privileges via gosu. See ADR-0029.
+# PUID:PGID (default 1000) and drops privileges via gosu.
 ENV PUID=1000
 ENV PGID=1000
 # App-native healthcheck (no shell / wget needed). HEALTHCHECK CMD bypasses the entrypoint, so it runs
-# directly; the binary just probes localhost HTTP. See ADR-0029.
+# directly; the binary just probes localhost HTTP.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
   CMD ["/app/labeler","healthcheck"]
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

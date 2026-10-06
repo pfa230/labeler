@@ -37,7 +37,7 @@ export function EmptyTemplates({ context }: { context?: string }) {
           Paste YAML
         </Link>
         <a
-          href="https://github.com/pfa230/labeler/blob/main/docs/SPEC.md#4-layout"
+          href="https://github.com/pfa230/labeler/blob/main/docs/AUTHORING.md"
           target="_blank"
           rel="noreferrer"
           className="text-sm underline"

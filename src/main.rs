@@ -4,7 +4,7 @@ use labeler::{app, store::Store, AppState, TemplateRegistry};
 use tracing_subscriber::EnvFilter;
 
 /// Container HEALTHCHECK: probe the local `/api/health` endpoint and exit 0 (healthy) or 1.
-/// Lets the runtime image carry no shell or `wget`/`curl` (see ADR-0029). Runs before tracing
+/// Lets the runtime image carry no shell or `wget`/`curl`. Runs before tracing
 /// init so it stays quiet, and exits the process directly.
 async fn run_healthcheck() -> i32 {
     let port = std::env::var("PORT").unwrap_or_else(|_| "8080".to_string());
@@ -106,7 +106,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Arc::new(AppState::new(templates, templates_dir, store));
 
-    // Job-log retention is an app setting (see ADR-0024), resolved live each run; no env var.
+    // Job-log retention is an app setting, resolved live each run; no env var.
     // Prune once at startup, then daily. The ticker always runs because the setting can change at runtime.
     match labeler::settings::prune_job_log_once(state.store()).await {
         Ok(n) => tracing::info!(deleted = n, "pruned job log at startup"),

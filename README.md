@@ -77,7 +77,7 @@ All routes are under `/api` (the root is reserved for the web UI); unknown `/api
 - `GET /api/docs/` → Swagger UI
 
 `scripts/render_avery_sheet.sh` posts a sample request to a running server and writes a PDF. All
-`/api` routes require authentication (ADR-0017), so export `LABELER_API_TOKEN` (create one in the UI
+`/api` routes require authentication, so export `LABELER_API_TOKEN` (create one in the UI
 under Settings) before running it; the script sends it as `Authorization: Bearer $LABELER_API_TOKEN`.
 
 ## Development
@@ -89,6 +89,4 @@ cargo test
 ```
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) has the contributor workflow. [`docs/AUTHORING.md`](docs/AUTHORING.md)
-is the guide to writing templates; the full API and template spec is in [`docs/SPEC.md`](docs/SPEC.md);
-decisions taken up to 2026-08-19 are recorded as [ADRs](docs/adr/), now frozen, and everything since
-is in the change that made it, under [`openspec/`](openspec/).
+is the guide to writing templates; the API and template contract is specified under [`openspec/specs/`](openspec/specs/).

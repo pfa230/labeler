@@ -2196,7 +2196,7 @@ layout:
         assert_eq!(body["error"]["code"], "BatchInvalid");
         assert_eq!(body["error"]["details"]["failures"][0]["index"], 1);
         // MissingField is outside the four codes that carry a reason, so the key is absent rather
-        // than null. That optionality is the contract (ADR-0052, decision 4), not an oversight.
+        // than null. That optionality is the contract, not an oversight.
         assert!(
             body["error"]["details"]["failures"][0]
                 .get("reason")
@@ -2547,7 +2547,7 @@ layout:
         assert_eq!(body["error"]["details"]["reason"], "csv_header_invalid");
     }
 
-    /// The contract is scoped to four codes (ADR-0052). Nothing else gains a reason, and `details`
+    /// The contract is scoped to four codes. Nothing else gains a reason, and `details`
     /// keeps carrying exactly what it carried before.
     #[tokio::test]
     async fn unreasoned_codes_have_no_reason() {
@@ -5407,7 +5407,7 @@ layout:
                 .as_object()
                 .expect("details object")
                 .contains_key("reason"),
-            "a 409 carries no details.reason key at all (ADR-0052)"
+            "a 409 carries no details.reason key at all"
         );
         assert!(dir.join("contested.yaml").exists(), "nothing was unlinked");
         assert!(

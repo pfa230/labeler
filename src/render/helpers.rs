@@ -71,7 +71,7 @@ fn process_literal_chunk(chunk: &str, template: &str, out: &mut String) -> Resul
     Ok(())
 }
 
-/// Substitution-only interpolation (ADR-0010, ADR-0055).
+/// Substitution-only interpolation.
 ///
 /// - `{sys.now[:<fmt>]}` resolves the request's captured instant.
 /// - `{vars.<key>}` resolves from `variables`.

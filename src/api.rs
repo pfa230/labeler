@@ -3694,7 +3694,7 @@ mod tests {
                 .as_object()
                 .expect("details object")
                 .contains_key("reason"),
-            "a 409 carries no details.reason key at all (ADR-0052)"
+            "a 409 carries no details.reason key at all"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
