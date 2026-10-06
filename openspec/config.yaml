@@ -34,6 +34,16 @@ context: |
   Tracker. GitHub issues and milestones are the sole live backlog. Every change corresponds to
   exactly one open issue.
 
+  Simplicity. Minimal by design (KISS): every mechanism, option, field and check must serve a
+  concrete need of the accepted issue. No speculative configuration, plugin points, extra layers,
+  silent fallbacks, or generality for problems nobody has hit. When two designs both work, use the
+  one with fewer moving parts. After the last artifact or edit and before any summary, run a cut
+  pass: list each mechanism, option, check, field and task, and name the spec requirement or the
+  issue's explicit request it serves. Remove whatever names neither, and whatever duplicates what
+  the repository already has. For each item that stays, name its simpler version and the concrete
+  failure that version causes; when there is none, use the simpler version. Report the cut list
+  with the result.
+
   Isolation. One change, one git worktree, one issue. Create the change's worktree from an
   up-to-date `origin/main` and work only there. An unrelated hotfix gets its own worktree;
   never switch branches inside a change's worktree.

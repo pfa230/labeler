@@ -5,6 +5,11 @@ A stateless label-rendering REST service (Rust/axum). It loads YAML label templa
 generating [Typst](https://typst.app/) source on the fly and compiling it in-process via
 `typst-as-lib`.
 
+## Simplicity
+
+- **Minimal by design (KISS).** Every mechanism, option, field and check must serve a concrete need of the accepted issue. Do not add speculative configuration, plugin points, extra layers, silent fallbacks, or generality for problems nobody has hit. When two designs both work, use the one with fewer moving parts.
+- **Cut before presenting.** After the last artifact or edit and before any summary, run a cut pass. List each mechanism, option, check, field and task on its own line, and name the spec requirement it serves, as the change amends it, or the issue's explicit request where no spec applies, such as docs or tooling. Remove whatever names neither, and whatever duplicates what the repository already has. For each item that stays, name its simpler version and the concrete failure that version causes; when there is none, use the simpler version. The presentation includes the cut list: what was removed, and why each kept item stayed.
+
 ## Isolation: one change, one worktree, one issue
 
 Every piece of work gets its own git **worktree**, not just a branch, and this one does not care what
