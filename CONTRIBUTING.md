@@ -1,34 +1,20 @@
 # Contributing
 
-Thanks for your interest. Labeler is a small self-hosted label-rendering service: a Rust/axum backend
-and a React + TypeScript UI.
+Labeler is a small self-hosted label-rendering service: a Rust/axum backend and a React + TypeScript UI.
 
-## Building and testing
+## Checks
 
-Run these before submitting a change.
+Run these before submitting a change:
 
-Backend:
 ```bash
-cargo fmt
-cargo clippy --all-targets --all-features
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+npm --prefix ui run lint && npm --prefix ui run test && npm --prefix ui run build
 ```
 
-Frontend (from `ui/`):
-```bash
-npm run lint
-npx vitest run
-npm run build
-```
-
-For active UI work, use the Vite dev server (`npm --prefix ui run dev`, port 5173, proxies `/api` to the
-backend on `:8080`); it never touches `ui/dist`. `cargo run` instead serves the prebuilt SPA from
-`ui/dist` and does not rebuild it, so run `npm --prefix ui run build` after UI changes or it serves a
-stale bundle. The server warns at startup when `ui/dist` is missing or older than `ui/src` (skipped when
-`LABELER_UI_DIR` is set, as in the container image).
+For UI work, use the Vite dev server (`npm --prefix ui run dev`, port 5173, proxies `/api` to `:8080`). `cargo run` serves the prebuilt `ui/dist` and does not rebuild it, so run `npm --prefix ui run build` after UI changes; the server warns at startup when `ui/dist` is older than `ui/src`.
 
 ## Proposing changes
 
-Open an issue to discuss a bug or feature, then submit a pull request that references it. The API and
-template schema are specified under [`openspec/specs/`](openspec/specs/). The project vision is in
-[`docs/VISION.md`](docs/VISION.md).
+Open an issue first, then a pull request that references it. Behavior is specified under [`openspec/specs/`](openspec/specs/); a change to behavior updates the spec too. The project vision is in [`docs/VISION.md`](docs/VISION.md).
