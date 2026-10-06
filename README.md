@@ -1,92 +1,30 @@
 # Labeler
 
-A REST service that renders labels from declarative YAML templates. It produces a single label as PNG
-(for continuous-roll printers) or a sheet of labels as PDF (for pre-cut label sheets), by generating
-[Typst](https://typst.app/) source on the fly and compiling it in-process.
-
-## Quickstart (Docker)
-
-```bash
-docker run -p 8080:8080 ghcr.io/pfa230/labeler:edge
-```
+A self-hosted service that renders labels from declarative YAML templates: a single label as PNG for continuous-roll printers, or a sheet of labels as PDF for pre-cut label sheets. It generates [Typst](https://typst.app/) source on the fly and compiles it in-process, and serves a web UI for printing, CSV import and inventory integrations.
 
 ## Run
 
 ```bash
-cargo run            # serves on 0.0.0.0:$PORT (default 8080)
+docker run -p 8080:8080 ghcr.io/pfa230/labeler:edge     # or: docker compose up -d --build
 ```
 
-## Web UI
+Open http://localhost:8080. [`docs/DEPLOY.md`](docs/DEPLOY.md) covers configuration, volumes and backups, authentication and CUPS/IPP printing.
 
-A React + TypeScript SPA in `ui/` (Vite, Tailwind). The backend serves its build at `/`.
+A new install has no templates. Install them from the catalog in the UI (Labels → Browse the catalog) or paste YAML. The catalog lives in this repo under `catalog/`: the Brother continuous-tape set (`brother_9mm` to `brother_24mm`) and `avery5163`, ten 2x4 inch labels per US Letter sheet. Your browser downloads the entry and the server stores it, so an air-gapped install pastes YAML instead.
+
+## Write templates
+
+[`docs/AUTHORING.md`](docs/AUTHORING.md) walks through writing templates by worked example. Templates demonstrating engine features (QR layouts, wrapping, `when:` branches, rotation, interpolation) live in `tests/fixtures/templates/`.
+
+## API
+
+Routes live under `/api`; all but health, login, setup and the API docs need authentication (see the [`auth` spec](openspec/specs/auth/spec.md)). The OpenAPI document is at `/api/openapi.json` and Swagger UI at `/api/docs/`. The full contract for the API, template schema, layout and errors is in [`openspec/specs/`](openspec/specs/). `scripts/render_avery_sheet.sh` posts a sample batch to a running server; export `LABELER_API_TOKEN` (create one under Settings) first.
+
+## Develop
 
 ```bash
-npm --prefix ui install            # once
-npm --prefix ui run dev            # Vite dev server (proxies /api to cargo run on :8080)
-npm --prefix ui run build          # build to ui/dist (then `cargo run` serves it at /)
+LABELER_CONFIG_DIR=./config-dev cargo run     # API and the built UI on :8080
+npm --prefix ui install && npm --prefix ui run dev   # Vite dev server, proxies /api to :8080
 ```
 
-In production the binary serves `ui/dist`; the Docker multi-stage build bundles the UI (see Deployment
-below).
-
-## Deployment
-
-Run the whole thing with Docker:
-
-```bash
-docker compose up -d --build      # serves on http://localhost:${HOST_PORT:-8080}
-```
-
-See [`docs/DEPLOY.md`](docs/DEPLOY.md) for configuration, persistent volumes and backups, and CUPS/IPP
-printing setup.
-
-YAML templates are loaded from `{config}/templates/` at startup and on
-`POST /api/templates/reload`. A file that fails to parse, fails validation, or claims an id another
-file already holds is quarantined: it is listed under `broken` in `GET /api/templates` and does not
-stop the service (#181).
-
-**A new install starts with no templates.** Install what you need from the catalog in the UI
-(Labels → Browse the catalog), or paste YAML. The catalog lives in this repo under `catalog/`,
-organised by media class and vendor: the Brother continuous-tape set `brother_9mm` / `brother_12mm` /
-`brother_18mm` / `brother_24mm`, and `avery5163`, ten 2x4 inch labels per US Letter sheet. Every one
-declares a single parameter named `message`, so an import maps one column and works against any of
-them. Your browser downloads the entry and the server validates and stores it — the server itself
-never reaches out, so air-gapped deployments paste YAML instead.
-
-**Writing your own.** [`docs/AUTHORING.md`](docs/AUTHORING.md) walks the layout model through worked
-examples: coordinates, auto-length tape widths, `auto` sizing, edge-relative placement, containers,
-parameters and `when:` conditional visibility, and a troubleshooting table.
-
-**On other tape widths.** Copy the closest tape template and change three things: `format.height`
-(the printable height, narrower than the nominal tape), `format.media_width` (the nominal width, used
-for print preflight), and the `font_size` range. Templates demonstrating engine features — QR
-layouts, text wrapping, conditional `when:` branches and rotation, variable interpolation — are not in the catalog; they
-live in `tests/fixtures/templates/` and are worth reading when authoring your own.
-
-## Endpoints
-
-All routes are under `/api` (the root is reserved for the web UI); unknown `/api/*` → `404 NotFound`.
-
-- `GET /api/health` → `{ "status": "ok" }`
-- `GET /api/templates` → list of template summaries
-- `GET /api/templates/{id}` → detailed template schema
-- `GET /api/templates/{id}/source` → raw stored template YAML
-- `POST /api/render/label` → rendered PNG/PDF for a single template (preview / one-off)
-- `POST /api/batch` → render/print a batch (single → ZIP or per-label jobs, sheet → paginated PDF or job)
-- `GET /api/openapi.json` → OpenAPI document
-- `GET /api/docs/` → Swagger UI
-
-`scripts/render_avery_sheet.sh` posts a sample request to a running server and writes a PDF. All
-`/api` routes require authentication, so export `LABELER_API_TOKEN` (create one in the UI
-under Settings) before running it; the script sends it as `Authorization: Bearer $LABELER_API_TOKEN`.
-
-## Development
-
-```bash
-cargo fmt
-cargo clippy --all-targets --all-features
-cargo test
-```
-
-[`CONTRIBUTING.md`](CONTRIBUTING.md) has the contributor workflow. [`docs/AUTHORING.md`](docs/AUTHORING.md)
-is the guide to writing templates; the API and template contract is specified under [`openspec/specs/`](openspec/specs/).
+[`CONTRIBUTING.md`](CONTRIBUTING.md) lists the checks to run before submitting a change.
