@@ -9,8 +9,7 @@ generating [Typst](https://typst.app/) source on the fly and compiling it in-pro
 
 Every piece of work gets its own git **worktree**, not just a branch, and this one does not care what
 kind of work it is: a branch shares one working directory, so two sessions collide, and sessions here
-do run concurrently. The loop creates its own worktree for a behavior change. For work outside the
-loop, create one explicitly:
+do run concurrently. Create one explicitly:
 
 ```bash
 git worktree add .worktrees/issue-<N> -b issue-<N>-<slug>   # start
@@ -34,8 +33,7 @@ only after performing the thing, and never write a step whose completion nothing
 saying to add an HTTP test is not satisfied by a unit test one layer below the status code.
 
 **A transcript belongs in a log, not in this context and not in the repository.** Run artifacts go to
-`.agent-runs/` at the worktree root for manual work; the loop keeps its own invocation logs outside
-the committed change. `.gitignore` excludes `.agent-runs/`, so a `git add -A` stages the work and
+`.agent-runs/` at the worktree root. `.gitignore` excludes `.agent-runs/`, so a `git add -A` stages the work and
 nothing else. Untracked was not enough: it left every commit depending on whoever ran it noticing the
 dotfiles (#255). An earlier convention committed raw agent captures into the repository, and 19 of
 them reached 47,190 lines against 893 lines of actual record in the worst case (#244).
@@ -50,8 +48,7 @@ Behavior changes, and nothing else. **Behavior means labeler's**: the API, the t
 layout model, the coordinates and the error contract, which is what `docs/SPEC.md` froze and what
 every capability under `openspec/specs/` names.
 
-The harness is not that, however much its own behavior changes. `.openspec-loop.yml`, the root npm
-manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `docs/WORKFLOW.md` and
+The harness is not that, however much its own behavior changes. The root npm manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `docs/WORKFLOW.md` and
 `openspec/config.yaml` say how a change gets made, not what the service does, and no capability under
 `openspec/specs/` is theirs to name.
 
@@ -66,8 +63,8 @@ ends as one commit that closes it.
 
 A correction to a published spec under `openspec/specs/` is not that lane, however much it reads like
 a documentation fix. Those files are written by archive and never by hand, so the correction arrives
-as a delta, and a delta is what sends a change through the loop. What it does not have is code: the
-deliverable is the delta itself; the brief and plan state that no implementation is required (#313).
+as a delta, and a delta is what makes it a change. What it does not have is code: the deliverable is
+the delta itself; the proposal states that no implementation is required (#313).
 
 Size decides nothing, and neither does effort. A nine-line handler check that alters behavior is a
 full change; a five-hundred line documentation rewrite is not. There is no lane to declare, no
@@ -77,34 +74,13 @@ change one, so discovering mid-work that you need one costs the review and nothi
 What no gate can decide is whether a diff *should* have carried a delta. A commit with no change
 folder is checked by nobody, which `docs/WORKFLOW.md` records under what is not guaranteed.
 
-## The loop
+## Making a change
 
-A change to labeler's behavior uses the published `openspec-loop` CLI, pinned to 0.1.0 in the root
-npm manifest. Run `npm ci` to install it, then invoke `npx --no-install openspec-loop`. Its OpenSpec
-dependency supplies the matching CLI; do not substitute a global installation.
+A change to labeler's behavior uses plain [OpenSpec](https://github.com/Fission-AI/OpenSpec) with its built-in `spec-driven` schema. The CLI is pinned in the root npm manifest: run `npm ci`, then `npx --no-install openspec`; do not substitute a global installation.
 
-**Drive it with `change <issue#>`**, using the copied `change` skill in `.agents/skills/change/`
-or `.claude/skills/change/`. Start from a clean default-branch checkout at `origin/main`. The skill
-reads and scopes the issue, supplies its requirements as a brief, and starts the loop. The CLI creates
-the worktree, plans, reviews, generates tasks, implements, tests, reviews the implementation and
-archives. Authors and reviewers are different named instances. Machine-specific role assignments
-and instances belong in `.openspec-loop.local.yml`.
+In the change's worktree: `/opsx:propose` writes the proposal, delta specs, design and tasks, with literal `Fixes #N` in the proposal. A person reviews that plan before implementation. `/opsx:apply` implements, checking each task only after performing it. Run the gates below and `npx --no-install openspec validate --all --strict`, then `/opsx:archive` syncs the deltas into `openspec/specs/` and moves the folder to `openspec/changes/archive/`. Commit the result as one commit with `Fixes #N`.
 
-The loop commits stages as it goes and resumes from committed state. It stores numbered review
-records under the change's `reviews/` directory. Follow its printed continuation command from the
-change worktree after a stop; do not reconstruct the legacy stage sequence or write review records
-by hand. Project rules live in `.openspec-loop.yml`; personal instance settings belong in the
-gitignored `.openspec-loop.local.yml`.
-
-Delivery is `mode: commit` with `squash: true`: the CLI combines the stage commits, runs landing
-checks and leaves the resulting branch local. It does not push or merge. Successful delivery removes
-the worktree by default and keeps the branch. Human approval is required before merging into `main`.
-CI runs `openspec-loop check` against the committed range. The package installs no Git hooks.
-After integration, unset a retired `core.hooksPath` only when no legacy worktree needs it; that
-clone-local setting is shared across worktrees. See the setup instructions in `docs/WORKFLOW.md`.
-
-See [`docs/WORKFLOW.md`](docs/WORKFLOW.md) for what the loop guarantees and where it stops for a
-human.
+See [`docs/WORKFLOW.md`](docs/WORKFLOW.md) for the full sequence and what no check covers.
 
 ## Commands
 
@@ -159,14 +135,7 @@ one line saying what stopped being true. Cite an issue where the reason lives th
 restating it. No `Co-Authored-By`, no "Generated with", no AI attribution of any kind, whatever your
 harness injects by default.
 
-The loop's squash message is generated as the change name followed by `proposal.md`
-(`openspec-loop` 0.1.0, `src/commands/landing.ts:1096`). It does not use the manual
-subject/body format. Include literal `Fixes #N` in the proposal as `openspec/config.yaml` requires,
-so the generated landing commit closes its issue when merged and pushed. Do not amend that checked
-delivery commit merely to reformat its message.
-
-Nothing is pushed by the loop and no branch run is waited for. After human approval, from the
-default-branch checkout, integrate the delivered branch:
+Nothing is pushed before approval and no branch run is waited for. After human approval, from the default-branch checkout, integrate the change branch:
 
 ```bash
 git merge --ff-only <change-branch> && git push
@@ -184,24 +153,20 @@ nothing until it is fixed forward.
 records that a branch outlived `main` and nothing else: of the 163 merges on `main`, 35 bring `main`
 into a branch, and 21 of those carry no message beyond `Merge remote-tracking branch 'origin/main'`.
 It also breaks every check that reads history through a single base ref, because a merge leaves two
-previous commits for that one ref to explain. The CLI's landing and CI checks enforce linear change
-history; there are no local hooks to enforce it on arbitrary manual commits.
+previous commits for that one ref to explain.
 
 Integration is `--ff-only`, which after a rebase always succeeds and leaves no bubble. `--no-ff` stays
 for a branch whose boundary says something, which is what the milestone merges did.
 
-**A change lands as one commit.** The loop's `delivery.squash: true` combines its stage commits
-before landing checks. Outside the loop, keep the change to one commit. Never integrate with
-`git merge --squash`, which discards the reviewed delivery commit and its message.
+**A change lands as one commit.** Never integrate with `git merge --squash`, which discards the
+reviewed commit and its message.
 
 **Never rewrite `main`, or any ref another session consumes.** That is the whole scope of the rule, and
 a change branch is outside it: it is committed locally and deleted once merged.
 
-If `main` moved, rebase the change branch before its final review and checks. Commit delivery does
-not automatically update a stale branch for later manual integration, and the CLI's `rebase`
-command only supports merge delivery. A manual rebase needs renewed review evidence and checks.
-Never bypass a failed
-fast-forward by merging `main` into the change or by landing code changed after review (#342).
+If `main` moved, rebase the change branch and rerun the gates before asking for approval. Never
+bypass a failed fast-forward by merging `main` into the change or by landing code changed after
+review (#342).
 
 ## Breaking changes, until 1.0
 
@@ -248,11 +213,6 @@ rationale. The 31 records written after ADR-0057 are gone (#378): each duplicate
 `openspec/changes/archive/` keeps permanently, and every pointer that named one now names the issue
 whose folder holds it. Rationale for a change lives in its `proposal.md` and `design.md`, and the
 contract lives in `openspec/specs/` (#285).
-
-`openspec/schemas/openspec-loop/` is what the CLI reads, named by `openspec/config.yaml`. It is copied
-from the published loop's source repository because the npm package does not include the schema.
-On a loop upgrade, update that copy and the copied `change` skills alongside the dependency, and
-review them together. Keep labeler-specific rules in `openspec/config.yaml`.
 
 `openspec/config.yaml` (`context`, `rules.*`) supplies project guidance to OpenSpec artifacts.
 It restates rules from this file on purpose, so the workflow stands alone.
@@ -326,8 +286,7 @@ makes them right is the test that reads them.
 
 - `CLAUDE.md` is a symlink to this file, so the two names are one file. Put personal,
   machine-specific instructions in `CLAUDE.local.md` instead; it is gitignored and loads alongside.
-  Which agents are installed and authenticated is that kind of fact, and so is any per-vendor cap on
-  how many review passes are worth spending.
+  Which agents are installed and authenticated is that kind of fact.
 - The `openspec-*` skills and `opsx` commands under `.claude/`, `.agent/`, `.agents/`, `.opencode/`
   are **generated** (43 files; the 24 `SKILL.md` manifests record `generatedBy: 1.9.0`). Never
   hand-edit them. To upgrade: upgrade the CLI, `openspec update --force`, review all four trees,

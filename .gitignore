@@ -13,7 +13,6 @@
 ui/node_modules
 ui/dist
 /node_modules/
-/.openspec-loop.local.yml
 
 # Superpowers scratch: brainstorm specs, implementation plans, SDD ledgers (CLAUDE.md)
 /docs/superpowers/

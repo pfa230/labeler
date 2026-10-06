@@ -2,6 +2,6 @@
   "name": "labeler-workflow",
   "private": true,
   "devDependencies": {
-    "openspec-loop": "0.1.0"
+    "@fission-ai/openspec": "1.13.0"
   }
 }

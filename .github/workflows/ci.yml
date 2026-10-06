@@ -101,9 +101,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Set up Node
         uses: actions/setup-node@v7
@@ -111,7 +108,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Install workflow dependencies
+      - name: Install OpenSpec
         run: npm ci
 
       - name: Doctor
@@ -122,27 +119,6 @@ jobs:
 
       - name: Validate archived changes
         run: npx --no-install openspec validate --archived --no-interactive
-
-      - name: Establish the default branch ref
-        run: |
-          git fetch --no-tags origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
-          git symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$DEFAULT_BRANCH"
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-
-      - name: Check landing range
-        run: |
-          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
-            base=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)
-            npx --no-install openspec-loop check --base "$base" --head-ref "$GITHUB_HEAD_REF" --target-ref "$GITHUB_BASE_REF"
-          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            npx --no-install openspec-loop check --base HEAD^ --head-ref "$DEFAULT_BRANCH" --target-ref none
-          else
-            npx --no-install openspec-loop check --base "$GITHUB_EVENT_BEFORE" --head-ref "$GITHUB_REF_NAME" --target-ref none
-          fi
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
 
   build:
     needs: [rust, ui]
