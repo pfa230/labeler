@@ -1,10 +1,8 @@
 //! The `details.reason` vocabulary.
 //!
-//! Each slug is API: clients switch on it, so renaming one is a breaking change. The macro keeps
-//! `ALL` structurally complete — a variant cannot be added without appearing in it, which is what
-//! makes the completeness test in `errors.rs` meaningful. Slugs are written out beside their
-//! variants rather than derived from them, so renaming a variant does not silently move the wire
-//! value.
+//! Each slug is API: clients switch on it, so renaming one is a breaking change. Slugs are written
+//! out beside their variants rather than derived from them, so renaming a variant does not silently
+//! move the wire value.
 
 macro_rules! reasons {
     ($($variant:ident => $slug:literal,)+) => {

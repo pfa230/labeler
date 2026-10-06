@@ -65,9 +65,8 @@ Request path `api.rs → render/`; template path `templates.rs → parse.rs → 
 - **Coordinates.** Bottom-left origin, y-up, in the template `unit`. Typst is top-left, so the renderer flips with `frame_height_units - top`. A `Container` re-bases children into its padded inner box via a fresh `RenderContext`.
 - **Sizing** (`resolver.rs`). An extent is a number, `content` or `fill`. `source_of` is the only place a spelling is classified, and `resolve`, `available` and `requirement` are shared by load-time validation and render-time resolution, so the two cannot drift. Adding a source or bound means editing `resolver.rs` alone.
 - **Rendering** (`render/mod.rs`). Walks the layout emitting Typst markup; PNG via `typst-render`, sheets as one clipped box per slot via `typst-pdf`. `render/helpers.rs` holds escaping, length formatting, QR SVG generation and `ttf-parser` text fitting.
-- **Errors.** `TemplateError` quarantines; `AppError` is the HTTP error, serializing to `{ "error": { code, message, details } }`. Add kinds as `AppError` constructors so `code` strings stay stable. A test checks that the `errors` spec's reason table matches `Reason::ALL` exactly.
+- **Errors.** `TemplateError` quarantines; `AppError` is the HTTP error, serializing to `{ "error": { code, message, details } }`. Add kinds as `AppError` constructors so `code` strings stay stable.
 - **OpenAPI.** Register every API model in `src/openapi.rs`.
-- Never share a `target/` between worktrees: tests read spec files through `CARGO_MANIFEST_DIR`.
 
 ## Templates are visual artifacts
 

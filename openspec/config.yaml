@@ -7,7 +7,7 @@ context: |
   The spec is one capability per domain under `openspec/specs/`: templates, parameters, interpolation,
   layout, text, rendering, errors, auth, printing, settings, connections, ui. Read only the domains a
   change touches. Every error `reason` slug is listed once, in the `errors` spec's "Reason slugs"
-  table; a test keeps that table equal to `Reason::ALL`.
+  table.
 
 rules:
   proposal:
