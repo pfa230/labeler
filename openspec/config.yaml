@@ -1,4 +1,4 @@
-schema: openspec-loop
+schema: spec-driven
 
 context: |
   Labeler is a stateless label-rendering REST service in Rust (axum). It loads YAML label templates
@@ -34,16 +34,14 @@ context: |
   Tracker. GitHub issues and milestones are the sole live backlog. Every change corresponds to
   exactly one open issue.
 
-  Isolation. One change, one git worktree, one issue. `npx --no-install openspec-loop run --change <name>`
-  creates the change's worktree from a clean default-branch checkout at `origin/<default>`.
-  Supply the accepted issue's requirements in the brief; the runtime does not fetch GitHub issues.
-  Run continuations from the change's worktree. An unrelated hotfix gets its own worktree;
+  Isolation. One change, one git worktree, one issue. Create the change's worktree from an
+  up-to-date `origin/main` and work only there. An unrelated hotfix gets its own worktree;
   never switch branches inside a change's worktree.
 
-  Gates. `.openspec-loop.yml` declares the commands the runtime runs before delivery:
-  `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test`,
-  `cargo build`, and `npm --prefix ui run lint`, `npm --prefix ui run test`,
-  `npm --prefix ui run build`. Keep Rust build output local to each worktree.
+  Gates. Before committing, run every gate the diff touches: `cargo fmt --check`,
+  `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` for `src/` and
+  `tests/`; `npm --prefix ui run lint`, `npm --prefix ui run test`, `npm --prefix ui run build`
+  for `ui/src/`. Keep Rust build output local to each worktree.
   Never silence a lint with `#[allow(clippy::...)]`; fix the root cause.
   Templates are visual artifacts: a YAML edit that parses and renders without error is not proof the
   label looks right. Use a render -> inspect -> fix loop against a PNG before calling a template done.
@@ -52,7 +50,6 @@ rules:
   proposal:
     - >-
       Include `Fixes #N` for the GitHub issue this change implements in the first section.
-      Squash delivery uses the proposal as its commit body, so this closes the issue on merge.
       Exactly one open issue per change.
     - >-
       Keep scope inside that issue's accepted scope. Work discovered mid-change that falls outside
@@ -91,22 +88,12 @@ rules:
       Tasks are execution steps for this change only. They are not a backlog, so never park future
       work as an unchecked task. Open a GitHub issue instead.
     - >-
-      Verify the affected behavior with appropriate tests. The runtime runs the declared gates
-      from `.openspec-loop.yml`; no task may claim a check passed before it actually ran.
+      Verify the affected behavior with appropriate tests. No task may claim a check passed
+      before it actually ran.
 
 operations:
   apply:
     guidance:
-      - >-
-        Use `npx --no-install openspec-loop run` for the automated workflow. The runtime commits stage output,
-        runs the declared tests, and obtains an independent implementation review. For a manual
-        workflow, commit the implementation before `npx --no-install openspec-loop review implement --change
-        <name>`; the review covers committed content and writes a numbered record under
-        `reviews/implement-*.md`. Never manufacture or refresh a verdict by hand.
-      - >-
-        The reviewer must be a different named participant from every producer, with a read-only
-        tree. Implementation requires APPROVE; requested fixes require a revision and fresh review.
-        Do not archive or deliver while the current review refuses the implementation.
       - >-
         Check a task only after performing it. A checked box is a claim the next reader trusts
         instead of redoing the work. A task saying to add an HTTP test is not satisfied by a unit
@@ -128,29 +115,18 @@ operations:
   archive:
     guidance:
       - >-
-        Let `npx --no-install openspec-loop run` perform archive and delivery. For a manual workflow, use
-        `npx --no-install openspec-loop archive --change <name>` only after current approving plan and
-        implementation reviews and completed tasks. Sync every delta into `openspec/specs/`;
-        never archive without syncing. A change declaring `skip_specs: true` has no deltas.
+        Archive only after the tasks are complete and the gates pass. Sync every delta into
+        `openspec/specs/`; never archive without syncing. A change declaring `skip_specs: true`
+        has no deltas.
       - >-
-        The runtime's archive checks compare published specs with replayed deltas. Its numbered
-        review records carry participant identities and committed subject manifests; the old
-        `diff-review.md` and tree-digest format are not used.
-      - >-
-        Delivery uses `mode: commit` and `squash: true`: one local landing commit, with no push
-        or merge. Include `Fixes #N` and explain why the change is needed in its commit message.
-        Never add AI attribution. Successful delivery removes the linked worktree and retains
-        the branch unless local cleanup settings keep the worktree.
+        Commit the implementation, the published specs and the archived change folder as one
+        commit whose message includes `Fixes #N` and explains why the change is needed. Never add
+        AI attribution.
       - >-
         Integration requires human approval. Fast-forward the approved branch into the default
         branch, then push. Never merge main into a change branch, never rewrite main or any ref
-        another session consumes. Commit delivery does not rebase onto a moved default branch;
-        if integration is no longer a fast-forward, stop and obtain fresh review evidence for
-        the updated candidate before integrating it.
-      - >-
-        Landing checks read committed history. Run `npx --no-install openspec-loop check --target-ref <ref>`
-        on the exact commit to integrate, where <ref> is the destination ref. A refusal or an
-        operational error stops delivery. Re-run checks after any later commit.
+        another session consumes. If main moved, rebase the change branch and rerun the gates
+        before integrating.
       - >-
         The `openspec-*` skills and `opsx` commands under `.claude/`, `.agent/`, `.agents/`
         and `.opencode/` are generated by the OpenSpec CLI. Never hand-edit them. Upgrade the
