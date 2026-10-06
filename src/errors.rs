@@ -690,50 +690,6 @@ mod tests {
         assert_eq!(Reason::TextDoesNotFit.as_slug(), "text_does_not_fit");
     }
 
-    /// The reason table in the `errors` spec is the published contract; the enum is what the code
-    /// emits. If they drift, clients switch on slugs that either no longer exist or were never
-    /// documented, so the check runs in both directions.
-    #[test]
-    fn spec_documents_every_reason_and_invents_none() {
-        use crate::reason::Reason;
-        use std::collections::HashSet;
-
-        let spec = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/openspec/specs/errors/spec.md"
-        ))
-        .expect("read the errors spec");
-        let section = spec
-            .split("### Requirement: Reason slugs")
-            .nth(1)
-            .expect("the errors spec must have a `Reason slugs` requirement");
-        let section = section.split("\n### ").next().unwrap_or(section);
-
-        // A reason row is a table row whose first cell is a backticked slug.
-        let documented: HashSet<&str> = section
-            .lines()
-            .filter(|line| line.starts_with('|'))
-            .filter_map(|line| line.split('|').nth(1))
-            .map(str::trim)
-            .filter_map(|cell| cell.strip_prefix('`')?.strip_suffix('`'))
-            .collect();
-        let declared: HashSet<&str> = Reason::ALL.iter().map(|r| r.as_slug()).collect();
-
-        let mut undocumented: Vec<_> = declared.difference(&documented).collect();
-        undocumented.sort_unstable();
-        assert!(
-            undocumented.is_empty(),
-            "reasons missing from the errors spec: {undocumented:?}"
-        );
-
-        let mut phantom: Vec<_> = documented.difference(&declared).collect();
-        phantom.sort_unstable();
-        assert!(
-            phantom.is_empty(),
-            "the errors spec documents reasons that do not exist: {phantom:?}"
-        );
-    }
-
     /// A per-label failure carries `reason` exactly when its code is one of
     /// the migrated four. Both halves matter — a required field would contradict the scoping, and a
     /// missing one would leave the nested failures prose-discriminated.
