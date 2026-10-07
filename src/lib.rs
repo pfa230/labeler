@@ -7700,6 +7700,24 @@ layout:
     }
 
     #[test]
+    fn openapi_connection_credential_required_on_create_only() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let schemas = doc.components.as_ref().unwrap().schemas.clone();
+        let required = |name: &str| -> Vec<String> {
+            let schema = serde_json::to_value(&schemas[name]).unwrap();
+            schema["required"]
+                .as_array()
+                .expect("required array")
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        };
+        assert!(required("ConnectionCreate").contains(&"credential".to_string()));
+        assert!(!required("ConnectionUpdate").contains(&"credential".to_string()));
+    }
+
+    #[test]
     fn openapi_print_request_is_strict() {
         use utoipa::OpenApi;
         let doc = crate::openapi::ApiDoc::openapi();
