@@ -2,32 +2,30 @@
 
 ## Purpose
 
-Configured printers and how labeler talks to them: printer CRUD and the default printer, the `cups` driver over IPP, capability probing and negotiation, the wire format per job, and the media-width check.
+Configured printers and how labeler talks to them over IPP: printer CRUD and the default printer, capability probing and negotiation, the wire format and media size per job, and the job log.
 
 ## Requirements
 
 ### Requirement: Printer records
 
-A printer SHALL be `{id, name, kind, config, is_default}`; `kind` selects the driver and the only kind is `cups`. `is_default` is read-only and ignored on write.
+A printer SHALL be `{id, name, uri, username?, password?, ca_cert?, insecure?, render?}` (fields in `Printer fields`). `POST` SHALL take the whole record; `PUT` SHALL take it without `id`, the path naming the printer, and SHALL replace the printer with it.
 
 | Method | Path | Success | Refusals |
 |---|---|---|---|
 | GET | `/api/printers` | list by id | |
-| POST | `/api/printers` | `201`, `is_default: false` | `409 PrinterExists` |
-| GET | `/api/printers/{id}` | printer | `404 PrinterNotFound` |
-| PUT | `/api/printers/{id}` | printer, `is_default` kept | `400` reason `printer_id_mismatch` if body id ≠ path; `404 PrinterNotFound` |
-| DELETE | `/api/printers/{id}` | `204` | `404 PrinterNotFound` |
-| POST | `/api/printers/{id}/default` | `204`; the only default | `404 PrinterNotFound`, old default kept |
-| DELETE | `/api/printers/{id}/default` | `204`, idempotent for any id | |
+| POST | `/api/printers` | `201` | `409 Conflict` when the id is taken |
+| GET | `/api/printers/{id}` | printer | `404 NotFound` |
+| PUT | `/api/printers/{id}` | printer | `404 NotFound` |
+| DELETE | `/api/printers/{id}` | `204` | `404 NotFound` |
 
-Before the existence checks, create and replace SHALL refuse an id that is empty or outside `[A-Za-z0-9_-]` with `400` reason `printer_id_invalid`, and a blank name, unknown kind or invalid config with `422 PrinterInvalid`.
+Create and replace SHALL refuse an id that is empty or outside `[A-Za-z0-9_-]` with `400` reason `printer_id_invalid`, and a blank name or a field that breaks its rule with `400` reason `printer_invalid`.
 
-#### Scenario: Moving the default
+#### Scenario: Replacing a printer
 
-- **WHEN** `p1` is default and a client posts `/api/printers/p2/default`
-- **THEN** `p2` is the only printer with `is_default: true`
+- **WHEN** a printer with `insecure: true` is replaced by a body without `insecure`
+- **THEN** the stored printer has `insecure: false`
 
-### Requirement: cups config
+### Requirement: Printer fields
 
 | Key | Type | Rule |
 |---|---|---|
@@ -39,21 +37,21 @@ Before the existence checks, create and replace SHALL refuse an id that is empty
 | `render.color_mode` | string | `color` or `bilevel`; absent means negotiate |
 | `render.resolution` | integer | 1 to 1200 DPI; absent means negotiate |
 
-A broken rule SHALL be `422 PrinterInvalid`; other keys SHALL be stored as sent. `password` SHALL never appear in a response. On `PUT` an absent `password` keeps the stored one, `null` clears it and a string replaces it.
+`password` SHALL never appear in a response. On `PUT` an omitted `password` keeps the stored one, `""` clears it and any other string replaces it.
 
 #### Scenario: Password survives an edit
 
-- **WHEN** a printer with a stored password is replaced by a config without `password`
+- **WHEN** a printer with a stored password is replaced by a body without `password`
 - **THEN** prints still authenticate with the stored password
 
-### Requirement: Address screening
+### Requirement: Default printer
 
-Before any IPP request labeler SHALL refuse a printer host resolving to any loopback, link-local, unspecified or multicast address (IPv4-mapped IPv6 judged as IPv4); private LAN addresses are allowed. Refusal makes a probe `unreachable`, a capability query fail open and a send fail.
+`default_printer_id` SHALL be a known setting (see `settings`) whose in-code default is `null`. `PUT /api/settings/default_printer_id` with `{ "value": <string> }` SHALL trim the string, store it and reflect it back, and SHALL fail with `400` and `details.reason` `setting_value_invalid` when the value is not a string, is blank, or names no existing printer. `DELETE` SHALL clear it with `204`. Deleting the printer it names SHALL clear it in the same atomic operation.
 
-#### Scenario: Loopback printer
+#### Scenario: Deleting the default printer
 
-- **WHEN** a client probes `ipp://127.0.0.1/ipp/print`
-- **THEN** the probe answers `200` with `status: "unreachable"`
+- **WHEN** `default_printer_id` names `p1` and a client deletes `p1`
+- **THEN** the response is `204` and `GET /api/settings` reports `default_printer_id` as `null` with `is_default: true`
 
 ### Requirement: Printer capabilities
 
@@ -65,7 +63,7 @@ Capabilities SHALL come from IPP `Get-Printer-Attributes` with a 3-second timeou
 - **media width**: `media-col-ready` → `media-size` → `x-dimension` in hundredths of a millimetre, when positive.
 - **model**: `printer-make-and-model`.
 
-`POST /api/printers/probe` with `{kind?, config}` (`kind` defaults to `cups`, no stored password used) SHALL validate like create (`422 PrinterInvalid`) and answer `200` with `{status: "ok", capabilities: {model, media_width_mm, resolution_dpi, color, accepts_png}}`, `color` being `bilevel`, `color`, or `unknown` when no colour mode or raster type was advertised, or `{status: "unreachable", detail}`.
+`POST /api/printers/probe` with the printer's connection fields (`uri`, `username`, `password`, `ca_cert`, `insecure`, `render`; no `id` or `name`, no stored password used) SHALL validate them like create (`400` reason `printer_invalid`) and answer `200` with `{status: "ok", capabilities: {model, media_width_mm, resolution_dpi, color, accepts_png}}`, `color` being `bilevel`, `color`, or `unknown` when no colour mode or raster type was advertised, or `{status: "unreachable", detail}`.
 
 #### Scenario: Grey raster is not bilevel
 
@@ -74,7 +72,7 @@ Capabilities SHALL come from IPP `Get-Printer-Attributes` with a 3-second timeou
 
 ### Requirement: Render negotiation
 
-For a print job, colour mode and resolution SHALL each resolve independently to the `render` override, else the negotiated value: colour `bilevel` only when the printer is bilevel and accepts PNG, else `color`; resolution the reported DPI, else the template `dpi`. Capabilities SHALL be queried only when a field is unset or a media check is pending.
+For a print job, colour mode and resolution SHALL each resolve independently to the `render` override, else the negotiated value: colour `bilevel` only when the printer is bilevel and accepts PNG, else `color`; resolution the reported DPI, else the template `dpi`. Capabilities SHALL be queried only when a field is unset.
 
 #### Scenario: One field overridden
 
@@ -90,27 +88,27 @@ A `single` template with resolved colour mode `bilevel` SHALL be sent as the 1-b
 - **WHEN** a sheet template prints to a printer with `render.color_mode: bilevel`
 - **THEN** it is sent as `application/pdf`
 
-### Requirement: Media check
+### Requirement: Media size
 
-Before rendering a `single` template that declares `media_width`, labeler SHALL compare it in millimetres (1 in = 25.4 mm) with the loaded media width and refuse a difference over 1 mm with `409 MediaMismatch`, message `template requires {want}mm media but {got}mm is loaded`, sending nothing. No `media_width`, no reported width or a failed query SHALL let the print proceed.
+Every job for a template that declares `media_width` SHALL carry IPP `media-col` whose `media-size` `x-dimension` is `media_width` in hundredths of a millimetre (1 in = 25.4 mm), rounded to the nearest integer. The printer judges whether its loaded media fits; a job it refuses fails like any other.
 
-#### Scenario: Wrong tape loaded
+#### Scenario: Tape width sent with the job
 
-- **WHEN** a template declares `media_width: 24` mm and the printer reports 12 mm
-- **THEN** the print is `409 MediaMismatch` and no job is sent
+- **WHEN** a template declares `media_width: 24` mm and prints
+- **THEN** each job carries `media-col` with `media-size` `x-dimension` `2400`
 
 ### Requirement: Job log
 
-Every job sent SHALL be recorded with template, printer, status `ok` or `failed`, error text and the caller's actor id. Retention is the `settings` key `job_log_retention_days`.
+Each print request SHALL record its template and the caller's actor: the user, whether signed in or acting through one of their API tokens, or `local` in no-auth mode.
 
-#### Scenario: Failed job
+#### Scenario: A token prints as its owner
 
-- **WHEN** a send fails
-- **THEN** a `failed` job with that error is recorded
+- **WHEN** user A prints template `pallet` through one of A's API tokens
+- **THEN** the job log records `pallet` with actor A
 
 ### Requirement: Printers UI
 
-Settings SHALL list printers (name, kind, URI, Default radio) plus a "No default printer" radio that clears the default. The add/edit form SHALL hold id (new only), name, address, Test connection and an "Advanced: override printer settings" disclosure with colour mode (`auto (use printer)`, `color`, `bilevel`) and resolution (empty is auto); auto values are omitted from `render`. It SHALL refuse a bad id, empty name or non-`ipp(s)://` address before sending, and an edit SHALL keep the stored `username`, `ca_cert` and `insecure`. Test connection SHALL show the model (or "Printer reachable") with media width, DPI, colour and PNG, or "Couldn't reach printer: {detail}". The print form SHALL preselect the default printer, else the only printer, until the user picks.
+Settings SHALL list printers (name, URI, Default radio) plus a "No default printer" radio; choosing a radio writes or clears `default_printer_id`. The add/edit form SHALL hold id (new only), name, address, Test connection and an "Advanced: override printer settings" disclosure with colour mode (`auto (use printer)`, `color`, `bilevel`) and resolution (empty is auto); auto values are omitted from `render`. It SHALL refuse a bad id, empty name or non-`ipp(s)://` address before sending, and an edit SHALL keep the stored `username`, `ca_cert` and `insecure`. Test connection SHALL show the model (or "Printer reachable") with media width, DPI, colour and PNG, or "Couldn't reach printer: {detail}". The print form SHALL preselect the default printer, else the only printer, until the user picks.
 
 #### Scenario: Sole printer is preselected
 

@@ -22,23 +22,23 @@ Every boxed item (`text`, `qr`, `image`, `container`) SHALL accept these placeme
 | Key | Type | Default | Rule |
 | --- | --- | --- | --- |
 | `at` | `[x, y]` | `[0, 0]` | Lower-left anchor in template units; components may be edge-relative. Refused on a packed child. |
-| `size` | `[w, h]` | none | Each component a number, a `"{param}"` reference to a `length`, `number` or `integer` parameter, `content`, or `fill`. Any other value, including `auto`, is refused at load. |
+| `size` | `[w, h]` | none | Each component a number, a `"{param}"` reference to a `number` or `integer` parameter, `content`, or `fill`. Any other value, including `auto`, is refused at load. |
 | `to` | `[x, y]` | none | Opposite (upper-right) corner; extent is `to − at` after both resolve. Refused on a packed child. |
-| `max_w`, `max_h` | number | none | Cap on a content or frame extent on that axis; must be greater than 0. |
+| `max_w`, `max_h` | number | none | Cap on a `size` component written `content` or `fill` on that axis; must be greater than 0. Refused on any other extent, including any `to`. |
 | `rotate` | number (degrees) | none | Container only; see rotation. |
 | `when` | map | none | Gate; see conditional visibility. |
 
-`size` and `to` SHALL be mutually exclusive. A `text`, `qr` or `image` MUST set exactly one of them; a `container` that sets neither SHALL behave as `size: [fill, fill]`. A non-container item carrying `rotate` SHALL be refused at load.
+`size` and `to` SHALL be mutually exclusive. Every boxed item, containers included, MUST set exactly one of them; one that sets neither SHALL be refused at load naming its layout path. A non-container item carrying `rotate` SHALL be refused at load.
 
 #### Scenario: Both size and to are refused
 
 - **WHEN** an item declares both `size: [10, 5]` and `to: [20, 10]`
 - **THEN** the template is refused at load, naming the item
 
-#### Scenario: A container with no extent fills its parent
+#### Scenario: A container with no extent is refused
 
 - **WHEN** a `container` declares neither `size` nor `to`
-- **THEN** it resolves exactly as `size: [fill, fill]`
+- **THEN** the template is refused at load, naming the container's path
 
 ### Requirement: Coordinates are bottom-left, y-up, and may be edge-relative
 
@@ -65,26 +65,27 @@ Every extent on each axis SHALL take its behavior from its **source**:
 | author | a number; a `"{param}"` reference; a `to` whose corners are both non-negative or both edge-relative | as written |
 | content | `content` | the item's intrinsic size |
 | frame | `fill`; a `to` with a non-negative `at` and an edge-relative `to` | the available extent |
-| author, conditional | a `to` with an edge-relative `at` and a non-negative `to` (a **shrinking `to`**) | `to − at − F`, only on a resolved axis |
+
+A boxed item pairing an edge-relative `at` with a non-negative `to` on the same axis SHALL be refused at load.
 
 The **available extent** on an axis SHALL be `frame − resolve(at) − inset`, where `inset` is the magnitude of an edge-relative `to` or zero. An item with no anchor (a packed child) SHALL have the whole frame extent available.
 
 1. An authored extent SHALL be checked: one that does not fit its frame is refused (at load when written in the template; at render with `item_out_of_frame` when it comes from a request value). A content or frame extent SHALL be `min(source value, max_w/max_h, available)` and so never overflows.
-2. `max_w`/`max_h` SHALL bind content and frame extents and SHALL be inert on authored ones. Pairing a cap with `to` SHALL NOT be an error.
-3. Only content and frame extents SHALL demand an intrinsic size.
-4. A content or frame extent of exactly zero SHALL render an empty box. An authored extent of zero or less written in the template SHALL be refused at load; one supplied through a parameter SHALL fail at render with `size_invalid`. A `to` that inverts SHALL fail with `edge_rect_inverted` (refused at load when it already inverts against the load-time frame), taking priority over `size_invalid`.
+2. Only content and frame extents SHALL demand an intrinsic size.
+3. A content or frame extent of exactly zero SHALL render an empty box. An authored extent of zero or less written in the template SHALL be refused at load; one supplied through a parameter SHALL fail at render with `size_invalid`. A `to` that inverts SHALL fail with `edge_rect_inverted` (refused at load when it already inverts against the load-time frame).
 
 A frame extent SHALL report `min(intrinsic, cap, available)` to its parent while taking the available extent as its box. The two axes are independent.
 
-#### Scenario: A cap binds a chosen size and not a written one
+#### Scenario: A cap binds only a chosen size
 
-- **WHEN** one item declares `size: [content, 10], max_w: 30` with an intrinsic width of 45, and another declares `size: [40, 10], max_w: 30`
-- **THEN** the first resolves to 30 and the second to 40
+- **WHEN** an item declares `size: [content, 10], max_w: 30` with an intrinsic width of 45
+- **THEN** it resolves to 30
+- **AND** `size: [40, 10], max_w: 30`, `size: [content, 10], max_h: 5` and `at: [0, 0], to: [-0.0, 10], max_w: 30` are each refused at load
 
-#### Scenario: A cap binds a stretching to and not a constant one
+#### Scenario: An edge-relative at with a non-negative to is refused
 
-- **WHEN** in a frame 50 wide one item declares `at: [0, 0], to: [-0.0, 10], max_w: 30` and another `at: [0, 0], to: [40.0, 10], max_w: 30`
-- **THEN** the first resolves to 30 and the second to 40, and neither is refused
+- **WHEN** an item declares `at: [-20.0, 0], to: [90.0, 10]`
+- **THEN** the template is refused at load, on a fixed-width label as on a dynamic-width one
 
 #### Scenario: A right-anchored to is a constant
 
@@ -142,12 +143,11 @@ An item's intrinsic size on an axis SHALL be its content's extent multiplied by 
 | --- | --- |
 | `text` | its laid-out block (`text`) |
 | `qr` | `(modules + 2 × quiet_zone) × module_size` |
-| `image`, PNG/JPEG | pixel dimensions × `1/dpi` (unit `in`) or `25.4/dpi` (unit `mm`), using the template's `dpi` |
-| `image`, SVG, per axis | the absolute `width`/`height` converted to the template unit (unitless or `px` uses the pixel scale above); otherwise that axis's `viewBox` extent at the pixel scale; percentage or font-relative dimensions fall through to the `viewBox` |
 | `container` | its children combined by its arrangement, plus padding |
+| `image` | none; an image's box is always authored |
 | `line` | none; a line contributes only through its endpoints |
 
-An absolutely arranged container's intrinsic extent on an axis SHALL be the largest frame requirement among its active children. A `qr` with a content or frame extent and no `module_size` SHALL be refused at load. When a content or frame extent is demanded at render and an SVG has no extent on that axis, or an image's dimension header cannot be parsed, the render SHALL fail with `UnsupportedLayoutItem` reason `intrinsic_size_undefined`; this applies to `src` and `name` images alike and is never decided at load. An authored-extent image SHALL NOT have its dimensions read for sizing. `fit` SHALL NOT affect intrinsic size.
+An absolutely arranged container's intrinsic extent on an axis SHALL be the largest frame requirement among its active children. A `qr` with a content or frame extent and no `module_size` SHALL be refused at load.
 
 #### Scenario: A QR sizes a label
 
@@ -161,19 +161,6 @@ An absolutely arranged container's intrinsic extent on an axis SHALL be the larg
 - **THEN** it is refused at load, naming `module_size`
 - **AND** with `size: [15, 15]` it is accepted
 
-#### Scenario: Image intrinsic sizes
-
-- **WHEN** a `content`-sized image carries a 300 by 150 px PNG on a template with `unit: in`, `dpi: 300`
-- **THEN** it is drawn 1.0 by 0.5
-- **AND** an SVG with `width="1in" height="0.5in"` on a `mm` template is drawn 25.4 by 12.7
-- **AND** an SVG with `width="20mm"` and no `height` in `size: [content, 10]` is drawn 20 by 10
-
-#### Scenario: An SVG with no extent fails at render
-
-- **WHEN** a `content`-sized image carries an SVG with neither absolute dimensions nor a `viewBox`
-- **THEN** the template loads and each render fails with `intrinsic_size_undefined`
-- **AND** the same unreadable bytes in an item with `size: [20, 10]` reach the renderer and fail as `RenderFailed` `typst_compile_failed`
-
 ### Requirement: An item requires of its frame the smallest extent that contains it
 
 An item's **requirement** on an axis SHALL be the smallest frame extent it fits in. Writing `a` and `b` for the insets of an edge-relative `at` and `to`, and **claim** for the item's extent (for a frame source, `min(intrinsic, cap, available)`):
@@ -185,7 +172,6 @@ An item's **requirement** on an axis SHALL be the smallest frame extent it fits 
 | `to`, both non-negative | `to` |
 | `to`, both edge-relative | `a` |
 | `to`, `at` non-negative, `to` edge-relative | `at + claim + b` |
-| shrinking `to` | `max(a, to)` |
 | `line` | the larger of its endpoints' requirements (`v` for non-negative, inset for edge-relative) |
 | packed child | `claim` |
 
@@ -216,45 +202,16 @@ On a dynamic-width `single` the label width SHALL be the largest requirement amo
 - **WHEN** a `container` at `[5, 0]` with `size: [content, 10]` and `padding: 1.0` holds a `container` at `[2, 0]` with `size: [content, 8]` holding a `text` at `[3, 0]` with `size: [7, 6]`
 - **THEN** the inner container is 10 wide, the outer 14, and the outer's requirement is 19
 
-### Requirement: Axis resolution and the shrinking to
+### Requirement: Label dimensions are bounded
 
-A frame axis is **resolved** when its extent is known before the items inside it are sized. The label's height axis SHALL be resolved; its width axis SHALL be resolved on a `sheet` and a fixed-width `single` and unresolved on a dynamic-width `single`. A container's inner axis SHALL be resolved when its extent on that axis is authored; or is a frame source under an edge-relative `at`; or, otherwise, when its enclosing axis is resolved and its source is not `content`. A packed child follows the last clause. `rotate: 90` or `270` SHALL swap the two axes' states; `180` SHALL NOT.
-
-A shrinking `to` SHALL be accepted only on a resolved axis and refused at load otherwise, with a message saying the extent shrinks as the label grows. Where accepted it is an authored extent.
-
-#### Scenario: A shrinking to on a dynamic width
-
-- **WHEN** an item declares `at: [-20.0, 0], to: [90.0, 10]` on a dynamic-width `single`
-- **THEN** it is refused at load
-- **AND** on a fixed-width `single` 100 wide it resolves to 10 wide with requirement 90, and on a frame 80 wide it is refused
-
-#### Scenario: A right-anchored fill container resolves its inner axis
-
-- **WHEN** a dynamic-width `single` carries a `container` at `[-40.0, 0]` with `size: [fill, 20]` holding a child `at: [-20.0, 0], to: [30.0, 10]`
-- **THEN** the template loads
-- **AND** the same child inside a container at `[0, 0]` with `size: [fill, 20]`, or inside a `size: [content, 20]` container, is refused
-
-#### Scenario: A quarter turn moves the state
-
-- **WHEN** a top-level `container` with `rotate: 90` and `size: [fill, 20]` on a dynamic-width `single` holds a child `at: [0, -20.0], to: [5, 90.0]`
-- **THEN** it is refused; with `size: [40, 20]` it is accepted; with `rotate: 180` the child `at: [0, -8.0], to: [5, 15.0]` is accepted
-
-### Requirement: Dynamic width bounds must be ordered
-
-On a dynamic-width `single`, both resolved `width` bounds SHALL first be judged as dimensions (non-positive, non-finite or above `max_label_dimension_mm` fails with `422 UnsupportedLayoutItem` reason `dimension_exceeds_limit`). If the resolved `min` then exceeds the resolved `max`, the render SHALL fail with `400 InvalidRequest` reason `width_bounds_inverted`, before any item is measured, with a message naming both values with the unit and each referenced parameter. Bounds resolve from request values, else defaults, else literals, and the check applies to every render path, including thumbnails and each label of a batch (where it is a per-label failure). Equal bounds SHALL render at that width.
+Every resolved label dimension (a `single`'s `width`, `height` and both dynamic `width` bounds; a `sheet`'s paper and label sizes) SHALL be finite, greater than 0 and at most 1000 mm once converted from the template `unit`; otherwise the render SHALL fail with `422 UnsupportedLayoutItem` reason `dimension_exceeds_limit`. On a dynamic-width `single`, a resolved `min` exceeding the resolved `max` SHALL fail the render with `400 InvalidRequest` reason `width_bounds_inverted`, with a message naming both values with the unit and each referenced parameter. Bounds resolve from request values, else defaults, else literals, and the checks apply to every render path, including thumbnails and each label of a batch (where they are per-label failures). Equal bounds SHALL render at that width.
 
 #### Scenario: A supplied max below min
 
 - **WHEN** a template declares `width: { min: 10.0, max: "{max_width}" }` and a render supplies `max_width: 5`
 - **THEN** the response is `400` `InvalidRequest` with reason `width_bounds_inverted`, naming `max_width`, `5` and `10`
-- **AND** `max_width: 0` instead gives `422` `dimension_exceeds_limit`
+- **AND** `max_width: 0` or, on a `mm` template, `max_width: 1001` instead gives `422` `dimension_exceeds_limit`
 - **AND** `max_width: 10` renders a label 10 wide
-
-#### Scenario: Ordering is checked before items
-
-- **WHEN** the same template has a `text` sized `"{w}"`, and a render supplies `max_width: 5` and `w: 0`
-- **THEN** the response is `400 width_bounds_inverted`
-- **AND** with `max_width: 40` it is `422 UnsupportedLayoutItem` `size_invalid`
 
 ### Requirement: Load-time validation runs the render-time sizing rules
 
@@ -288,42 +245,51 @@ A render-time layout failure message SHALL name the item's layout path (`layout[
 
 ### Requirement: The qr item
 
-A `qr` SHALL accept `value` (required, interpolated, must not be blank), placement, `when`, and an optional `params` block with `error_correction`, `module_size` and `quiet_zone`; unknown keys inside `params` SHALL be ignored. `error_correction` is `L`, `M`, `Q` or `H`, case-insensitive and trimmed, defaulting to `M` when absent or blank; any other value SHALL fail at render with `UnsupportedLayoutItem` reason `qr_error_correction_invalid`. `module_size` is the module pitch in the template unit and MUST be greater than 0. `quiet_zone` is a count of modules, default 0, MUST be at least 0, and need not be whole. The symbol SHALL be drawn with exactly `quiet_zone` modules of margin on each side, as an SVG scaled `contain` into the item's box, whether or not `module_size` is set. A payload that cannot be encoded SHALL fail with `RenderFailed` reason `qr_generation_failed`.
+A `qr` SHALL accept `value` (required, interpolated, must not be blank), placement, `when`, `error_correction`, `module_size` and `quiet_zone`. `error_correction` SHALL be exactly `L`, `M`, `Q` or `H`, default `M`; any other value SHALL be refused at load. `module_size` is the module pitch in the template unit and MUST be greater than 0. `quiet_zone` is a count of modules, default 0, MUST be at least 0, and need not be whole. The symbol SHALL be drawn with exactly `quiet_zone` modules of margin on each side, as an SVG scaled `contain` into the item's box, whether or not `module_size` is set. A payload that cannot be encoded SHALL fail with `422 UnsupportedLayoutItem` reason `qr_payload_invalid`.
 
 #### Scenario: The quiet zone is the requested margin
 
 - **WHEN** a `qr` with `size: [15, 15]`, no `module_size` and `quiet_zone: 2` renders
 - **THEN** the symbol carries a 2-module margin on each side
 
-#### Scenario: A bad error correction level fails at render
+#### Scenario: A bad error correction level is refused at load
 
-- **WHEN** a `qr` declares `params: { error_correction: X }`
-- **THEN** the template loads and the render fails with `qr_error_correction_invalid`
+- **WHEN** a `qr` declares `error_correction: X` or `error_correction: m`
+- **THEN** the template is refused at load, naming `error_correction`
 
 ### Requirement: The image item
 
-An `image` SHALL set exactly one of `src` or `name`, plus placement, `when`, and `fit` (`contain` default, `cover`, `stretch`). `src` is a path under `{LABELER_CONFIG_DIR}/assets/` (interpolated) whose extension (`png`, `jpg`, `jpeg`, `svg`, case-insensitive) decides the format. `name` SHALL name a declared `string` parameter, match `^[a-zA-Z0-9_-]+$`, and be unique among its siblings; its value MUST be a base64 `data:` URI of type `image/png`, `image/jpeg`, `image/jpg` or `image/svg+xml`. The image SHALL be drawn into its box by `fit` and clipped to the box. There is no URL fetching.
+An `image` SHALL set `src` (required, interpolated), plus placement, `when`, and `fit` (`contain` default, `cover`, `stretch`). A resolved `src` starting with `data:` SHALL be a base64 data URI of type `image/png`, `image/jpeg` or `image/svg+xml`; any other resolved `src` is a path under `{LABELER_CONFIG_DIR}/assets/` whose extension (`png`, `jpg`, `jpeg`, `svg`, case-insensitive) decides the format. There is no URL fetching.
 
-Render failures, all `UnsupportedLayoutItem` unless noted: missing data key `422 MissingField`; an array value `field_value_not_scalar`; not a base64 data URI `image_data_invalid`; unsupported MIME or extension `image_format_unsupported`; asset missing `image_asset_missing`; unreadable `image_asset_unreadable`; path escaping the assets directory `image_asset_path_escapes`; assets directory unresolvable `assets_dir_unavailable`.
+An image's box SHALL be authored on both axes (a number, a parameter reference, or a `to` whose corners are both non-negative or both edge-relative); any other extent SHALL be refused at load. The image SHALL be drawn into its box by `fit` and clipped to the box.
+
+Render failures, all `UnsupportedLayoutItem`: not a base64 data URI `image_data_invalid`; unsupported MIME or extension `image_format_unsupported`; asset missing `image_asset_missing`; unreadable `image_asset_unreadable`; path escaping the assets directory `image_asset_path_escapes`; assets directory unresolvable `assets_dir_unavailable`.
 
 #### Scenario: An escaping asset path is refused
 
 - **WHEN** an image declares `src: "../secret.png"`
 - **THEN** the render fails with `image_asset_path_escapes`
 
-#### Scenario: Both sources are refused
+#### Scenario: A constant and a per-label image
 
-- **WHEN** an image declares both `src` and `name`, or neither
+- **WHEN** one image declares `src: "data:image/svg+xml;base64,…"` and another `src: "{photo}"`, and a request supplies `photo` as a PNG data URI
+- **THEN** both images are drawn into their boxes
+
+#### Scenario: An image box from its content is refused
+
+- **WHEN** an image declares `size: [content, 10]` or `size: [fill, 10]`
 - **THEN** the template is refused at load
+- **AND** `size: [20, 10]` or `at: [0, 0], to: [20, 10]` loads
 
 ### Requirement: The line item
 
-A `line` SHALL accept `at` (default `[0, 0]`), `to` (required), optional `stroke` and `when`, and nothing else; it has no box, `size`, `fit` or rotation. Endpoints SHALL resolve in the current frame, may be edge-relative, MUST lie inside the frame, and MUST differ after resolution (within 0.0001); otherwise load refuses the template, or render fails with `coord_out_of_frame`, `line_endpoint_out_of_frame` or `line_degenerate`. An absolute endpoint past `width.max` SHALL be refused at load. A line without `stroke` SHALL draw nothing but is still checked. A line SHALL NOT be a packed child.
+A `line` SHALL accept `at` (default `[0, 0]`), `to` (required), `stroke` (required) and `when`, and nothing else; it has no box, `size`, `fit` or rotation. Endpoints SHALL resolve in the current frame, may be edge-relative, MUST lie inside the frame, and MUST differ after resolution (within 0.0001); otherwise load refuses the template, or render fails with `coord_out_of_frame`, `line_endpoint_out_of_frame` or `line_degenerate`. An absolute endpoint past `width.max` SHALL be refused at load. A line SHALL NOT be a packed child.
 
 #### Scenario: An out-of-frame endpoint is refused
 
 - **WHEN** a `line` on a label 50 wide declares `to: [60, 5]`
 - **THEN** the template is refused at load
+- **AND** a `line` with no `stroke` is refused at load
 
 ### Requirement: Containers establish a padded frame
 
@@ -367,7 +333,7 @@ A `container` MAY carry `flow`, which selects packing for its direct children; w
 | `line_gap` | number ≥ 0 | 0 | Space between lines; inert without `wrap`. |
 | `overflow` | `fail` or `trim` | `fail` | What happens to a child packed past the inner box. |
 
-A missing or unknown `direction`, a negative or non-finite `gap`/`line_gap`, an unknown `overflow`, or `flow: null` SHALL be refused at load naming the key's path. `wrap: true` SHALL be refused unless the container's primary inner axis is resolved, and `overflow: trim` unless both inner axes are resolved, each naming the key. Children SHALL align to the inner box's top edge in a `row` and left edge in a `column`. A flow container under `rotate` SHALL pack in author space.
+A missing or unknown `direction`, a negative or non-finite `gap`/`line_gap`, or an unknown `overflow` SHALL be refused at load naming the key's path. A frame axis is **resolved** when its extent is known before the items inside it are sized. The label's height axis SHALL be resolved; its width axis SHALL be resolved on a `sheet` and a fixed-width `single` and unresolved on a dynamic-width `single`. A container's inner axis SHALL be resolved when its extent on that axis is authored; or is a frame source under an edge-relative `at`; or, otherwise, when its enclosing axis is resolved and its source is not `content`. A packed child follows the last clause. `rotate: 90` or `270` SHALL swap the two axes' states; `180` SHALL NOT. `wrap: true` SHALL be refused unless the container's primary inner axis is resolved, and `overflow: trim` unless both inner axes are resolved, each naming the key. Children SHALL align to the inner box's top edge in a `row` and left edge in a `column`. A flow container under `rotate` SHALL pack in author space.
 
 #### Scenario: A column packs downward
 
@@ -382,19 +348,13 @@ A missing or unknown `direction`, a negative or non-finite `gap`/`line_gap`, an 
 
 ### Requirement: Packed children
 
-A **packed child** is a direct child of a flow container. It SHALL NOT carry `at` or `to`, and SHALL NOT be a `line`; each is refused at load naming the child's path. It SHALL be sized against the padded inner box as an anchorless item, exactly as the same item at `[0, 0]` in an absolutely arranged container. An uncapped `fill` child therefore takes the whole inner extent on that axis: alone it fills the container, and beside a sibling it overflows. A packed container giving no extent is `[fill, fill]` like any container.
+A **packed child** is a direct child of a flow container. It SHALL NOT carry `at` or `to`, and SHALL NOT be a `line`; each is refused at load naming the child's path. It SHALL be sized against the padded inner box as an anchorless item, exactly as the same item at `[0, 0]` in an absolutely arranged container. An uncapped `fill` child therefore takes the whole inner extent on that axis: alone it fills the container, and beside a sibling it overflows.
 
 #### Scenario: A fill child beside a sibling overflows
 
 - **WHEN** a `row` flow container with inner width 30 and `gap: 2` holds a 10-wide child then a `size: [fill, 4]` child
 - **THEN** the second box is 30 wide at x = 12 and the render fails with `item_out_of_frame`
 - **AND** with `max_w: 8` on the second child it is 8 wide and fits
-
-#### Scenario: Two sizeless packed containers collide
-
-- **WHEN** a `row` flow container holds two `container` children with neither `size` nor `to`
-- **THEN** the render fails with `item_out_of_frame` naming the second
-- **AND** with `size: [content, content]` they pack side by side
 
 ### Requirement: Packing order, lines and occupancy
 
@@ -433,7 +393,7 @@ A flow container's intrinsic size SHALL be its padding plus its **assembled exte
 
 ### Requirement: Packing past the inner box
 
-Each packed child SHALL be checked twice against the padded inner box: its own extents (at load and render) and its arranged position (at render). Both SHALL fail with `UnsupportedLayoutItem` reason `item_out_of_frame` on either axis, never `coord_out_of_frame`. The own-extent check runs first and always fails. Under `overflow: trim` the first child whose arranged box does not fit, and every child after it, SHALL be left undrawn, out of the assembled extent, and unreported; trimmed children are still sized, so a trimmed `text` reading a missing field still fails `MissingField`, while a trimmed authored-size `image` or `qr` reads nothing.
+Each packed child SHALL be checked twice against the padded inner box: its own extents (at load and render) and its arranged position (at render). Both SHALL fail with `UnsupportedLayoutItem` reason `item_out_of_frame` on either axis, never `coord_out_of_frame`. A child whose own extents do not fit SHALL fail under either policy. Under `overflow: trim` the first child whose arranged box does not fit, and every child after it, SHALL be left undrawn, out of the assembled extent, and unreported; trimmed children are still sized, so a trimmed `text` reading a missing field still fails with `missing_field`, while a trimmed `image` or authored-size `qr` reads nothing.
 
 #### Scenario: An accumulated overrun fails
 
@@ -453,20 +413,15 @@ Each packed child SHALL be checked twice against the padded inner box: its own e
 
 ### Requirement: repeat draws a container once per list element
 
-A `container` MAY carry `repeat:`, the bare name of a declared `type: list` parameter. Each of these SHALL be refused at load naming the key and the container's layout path: `repeat` written empty (null); naming an undeclared parameter; naming a parameter of another type (also naming its type); on a container whose parent has no `flow`, including the layout root; naming a list an enclosing repeat already repeats. `repeat` on other item types is an unknown key. Through a template write each of these, and the two scope refusals below, SHALL be `422 TemplateInvalid` reason `template_parse_failed`.
+A `container` MAY carry `repeat:`, the bare name of a declared `type: list` parameter. Each of these SHALL be refused at load naming the key and the container's layout path: naming an undeclared parameter; naming a parameter of another type (also naming its type); on a container whose parent has no `flow`, including the layout root; naming a list an enclosing repeat already repeats. `repeat` on other item types is an unknown key.
 
-An active repeating container SHALL produce one packed instance per element, in element order, in the authored container's place among its siblings. An empty list produces none and is not an error. An absent list with no usable default SHALL fail `422 MissingField` naming it. The container's own `when:` SHALL be evaluated once, before binding, and gates every instance; a gated-off repeat reads nothing. There is no instance cap; overflow is the flow policy's. Each instance is sized on its own. Load checks the repeated subtree once as a single instance.
+An active repeating container SHALL produce one packed instance per element, in element order, in the authored container's place among its siblings. An empty list produces none and is not an error. An absent list with no usable default SHALL fail `422 UnsupportedLayoutItem` reason `missing_field` naming it. The container's own `when:` SHALL be evaluated once, before binding, and gates every instance; a gated-off repeat reads nothing. There is no instance cap; overflow is the flow policy's. Each instance is sized on its own. Load checks the repeated subtree once as a single instance.
 
 #### Scenario: Three tags render three pills
 
 - **WHEN** a `row` with `gap: 1` holds a `size: [content, content]` container repeating `tags` around a text `{tags}`, and a request sends `["A", "B", "C"]`
 - **THEN** three pills `A`, `B`, `C` are drawn left to right, each hugging its element
-- **AND** `tags: []` draws the strip with no pills, and omitting `tags` with no default is `422 MissingField`
-
-#### Scenario: A sizeless repeat fills its strip
-
-- **WHEN** the pill omits `size` and `to` and a request sends `["A", "B"]`
-- **THEN** the render fails with `item_out_of_frame` naming the second instance
+- **AND** `tags: []` draws the strip with no pills, and omitting `tags` with no default fails with `missing_field`
 
 #### Scenario: Misplaced repeats are refused
 
@@ -476,7 +431,7 @@ An active repeating container SHALL produce one packed instance per element, in 
 
 ### Requirement: Inside a repeat the name is one element
 
-Within a repeating container and its descendants, the repeated name SHALL denote the current element, a string. A bare `{p}` in a `text` or `qr` `value` or an `image` `src` SHALL print the element. `{p:join(...)}` and `{p:<format>}` inside the scope SHALL be refused at load, naming the token and the item's layout path (the latter as a format applied to a non-instant). A `when:` key naming `p` inside the scope SHALL compare the element. Typed slots (`size`, `max_w`, `max_h`, `font_weight`, colour references, image `name`) SHALL still refuse a list parameter inside the scope. In nested repeats each name binds its own element. Outside every scope the parameter remains a list.
+Within a repeating container and its descendants, the repeated name SHALL denote the current element, a string. A bare `{p}` in a `text` or `qr` `value` or an `image` `src` SHALL print the element. `{p:join(...)}` and `{p:<format>}` inside the scope SHALL be refused at load, naming the token and the item's layout path (the latter as a format applied to a non-instant). A `when:` key naming `p` inside the scope SHALL compare the element. Typed slots (`size`, `max_w`, `max_h`, `font_weight`) SHALL still refuse a list parameter inside the scope. In nested repeats each name binds its own element. Outside every scope the parameter remains a list.
 
 #### Scenario: Nested scopes bind two names
 
@@ -492,12 +447,12 @@ Within a repeating container and its descendants, the repeated name SHALL denote
 
 Any item MAY carry `when:`, a map of conditions. The item is **active** only when every condition matches the label's resolved parameter value, compared as text; a condition on an absent parameter is false. An inactive item, and everything inside an inactive container, SHALL be excluded from measurement and rendering: it imposes no requirement, paints nothing, raises no error, and a field read only by inactive items is not required.
 
-At load, each of these SHALL be refused: `when: {}`; an empty or whitespace-only key or value; a value that is null, a sequence or a mapping; a key naming an undeclared parameter; a value outside an `enum` parameter's `values`; a key naming a `list` parameter outside a repeat scope (including on the repeating container itself), naming the key and the item's layout path. A condition value is held as its scalar text, so `true` and `"true"` are one condition. `when:` written with no value (null) SHALL be treated as absent.
+At load, each of these SHALL be refused: `when: {}`; an empty or whitespace-only key or value; a value that is a sequence or a mapping; a key naming an undeclared parameter; a value outside an `enum` parameter's `values`; a key naming a `list` parameter outside a repeat scope (including on the repeating container itself), naming the key and the item's layout path. A condition value is held as its scalar text, so `true` and `"true"` are one condition.
 
 #### Scenario: An inactive branch does not require its fields
 
 - **WHEN** a text whose value reads `{v_text}` sits behind a gate that does not match and the request omits `v_text`
-- **THEN** the label renders without `MissingField`
+- **THEN** the label renders
 
 #### Scenario: Refused gates
 
@@ -518,23 +473,18 @@ At load, each of these SHALL be refused: `when: {}`; an empty or whitespace-only
 | `stroke` | container, line | no outline | `{ thickness, color }`; see stroke. |
 | `background` | container | no fill | A colour. |
 | `rounded` | container with `shape: rect` | square corners | Corner radius in template units. |
-| `shape` | container | `rect` | `rect`, `ellipse` or `circle`; anything else is refused naming the accepted set. |
+| `shape` | container | `rect` | `rect` or `ellipse`; anything else is refused naming the accepted set. |
 
-Paint on any other item, `background` or `rounded` on a `line`, and `rounded` on `ellipse`/`circle` SHALL be refused at load. `stroke`, `background`, `rounded`, `shape` and `stroke.color` written as null SHALL be refused naming the field. Every combination of stroke and background SHALL render as declared. Paint SHALL NOT be inherited by children.
+Paint on any other item, `background` or `rounded` on a `line`, and `rounded` on `ellipse` SHALL be refused at load. Every combination of stroke and background SHALL render as declared. Paint SHALL NOT be inherited by children.
 
 #### Scenario: Fill only, outline only
 
 - **WHEN** one container declares `background: "#000000"` and no stroke, and another `stroke: { thickness: 0.02 }` and no background
 - **THEN** the first is a solid black block with no outline and the second an outline with the interior showing through, in PNG and PDF alike
 
-#### Scenario: Null paint is refused
-
-- **WHEN** a container declares `stroke: null`, `background: null` or `rounded: null`
-- **THEN** the template is refused at load naming the field
-
 ### Requirement: A stroke is a thickness and a colour
 
-`stroke` SHALL accept only `thickness` (required, template units, finite and at least 0.0001) and `color` (a colour, default `black`). A missing, null, zero, negative, non-finite or too-small thickness, a null `color`, or any other key SHALL be refused at load; a missing thickness and a null one SHALL be reported distinctly. The stroke SHALL be centred on the painted boundary, SHALL NOT affect any size or position, and its outer half SHALL be clipped only by an ancestor or the label.
+`stroke` SHALL accept only `thickness` (required, template units, finite and at least 0.0001) and `color` (a colour, default `black`). A missing, zero, negative, non-finite or too-small thickness SHALL be refused at load. The stroke SHALL be centred on the painted boundary, SHALL NOT affect any size or position, and its outer half SHALL be clipped only by an ancestor or the label.
 
 #### Scenario: A thickness alone draws black
 
@@ -558,22 +508,9 @@ Paint on any other item, `background` or `rounded` on a `line`, and `rounded` on
 
 ### Requirement: Geometry, paint order and clipping
 
-`rect` SHALL paint the container's outer box (padding band included); `ellipse` SHALL paint the ellipse inscribed in it; `circle` SHALL paint the same and require a square box (extents within 0.0001). Paint SHALL be drawn background, then stroke, then children. Geometry SHALL NOT change where children sit or how large they are.
+`rect` SHALL paint the container's outer box (padding band included); `ellipse` SHALL paint the ellipse inscribed in it. Paint SHALL be drawn background, then stroke, then children. Geometry SHALL NOT change where children sit or how large they are.
 
-At `rect` the container SHALL clip its children at the inner edge of its stroke, following the rounded corner (the stroke's inner curve, or the painted curve when there is no stroke). At `ellipse` and `circle` children SHALL be clipped only to the rectangular box, so they may cross the curve and draw over the stroke. A container's clip SHALL NOT cut its own paint.
-
-A `circle` whose both extents are fixed by the template (numbers, or a `to` with both corners non-negative or both edge-relative) SHALL be refused at load when not square. Every active `circle` SHALL be checked at render, failing with `422 UnsupportedLayoutItem` reason `circle_box_not_square` (a per-label failure in a batch) and a message naming the container's path. A gated-off circle is not checked.
-
-#### Scenario: A circle sized from content is judged at render
-
-- **WHEN** a container declares `shape: circle` and `size: [content, content]` in a non-square frame
-- **THEN** it loads, renders when its box resolves square, and fails with `circle_box_not_square` otherwise
-- **AND** `shape: circle` with `size: [14, 12]` is refused at load
-
-#### Scenario: A parameter-sized circle is judged per request
-
-- **WHEN** a circle declares `size: ["{w}", 12]` with `w` defaulting to 12
-- **THEN** it loads and renders without `w`, and a request supplying `w: 14` fails with `circle_box_not_square`
+At `rect` the container SHALL clip its children at the inner edge of its stroke, following the rounded corner (the stroke's inner curve, or the painted curve when there is no stroke). At `ellipse` children SHALL be clipped only to the rectangular box, so they may cross the curve and draw over the stroke. A container's clip SHALL NOT cut its own paint.
 
 #### Scenario: A stroked rectangle cuts child ink
 
@@ -587,50 +524,14 @@ A `circle` whose both extents are fixed by the template (numbers, or a `to` with
 
 ### Requirement: The colour vocabulary
 
-A colour SHALL be exactly one of: one of sixteen names, case-insensitive; a hex string `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` (digits case-insensitive, short forms expanding by doubling, alpha composited in PNG and PDF); or a `"{param}"` reference. Leading and trailing whitespace SHALL be stripped first; anything else (including inner whitespace, a hex without `#`, other digit counts, non-hex digits, non-strings, empty or all-whitespace strings, and other names such as `orange`) SHALL be refused at load naming the file, the item's layout path and the field. The fields taking a colour are `text.color`, `stroke.color` and `background`, and a name denotes the same value on each:
-
-| Name | Value | Name | Value |
-| --- | --- | --- | --- |
-| `black` | `#000000` | `silver` | `#c0c0c0` |
-| `white` | `#ffffff` | `gray` | `#808080` |
-| `red` | `#ff0000` | `maroon` | `#800000` |
-| `yellow` | `#ffff00` | `olive` | `#808000` |
-| `lime` | `#00ff00` | `green` | `#008000` |
-| `aqua` | `#00ffff` | `teal` | `#008080` |
-| `blue` | `#0000ff` | `navy` | `#000080` |
-| `fuchsia` | `#ff00ff` | `purple` | `#800080` |
+A colour SHALL be exactly one of the names `black` (`#000000`), `white` (`#ffffff`), `red` (`#ff0000`), `green` (`#008000`) and `blue` (`#0000ff`), written in lowercase, or a hex string `#rrggbb` with case-insensitive digits. Anything else SHALL be refused at load naming the file, the item's layout path and the field. The fields taking a colour are `text.color`, `stroke.color` and `background`; each takes a literal colour only.
 
 #### Scenario: Names and hex forms
 
-- **WHEN** a template writes `RED`, `" red "`, `"#f0f"` or `"#FF00FF80"`
-- **THEN** they denote `#ff0000`, `#ff0000`, `#ff00ff` and `#ff00ff` at half alpha
+- **WHEN** a template writes `red` or `"#FF00ff"`
+- **THEN** they denote `#ff0000` and `#ff00ff`
 
 #### Scenario: Unreadable colours are refused
 
-- **WHEN** a template writes `"#ff00f"`, `"ff00ff"`, `"re d"`, `""`, `16711680` or `chartreuse`
+- **WHEN** a template writes `RED`, `" red "`, `"#f0f"`, `"#ff00ff80"`, `"ff00ff"`, `""`, `16711680`, `orange` or `"{brand}"`
 - **THEN** the template is refused at load naming the value
-
-### Requirement: Colour parameter references
-
-A colour reference SHALL name a declared `string` or `enum` parameter, or be refused at load naming the item's path, the field and the parameter (and its type). At render the resolved value SHALL be stripped and read as a name or hex colour. A value that is not a colour, is all whitespace, or is itself a `"{name}"` reference SHALL fail with `400 InvalidRequest` reason `color_param_invalid` naming the parameter, with no fallback colour; in a batch it is a per-label failure with that code and reason.
-
-#### Scenario: A referenced colour renders
-
-- **WHEN** a container declares `background: "{brand}"` and a request supplies `brand: " navy "`
-- **THEN** the interior is `#000080`
-
-#### Scenario: A bad resolved colour fails
-
-- **WHEN** a request supplies `brand: "octarine"` or `brand: "{other}"` for a colour reference
-- **THEN** the single render fails `400` with `color_param_invalid` naming `brand`
-- **AND** in a two-label batch where only the second is bad, the batch fails `422 BatchInvalid` with one failure at `index` 1 and nothing is produced
-
-### Requirement: Layout read-back
-
-`GET /api/templates/{id}` SHALL report the layout as authored: a packed child with neither `at` nor `to`; every other boxed item with its `at`, including a defaulted one; a repeating container once, with its `repeat` key. A literal colour SHALL be reported as the decoded YAML string, unnormalised (case, digit count and surrounding whitespace kept); a colour reference as `"{name}"`. `stroke.color` SHALL always be reported (`"black"` when omitted); `text.color` and `background` only when written. Resubmitting the response unchanged SHALL be accepted.
-
-#### Scenario: Colours read back as written
-
-- **WHEN** a template with `stroke: { thickness: 0.2, color: "#F0F" }`, `background: " {brand} "` and a text `color: " red "` is read back
-- **THEN** the response reports `"#F0F"`, `"{brand}"` and `" red "`
-- **AND** a stroke written without `color` reports `"black"`
