@@ -1840,7 +1840,7 @@ pub struct ConnectionCreate {
     pub public_url: Option<String>,
     // Required; optional here only so an omitted one is refused as `credential_required`.
     #[serde(default, deserialize_with = "crate::models::deserialize_some")]
-    #[schema(nullable = false)]
+    #[schema(nullable = false, required = true)]
     pub credential: Option<String>,
 }
 
