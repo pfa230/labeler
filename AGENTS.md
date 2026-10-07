@@ -24,7 +24,7 @@ The behavior contract lives in `openspec/specs/<domain>/spec.md`, one capability
 3. `npx --no-install openspec archive <change> --yes` merges the deltas into `openspec/specs/`. Then delete `openspec/changes/archive/`: the tree holds only the current spec, and git keeps the history.
 4. Run the gates, then commit everything as one commit with `Fixes #N`.
 
-A docs fix, harness change (root npm manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `openspec/config.yaml`), CI change, dependency bump or behavior-preserving refactor skips the change folder: issue, worktree, gates, one commit. Nothing checks whether a diff should have carried a delta; that judgment is yours.
+A docs fix, harness change (root npm manifests, `.claude/`, `.agent/`, `.agents/`, `.opencode/`, this file, `openspec/config.yaml`), CI change, dependency bump or behavior-preserving refactor skips the change folder: issue, worktree, gates, one commit. So does code that catches up to a contract already in `openspec/specs/`: there is no delta to write, and the issue names the requirements it implements. Nothing checks whether a diff should have carried a delta; that judgment is yours.
 
 **Breaking changes, until 1.0.** A behavior change replaces what came before: no migration, no deprecation window, no second spelling, no explanation of the removed one. A dropped key becomes a parse error via `deny_unknown_fields`. Stored user data is the one exception: `store.rs` migrates the SQLite schema.
 
