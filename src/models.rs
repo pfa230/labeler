@@ -187,6 +187,17 @@ where
     Option::<String>::deserialize(deserializer).map(Some)
 }
 
+/// For an optional key that may be omitted but not written as `null`: with `#[serde(default)]`,
+/// omission gives `None`, while `null` reaches `T`'s deserializer and fails, so the body is
+/// malformed (`errors` spec). A plain `Option<T>` reads `null` as omission.
+pub(crate) fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 impl TemplateGroupUpdate {
     /// The requested group, or `None` when the body omitted the key entirely.
     pub fn group(&self) -> Option<Option<&str>> {

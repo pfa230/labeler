@@ -19,11 +19,10 @@ const schema: ConnectorSchema = {
       id: "entities",
       label: "Items",
       view: "table",
-      dynamic_source_prefix: "custom:",
       fields_incomplete: false,
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false },
       ],
       filters: [],
     },
@@ -47,7 +46,7 @@ function stubBrowse(hasMore: boolean) {
   vi.stubGlobal(
     "fetch",
     vi.fn(async () =>
-      new Response(JSON.stringify({ rows, next_cursor: hasMore ? "cursor-1" : null, has_more: hasMore, count: rows.length }), {
+      new Response(JSON.stringify({ rows, has_more: hasMore, count: rows.length }), {
         status: 200,
         headers: { "content-type": "application/json" },
       }),
@@ -189,9 +188,8 @@ describe("scope disclosure", () => {
           id: "entities",
           label: "Items",
           view: "table",
-          dynamic_source_prefix: "custom:",
           fields_incomplete: false,
-          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }],
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }],
           filters: [{ key: "q", label: "Search", ty: "search" }],
         },
       ],
@@ -201,7 +199,7 @@ describe("scope disclosure", () => {
       "fetch",
       vi.fn(async () =>
         new Response(
-          JSON.stringify({ rows, next_cursor: "cur-1", has_more: true, count: rows.length }),
+          JSON.stringify({ rows, has_more: true, count: rows.length }),
           { status: 200, headers: { "content-type": "application/json" } },
         ),
       ),

@@ -36,13 +36,6 @@ pub struct ApiToken {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UpdateField<T> {
-    Keep,
-    Clear,
-    Set(T),
-}
-
 #[derive(Debug, Clone)]
 pub struct Connection {
     pub id: String,
@@ -51,8 +44,6 @@ pub struct Connection {
     pub base_url: String,
     pub public_url: Option<String>,
     pub credential: String,
-    pub enabled: bool,
-    pub transforms: Vec<crate::connector::FieldTransform>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,18 +53,14 @@ pub struct NewConnection<'a> {
     pub base_url: &'a str,
     pub public_url: Option<&'a str>,
     pub credential: &'a str,
-    pub enabled: bool,
-    pub transforms: &'a [crate::connector::FieldTransform],
 }
 
 #[derive(Debug, Clone)]
 pub struct UpdateConnection<'a> {
     pub name: &'a str,
     pub base_url: &'a str,
-    pub public_url: UpdateField<String>,
+    pub public_url: Option<&'a str>,
     pub credential: Option<&'a str>,
-    pub enabled: bool,
-    pub transforms: UpdateField<Vec<crate::connector::FieldTransform>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -166,6 +153,10 @@ fn migrations() -> Migrations<'static> {
         M::up("ALTER TABLE printers DROP COLUMN enabled;"),
         M::up("ALTER TABLE connections ADD COLUMN public_url TEXT;"),
         M::up("ALTER TABLE connections ADD COLUMN transforms TEXT;"),
+        M::up(
+            "ALTER TABLE connections DROP COLUMN enabled;
+        ALTER TABLE connections DROP COLUMN transforms;",
+        ),
     ])
 }
 
@@ -654,15 +645,10 @@ impl Store {
         new: NewConnection<'_>,
     ) -> Result<Connection, StoreError> {
         let id = crate::auth::random_secret();
-        let transforms_json = if new.transforms.is_empty() {
-            None
-        } else {
-            Some(serde_json::to_string(new.transforms)?)
-        };
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
-            "INSERT INTO connections (id, connector, name, base_url, public_url, credential, enabled, transforms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![id, new.connector, new.name, new.base_url, new.public_url, new.credential, new.enabled as i64, transforms_json],
+            "INSERT INTO connections (id, connector, name, base_url, public_url, credential) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![id, new.connector, new.name, new.base_url, new.public_url, new.credential],
         )?;
         Ok(Connection {
             id,
@@ -671,15 +657,13 @@ impl Store {
             base_url: new.base_url.to_string(),
             public_url: new.public_url.map(ToString::to_string),
             credential: new.credential.to_string(),
-            enabled: new.enabled,
-            transforms: new.transforms.to_vec(),
         })
     }
 
     pub async fn get_connection(&self, id: &str) -> Result<Option<Connection>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         conn.query_row(
-            "SELECT id, connector, name, base_url, credential, enabled, public_url, transforms FROM connections WHERE id = ?1",
+            "SELECT id, connector, name, base_url, credential, public_url FROM connections WHERE id = ?1",
             [id],
             row_to_connection,
         )
@@ -690,7 +674,7 @@ impl Store {
     pub async fn list_connections(&self) -> Result<Vec<Connection>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare(
-            "SELECT id, connector, name, base_url, credential, enabled, public_url, transforms FROM connections ORDER BY name, id",
+            "SELECT id, connector, name, base_url, credential, public_url FROM connections ORDER BY name, id",
         )?;
         let rows = stmt.query_map([], row_to_connection)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -701,56 +685,17 @@ impl Store {
         id: &str,
         update: UpdateConnection<'_>,
     ) -> Result<bool, StoreError> {
-        let mut set_clauses = vec![
-            "name = ?".to_string(),
-            "base_url = ?".to_string(),
-            "enabled = ?".to_string(),
-        ];
-        let mut params: Vec<rusqlite::types::Value> = vec![
-            update.name.to_string().into(),
-            update.base_url.to_string().into(),
-            (update.enabled as i64).into(),
-        ];
-
-        if let Some(cred) = update.credential {
-            set_clauses.push("credential = ?".to_string());
-            params.push(cred.to_string().into());
-        }
-
-        match update.public_url {
-            UpdateField::Keep => {}
-            UpdateField::Clear => {
-                set_clauses.push("public_url = NULL".to_string());
-            }
-            UpdateField::Set(url) => {
-                set_clauses.push("public_url = ?".to_string());
-                params.push(url.into());
-            }
-        }
-
-        match update.transforms {
-            UpdateField::Keep => {}
-            UpdateField::Clear => {
-                set_clauses.push("transforms = NULL".to_string());
-            }
-            UpdateField::Set(rules) => {
-                if rules.is_empty() {
-                    set_clauses.push("transforms = NULL".to_string());
-                } else {
-                    let json = serde_json::to_string(&rules)?;
-                    set_clauses.push("transforms = ?".to_string());
-                    params.push(json.into());
-                }
-            }
-        }
-
-        params.push(id.to_string().into());
-        let sql = format!(
-            "UPDATE connections SET {} WHERE id = ?",
-            set_clauses.join(", ")
-        );
         let conn = self.conn.lock().expect("store lock");
-        let n = conn.execute(&sql, rusqlite::params_from_iter(params))?;
+        let n = match update.credential {
+            Some(credential) => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, public_url = ?3, credential = ?4 WHERE id = ?5",
+                rusqlite::params![update.name, update.base_url, update.public_url, credential, id],
+            )?,
+            None => conn.execute(
+                "UPDATE connections SET name = ?1, base_url = ?2, public_url = ?3 WHERE id = ?4",
+                rusqlite::params![update.name, update.base_url, update.public_url, id],
+            )?,
+        };
         Ok(n > 0)
     }
 
@@ -774,22 +719,13 @@ impl Store {
 }
 
 fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
-    let raw_transforms: Option<String> = r.get(7)?;
-    let transforms = match raw_transforms {
-        Some(s) if !s.trim().is_empty() => serde_json::from_str(&s).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
-        })?,
-        _ => Vec::new(),
-    };
     Ok(Connection {
         id: r.get(0)?,
         connector: r.get(1)?,
         name: r.get(2)?,
         base_url: r.get(3)?,
         credential: r.get(4)?,
-        enabled: r.get::<_, i64>(5)? != 0,
-        public_url: r.get(6)?,
-        transforms,
+        public_url: r.get(5)?,
     })
 }
 
@@ -1123,40 +1059,69 @@ mod migration_tests {
         assert_eq!(public_url, None);
     }
 
+    /// #416: the connection record has no `enabled` and no `transforms`. An existing database drops
+    /// both columns, and its connections survive with every field the record keeps.
     #[test]
-    fn migration_adds_transforms_to_connections() {
+    fn migration_drops_enabled_and_transforms_from_connections() {
         let mut conn = SqlConnection::open_in_memory().expect("open");
         let migrations = migrations();
-        // Version 11 is before transforms was added in migration 12
+        // Version 12 is before both columns were dropped in migration 13
         migrations
-            .to_version(&mut conn, 11)
-            .expect("migrate to version before transforms");
+            .to_version(&mut conn, 12)
+            .expect("migrate to the version before the drop");
 
         conn.execute(
-            "INSERT INTO connections (id, connector, name, base_url, public_url, credential, enabled)
-             VALUES ('c1', 'homebox', 'Home', 'http://hb.lan', NULL, 'secret', 1)",
+            "INSERT INTO connections (id, connector, name, base_url, public_url, credential, enabled, transforms)
+             VALUES ('c1', 'homebox', 'Home', 'http://hb.lan', 'https://pub.lan', 'secret', 0, '[]')",
             [],
         )
-        .expect("seed connection");
+        .expect("seed a disabled connection with a transform rule");
 
         migrations.to_latest(&mut conn).expect("migrate to latest");
 
-        let (name, transforms_raw): (String, Option<String>) = conn
+        let row: (String, String, String, String, Option<String>, String) = conn
             .query_row(
-                "SELECT name, transforms FROM connections WHERE id = 'c1'",
+                "SELECT id, connector, name, base_url, public_url, credential FROM connections",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                    ))
+                },
             )
-            .expect("connection survives with transforms as NULL");
-        assert_eq!(name, "Home");
-        assert_eq!(transforms_raw, None);
+            .expect("the connection survives the migration");
+        assert_eq!(
+            row,
+            (
+                "c1".to_string(),
+                "homebox".to_string(),
+                "Home".to_string(),
+                "http://hb.lan".to_string(),
+                Some("https://pub.lan".to_string()),
+                "secret".to_string()
+            )
+        );
+
+        for column in ["enabled", "transforms"] {
+            let err = conn
+                .prepare(&format!("SELECT {column} FROM connections"))
+                .expect_err("the column must be gone");
+            assert!(
+                err.to_string().contains(column),
+                "expected a no-such-column error, got: {err}"
+            );
+        }
     }
 }
 
 #[cfg(test)]
 mod connection_tests {
     use super::*;
-    use crate::connector::FieldTransform;
 
     fn store() -> Store {
         Store::open_in_memory().unwrap()
@@ -1172,29 +1137,23 @@ mod connection_tests {
                 base_url: "http://hb.lan:7745",
                 public_url: None,
                 credential: "hb_secret",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
         assert_eq!(c.connector, "homebox");
         assert_eq!(c.credential, "hb_secret");
         assert_eq!(c.public_url, None);
-        assert!(c.transforms.is_empty());
-        assert!(c.enabled);
         assert!(s.get_connection(&c.id).await.unwrap().is_some());
         assert_eq!(s.list_connections().await.unwrap().len(), 1);
-        // update name + keep credential (None = unchanged) + keep public_url + keep transforms
+        // update name + keep credential (None = unchanged)
         assert!(s
             .update_connection(
                 &c.id,
                 UpdateConnection {
                     name: "renamed",
                     base_url: "http://hb.lan:7745",
-                    public_url: UpdateField::Keep,
+                    public_url: None,
                     credential: None,
-                    enabled: true,
-                    transforms: UpdateField::Keep,
                 },
             )
             .await
@@ -1203,7 +1162,6 @@ mod connection_tests {
         assert_eq!(g.name, "renamed");
         assert_eq!(g.credential, "hb_secret"); // unchanged
         assert_eq!(g.public_url, None);
-        assert!(g.transforms.is_empty());
         // update credential
         assert!(s
             .update_connection(
@@ -1211,10 +1169,8 @@ mod connection_tests {
                 UpdateConnection {
                     name: "renamed",
                     base_url: "http://hb.lan:7745",
-                    public_url: UpdateField::Keep,
+                    public_url: None,
                     credential: Some("hb_new"),
-                    enabled: true,
-                    transforms: UpdateField::Keep,
                 },
             )
             .await
@@ -1237,73 +1193,43 @@ mod connection_tests {
                 base_url: "http://homebox.lan:7745",
                 public_url: Some("https://homebox.example.com"),
                 credential: "token123",
-                enabled: false,
-                transforms: &[],
             })
             .await
             .unwrap();
         assert_eq!(c.public_url.as_deref(), Some("https://homebox.example.com"));
-        assert!(!c.enabled);
 
         let fetched = store.get_connection(&c.id).await.unwrap().unwrap();
         assert_eq!(
             fetched.public_url.as_deref(),
             Some("https://homebox.example.com")
         );
-        assert!(!fetched.enabled);
 
-        // UpdateField::Keep preserves existing public_url
+        // An update replaces the record: no public_url clears it
         store
             .update_connection(
                 &c.id,
                 UpdateConnection {
                     name: "Home Updated",
                     base_url: "http://homebox.lan:7745",
-                    public_url: UpdateField::Keep,
+                    public_url: None,
                     credential: None,
-                    enabled: true,
-                    transforms: UpdateField::Keep,
-                },
-            )
-            .await
-            .unwrap();
-        let updated = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(updated.name, "Home Updated");
-        assert_eq!(
-            updated.public_url.as_deref(),
-            Some("https://homebox.example.com")
-        );
-        assert!(updated.enabled);
-
-        // UpdateField::Clear clears public_url to None
-        store
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "Home Updated",
-                    base_url: "http://homebox.lan:7745",
-                    public_url: UpdateField::Clear,
-                    credential: None,
-                    enabled: true,
-                    transforms: UpdateField::Keep,
                 },
             )
             .await
             .unwrap();
         let cleared = store.get_connection(&c.id).await.unwrap().unwrap();
+        assert_eq!(cleared.name, "Home Updated");
         assert_eq!(cleared.public_url, None);
+        assert_eq!(cleared.credential, "token123");
 
-        // UpdateField::Set updates public_url
         store
             .update_connection(
                 &c.id,
                 UpdateConnection {
                     name: "Home Updated",
                     base_url: "http://homebox.lan:7745",
-                    public_url: UpdateField::Set("https://new.example.com".into()),
+                    public_url: Some("https://new.example.com"),
                     credential: None,
-                    enabled: true,
-                    transforms: UpdateField::Keep,
                 },
             )
             .await
@@ -1313,99 +1239,6 @@ mod connection_tests {
             set_again.public_url.as_deref(),
             Some("https://new.example.com")
         );
-    }
-
-    #[tokio::test]
-    async fn connection_transforms_roundtrip_and_update_fields() {
-        let store = Store::open_in_memory().unwrap();
-        let rules = vec![
-            FieldTransform {
-                resource: "entities".into(),
-                source: "location".into(),
-                pattern: r"^(?<location_id>[^|]+)\s*\|\s*(?<location_name>.*)$".into(),
-            },
-            FieldTransform {
-                resource: "entities".into(),
-                source: "name".into(),
-                pattern: r"^(?<prefix>[A-Z]+)-(?<suffix>\d+)$".into(),
-            },
-        ];
-
-        let c = store
-            .create_connection(NewConnection {
-                connector: "homebox",
-                name: "Home",
-                base_url: "http://homebox.lan:7745",
-                public_url: None,
-                credential: "token123",
-                enabled: true,
-                transforms: &rules,
-            })
-            .await
-            .unwrap();
-        assert_eq!(c.transforms, rules);
-
-        let fetched = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(fetched.transforms, rules);
-
-        // UpdateField::Keep preserves transforms
-        store
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "Home Renamed",
-                    base_url: "http://homebox.lan:7745",
-                    public_url: UpdateField::Keep,
-                    credential: None,
-                    enabled: true,
-                    transforms: UpdateField::Keep,
-                },
-            )
-            .await
-            .unwrap();
-        let kept = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(kept.transforms, rules);
-
-        // UpdateField::Set updates transforms
-        let new_rules = vec![FieldTransform {
-            resource: "locations".into(),
-            source: "name".into(),
-            pattern: r"^(?<room>.*)$".into(),
-        }];
-        store
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "Home Renamed",
-                    base_url: "http://homebox.lan:7745",
-                    public_url: UpdateField::Keep,
-                    credential: None,
-                    enabled: true,
-                    transforms: UpdateField::Set(new_rules.clone()),
-                },
-            )
-            .await
-            .unwrap();
-        let updated = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(updated.transforms, new_rules);
-
-        // UpdateField::Clear clears transforms
-        store
-            .update_connection(
-                &c.id,
-                UpdateConnection {
-                    name: "Home Renamed",
-                    base_url: "http://homebox.lan:7745",
-                    public_url: UpdateField::Keep,
-                    credential: None,
-                    enabled: true,
-                    transforms: UpdateField::Clear,
-                },
-            )
-            .await
-            .unwrap();
-        let cleared = store.get_connection(&c.id).await.unwrap().unwrap();
-        assert!(cleared.transforms.is_empty());
     }
 }
 
@@ -1486,12 +1319,12 @@ mod auth_tests {
         {
             let conn = s.conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO connections (id, connector, name, base_url, credential, enabled) VALUES ('b', 'homebox', 'Homebox', 'http://b.lan', 'sec', 1)",
+                "INSERT INTO connections (id, connector, name, base_url, credential) VALUES ('b', 'homebox', 'Homebox', 'http://b.lan', 'sec')",
                 [],
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO connections (id, connector, name, base_url, credential, enabled) VALUES ('a', 'homebox', 'Homebox', 'http://a.lan', 'sec', 1)",
+                "INSERT INTO connections (id, connector, name, base_url, credential) VALUES ('a', 'homebox', 'Homebox', 'http://a.lan', 'sec')",
                 [],
             )
             .unwrap();
@@ -1512,8 +1345,6 @@ mod auth_tests {
                 base_url: "http://c1.lan",
                 public_url: None,
                 credential: "sec",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -1524,8 +1355,6 @@ mod auth_tests {
                 base_url: "http://c2.lan",
                 public_url: None,
                 credential: "sec",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();

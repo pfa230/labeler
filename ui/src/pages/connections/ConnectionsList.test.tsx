@@ -15,9 +15,7 @@ type C = {
   name: string;
   base_url: string;
   public_url?: string | null;
-  enabled: boolean;
   has_credential: boolean;
-  transforms: [];
 };
 
 function stubFetch(
@@ -107,9 +105,7 @@ describe("ConnectionsList", () => {
         name: "Homebox 1",
         base_url: "http://hb1.lan",
         public_url: null,
-        enabled: true,
         has_credential: true,
-        transforms: [],
       },
       {
         id: "c2",
@@ -117,9 +113,7 @@ describe("ConnectionsList", () => {
         name: "Homebox 2",
         base_url: "http://hb2.lan",
         public_url: "https://hb2.example.com",
-        enabled: false,
         has_credential: false,
-        transforms: [],
       },
     ]);
     vi.stubGlobal("fetch", fetchMock);
@@ -135,18 +129,15 @@ describe("ConnectionsList", () => {
     expect(screen.getByText("Base URL")).toBeInTheDocument();
     expect(screen.getByText("Public URL")).toBeInTheDocument();
     expect(screen.getByText("API key")).toBeInTheDocument();
-    expect(screen.getByText("Enabled")).toBeInTheDocument();
 
     // Values
     expect(screen.getByText("http://hb1.lan")).toBeInTheDocument();
     expect(screen.getByText("-")).toBeInTheDocument();
     expect(screen.getByText("set")).toBeInTheDocument();
-    expect(screen.getByText("yes")).toBeInTheDocument();
 
     expect(screen.getByText("http://hb2.lan")).toBeInTheDocument();
     expect(screen.getByText("https://hb2.example.com")).toBeInTheDocument();
     expect(screen.getByText("none")).toBeInTheDocument();
-    expect(screen.getByText("no")).toBeInTheDocument();
 
     // Edit link and no delete button in the row
     const editLinks = screen.getAllByRole("link", { name: "Edit" });
@@ -202,8 +193,8 @@ describe("ConnectionsList", () => {
 
   it("7.3 default connection control: choosing, clearing, no default stored", async () => {
     fetchMock = stubFetch([
-      { id: "c1", connector: "homebox", name: "Main", base_url: "http://hb", enabled: true, has_credential: true, transforms: [] },
-      { id: "c2", connector: "homebox", name: "Secondary", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] },
+      { id: "c1", connector: "homebox", name: "Main", base_url: "http://hb", has_credential: true },
+      { id: "c2", connector: "homebox", name: "Secondary", base_url: "http://hb2", has_credential: true },
     ]);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -232,10 +223,10 @@ describe("ConnectionsList", () => {
     await waitFor(() => expect((screen.getByLabelText("default connection") as HTMLSelectElement).value).toBe(""));
   });
 
-  it("7.3 distinguishes identically named connections by id and marks disabled connection", async () => {
+  it("7.3 distinguishes identically named connections by id", async () => {
     fetchMock = stubFetch([
-      { id: "c1", connector: "homebox", name: "Homebox", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] },
-      { id: "c2", connector: "homebox", name: "Homebox", base_url: "http://hb2", enabled: false, has_credential: true, transforms: [] },
+      { id: "c1", connector: "homebox", name: "Homebox", base_url: "http://hb1", has_credential: true },
+      { id: "c2", connector: "homebox", name: "Homebox", base_url: "http://hb2", has_credential: true },
     ]);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -245,52 +236,29 @@ describe("ConnectionsList", () => {
 
     const select = await screen.findByLabelText("default connection");
     expect(select).toContainElement(screen.getByRole("option", { name: "Homebox (c1)" }));
-    expect(select).toContainElement(screen.getByRole("option", { name: "Homebox (c2) (disabled)" }));
+    expect(select).toContainElement(screen.getByRole("option", { name: "Homebox (c2)" }));
   });
 
-  it("7.3 shows unavailable state for stored default no connection has, only once list has answered", async () => {
+  it("7.3 disables the default control and offers no option for the stored default while the list is loading", async () => {
     const pendingConnections = new Promise<Response>(() => {});
 
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/connections") return pendingConnections;
-      if (url === "/api/settings") return json({ default_connection_id: { value: "dangling-id", is_default: false } });
+      if (url === "/api/settings") return json({ default_connection_id: { value: "c1", is_default: false } });
       throw new Error(`unexpected fetch: ${url}`);
     }));
 
-    const { unmount } = renderConnectionsList();
-
-    // While list is loading, do NOT report as unavailable
-    const selectLoading = (await screen.findByLabelText("default connection")) as HTMLSelectElement;
-    expect(selectLoading).toBeDisabled();
-    expect(screen.queryByText(/unavailable/i)).not.toBeInTheDocument();
-
-    unmount();
-
-    // Now with loaded list that does not hold dangling-id
-    const fetchLoaded = stubFetch(
-      [{ id: "c1", connector: "homebox", name: "Other", base_url: "http://hb", enabled: true, has_credential: true, transforms: [] }],
-      { default_connection_id: { value: "dangling-id", is_default: false } },
-    );
-    vi.stubGlobal("fetch", fetchLoaded);
-
     renderConnectionsList();
 
-    expect(await screen.findByText("Other")).toBeInTheDocument();
-
     const select = (await screen.findByLabelText("default connection")) as HTMLSelectElement;
-    expect(screen.getByRole("option", { name: "dangling-id (unavailable)" })).toBeInTheDocument();
-    expect(select.value).toBe("dangling-id");
-
-    // Can still clear it
-    fireEvent.change(select, { target: { value: "" } });
-    await waitFor(() => {
-      const calls = fetchLoaded.mock.calls.filter(([u, i]) => String(u) === "/api/settings/default_connection_id" && ((i as RequestInit)?.method ?? "GET").toUpperCase() === "DELETE");
-      expect(calls.length).toBe(1);
-    });
+    expect(select).toBeDisabled();
+    // Let the settings answer land: the stored id must still not become an option.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(no default)"]);
   });
 
-  it("7.3 does not report stored default as unavailable when connections list failed", async () => {
+  it("7.3 disables the default control when the connections list failed", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/connections") return json({ error: "failed" }, 500);
@@ -304,14 +272,13 @@ describe("ConnectionsList", () => {
 
     const select = (await screen.findByLabelText("default connection")) as HTMLSelectElement;
     expect(select).toBeDisabled();
-    expect(screen.queryByText(/unavailable/i)).not.toBeInTheDocument();
   });
 
   it("7.3 shows no default after deleting the connection that was the default from its form", async () => {
     fetchMock = stubFetch(
       [
-        { id: "c1", connector: "homebox", name: "Homebox 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] },
-        { id: "c2", connector: "homebox", name: "Homebox 2", base_url: "http://hb2", enabled: true, has_credential: true, transforms: [] },
+        { id: "c1", connector: "homebox", name: "Homebox 1", base_url: "http://hb1", has_credential: true },
+        { id: "c2", connector: "homebox", name: "Homebox 2", base_url: "http://hb2", has_credential: true },
       ],
       { default_connection_id: { value: "c1", is_default: false } },
     );
@@ -346,12 +313,33 @@ describe("ConnectionsList", () => {
     // Default connection control shows no default
     const select = (await screen.findByLabelText("default connection")) as HTMLSelectElement;
     expect(select.value).toBe("");
-    expect(screen.queryByText(/unavailable/i)).not.toBeInTheDocument();
+  });
+
+  it("7.3 offers no Enabled column, no (disabled) mark and no (unavailable) option for a stored id missing from the list", async () => {
+    fetchMock = stubFetch(
+      [
+        { id: "c1", connector: "homebox", name: "Main", base_url: "http://hb1", public_url: null, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Spare", base_url: "http://hb2", public_url: null, has_credential: true },
+      ],
+      { default_connection_id: { value: "dangling-id", is_default: false } },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderConnectionsList();
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getAllByRole("columnheader").map((h) => h.textContent)).toEqual([
+      "Name", "Connector", "Base URL", "Public URL", "API key", "",
+    ]);
+    const select = (await screen.findByLabelText("default connection")) as HTMLSelectElement;
+    await waitFor(() => expect(select).not.toBeDisabled());
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(no default)", "Main (c1)", "Spare (c2)"]);
+    expect(select.value).toBe("");
   });
 
   it("3.5 relays location.state.from onto Add connection and Edit links", async () => {
     fetchMock = stubFetch([
-      { id: "c1", connector: "homebox", name: "Main", base_url: "http://hb", enabled: true, has_credential: true, transforms: [] },
+      { id: "c1", connector: "homebox", name: "Main", base_url: "http://hb", has_credential: true },
     ]);
     vi.stubGlobal("fetch", fetchMock);
 

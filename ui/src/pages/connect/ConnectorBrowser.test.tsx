@@ -14,15 +14,14 @@ const schema: ConnectorSchema = {
       id: "entities",
       label: "Items",
       view: "table",
-      dynamic_source_prefix: "custom:",
       fields_incomplete: false,
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "description", label: "Description", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "manufacturer", label: "Manufacturer", ty: "text", tier: "hydrated", multi_valued: false, transform_source: true },
-        { key: "modelNumber", label: "Model Number", ty: "text", tier: "hydrated", multi_valued: false, transform_source: true },
-        { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived", multi_valued: false, transform_source: true },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "description", label: "Description", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "manufacturer", label: "Manufacturer", ty: "text", tier: "hydrated", multi_valued: false },
+        { key: "modelNumber", label: "Model Number", ty: "text", tier: "hydrated", multi_valued: false },
+        { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived", multi_valued: false },
       ],
       filters: [{ key: "q", label: "Search", ty: "search" }],
     },
@@ -30,12 +29,11 @@ const schema: ConnectorSchema = {
       id: "locations",
       label: "Locations",
       view: "table",
-      dynamic_source_prefix: null,
       fields_incomplete: false,
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "itemCount", label: "Item Count", ty: "number", tier: "cheap", multi_valued: false, transform_source: false },
-        { key: "location_url", label: "Location URL", ty: "text", tier: "derived", multi_valued: false, transform_source: true },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "itemCount", label: "Item Count", ty: "number", tier: "cheap", multi_valued: false },
+        { key: "location_url", label: "Location URL", ty: "text", tier: "derived", multi_valued: false },
       ],
       filters: [],
     },
@@ -68,7 +66,7 @@ describe("ConnectorBrowser", () => {
       json({ rows: [
         { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
         { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } },
-      ], next_cursor: null, has_more: false, count: 2 })));
+      ], has_more: false, count: 2 })));
     render(<Harness />);
     expect(await screen.findByText("Drill")).toBeInTheDocument();
     fireEvent.click(screen.getByLabelText("select entities:e1"));
@@ -80,7 +78,7 @@ describe("ConnectorBrowser", () => {
       json({ rows: [
         { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
         { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } },
-      ], next_cursor: null, has_more: false, count: 2 })));
+      ], has_more: false, count: 2 })));
     const onSelectedChange = vi.fn();
     render(<ConnectorBrowser connectionId="c1" schema={schema} selected={[]} onSelectedChange={onSelectedChange} />);
     await screen.findByText("Drill");
@@ -98,7 +96,7 @@ describe("ConnectorBrowser", () => {
       json({ rows: [
         { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
         { id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } },
-      ], next_cursor: null, has_more: false, count: 2 })));
+      ], has_more: false, count: 2 })));
     const selected: SelectedRow[] = [
       { resource: "entities", key: "e1", label: "Drill", lastSeen: 1 },
       { resource: "entities", key: "e2", label: "Shelf", lastSeen: 2 },
@@ -109,44 +107,73 @@ describe("ConnectorBrowser", () => {
     expect(screen.getByText("3/200 selected (2 in this view, 1 elsewhere)")).toBeInTheDocument();
   });
 
-  it("Load more appends a second page of rows", async () => {
+  it("Load more requests the next page with the same resource, filters and parent and appends its rows", async () => {
+    const drillSchema: ConnectorSchema = {
+      version: "homebox-1",
+      resources: [
+        {
+          id: "locations",
+          label: "Locations",
+          view: "table",
+          fields_incomplete: false,
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }],
+          filters: [],
+        },
+        {
+          id: "entities",
+          label: "Items",
+          view: "table",
+          fields_incomplete: false,
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }],
+          filters: [{ key: "q", label: "Search", ty: "search" }],
+        },
+      ],
+      relationships: [{ id: "location_children", label: "Contents", from: "locations", to: "entities" }],
+    };
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (_input, init) => {
-      const body = init?.body ? JSON.parse(init.body as string) : {};
-      if (body.cursor) {
-        return json({
-          rows: [{ id: { resource: "entities", key: "e2" }, cells: { name: "Shelf", assetId: "000-002" } }],
-          next_cursor: null,
-          has_more: false,
-          count: 2,
-        });
+      const body = JSON.parse(init!.body as string);
+      if (body.resource === "locations") {
+        return json({ rows: [{ id: { resource: "locations", key: "l1" }, cells: { name: "Garage" } }], has_more: false, count: 1 });
       }
-      return json({
-        rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } }],
-        next_cursor: "c2",
-        has_more: true,
-        count: 2,
-      });
+      if (body.page === 2) {
+        return json({ rows: [{ id: { resource: "entities", key: "e2" }, cells: { name: "Shelf" } }], has_more: false, count: 2 });
+      }
+      return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Hammer" } }], has_more: true, count: 2 });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<Harness />);
-    await screen.findByText("Drill");
-    expect(screen.queryByText("Shelf")).not.toBeInTheDocument();
+    const lastBody = () => JSON.parse(fetchMock.mock.calls.at(-1)![1]!.body as string);
+    render(<Harness schema={drillSchema} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await screen.findByText("Garage");
+    fireEvent.click(screen.getByRole("button", { name: "Drill in" }));
+    await screen.findByText("Hammer");
+    fireEvent.change(screen.getByLabelText("Search"), { target: { value: "ham" } });
+    fireEvent.click(screen.getByRole("button", { name: /apply/i }));
+    const firstPage = {
+      resource: "entities",
+      filters: { q: "ham" },
+      parent: { relationship: "location_children", key: "l1" },
+    };
+    await waitFor(() => expect(lastBody()).toEqual(firstPage));
+    await screen.findByText("Hammer");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
 
     await screen.findByText("Shelf");
     // The first page's row stays present: Load more appends rather than replaces.
-    expect(screen.getByText("Drill")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const lastCall = fetchMock.mock.calls.at(-1)!;
-    expect(JSON.parse(lastCall[1]!.body as string).cursor).toBe("c2");
+    expect(screen.getByText("Hammer")).toBeInTheDocument();
+    expect(lastBody()).toEqual({ ...firstPage, page: 2 });
     // The second page reported has_more: false, so the button is gone.
     expect(screen.queryByRole("button", { name: "Load more" })).not.toBeInTheDocument();
+
+    // Clearing the parent is a reset: paging starts again from the first page.
+    fireEvent.click(screen.getByRole("button", { name: "clear" }));
+    await waitFor(() => expect(lastBody()).toEqual({ resource: "entities", filters: { q: "ham" } }));
   });
 
   it("sends the search filter on Apply", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-      json({ rows: [], next_cursor: null, has_more: false, count: 0 }));
+      json({ rows: [], has_more: false, count: 0 }));
     vi.stubGlobal("fetch", fetchMock);
     render(<Harness />);
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
@@ -166,9 +193,8 @@ describe("ConnectorBrowser", () => {
           id: "entities",
           label: "Items",
           view: "table",
-          dynamic_source_prefix: "custom:",
           fields_incomplete: false,
-          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }],
+          columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }],
           filters: [
             { key: "q", label: "Search", ty: "search" },
             { key: "tag", label: "Tags", ty: "label_id" },
@@ -178,7 +204,7 @@ describe("ConnectorBrowser", () => {
       relationships: [],
     };
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-      json({ rows: [], next_cursor: null, has_more: false, count: 0 }));
+      json({ rows: [], has_more: false, count: 0 }));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<ConnectorBrowser connectionId="c1" schema={schemaWithTags} selected={[]} onSelectedChange={vi.fn()} />);
@@ -226,7 +252,7 @@ describe("ConnectorBrowser", () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
         json({ rows: [
           { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
 
       render(<Harness />);
       await screen.findByText("Drill");
@@ -248,7 +274,7 @@ describe("ConnectorBrowser", () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
         json({ rows: [
           { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
 
       render(<Harness />);
       await screen.findByText("Drill");
@@ -272,9 +298,8 @@ describe("ConnectorBrowser", () => {
             id: "entities",
             label: "Items",
             view: "table",
-            dynamic_source_prefix: "custom:",
             fields_incomplete: false,
-            columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }],
+            columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }],
             filters: [
               { key: "q", label: "Search", ty: "search" },
               { key: "tag", label: "Tags", ty: "label_id" },
@@ -286,7 +311,7 @@ describe("ConnectorBrowser", () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
         json({ rows: [
           { id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
 
       render(<ConnectorBrowser connectionId="c1" schema={schemaWithTags} selected={[]} onSelectedChange={vi.fn()} />);
       await screen.findByText("Drill");
@@ -304,7 +329,7 @@ describe("ConnectorBrowser", () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
         json({ rows: [
           { id: { resource: "locations", key: "l1" }, cells: { name: "Garage", itemCount: 5 } },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
 
       render(<Harness />);
       await waitFor(() => expect(screen.getByRole("button", { name: "Locations" })).toBeInTheDocument());
@@ -326,7 +351,6 @@ describe("ConnectorBrowser", () => {
               { id: { resource: "entities", key: "e1" }, cells: { name: "Drill 1", assetId: "000-001" } },
               { id: { resource: "entities", key: "e2" }, cells: { name: "Drill 2", assetId: "000-002" } },
             ],
-            next_cursor: null,
             has_more: false,
             count: 2,
           });
@@ -337,7 +361,6 @@ describe("ConnectorBrowser", () => {
             { id: { resource: "entities", key: "e2" }, cells: { name: "Drill 2", assetId: "000-002" } },
             { id: { resource: "entities", key: "e3" }, cells: { name: "Saw", assetId: "000-003" } },
           ],
-          next_cursor: null,
           has_more: false,
           count: 3,
         });
@@ -376,7 +399,7 @@ describe("ConnectorBrowser", () => {
         json({ rows: [
           { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "000-001" } },
           { id: { resource: "entities", key: "e2" }, cells: { name: "Saw", assetId: "000-002" } },
-        ], next_cursor: null, has_more: false, count: 2 })));
+        ], has_more: false, count: 2 })));
 
       render(<Harness />);
       await screen.findByText("Drill");
@@ -404,7 +427,6 @@ describe("ConnectorBrowser", () => {
               { id: { resource: "entities", key: "e1" }, cells: { name: "Power Drill", assetId: "A1" } },
               { id: { resource: "entities", key: "e2" }, cells: { name: "Power Saw", assetId: "A2" } },
             ],
-            next_cursor: null,
             has_more: false,
             count: 2,
           });
@@ -415,7 +437,6 @@ describe("ConnectorBrowser", () => {
             { id: { resource: "entities", key: "e2" }, cells: { name: "Power Saw", assetId: "A2" } },
             { id: { resource: "entities", key: "e3" }, cells: { name: "Hand Saw", assetId: "A3" } },
           ],
-          next_cursor: null,
           has_more: false,
           count: 3,
         });
@@ -447,7 +468,7 @@ describe("ConnectorBrowser", () => {
             id: { resource: "entities", key: "e1" },
             cells: { name: "Drill", assetId: "000-001", description: "Power tool", manufacturer: "DeWalt" },
           },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
       render(<Harness />);
       await screen.findByText("Drill");
 
@@ -470,7 +491,7 @@ describe("ConnectorBrowser", () => {
             id: { resource: "entities", key: "e1" },
             cells: { name: "Drill", assetId: "000-001", description: "Power tool", manufacturer: "DeWalt" },
           },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
       render(<Harness />);
       await screen.findByText("Drill");
 
@@ -501,7 +522,7 @@ describe("ConnectorBrowser", () => {
 
     it("enforces minimum 1 visible column invariant by disabling the last checked checkbox", async () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-        json({ rows: [], next_cursor: null, has_more: false, count: 0 })));
+        json({ rows: [], has_more: false, count: 0 })));
       render(<Harness />);
       await waitFor(() => expect(screen.getByRole("button", { name: /customize visible columns/i })).toBeInTheDocument());
 
@@ -525,7 +546,7 @@ describe("ConnectorBrowser", () => {
 
     it("handles All and Reset quick action buttons and persists changes", async () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-        json({ rows: [], next_cursor: null, has_more: false, count: 0 })));
+        json({ rows: [], has_more: false, count: 0 })));
       render(<Harness />);
       await waitFor(() => expect(screen.getByRole("button", { name: /customize visible columns/i })).toBeInTheDocument());
 
@@ -549,8 +570,19 @@ describe("ConnectorBrowser", () => {
       expect(screen.queryByRole("columnheader", { name: "Manufacturer" })).not.toBeInTheDocument();
     });
 
-    it("restores persisted column preferences across component remounts", async () => {
+    it("opens with the cheap columns when the stored choice is a plain array", async () => {
       localStorage.setItem("labeler:connector-columns:c1:entities", JSON.stringify(["name", "manufacturer"]));
+      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
+        json({ rows: [], has_more: false, count: 0 })));
+      render(<Harness />);
+
+      expect(await screen.findByRole("button", { name: /customize visible columns/i })).toHaveTextContent("Columns (3/6)");
+      expect(screen.getByRole("columnheader", { name: "Asset ID" })).toBeInTheDocument();
+      expect(screen.queryByRole("columnheader", { name: "Manufacturer" })).not.toBeInTheDocument();
+    });
+
+    it("restores persisted column preferences across component remounts", async () => {
+      localStorage.setItem("labeler:connector-columns:c1:entities", JSON.stringify({ visible: ["name", "manufacturer"] }));
 
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
         json({ rows: [
@@ -558,7 +590,7 @@ describe("ConnectorBrowser", () => {
             id: { resource: "entities", key: "e1" },
             cells: { name: "Drill", assetId: "000-001", description: "Power tool", manufacturer: "DeWalt" },
           },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
 
       const { unmount } = render(<Harness />);
       await screen.findByText("Drill");
@@ -576,7 +608,7 @@ describe("ConnectorBrowser", () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
         json({ rows: [
           { id: { resource: "locations", key: "l1" }, cells: { name: "Garage", itemCount: 5 } },
-        ], next_cursor: null, has_more: false, count: 1 })));
+        ], has_more: false, count: 1 })));
 
       render(<Harness />);
       await waitFor(() => expect(screen.getByRole("button", { name: "Locations" })).toBeInTheDocument());
@@ -594,7 +626,7 @@ describe("ConnectorBrowser", () => {
 
     it("dismisses the column picker popover on Escape key and outside click", async () => {
       vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-        json({ rows: [], next_cursor: null, has_more: false, count: 0 })));
+        json({ rows: [], has_more: false, count: 0 })));
       render(<Harness />);
       await waitFor(() => expect(screen.getByRole("button", { name: /customize visible columns/i })).toBeInTheDocument());
 
@@ -615,51 +647,15 @@ describe("ConnectorBrowser", () => {
       expect(screen.queryByText("Visible Columns")).not.toBeInTheDocument();
     });
 
-    it("a newly derived column appears for a resource customized in this session", async () => {
-      vi.stubGlobal("fetch", vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-        json({ rows: [], next_cursor: null, has_more: false, count: 0 })));
-      const { rerender } = render(<Harness />);
-      await waitFor(() => expect(screen.getByRole("button", { name: /customize visible columns/i })).toBeInTheDocument());
-
-      // Open popover and uncheck Description (customizing columns in this session)
-      fireEvent.click(screen.getByRole("button", { name: /customize visible columns/i }));
-      fireEvent.click(screen.getByRole("checkbox", { name: "Description" }));
-      expect(screen.queryByRole("columnheader", { name: "Description" })).not.toBeInTheDocument();
-
-      // Now, on the same mount, update schema to include a newly derived column
-      const updatedSchema: ConnectorSchema = {
+    it("guard: sorting by a column the schema drops stops ordering without clearing sort, and resumes when restored", async () => {
+      const schemaWithLocation: ConnectorSchema = {
         ...schema,
         resources: [
           {
             ...schema.resources[0],
             columns: [
               ...schema.resources[0].columns,
-              { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-            ],
-          },
-          schema.resources[1],
-        ],
-      };
-      rerender(<Harness schema={updatedSchema} />);
-
-      // The new derived column is shown
-      expect(screen.getByRole("columnheader", { name: "Location ID" })).toBeInTheDocument();
-      // While Description stays hidden
-      expect(screen.queryByRole("columnheader", { name: "Description" })).not.toBeInTheDocument();
-      // And Name and Asset ID remain visible
-      expect(screen.getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
-      expect(screen.getByRole("columnheader", { name: "Asset ID" })).toBeInTheDocument();
-    });
-
-    it("guard: sorting by a column a save removes stops ordering without clearing sort, and resumes when restored", async () => {
-      const schemaWithDerived: ConnectorSchema = {
-        ...schema,
-        resources: [
-          {
-            ...schema.resources[0],
-            columns: [
-              ...schema.resources[0].columns,
-              { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+              { key: "location_id", label: "Location ID", ty: "text", tier: "cheap", multi_valued: false },
             ],
           },
           schema.resources[1],
@@ -670,9 +666,9 @@ describe("ConnectorBrowser", () => {
         json({ rows: [
           { id: { resource: "entities", key: "e1" }, cells: { name: "B", assetId: "1", description: "d", location_id: "LOC-2" } },
           { id: { resource: "entities", key: "e2" }, cells: { name: "A", assetId: "2", description: "d", location_id: "LOC-1" } },
-        ], next_cursor: null, has_more: false, count: 2 })));
+        ], has_more: false, count: 2 })));
 
-      const { rerender } = render(<Harness schema={schemaWithDerived} />);
+      const { rerender } = render(<Harness schema={schemaWithLocation} />);
       await screen.findByText("LOC-2");
 
       // Sort by Location ID asc
@@ -684,7 +680,7 @@ describe("ConnectorBrowser", () => {
       expect(textNodes[0].textContent).toBe("LOC-1");
       expect(textNodes[1].textContent).toBe("LOC-2");
 
-      // Save removes the rule deriving Location ID
+      // The schema drops Location ID
       rerender(<Harness schema={schema} />);
       await screen.findByText("B");
 
@@ -694,8 +690,8 @@ describe("ConnectorBrowser", () => {
       expect(nameNodes[0].textContent).toBe("B");
       expect(nameNodes[1].textContent).toBe("A");
 
-      // Save restores the rule deriving Location ID
-      rerender(<Harness schema={schemaWithDerived} />);
+      // The schema carries Location ID again
+      rerender(<Harness schema={schemaWithLocation} />);
 
       // Sorting resumes: LOC-1 comes before LOC-2 again
       await screen.findByText("LOC-2");
@@ -704,15 +700,15 @@ describe("ConnectorBrowser", () => {
       expect(restoredNodes[1].textContent).toBe("LOC-2");
     });
 
-    it("guard: filtering by a column a save removes stops narrowing without clearing filter, and resumes when restored", async () => {
-      const schemaWithDerived: ConnectorSchema = {
+    it("guard: filtering by a column the schema drops stops narrowing without clearing filter, and resumes when restored", async () => {
+      const schemaWithLocation: ConnectorSchema = {
         ...schema,
         resources: [
           {
             ...schema.resources[0],
             columns: [
               ...schema.resources[0].columns,
-              { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+              { key: "location_id", label: "Location ID", ty: "text", tier: "cheap", multi_valued: false },
             ],
           },
           schema.resources[1],
@@ -723,9 +719,9 @@ describe("ConnectorBrowser", () => {
         json({ rows: [
           { id: { resource: "entities", key: "e1" }, cells: { name: "B", assetId: "1", description: "d", location_id: "LOC-2" } },
           { id: { resource: "entities", key: "e2" }, cells: { name: "A", assetId: "2", description: "d", location_id: "LOC-1" } },
-        ], next_cursor: null, has_more: false, count: 2 })));
+        ], has_more: false, count: 2 })));
 
-      const { rerender } = render(<Harness schema={schemaWithDerived} />);
+      const { rerender } = render(<Harness schema={schemaWithLocation} />);
       await screen.findByText("LOC-2");
 
       // Type filter into Location ID filter input
@@ -736,7 +732,7 @@ describe("ConnectorBrowser", () => {
       expect(screen.getByText("LOC-1")).toBeInTheDocument();
       expect(screen.queryByText("LOC-2")).not.toBeInTheDocument();
 
-      // Save removes the rule deriving Location ID
+      // The schema drops Location ID
       rerender(<Harness schema={schema} />);
       await screen.findByText("B");
 
@@ -744,8 +740,8 @@ describe("ConnectorBrowser", () => {
       expect(screen.getByText("B")).toBeInTheDocument();
       expect(screen.getByText("A")).toBeInTheDocument();
 
-      // Save restores the rule deriving Location ID
-      rerender(<Harness schema={schemaWithDerived} />);
+      // The schema carries Location ID again
+      rerender(<Harness schema={schemaWithLocation} />);
 
       // Filter resumes narrowing to LOC-1
       await screen.findByText("LOC-1");

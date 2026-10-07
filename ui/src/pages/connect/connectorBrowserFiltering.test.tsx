@@ -15,12 +15,11 @@ const schema: ConnectorSchema = {
       id: "entities",
       label: "Items",
       view: "table",
-      dynamic_source_prefix: "custom:",
       fields_incomplete: false,
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "count", label: "Count", ty: "number", tier: "cheap", multi_valued: false, transform_source: false },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "count", label: "Count", ty: "number", tier: "cheap", multi_valued: false },
       ],
       filters: [],
     },
@@ -61,7 +60,7 @@ describe("connector browser per-column filtering", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-        json({ rows, next_cursor: null, has_more: false, count: rows.length }),
+        json({ rows, has_more: false, count: rows.length }),
       ),
     );
   });
@@ -101,18 +100,17 @@ describe("connector browser per-column filtering", () => {
     expect(screen.queryByText("Sawzall")).not.toBeInTheDocument();
   });
 
-  it("issues no browse request and leaves the cursor unchanged", async () => {
+  it("issues no browse request and leaves the page number unchanged", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (_input, init) => {
       const body = init?.body ? JSON.parse(init.body as string) : {};
-      if (body.cursor) {
+      if (body.page === 2) {
         return json({
           rows: [{ id: { resource: "entities", key: "e6" }, cells: { name: "Extra", assetId: "A6", count: 60 } }],
-          next_cursor: null,
           has_more: false,
           count: rows.length + 1,
         });
       }
-      return json({ rows, next_cursor: "cur1", has_more: true, count: rows.length });
+      return json({ rows, has_more: true, count: rows.length });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -125,14 +123,14 @@ describe("connector browser per-column filtering", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     // Clear the filter so "Load more"'s appended row is visible, then load more: the request must
-    // still carry the cursor from the very first page, proving the filter never touched it.
+    // still ask for page 2, proving the filter never touched paging.
     fireEvent.change(screen.getByLabelText("Filter by Name"), { target: { value: "" } });
     await waitFor(() => expect(dataRowCount()).toBe(5));
 
     fireEvent.click(screen.getByRole("button", { name: /load more/i }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     const secondCall = fetchMock.mock.calls[1]!;
-    expect(JSON.parse(secondCall[1]!.body as string).cursor).toBe("cur1");
+    expect(JSON.parse(secondCall[1]!.body as string).page).toBe(2);
     await waitFor(() => expect(screen.getByText("Extra")).toBeInTheDocument());
   });
 

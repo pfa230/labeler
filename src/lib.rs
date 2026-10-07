@@ -204,13 +204,6 @@ mod http_tests {
         )))
     }
 
-    fn loopback_state() -> Arc<AppState> {
-        let (templates, templates_dir) = crate::templates::load_all_for_tests();
-        let store = Store::open_in_memory().expect("store");
-        seed_token(&store);
-        Arc::new(AppState::new(templates, templates_dir, store).with_loopback_egress())
-    }
-
     async fn json_response(response: axum::response::Response) -> Value {
         let body = response
             .into_body()
@@ -314,7 +307,7 @@ mod http_tests {
                     .uri(format!("/api/connections/{id}"))
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"connector":"homebox","name":"renamed","base_url":"http://hb.lan:7745"}"#,
+                        r#"{"name":"renamed","base_url":"http://hb.lan:7745"}"#,
                     ))
                     .unwrap(),
             )
@@ -480,7 +473,7 @@ mod http_tests {
     }
 
     #[tokio::test]
-    async fn update_connection_preserves_omitted_public_url() {
+    async fn update_connection_clears_omitted_public_url() {
         let app = build_app();
         // Create with public_url
         let res = app
@@ -502,7 +495,7 @@ mod http_tests {
         let id = v["id"].as_str().unwrap();
         assert_eq!(v["public_url"], "https://homebox.example.com");
 
-        // Update omitting public_url preserves existing
+        // PUT replaces the connection, so omitting public_url clears it
         let res = app
             .clone()
             .oneshot(
@@ -511,7 +504,7 @@ mod http_tests {
                     .uri(format!("/api/connections/{id}"))
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"connector":"homebox","name":"renamed","base_url":"http://hb.lan:7745"}"#,
+                        r#"{"name":"renamed","base_url":"http://hb.lan:7745"}"#,
                     ))
                     .unwrap(),
             )
@@ -520,89 +513,76 @@ mod http_tests {
         assert_eq!(res.status(), StatusCode::OK);
         let v = json_response(res).await;
         assert_eq!(v["name"], "renamed");
-        assert_eq!(v["public_url"], "https://homebox.example.com");
+        assert_eq!(v["public_url"], Value::Null);
     }
 
+    /// `null` is not a way to clear `public_url`: a key written as `null` is a malformed body. Blank and
+    /// omitted both clear it.
     #[tokio::test]
-    async fn update_connection_clears_null_public_url() {
+    async fn update_connection_refuses_null_public_url_and_clears_blank_or_omitted() {
         let app = build_app();
-        // Create with public_url
         let res = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://homebox.example.com","credential":"secret"}"#,
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(json_req(
+                "POST",
+                "/api/connections",
+                r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://homebox.example.com","credential":"secret"}"#.to_string(),
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let v = json_response(res).await;
-        let id = v["id"].as_str().unwrap();
-        assert_eq!(v["public_url"], "https://homebox.example.com");
+        let id = json_response(res).await["id"].as_str().unwrap().to_string();
+        let put = |body: &'static str| {
+            app.clone().oneshot(json_req(
+                "PUT",
+                &format!("/api/connections/{id}"),
+                body.to_string(),
+            ))
+        };
 
-        // Clear public_url with null
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{id}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":null}"#,
-                    ))
-                    .unwrap(),
-            )
+        let res = put(r#"{"name":"home","base_url":"http://hb.lan:7745","public_url":null}"#)
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "json_malformed");
+        assert!(
+            body["error"]["details"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("null"),
+            "{body}"
+        );
+
+        // Sent with a trailing slash, so the update path is what proves the normalization, not the
+        // create path or the shared helper.
+        let res = put(r#"{"name":"home","base_url":"http://hb.lan:7745","public_url":"https://hb2.example.com/"}"#)
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let v = json_response(res).await;
-        assert_eq!(v["public_url"], Value::Null);
+        assert_eq!(
+            json_response(res).await["public_url"],
+            "https://hb2.example.com"
+        );
 
-        // Set to new public_url. Sent with a trailing slash, so the update path is what proves the
-        // normalization, not the create path or the shared helper.
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{id}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":"https://hb2.example.com/"}"#,
-                    ))
-                    .unwrap(),
-            )
+        let res = put(r#"{"name":"home","base_url":"http://hb.lan:7745","public_url":""}"#)
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let v = json_response(res).await;
-        assert_eq!(v["public_url"], "https://hb2.example.com");
+        assert_eq!(json_response(res).await["public_url"], Value::Null);
 
-        // Clear public_url with empty string ""
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{id}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":""}"#,
-                    ))
-                    .unwrap(),
-            )
+        let res = put(r#"{"name":"home","base_url":"http://hb.lan:7745","public_url":"https://hb2.example.com"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            json_response(res).await["public_url"],
+            "https://hb2.example.com"
+        );
+        let res = put(r#"{"name":"home","base_url":"http://hb.lan:7745"}"#)
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let v = json_response(res).await;
-        assert_eq!(v["public_url"], Value::Null);
+        assert_eq!(json_response(res).await["public_url"], Value::Null);
     }
 
     /// The two URL fields must not share a discriminator. Passing `UrlField::Public` for `base_url`
@@ -653,7 +633,7 @@ mod http_tests {
                     .uri(format!("/api/connections/{id}"))
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"https://user:pass@hb.lan"}"#,
+                        r#"{"name":"home","base_url":"https://user:pass@hb.lan"}"#,
                     ))
                     .unwrap(),
             )
@@ -695,13 +675,7 @@ mod http_tests {
             ("GET", Body::empty()),
             (
                 "PUT",
-                Body::from(r#"{"connector":"homebox","name":"x","base_url":"http://hb.lan:7745"}"#),
-            ),
-            (
-                "PUT",
-                Body::from(
-                    r#"{"connector":"mismatched","name":"x","base_url":"http://hb.lan:7745"}"#,
-                ),
+                Body::from(r#"{"name":"x","base_url":"http://hb.lan:7745"}"#),
             ),
             ("DELETE", Body::empty()),
         ] {
@@ -721,50 +695,9 @@ mod http_tests {
         }
     }
 
-    /// A connection's connector is fixed at creation: an update naming a different one is rejected
-    /// with 400 and reason connector_immutable (#197).
+    /// An update returns 200 with the new fields and the connector it was created with.
     #[tokio::test]
-    async fn update_connection_rejects_mismatched_connector() {
-        let app = build_app();
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let id = json_response(res).await["id"].as_str().unwrap().to_string();
-
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{id}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"not-a-connector","name":"home","base_url":"http://hb.lan:7745"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "connector_immutable");
-    }
-
-    /// Updating a connection sending the stored connector returns 200 and updates fields (#197).
-    #[tokio::test]
-    async fn update_connection_with_matching_connector_succeeds() {
+    async fn update_connection_replaces_fields_and_keeps_the_connector() {
         let app = build_app();
         let res = app
             .clone()
@@ -790,7 +723,7 @@ mod http_tests {
                     .uri(format!("/api/connections/{id}"))
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"connector":"homebox","name":"new-name","base_url":"http://hb-updated.lan:7745"}"#,
+                        r#"{"name":"new-name","base_url":"http://hb-updated.lan:7745"}"#,
                     ))
                     .unwrap(),
             )
@@ -801,273 +734,6 @@ mod http_tests {
         assert_eq!(body["connector"], "homebox");
         assert_eq!(body["name"], "new-name");
         assert_eq!(body["base_url"], "http://hb-updated.lan:7745");
-    }
-
-    /// A rejected PUT with a mismatched connector changes nothing in the stored connection (#197).
-    #[tokio::test]
-    async fn update_connection_rejected_mismatched_connector_leaves_state_unchanged() {
-        let app = build_app();
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"orig-name","base_url":"http://hb.lan:7745","public_url":"http://pub.lan","credential":"secret","enabled":true}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let id = json_response(res).await["id"].as_str().unwrap().to_string();
-
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{id}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"other-connector","name":"mutated-name","base_url":"http://other.lan:7745","public_url":"http://mutated-pub.lan","enabled":false}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-
-        // Read it back: all fields must remain as originally created
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/api/connections/{id}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = json_response(res).await;
-        assert_eq!(body["connector"], "homebox");
-        assert_eq!(body["name"], "orig-name");
-        assert_eq!(body["base_url"], "http://hb.lan:7745");
-        assert_eq!(body["public_url"], "http://pub.lan");
-        assert_eq!(body["enabled"], true);
-    }
-
-    /// A connector mismatch outranks every field the update itself validates: the check runs before
-    /// URL and transform validation, so the client is told which connection it is editing before it
-    /// is told which field is malformed. It cannot outrank deserialization, which happens before the
-    /// handler runs; the test below pins that boundary (#197).
-    #[tokio::test]
-    async fn update_connection_connector_mismatch_outranks_other_invalid_fields() {
-        let app = build_app();
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let id = json_response(res).await["id"].as_str().unwrap().to_string();
-
-        for (field, payload) in [
-            (
-                "base_url",
-                r#"{"connector":"mismatched-connector","name":"home","base_url":"not a url"}"#,
-            ),
-            (
-                "public_url",
-                r#"{"connector":"mismatched-connector","name":"home","base_url":"http://hb.lan:7745","public_url":"ftp://nope"}"#,
-            ),
-            (
-                "transforms",
-                r#"{"connector":"mismatched-connector","name":"home","base_url":"http://hb.lan:7745","transforms":[{"resource":"nope","source":"x","pattern":"y"}]}"#,
-            ),
-        ] {
-            let res = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("PUT")
-                        .uri(format!("/api/connections/{id}"))
-                        .header("content-type", "application/json")
-                        .body(Body::from(payload))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad {field}");
-            let body = json_response(res).await;
-            assert_eq!(body["error"]["code"], "InvalidRequest", "bad {field}");
-            assert_eq!(
-                body["error"]["details"]["reason"], "connector_immutable",
-                "bad {field}"
-            );
-        }
-    }
-
-    /// A body that never deserializes is rejected by the request layer, before the handler and so
-    /// before the `connector` comparison, which cannot precede reading the payload that carries it.
-    /// What that rejection reports is the request layer's own contract, not this one's: since #225
-    /// the crate's `Json<T>` extractor maps every deserialization failure to `400 InvalidRequest`
-    /// with `json_malformed` (#225). Out of scope for #197; what matters here is only that the
-    /// rejection is not `connector_immutable` (#197).
-    #[tokio::test]
-    async fn update_connection_undeserializable_body_is_rejected_before_the_connector_check() {
-        let app = build_app();
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let id = json_response(res).await["id"].as_str().unwrap().to_string();
-
-        for (case, expected, payload) in [
-            (
-                "not json",
-                StatusCode::BAD_REQUEST,
-                r#"{"connector":"nope","#,
-            ),
-            (
-                "connector of the wrong type",
-                StatusCode::BAD_REQUEST,
-                r#"{"connector":42,"name":"home","base_url":"http://hb.lan:7745"}"#,
-            ),
-            (
-                "required key missing",
-                StatusCode::BAD_REQUEST,
-                r#"{"connector":"nope","base_url":"http://hb.lan:7745"}"#,
-            ),
-        ] {
-            let res = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("PUT")
-                        .uri(format!("/api/connections/{id}"))
-                        .header("content-type", "application/json")
-                        .body(Body::from(payload))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(res.status(), expected, "{case}");
-            let body = String::from_utf8(bytes_response(res).await).expect("utf-8 body");
-            assert!(
-                !body.contains("connector_immutable"),
-                "{case}: rejected before the connector check, got {body}"
-            );
-        }
-    }
-
-    /// The comparison is byte equality, not a case-insensitive one: `ConnectorRegistry::get` matches
-    /// ids literally, so a connector differing only in case is a different connector (#197).
-    #[tokio::test]
-    async fn update_connection_rejects_a_connector_differing_only_in_case() {
-        let app = build_app();
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let id = json_response(res).await["id"].as_str().unwrap().to_string();
-
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{id}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"Homebox","name":"home","base_url":"http://hb.lan:7745"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "connector_immutable");
-    }
-
-    #[tokio::test]
-    async fn update_connection_disappearing_before_readback_returns_not_found() {
-        let (app, state) = build_app_with_state();
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::CREATED);
-        let id = json_response(res).await["id"].as_str().unwrap().to_string();
-
-        let conn_id = id.clone();
-        state.set_mid_connection_update_hook(move |store| {
-            let conn_id = conn_id.clone();
-            Box::pin(async move {
-                store.delete_connection_and_default(&conn_id).await.unwrap();
-            })
-        });
-
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{id}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"renamed","base_url":"http://hb.lan:7745"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "NotFound");
-        assert!(body["error"]["message"].is_string());
     }
 
     #[tokio::test]
@@ -1114,6 +780,184 @@ mod http_tests {
             .unwrap();
         let list = json_response(res).await;
         assert!(list.as_array().unwrap().is_empty());
+    }
+
+    /// Create a Homebox connection through the API and return its id.
+    async fn create_homebox_connection(app: &axum::Router, base_url: &str) -> String {
+        let body = json!({
+            "connector": "homebox",
+            "name": "home",
+            "base_url": base_url,
+            "credential": "hb_key",
+        });
+        let res = app
+            .clone()
+            .oneshot(json_req("POST", "/api/connections", body.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        json_response(res).await["id"].as_str().unwrap().to_string()
+    }
+
+    /// Assert a `400 json_malformed` whose `details.error` names `cause`.
+    async fn assert_json_malformed(res: axum::response::Response, cause: &str) {
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(
+            body["error"]["details"]["reason"], "json_malformed",
+            "{body}"
+        );
+        let error = body["error"]["details"]["error"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(error.contains(cause), "expected `{cause}` in {body}");
+    }
+
+    /// The connector is fixed at create, so the update body has no `connector` key: sending one is an
+    /// unlisted key, refused whatever its value.
+    #[tokio::test]
+    async fn update_connection_refuses_a_connector_key() {
+        let app = build_app();
+        let id = create_homebox_connection(&app, "http://hb.lan:7745").await;
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                &format!("/api/connections/{id}"),
+                r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_json_malformed(res, "unknown field").await;
+    }
+
+    #[tokio::test]
+    async fn update_connection_refuses_a_blank_credential() {
+        let (app, state) = build_app_with_state();
+        let id = create_homebox_connection(&app, "http://hb.lan:7745").await;
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                &format!("/api/connections/{id}"),
+                r#"{"name":"home","base_url":"http://hb.lan:7745","credential":""}"#.into(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["details"]["reason"], "credential_required");
+        let stored = state.store().get_connection(&id).await.unwrap().unwrap();
+        assert_eq!(stored.credential, "hb_key");
+    }
+
+    /// Each request is otherwise valid, so the one `null` is the only fault it carries.
+    #[tokio::test]
+    async fn connection_bodies_refuse_null_keys() {
+        let app = build_app();
+        let id = create_homebox_connection(&app, "http://hb.lan:7745").await;
+        for (method, uri, body) in [
+            (
+                "PUT",
+                format!("/api/connections/{id}"),
+                r#"{"name":"home","base_url":"http://hb.lan:7745","credential":null}"#,
+            ),
+            (
+                "POST",
+                "/api/connections".to_string(),
+                r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","public_url":null,"credential":"secret"}"#,
+            ),
+            (
+                "POST",
+                "/api/connections".to_string(),
+                r#"{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":null}"#,
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(json_req(method, &uri, body.into()))
+                .await
+                .unwrap();
+            assert_json_malformed(res, "null").await;
+        }
+    }
+
+    #[tokio::test]
+    async fn create_connection_refuses_enabled_and_transforms() {
+        let app = build_app();
+        for extra in [r#""enabled":true"#, r#""transforms":[]"#] {
+            let body = format!(
+                r#"{{"connector":"homebox","name":"home","base_url":"http://hb.lan:7745","credential":"secret",{extra}}}"#
+            );
+            let res = app
+                .clone()
+                .oneshot(json_req("POST", "/api/connections", body))
+                .await
+                .unwrap();
+            assert_json_malformed(res, "unknown field").await;
+        }
+
+        let id = create_homebox_connection(&app, "http://hb.lan:7745").await;
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/connections/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = json_response(res).await;
+        assert!(v.get("enabled").is_none(), "{v}");
+        assert!(v.get("transforms").is_none(), "{v}");
+    }
+
+    /// The URL parser drops empty userinfo, so `https://@host` parses with no username and no
+    /// password; only the parser's syntax violation shows it was there.
+    #[tokio::test]
+    async fn connection_urls_refuse_empty_userinfo() {
+        let app = build_app();
+        let id = create_homebox_connection(&app, "http://hb.lan:7745").await;
+        for url in ["https://@host", "https:////@host"] {
+            for (field, reason) in [
+                ("base_url", "base_url_invalid"),
+                ("public_url", "public_url_invalid"),
+            ] {
+                let mut create = json!({
+                    "connector": "homebox",
+                    "name": "home",
+                    "base_url": "http://hb.lan:7745",
+                    "credential": "secret",
+                });
+                create[field] = json!(url);
+                let mut update = json!({
+                    "name": "home",
+                    "base_url": "http://hb.lan:7745",
+                });
+                update[field] = json!(url);
+                for (method, uri, body) in [
+                    ("POST", "/api/connections".to_string(), create),
+                    ("PUT", format!("/api/connections/{id}"), update),
+                ] {
+                    let res = app
+                        .clone()
+                        .oneshot(json_req(method, &uri, body.to_string()))
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        res.status(),
+                        StatusCode::BAD_REQUEST,
+                        "{method} {field} {url}"
+                    );
+                    let body = json_response(res).await;
+                    assert_eq!(
+                        body["error"]["details"]["reason"], reason,
+                        "{method} {field} {url}"
+                    );
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -6678,7 +6522,7 @@ layout:
             })))
             .mount(&hb)
             .await;
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -6687,8 +6531,6 @@ layout:
                 base_url: &hb.uri(),
                 public_url: None,
                 credential: "hb_key",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -6722,7 +6564,7 @@ layout:
             })))
             .mount(&hb)
             .await;
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -6731,8 +6573,6 @@ layout:
                 base_url: &hb.uri(),
                 public_url: Some("https://public.homebox.domain"),
                 credential: "hb_key",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -6759,7 +6599,7 @@ layout:
             "https://public.homebox.domain/entity/e1"
         );
 
-        // Clear public_url via PUT
+        // Clear public_url by omitting it from the PUT
         let res = router
             .clone()
             .oneshot(
@@ -6768,7 +6608,7 @@ layout:
                     .uri(format!("/api/connections/{}", c.id))
                     .header("content-type", "application/json")
                     .body(Body::from(format!(
-                        r#"{{"connector":"homebox","name":"h","base_url":"{}","public_url":null}}"#,
+                        r#"{{"name":"h","base_url":"{}"}}"#,
                         hb.uri()
                     )))
                     .unwrap(),
@@ -6806,7 +6646,7 @@ layout:
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(["SKU"])))
             .mount(&hb)
             .await;
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -6815,8 +6655,6 @@ layout:
                 base_url: &hb.uri(),
                 public_url: None,
                 credential: "hb_key",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -6853,7 +6691,7 @@ layout:
             })))
             .mount(&hb)
             .await;
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -6862,8 +6700,6 @@ layout:
                 base_url: &hb.uri(),
                 public_url: None,
                 credential: "hb_key",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -6889,7 +6725,7 @@ layout:
 
     #[tokio::test]
     async fn browse_requires_auth() {
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -6898,8 +6734,6 @@ layout:
                 base_url: "http://hb.lan:7745",
                 public_url: None,
                 credential: "hb_key",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -6920,7 +6754,7 @@ layout:
 
     #[tokio::test]
     async fn browse_unknown_connection_404() {
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let router = with_auth(app(state.clone()));
         let res = router
             .oneshot(
@@ -6937,436 +6771,7 @@ layout:
     }
 
     #[tokio::test]
-    async fn browse_bad_cursor_400() {
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: "http://hb.lan:7745",
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/browse", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"resource":"entities","cursor":"garbage.token"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[tokio::test]
-    async fn schema_with_transforms_includes_derived_fields() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities/fields"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&hb)
-            .await;
-        let state = loopback_state();
-        let rules = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &rules,
-            })
-            .await
-            .unwrap();
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/api/connections/{}/schema", c.id))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        let entities = v["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["id"] == "entities")
-            .unwrap();
-        let loc_id_col = entities["columns"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|c| c["key"] == "location_id")
-            .expect("location_id column present");
-        assert_eq!(loc_id_col["ty"], "text");
-        assert_eq!(loc_id_col["tier"], "derived");
-
-        let locations = v["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["id"] == "locations")
-            .unwrap();
-        assert!(!locations["columns"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|c| c["key"] == "location_id"));
-    }
-
-    #[tokio::test]
-    async fn browse_with_transforms_populates_derived_cells() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [
-                    {"id":"e1","name":"Drill","parent":{"id":"loc1","name":"BOX.123 | Garage"}}
-                ],
-                "total": 1
-            })))
-            .mount(&hb)
-            .await;
-        let state = loopback_state();
-        let rules = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &rules,
-            })
-            .await
-            .unwrap();
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/browse", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"resource":"entities"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        let row = &v["rows"][0];
-        assert_eq!(row["cells"]["location_id"], "BOX.123");
-        assert_eq!(row["cells"]["location_name"], "Garage");
-    }
-
-    #[tokio::test]
-    async fn materialize_derived_field_alone_returns_it_without_source() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities/e1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id":"e1","name":"Drill","parent":{"id":"loc1","name":"BOX.123 | Garage"}
-            })))
-            .mount(&hb)
-            .await;
-        let state = loopback_state();
-        let rules = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &rules,
-            })
-            .await
-            .unwrap();
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/materialize", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["location_id"],"expansion":"as_listed"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        let data = &v[0]["data"];
-        assert_eq!(data["location_id"], "BOX.123");
-        assert!(
-            data.get("location").is_none(),
-            "source must not be returned when unrequested"
-        );
-    }
-
-    #[tokio::test]
-    async fn materialize_non_matching_row_omits_key() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities/e1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id":"e1","name":"Drill","parent":{"id":"loc1","name":"Simple Garage"}
-            })))
-            .mount(&hb)
-            .await;
-        let state = loopback_state();
-        let rules = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<location_id>BOX\.\d+)\s*\|\s*(?<location_name>.*)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &rules,
-            })
-            .await
-            .unwrap();
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/materialize", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["location_id"],"expansion":"as_listed"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        let data = &v[0]["data"];
-        assert!(
-            data.get("location_id").is_none(),
-            "non-matching row must omit key entirely"
-        );
-    }
-
-    #[tokio::test]
-    async fn rejected_connection_save_leaves_stored_connection_untouched() {
-        let state = loopback_state();
-        let original_rules = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: "http://hb.lan:7745",
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &original_rules,
-            })
-            .await
-            .unwrap();
-        let router = with_auth(app(state.clone()));
-
-        // PUT with invalid regex pattern
-        let res = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("PUT")
-                    .uri(format!("/api/connections/{}", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"Renamed","base_url":"http://hb.lan:7745","transforms":[{"resource":"entities","source":"location","pattern":"(?<bad>[0-9+"}]}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "connection_transform_invalid"
-        );
-        assert!(body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("rule 0"));
-
-        // Verify stored connection is unchanged
-        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(stored.name, "h");
-        assert_eq!(stored.transforms, original_rules);
-    }
-
-    #[tokio::test]
-    async fn create_connection_rejects_invalid_transforms() {
-        let state = loopback_state();
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"New","base_url":"http://hb.lan:7745","credential":"key","transforms":[{"resource":"entities","source":"unknown_col","pattern":"(?<out>.*)"}]}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "connection_transform_invalid"
-        );
-        assert!(body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("rule 0"));
-    }
-
-    #[tokio::test]
-    async fn inert_transform_for_unsupported_resource() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities/fields"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
-            .mount(&hb)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities/e1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id":"e1","name":"Drill"
-            })))
-            .mount(&hb)
-            .await;
-        let state = loopback_state();
-        let inert_rule = vec![crate::connector::FieldTransform {
-            resource: "retired_resource".into(),
-            source: "name".into(),
-            pattern: r"^(?<retired_id>.*)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &inert_rule,
-            })
-            .await
-            .unwrap();
-        let router = with_auth(app(state.clone()));
-
-        // Schema succeeds and does not include retired_id
-        let res = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/api/connections/{}/schema", c.id))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert!(!v["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| r["id"] == "retired_resource"));
-
-        // Materialize succeeds
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/materialize", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["name"],"expansion":"as_listed"}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn connection_schema_reports_tags_multi_valued_and_derived_columns() {
+    async fn connection_schema_reports_tags_multi_valued() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let hb = MockServer::start().await;
@@ -7375,12 +6780,7 @@ layout:
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!(["sku"])))
             .mount(&hb)
             .await;
-        let state = loopback_state();
-        let rules = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$".into(),
-        }];
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -7389,8 +6789,6 @@ layout:
                 base_url: &hb.uri(),
                 public_url: None,
                 credential: "hb_key",
-                enabled: true,
-                transforms: &rules,
             })
             .await
             .unwrap();
@@ -7436,13 +6834,6 @@ layout:
                 );
             }
         }
-        let derived_col = ent_cols
-            .iter()
-            .find(|c| c["key"] == "location_id")
-            .expect("location_id present");
-        assert_eq!(derived_col["tier"], "derived");
-        assert_eq!(derived_col["multi_valued"], false);
-
         // 4.1: no tags column on locations
         let locations = v["resources"]
             .as_array()
@@ -7487,7 +6878,7 @@ layout:
             .expect(1)
             .mount(&hb)
             .await;
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -7496,8 +6887,6 @@ layout:
                 base_url: &hb.uri(),
                 public_url: None,
                 credential: "hb_key",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -7594,7 +6983,7 @@ layout:
             .mount(&hb)
             .await;
 
-        let state = loopback_state();
+        let state = build_app_with_state().1;
         let c = state
             .store()
             .create_connection(crate::store::NewConnection {
@@ -7603,8 +6992,6 @@ layout:
                 base_url: &hb.uri(),
                 public_url: None,
                 credential: "hb_key",
-                enabled: true,
-                transforms: &[],
             })
             .await
             .unwrap();
@@ -7698,843 +7085,230 @@ layout:
         assert_eq!(data2["children"], serde_json::json!(""));
     }
 
-    #[tokio::test]
-    async fn save_connection_rejects_multi_valued_transform_source() {
-        let state = loopback_state();
-        let router = with_auth(app(state.clone()));
+    /// A Homebox stand-in answering `GET /api/v1/entities` with `list`.
+    async fn homebox_listing(list: Value) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(list))
+            .mount(&hb)
+            .await;
+        hb
+    }
 
-        // 4.8: Attempt to create connection with transform sourcing 'tags'
-        let res = router
+    async fn browse(app: &axum::Router, id: &str, body: &str) -> axum::response::Response {
+        app.clone()
+            .oneshot(json_req(
+                "POST",
+                &format!("/api/connections/{id}/browse"),
+                body.into(),
+            ))
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn transform_preview_route_is_gone() {
+        let hb =
+            homebox_listing(json!({"items": [{"id": "e1", "name": "Drill"}], "total": 1})).await;
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        let res = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"BadConn","base_url":"http://hb.lan:7745","credential":"key","transforms":[{"resource":"entities","source":"tags","pattern":"(?<tag_id>.*)"}]}"#,
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(json_req(
+                "POST",
+                &format!("/api/connections/{id}/transforms/preview"),
+                r#"{"transforms":[{"resource":"entities","source":"name","pattern":"^(?<n>.*)$"}],"rule":0}"#.into(),
+            ))
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "connection_transform_invalid"
-        );
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(
-            msg.contains("tags"),
-            "error message must name source 'tags': {}",
-            msg
-        );
-
-        // Assert nothing is stored
-        let conns = state.store().list_connections().await.unwrap();
-        assert!(
-            conns.is_empty(),
-            "connection must be left unstored on failure"
-        );
-
-        // Assert same body with scalar source 'name' saves successfully
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"connector":"homebox","name":"GoodConn","base_url":"http://hb.lan:7745","credential":"key","transforms":[{"resource":"entities","source":"name","pattern":"(?<clean_name>.*)"}]}"#,
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::CREATED);
-        let conns = state.store().list_connections().await.unwrap();
-        assert_eq!(conns.len(), 1);
-        assert_eq!(conns[0].name, "GoodConn");
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(json_response(res).await["error"]["code"], "NotFound");
     }
 
+    /// Browse sends `page` and `page_size` to Homebox as given, with no upper bound, and answers with
+    /// exactly `rows`, `has_more` and `count`.
     #[tokio::test]
-    async fn preview_endpoint_matching_rule_returns_captures_and_counts() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-
-        let mut items = Vec::new();
-        for i in 0..7 {
-            items.push(serde_json::json!({
-                "id": format!("e{i}"),
-                "name": format!("Item {i}"),
-                "parent": {"id": format!("loc{i}"), "name": "BOX.123 | Motorcycle parts"}
-            }));
-        }
-        for i in 7..10 {
-            items.push(serde_json::json!({
-                "id": format!("e{i}"),
-                "name": format!("Item {i}"),
-                "parent": {"id": format!("loc{i}"), "name": "NoDelim"}
-            }));
-        }
-
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": items,
-                "total": 10
-            })))
-            .mount(&hb)
-            .await;
-
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "location",
-                                "pattern": r"^(?<location_id>[^|]+?)\s*\|\s*(?<location_name>.*)$"
-                            }],
-                            "rule": 0,
-                            "page_size": 10
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["rule"], 0);
-        assert_eq!(v["resource"], "entities");
-        assert_eq!(v["source"], "location");
-        assert_eq!(v["row_count"], 10);
-        assert_eq!(v["matched_count"], 7);
-
-        let rows = v["rows"].as_array().unwrap();
-        assert_eq!(rows.len(), 10);
-
-        let matched_row = &rows[0];
-        assert_eq!(matched_row["source_value"], "BOX.123 | Motorcycle parts");
-        assert_eq!(matched_row["matched"], true);
-        assert_eq!(matched_row["value_truncated"], false);
-        assert_eq!(matched_row["derived"]["location_id"], "BOX.123");
-        assert_eq!(matched_row["derived"]["location_name"], "Motorcycle parts");
-
-        let unmatched_row = &rows[7];
-        assert_eq!(unmatched_row["source_value"], "NoDelim");
-        assert_eq!(unmatched_row["matched"], false);
-        assert_eq!(unmatched_row["value_truncated"], false);
-        assert!(unmatched_row.get("derived").is_none());
-    }
-
-    #[tokio::test]
-    async fn preview_endpoint_rule_matching_no_row() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [
-                    {"id": "e1", "name": "Item 1"},
-                    {"id": "e2", "name": "Item 2"}
-                ],
-                "total": 2
-            })))
-            .mount(&hb)
-            .await;
-
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^(?<nomatch>ZXZXZX.*)$"
-                            }],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["matched_count"], 0);
-        assert_eq!(v["row_count"], 2);
-
-        let rows = v["rows"].as_array().unwrap();
-        for row in rows {
-            assert_eq!(row["matched"], false);
-            assert!(row.get("derived").is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn preview_endpoint_distinguishes_no_source_value_non_match_and_empty_capture() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [
-                    {"id": "e1", "name": "Item 1"},
-                    {"id": "e2", "name": "Item 2", "manufacturer": "other val"},
-                    {"id": "e3", "name": "Item 3", "manufacturer": "prefix:"}
-                ],
-                "total": 3
-            })))
-            .mount(&hb)
-            .await;
-
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "manufacturer",
-                                "pattern": r"^prefix:(?<empty_cap>.*)$"
-                            }],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        let rows = v["rows"].as_array().unwrap();
-        assert_eq!(rows.len(), 3);
-
-        // Row 1 (e1: manufacturer absent in browse cells => no source_value, matched false, no derived)
-        let row0 = &rows[0];
-        assert!(row0.get("source_value").is_none());
-        assert_eq!(row0["matched"], false);
-        assert!(row0.get("derived").is_none());
-
-        // Row 2 (e2: manufacturer present but non-matching => reports source_value, matched false, no derived)
-        let row1 = &rows[1];
-        assert_eq!(row1["source_value"], "other val");
-        assert_eq!(row1["matched"], false);
-        assert!(row1.get("derived").is_none());
-
-        // Row 3 (e3: manufacturer matches and captures empty string => reports source_value, matched true, derived with empty string)
-        let row2 = &rows[2];
-        assert_eq!(row2["source_value"], "prefix:");
-        assert_eq!(row2["matched"], true);
-        assert_eq!(row2["derived"]["empty_cap"], "");
-    }
-
-    #[tokio::test]
-    async fn preview_endpoint_rejects_invalid_candidate_rule_elsewhere_in_list_with_no_upstream_fetch_and_leaves_store_unchanged(
-    ) {
-        use wiremock::MockServer;
-        let hb = MockServer::start().await;
-
-        let state = loopback_state();
-        let orig_transforms = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<orig_loc>[^|]+)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &orig_transforms,
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [
-                                {
-                                    "resource": "entities",
-                                    "source": "location",
-                                    "pattern": r"^(?<valid_loc>[^|]+)$"
-                                },
-                                {
-                                    "resource": "entities",
-                                    "source": "name",
-                                    "pattern": r"^([0-9]+)$" // No named group
-                                }
-                            ],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "connection_transform_invalid"
-        );
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("rule 1:"), "message must name rule 1: {}", msg);
-
-        // No request was sent to wiremock server
-        assert_eq!(hb.received_requests().await.unwrap().len(), 0);
-
-        // Stored connection in DB is unchanged
-        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(stored.transforms, orig_transforms);
-    }
-
-    #[tokio::test]
-    async fn preview_endpoint_rejects_collision_between_candidate_rules() {
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: "http://hb.lan",
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [
-                                {
-                                    "resource": "entities",
-                                    "source": "name",
-                                    "pattern": r"^(?<dup_field>.*)$"
-                                },
-                                {
-                                    "resource": "entities",
-                                    "source": "description",
-                                    "pattern": r"^(?<dup_field>.*)$"
-                                }
-                            ],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(
-            body["error"]["details"]["reason"],
-            "connection_transform_invalid"
-        );
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("rule 1:"));
-    }
-
-    #[tokio::test]
-    async fn preview_endpoint_rejects_out_of_range_rule_index_and_unknown_connection() {
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: "http://hb.lan",
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-
-        // Out of range rule index
-        let res = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^(?<clean>.*)$"
-                            }],
-                            "rule": 5
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
-
-        // Unknown connection id
-        let res404 = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/connections/non-existent-id/transforms/preview")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^(?<clean>.*)$"
-                            }],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res404.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn preview_endpoint_page_size_clamping() {
+    async fn browse_passes_page_and_page_size_upstream_unchanged() {
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let hb = MockServer::start().await;
-
         Mock::given(method("GET"))
             .and(path("/api/v1/entities"))
-            .and(query_param("pageSize", "200"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "e1", "name": "Item 1"}],
-                "total": 1
+            .and(query_param("page", "3"))
+            .and(query_param("pageSize", "500"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "items": [{"id": "e1", "name": "Drill"}], "total": 2000
             })))
             .mount(&hb)
             .await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .and(query_param("pageSize", "1"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "e1", "name": "Item 1"}],
-                "total": 1
-            })))
-            .mount(&hb)
-            .await;
-
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-
-        // page_size: 500 clamps to 200
-        let res1 = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^(?<clean>.*)$"
-                            }],
-                            "rule": 0,
-                            "page_size": 500
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res1.status(), StatusCode::OK);
-
-        // page_size: 0 clamps to 1
-        let res2 = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^(?<clean>.*)$"
-                            }],
-                            "rule": 0,
-                            "page_size": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(res2.status(), StatusCode::OK);
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        let res = browse(
+            &app,
+            &id,
+            r#"{"resource":"entities","page":3,"page_size":500}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["count", "has_more", "rows"]);
+        assert_eq!(v["has_more"], true);
+        assert_eq!(v["count"], 2000);
+        assert_eq!(v["rows"][0]["id"]["key"], "e1");
     }
 
     #[tokio::test]
-    async fn preview_endpoint_over_returning_upstream_truncated_to_requested_page_size() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-
-        let mut items = Vec::new();
-        for i in 0..50 {
-            items.push(serde_json::json!({
-                "id": format!("e{i}"),
-                "name": format!("Item {i}"),
-                "parent": {"id": format!("loc{i}"), "name": "MATCH.123"}
-            }));
+    async fn browse_refuses_malformed_paging_keys() {
+        let hb =
+            homebox_listing(json!({"items": [{"id": "e1", "name": "Drill"}], "total": 1})).await;
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        for (body, cause) in [
+            (r#"{"resource":"entities","page":0}"#, "nonzero"),
+            (r#"{"resource":"entities","page_size":0}"#, "nonzero"),
+            (r#"{"resource":"entities","page":null}"#, "null"),
+            (r#"{"resource":"entities","parent":null}"#, "null"),
+            (r#"{"resource":"entities","cursor":"x"}"#, "unknown field"),
+        ] {
+            assert_json_malformed(browse(&app, &id, body).await, cause).await;
         }
+    }
 
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": items,
-                "total": 50
-            })))
-            .mount(&hb)
-            .await;
+    /// `count` is the upstream total: a list without one is not the expected JSON, not an empty
+    /// resource.
+    #[tokio::test]
+    async fn browse_without_an_upstream_total_is_a_bad_response() {
+        let hb = homebox_listing(json!({"items": [{"id": "e1", "name": "Drill"}]})).await;
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        let res = browse(&app, &id, r#"{"resource":"entities"}"#).await;
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "Upstream");
+        assert_eq!(body["error"]["details"]["reason"], "bad_response");
+    }
 
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "location",
-                                "pattern": r"^(?<m>MATCH\..*)$"
-                            }],
-                            "rule": 0,
-                            "page_size": 10
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
+    /// No address screening: the state the service runs with reaches an upstream on 127.0.0.1.
+    #[tokio::test]
+    async fn browse_reaches_a_loopback_upstream_through_the_production_state() {
+        let hb =
+            homebox_listing(json!({"items": [{"id": "e1", "name": "Drill"}], "total": 1})).await;
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        let res = browse(&app, &id, r#"{"resource":"entities"}"#).await;
         assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["row_count"], 10);
-        assert_eq!(v["matched_count"], 10);
-        let rows = v["rows"].as_array().unwrap();
-        assert_eq!(rows.len(), 10);
+        assert_eq!(json_response(res).await["rows"][0]["id"]["key"], "e1");
+    }
+
+    /// A parse error quotes the offending upstream value, which can be anything the upstream holds,
+    /// the credential included; the reported message must not carry it.
+    #[tokio::test]
+    async fn an_unparseable_upstream_body_does_not_echo_the_credential() {
+        let hb = homebox_listing(json!({
+            "items": [{"id": "e1", "name": "Drill", "quantity": "hb_key"}], "total": 1
+        }))
+        .await;
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        let res = browse(&app, &id, r#"{"resource":"entities"}"#).await;
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "Upstream");
+        assert_eq!(body["error"]["details"]["reason"], "bad_response");
+        assert!(!body.to_string().contains("hb_key"), "{body}");
     }
 
     #[tokio::test]
-    async fn preview_endpoint_long_source_value_truncated_to_512_bytes_and_still_matched() {
+    async fn materialize_stringifies_a_numeric_custom_value_and_blanks_an_object() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let hb = MockServer::start().await;
-
-        let long_name = "X".repeat(4000);
         Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [
-                    {"id": "e1", "name": long_name}
-                ],
-                "total": 1
+            .and(path("/api/v1/entities/e1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "e1",
+                "name": "Drill",
+                "entityType": {"name": "item"},
+                "fields": [{"name": "N", "value": 7}]
             })))
             .mount(&hb)
             .await;
-
-        let state = loopback_state();
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &[],
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-        let res = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^(?<captured>.*)$"
-                            }],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["matched_count"], 1);
-        let row = &v["rows"][0];
-        assert_eq!(row["matched"], true);
-        assert_eq!(row["value_truncated"], true);
-        let src_val = row["source_value"].as_str().unwrap();
-        assert_eq!(src_val.len(), 512);
-        let cap_val = row["derived"]["captured"].as_str().unwrap();
-        assert_eq!(cap_val.len(), 512);
-    }
-
-    #[tokio::test]
-    async fn preview_endpoint_leaves_stored_transforms_unchanged() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-        let hb = MockServer::start().await;
-
-        Mock::given(method("GET"))
-            .and(path("/api/v1/entities"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "e1", "name": "Item 1"}],
-                "total": 1
-            })))
-            .mount(&hb)
-            .await;
-
-        let state = loopback_state();
-        let orig_transforms = vec![crate::connector::FieldTransform {
-            resource: "entities".into(),
-            source: "location".into(),
-            pattern: r"^(?<orig_field>[^|]+)$".into(),
-        }];
-        let c = state
-            .store()
-            .create_connection(crate::store::NewConnection {
-                connector: "homebox",
-                name: "h",
-                base_url: &hb.uri(),
-                public_url: None,
-                credential: "hb_key",
-                enabled: true,
-                transforms: &orig_transforms,
-            })
-            .await
-            .unwrap();
-
-        let router = with_auth(app(state.clone()));
-
-        // Successful preview with different transforms
-        let res = router
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        let res = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^(?<preview_only_field>.*)$"
-                            }],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(json_req(
+                "POST",
+                &format!("/api/connections/{id}/materialize"),
+                r#"{"rows":[{"resource":"entities","key":"e1"}],"fields":["entityType","custom:N"],"expansion":"as_listed"}"#.into(),
+            ))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v[0]["data"], json!({"entityType": "", "custom:N": "7"}));
+    }
 
-        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(stored.transforms, orig_transforms);
-
-        // Refused preview with invalid transforms
-        let res_bad = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/connections/{}/transforms/preview", c.id))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::to_string(&serde_json::json!({
-                            "transforms": [{
-                                "resource": "entities",
-                                "source": "name",
-                                "pattern": r"^([0-9]+)$"
-                            }],
-                            "rule": 0
-                        }))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
+    /// Pin (passes before #416): a location's custom field materializes like an item's, per the
+    /// spec scenario "A location custom field".
+    #[tokio::test]
+    async fn materialize_reads_a_location_custom_field() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let hb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/entities/l1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "l1",
+                "name": "Shelf",
+                "fields": [{"name": "Code", "textValue": "BOX.123"}]
+            })))
+            .mount(&hb)
+            .await;
+        let app = build_app();
+        let id = create_homebox_connection(&app, &hb.uri()).await;
+        let res = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                &format!("/api/connections/{id}/materialize"),
+                r#"{"rows":[{"resource":"locations","key":"l1"}],"fields":["custom:Code"],"expansion":"as_listed"}"#.into(),
+            ))
             .await
             .unwrap();
-        assert_eq!(res_bad.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v[0]["data"], json!({"custom:Code": "BOX.123"}));
+    }
 
-        let stored = state.store().get_connection(&c.id).await.unwrap().unwrap();
-        assert_eq!(stored.transforms, orig_transforms);
+    /// No address screening on printers either: a probe of a closed loopback port fails in the IPP
+    /// transport, and that failure is what the detail reports.
+    #[tokio::test]
+    async fn probe_of_a_closed_loopback_port_reports_the_transport_error() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let body = json!({
+            "kind": "cups",
+            "config": { "uri": format!("ipp://127.0.0.1:{port}/ipp/print") }
+        });
+        let res = build_app()
+            .oneshot(json_req("POST", "/api/printers/probe", body.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_response(res).await;
+        assert_eq!(v["status"], "unreachable");
+        let detail = v["detail"].as_str().unwrap();
+        assert!(!detail.contains("blocked"), "{detail}");
+        assert!(detail.contains("error sending request"), "{detail}");
     }
 
     #[tokio::test]
@@ -9670,7 +8444,7 @@ layout:
     }
 
     #[tokio::test]
-    async fn all_twenty_json_endpoints_reject_malformed_body_identically() {
+    async fn all_nineteen_json_endpoints_reject_malformed_body_identically() {
         let endpoints = [
             ("POST", "/api/printers"),
             ("POST", "/api/printers/probe"),
@@ -9682,7 +8456,6 @@ layout:
             ("PUT", "/api/connections/conn-1"),
             ("POST", "/api/connections/conn-1/browse"),
             ("POST", "/api/connections/conn-1/materialize"),
-            ("POST", "/api/connections/conn-1/transforms/preview"),
             ("POST", "/api/auth/setup"),
             ("POST", "/api/auth/login"),
             ("POST", "/api/auth/password"),
@@ -9694,7 +8467,7 @@ layout:
             ("POST", "/api/render/label"),
         ];
 
-        assert_eq!(endpoints.len(), 20);
+        assert_eq!(endpoints.len(), 19);
 
         for (method, uri) in endpoints {
             assert_malformed_body_returns_envelope(method, uri).await;
@@ -13046,13 +11819,6 @@ mod auth_http_tests {
         app(Arc::new(AppState::new(templates, templates_dir, store)))
     }
 
-    fn test_app_with_state() -> (axum::Router, Arc<AppState>) {
-        let (templates, templates_dir) = crate::templates::load_all_for_tests();
-        let store = Store::open_in_memory().expect("store");
-        let state = Arc::new(AppState::new(templates, templates_dir, store));
-        (app(state.clone()), state)
-    }
-
     fn test_app_no_auth() -> axum::Router {
         let (templates, templates_dir) = crate::templates::load_all_for_tests();
         let store = Store::open_in_memory().expect("store");
@@ -13821,7 +12587,7 @@ mod auth_http_tests {
 
     #[tokio::test]
     async fn settings_default_connection_id_endpoints() {
-        let (app, state) = test_app_with_state();
+        let app = test_app();
         let cookie = setup_login_cookie(&app).await;
 
         // 1. Initial GET reports default_connection_id: null, is_default: true
@@ -13838,7 +12604,7 @@ mod auth_http_tests {
         );
         assert_eq!(body["default_connection_id"]["is_default"], true);
 
-        // Create connection 1 (enabled)
+        // Create connection 1
         let res = app
             .clone()
             .oneshot(req_post_json_cookie(
@@ -13851,12 +12617,12 @@ mod auth_http_tests {
         assert_eq!(res.status(), StatusCode::CREATED);
         let conn1_id = body_json(res).await["id"].as_str().unwrap().to_string();
 
-        // Create connection 2 (disabled)
+        // Create connection 2
         let res = app
             .clone()
             .oneshot(req_post_json_cookie(
                 "/api/connections",
-                r#"{"connector":"homebox","name":"conn2","base_url":"http://hb2.lan","credential":"sec","enabled":false}"#,
+                r#"{"connector":"homebox","name":"conn2","base_url":"http://hb2.lan","credential":"sec"}"#,
                 &cookie,
             ))
             .await
@@ -13916,7 +12682,7 @@ mod auth_http_tests {
             assert_eq!(err["error"]["details"]["reason"], "setting_value_invalid");
         }
 
-        // 4. PUT accepts a disabled connection's id
+        // 4. PUT accepts another connection's id
         let res = app
             .clone()
             .oneshot(req_put_json_cookie(
@@ -13954,29 +12720,7 @@ mod auth_http_tests {
         );
         assert_eq!(body["default_connection_id"]["is_default"], true);
 
-        // 6. GET reports a dangling stored id without erroring
-        state
-            .store()
-            .set_setting(
-                crate::settings::DEFAULT_CONNECTION_ID,
-                "dangling-connection-id",
-            )
-            .await
-            .unwrap();
-        let res = app
-            .clone()
-            .oneshot(req_get_cookie("/api/settings", &cookie))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = body_json(res).await;
-        assert_eq!(
-            body["default_connection_id"]["value"],
-            "dangling-connection-id"
-        );
-        assert_eq!(body["default_connection_id"]["is_default"], false);
-
-        // 7. Deleting the default connection clears the setting and deleting a different one does not
+        // 6. Deleting the default connection clears the setting and deleting a different one does not
         // Set default to conn1_id
         let res = app
             .clone()

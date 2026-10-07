@@ -4,8 +4,8 @@ import { useState } from "react";
 import { ConnectorBrowser } from "./ConnectorBrowser";
 import type { ConnectorSchema, SelectedRow } from "../../api/connectors";
 const schema: ConnectorSchema = { version: "h1", resources: [{ id: "entities", label: "Items", view: "table",
-  dynamic_source_prefix: "custom:", fields_incomplete: false,
-  columns: [ { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }, { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false, transform_source: true } ], filters: [] }], relationships: [] };
+  fields_incomplete: false,
+  columns: [ { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }, { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false } ], filters: [] }], relationships: [] };
 const rows = [ { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", assetId: "A1" } },
                { id: { resource: "entities", key: "e2" }, cells: { name: "Saw", assetId: "B2" } } ];
 function H() { const [s, set] = useState<SelectedRow[]>([]); return <ConnectorBrowser connectionId="c1" schema={schema} selected={s} onSelectedChange={set} />; }
@@ -18,7 +18,7 @@ afterEach(() => vi.unstubAllGlobals());
 // "none" over sorted rows is worse than one that says nothing.
 describe("sort indicator", () => {
   it("survives a filter edit on another column", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ rows, next_cursor: null, has_more: false, count: 2 }), { status: 200, headers: { "content-type": "application/json" } })));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ rows, has_more: false, count: 2 }), { status: 200, headers: { "content-type": "application/json" } })));
     render(<H />);
     await waitFor(() => expect(screen.getByText("Drill")).toBeInTheDocument());
     fireEvent.click(nameHeader());

@@ -73,7 +73,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   const [applied, setApplied] = useState<Record<string, import("../../api/connectors").FilterValue>>({});
   const [parent, setParent] = useState<{ relationship: string; key: string; label: string } | undefined>(undefined);
   const [rows, setRows] = useState<DisplayRow[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,7 +115,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
 
   const setVisibleKeysForCurrent = (next: Set<string>) => {
     if (!resource) return;
-    const choice = makeColumnChoice(resource.columns, next);
+    const choice = makeColumnChoice(next);
     setColumnOverrides((prev) => ({ ...prev, [currentResourceKey]: choice }));
     saveColumnChoice(connectionId, resource.id, choice);
     // Hiding a column CLEARS its filter rather than parking it: re-showing the column must not
@@ -210,7 +210,7 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   // A monotonic request token shared by the fresh-load effect AND loadMore. Any new request bumps it,
   // so a slower in-flight request (fresh OR append) is dropped once a newer one starts. This is what
   // prevents a stale "Load more" from appending the previous resource's rows after a resource switch /
-  // drill / filter change (which would also corrupt the cursor). Every `setState` runs inside the async
+  // drill / filter change (which would also corrupt the page number). Every `setState` runs inside the async
   // body so `react-hooks/set-state-in-effect` does not fire (see src/lib/livePreview.ts).
   const reqToken = useRef(0);
 
@@ -221,18 +221,17 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
       setBusy(true);
       setError(null);
       setRows([]);
-      setCursor(null);
+      setPage(1);
       setHasMore(false);
       try {
-        const page = await browseConnection(connectionId, {
+        const first = await browseConnection(connectionId, {
           resource: resource.id,
           ...(Object.keys(applied).length ? { filters: applied } : {}),
           ...(parent ? { parent: { relationship: parent.relationship, key: parent.key } } : {}),
         });
         if (reqToken.current !== token) return;
-        setRows(page.rows);
-        setCursor(page.next_cursor);
-        setHasMore(page.has_more);
+        setRows(first.rows);
+        setHasMore(first.has_more);
       } catch (err) {
         if (reqToken.current === token) setError(err instanceof Error ? err.message : "Browse failed");
       } finally {
@@ -242,22 +241,23 @@ export function ConnectorBrowser({ connectionId, schema, selected, onSelectedCha
   }, [connectionId, resource, applied, parent]);
 
   const loadMore = async () => {
-    if (!resource || !cursor) return;
+    if (!resource) return;
     const token = ++reqToken.current;
+    const nextPage = page + 1;
     setBusy(true);
     setError(null);
     try {
-      const page = await browseConnection(connectionId, {
+      const next = await browseConnection(connectionId, {
         resource: resource.id,
         ...(Object.keys(applied).length ? { filters: applied } : {}),
         ...(parent ? { parent: { relationship: parent.relationship, key: parent.key } } : {}),
-        cursor,
+        page: nextPage,
       });
       // Drop the append if a newer request (resource switch / fresh reload) has since started.
       if (reqToken.current !== token) return;
-      setRows((prev) => [...prev, ...page.rows]);
-      setCursor(page.next_cursor);
-      setHasMore(page.has_more);
+      setRows((prev) => [...prev, ...next.rows]);
+      setPage(nextPage);
+      setHasMore(next.has_more);
     } catch (err) {
       if (reqToken.current === token) setError(err instanceof Error ? err.message : "Browse failed");
     } finally {

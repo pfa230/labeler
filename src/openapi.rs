@@ -3,15 +3,15 @@ use utoipa::OpenApi;
 use crate::{
     api,
     api::{
-        AuthStatus, ConnectionInput, ConnectionView, Credentials, DatetimePreviewRequest,
-        DatetimePreviewResponse, OkResponse, PasswordChange, ProbeCapabilities, ProbeRequest,
-        ProbeResponse, ResolvedSetting, SettingValue, TokenCreate, TokenCreated, TokenSummary,
-        TransformPreviewRequest, TransformPreviewResponse, TransformPreviewRow, UserSummary,
+        AuthStatus, ConnectionCreate, ConnectionUpdate, ConnectionView, Credentials,
+        DatetimePreviewRequest, DatetimePreviewResponse, OkResponse, PasswordChange,
+        ProbeCapabilities, ProbeRequest, ProbeResponse, ResolvedSetting, SettingValue, TokenCreate,
+        TokenCreated, TokenSummary, UserSummary,
     },
     connector::{
         BrowsePage, BrowseParent, BrowseRequest, CellValue, ConnectorSchema, DisplayRow,
-        ExpansionPolicy, FieldSpec, FieldTransform, FieldType, FilterSpec, FilterType, FilterValue,
-        LabelRow, MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, RowValue, Tier, View,
+        ExpansionPolicy, FieldSpec, FieldType, FilterSpec, FilterType, FilterValue, LabelRow,
+        MaterializeRequest, RelationshipSpec, ResourceSpec, RowRef, RowValue, Tier, View,
     },
     models::{
         BatchRequest, BatchRowError, BatchSummary, Color, Dimension, ErrorBody, ErrorResponse,
@@ -82,8 +82,7 @@ use crate::{
         api::delete_connection_h,
         api::connection_schema,
         api::connection_browse,
-        api::connection_materialize,
-        api::connection_transforms_preview
+        api::connection_materialize
     ),
     servers((url = "/api")),
     components(
@@ -155,9 +154,9 @@ use crate::{
             TokenSummary,
             TokenCreated,
             OkResponse,
-            ConnectionInput,
+            ConnectionCreate,
+            ConnectionUpdate,
             ConnectionView,
-            FieldTransform,
             ConnectorSchema,
             ResourceSpec,
             FieldSpec,
@@ -177,10 +176,7 @@ use crate::{
             MaterializeRequest,
             ExpansionPolicy,
             RowValue,
-            LabelRow,
-            TransformPreviewRequest,
-            TransformPreviewResponse,
-            TransformPreviewRow
+            LabelRow
         )
     ),
     tags(

@@ -21,7 +21,7 @@ describe("connectors api", () => {
 
   it("browseConnection posts the request and returns the page", async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-      json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 }),
+      json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], has_more: false, count: 1 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const page = await browseConnection("c1", { resource: "entities" });
@@ -49,10 +49,10 @@ describe("connectors api", () => {
       const url = String(input);
       const method = (init?.method || "GET").toUpperCase();
       if (url.includes("/api/connections/c1") && method === "PUT") {
-        return json({ id: "c1", name: "Updated Conn", connector: "mock", base_url: "http://example.com", enabled: true, has_credential: false, transforms: [] });
+        return json({ id: "c1", name: "Updated Conn", connector: "mock", base_url: "http://example.com", has_credential: false });
       }
       if (url === "/api/connections" && method === "POST") {
-        return json({ id: "c2", name: "New Conn", connector: "mock", base_url: "http://example.com", enabled: true, has_credential: false, transforms: [] });
+        return json({ id: "c2", name: "New Conn", connector: "mock", base_url: "http://example.com", has_credential: false });
       }
       return json({}, 404);
     });
@@ -67,7 +67,7 @@ describe("connectors api", () => {
     await act(async () => {
       await result.current.mutateAsync({
         id: "c1",
-        input: { name: "Updated Conn", connector: "mock", base_url: "http://example.com" },
+        input: { name: "Updated Conn", base_url: "http://example.com" },
       });
     });
 
@@ -79,7 +79,7 @@ describe("connectors api", () => {
     // 2. Create
     await act(async () => {
       await result.current.mutateAsync({
-        input: { name: "New Conn", connector: "mock", base_url: "http://example.com" },
+        input: { name: "New Conn", connector: "mock", base_url: "http://example.com", credential: "secret" },
       });
     });
 
@@ -135,7 +135,7 @@ describe("connectors api", () => {
       const url = String(input);
       const method = (init?.method || "GET").toUpperCase();
       if (url.includes("/api/connections/c1") && method === "PUT") {
-        return json({ id: "c1", name: "Saved", connector: "mock", base_url: "http://example.com", enabled: true, has_credential: false, transforms: [] });
+        return json({ id: "c1", name: "Saved", connector: "mock", base_url: "http://example.com", has_credential: false });
       }
       if (url.includes("/api/connections/c1") && method === "DELETE") {
         return json({ ok: true });
@@ -153,7 +153,7 @@ describe("connectors api", () => {
     await act(async () => {
       await saveResult.current.mutateAsync({
         id: "c1",
-        input: { name: "Saved", connector: "mock", base_url: "http://example.com" },
+        input: { name: "Saved", base_url: "http://example.com" },
       });
     });
     await act(async () => {
@@ -179,12 +179,12 @@ describe("connectors api", () => {
     let schemaCallCount = 0;
     const oldSchema = {
       version: "1.0",
-      resources: [{ id: "entities", label: "Entities Old", view: "table", columns: [], filters: [], dynamic_source_prefix: null, fields_incomplete: false }],
+      resources: [{ id: "entities", label: "Entities Old", view: "table", columns: [], filters: [], fields_incomplete: false }],
       relationships: [],
     };
     const newSchema = {
       version: "1.0",
-      resources: [{ id: "entities", label: "Entities New", view: "table", columns: [], filters: [], dynamic_source_prefix: null, fields_incomplete: false }],
+      resources: [{ id: "entities", label: "Entities New", view: "table", columns: [], filters: [], fields_incomplete: false }],
       relationships: [],
     };
 
@@ -199,7 +199,7 @@ describe("connectors api", () => {
         return json(newSchema);
       }
       if (url.includes("/api/connections/c1") && method === "PUT") {
-        return json({ id: "c1", name: "Saved", connector: "mock", base_url: "http://example.com", enabled: true, has_credential: false, transforms: [] });
+        return json({ id: "c1", name: "Saved", connector: "mock", base_url: "http://example.com", has_credential: false });
       }
       return json({}, 404);
     });
@@ -219,7 +219,7 @@ describe("connectors api", () => {
     await act(async () => {
       await saveResult.current.mutateAsync({
         id: "c1",
-        input: { name: "Saved", connector: "mock", base_url: "http://example.com" },
+        input: { name: "Saved", base_url: "http://example.com" },
       });
     });
 
@@ -260,7 +260,7 @@ describe("connectors api", () => {
       await expect(
         saveResult.current.mutateAsync({
           id: "c1",
-          input: { name: "Saved", connector: "mock", base_url: "http://example.com" },
+          input: { name: "Saved", base_url: "http://example.com" },
         }),
       ).rejects.toThrow();
     });

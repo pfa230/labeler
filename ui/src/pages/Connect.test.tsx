@@ -18,8 +18,8 @@ const json = (body: unknown, status = 200) =>
 const schema = {
   version: "homebox-1",
   resources: [{ id: "entities", label: "Items", view: "table",
-    dynamic_source_prefix: "custom:", fields_incomplete: false,
-    columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }], filters: [] }],
+    fields_incomplete: false,
+    columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }], filters: [] }],
   relationships: [],
 };
 const templateDetail = {
@@ -37,9 +37,7 @@ type StubConnection = {
   name: string;
   base_url: string;
   public_url?: string | null;
-  enabled: boolean;
   has_credential: boolean;
-  transforms?: Array<{ resource: string; source: string; pattern: string; target?: string }>;
 };
 
 type StubOptions = {
@@ -68,7 +66,6 @@ function stub(opts: StubOptions = {}) {
           connector: "homebox",
           name: "Home",
           base_url: "http://hb",
-          enabled: true,
           has_credential: true,
         },
       ];
@@ -95,7 +92,7 @@ function stub(opts: StubOptions = {}) {
         { id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } },
         { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
       ];
-      return json({ rows, next_cursor: null, has_more: false, count: rows.length });
+      return json({ rows, has_more: false, count: rows.length });
     }
     if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) {
       const parsed = init?.body ? JSON.parse(String(init.body)) : null;
@@ -138,10 +135,8 @@ function stub(opts: StubOptions = {}) {
               ...c,
               name: b.name,
               base_url: b.base_url,
-              public_url: "public_url" in b ? b.public_url : c.public_url,
-              enabled: b.enabled !== undefined ? b.enabled : c.enabled,
+              public_url: b.public_url ?? null,
               has_credential: c.has_credential || !!b.credential,
-              transforms: b.transforms ?? c.transforms,
             }
           : c,
       );
@@ -155,9 +150,7 @@ function stub(opts: StubOptions = {}) {
         name: b.name,
         base_url: b.base_url,
         public_url: b.public_url ?? null,
-        enabled: b.enabled ?? true,
         has_credential: !!b.credential,
-        transforms: b.transforms ?? [],
       };
       state = [...state, c];
       return json(c, 201);
@@ -235,7 +228,6 @@ function MutationBridge() {
               connector: "homebox",
               name: "New Connection",
               base_url: "http://hb-new.lan",
-              enabled: true,
               credential: "secret",
             },
           })
@@ -271,10 +263,8 @@ function MutationBridge() {
           save.mutate({
             id: "c1",
             input: {
-              connector: "homebox",
               name: "Home 1",
               base_url: "http://hb-updated",
-              enabled: true,
               credential: "secret",
             },
           })
@@ -381,8 +371,8 @@ describe("Connect", () => {
   it("selects the stored default connection on open and loads its browse rows without a click", async () => {
     fetchMock = stub({
       connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
       ],
       settings: {
         default_connection_id: { value: "c2", is_default: false },
@@ -396,11 +386,11 @@ describe("Connect", () => {
     await waitFor(() => expect(countCalls("/api/connections/c2/browse")).toBeGreaterThan(0));
   });
 
-  it("falls back to the first enabled connection when no default is stored", async () => {
+  it("falls back to the first connection when no default is stored", async () => {
     fetchMock = stub({
       connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
       ],
       settings: {
         default_connection_id: { value: null, is_default: true },
@@ -411,29 +401,13 @@ describe("Connect", () => {
     renderConnect();
     const select = await screen.findByLabelText(/^connection$/i);
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
+    await waitFor(() => expect(countCalls("/api/connections/c1/browse")).toBeGreaterThan(0));
   });
 
-  it("falls back to the first enabled connection when the stored default is disabled", async () => {
+  it("falls back to the first connection when the stored default names no connection", async () => {
     fetchMock = stub({
       connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
-      ],
-      settings: {
-        default_connection_id: { value: "c1", is_default: false },
-      },
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    const select = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c2"));
-  });
-
-  it("falls back to the first enabled connection when the stored default names no connection", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
       ],
       settings: {
         default_connection_id: { value: "nonexistent", is_default: false },
@@ -446,30 +420,10 @@ describe("Connect", () => {
     await waitFor(() => expect((select as HTMLSelectElement).value).toBe("c1"));
   });
 
-  it("selects nothing when no connection is enabled", async () => {
+  it("falls back to the first connection when settings query errors", async () => {
     fetchMock = stub({
       connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: false, has_credential: true },
-      ],
-      settings: {
-        default_connection_id: { value: null, is_default: true },
-      },
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderConnect();
-    const select = await screen.findByLabelText(/^connection$/i);
-    await waitFor(() => expect((select as HTMLSelectElement).value).toBe(""));
-    expect(screen.queryByLabelText(/template/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("grid")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /manage connections/i })).toBeInTheDocument();
-  });
-
-  it("falls back to first enabled connection when settings query errors", async () => {
-    fetchMock = stub({
-      connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
       ],
       settingsError: true,
     });
@@ -483,8 +437,8 @@ describe("Connect", () => {
   it("resolves equal-name connections in list (id) order", async () => {
     fetchMock = stub({
       connections: [
-        { id: "a", connector: "homebox", name: "Home", base_url: "http://hba", enabled: true, has_credential: true },
-        { id: "b", connector: "homebox", name: "Home", base_url: "http://hbb", enabled: true, has_credential: true },
+        { id: "a", connector: "homebox", name: "Home", base_url: "http://hba", has_credential: true },
+        { id: "b", connector: "homebox", name: "Home", base_url: "http://hbb", has_credential: true },
       ],
       settings: {
         default_connection_id: { value: null, is_default: true },
@@ -500,8 +454,8 @@ describe("Connect", () => {
   it("does not move the selection or drop row selection when settings query refetches with a new default", async () => {
     fetchMock = stub({
       connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
       ],
       settings: {
         default_connection_id: { value: "c1", is_default: false },
@@ -532,8 +486,8 @@ describe("Connect", () => {
   it("clears row selection and writes no setting on manual pick", async () => {
     fetchMock = stub({
       connections: [
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
       ],
       settings: {
         default_connection_id: { value: "c1", is_default: false },
@@ -570,7 +524,7 @@ describe("Connect", () => {
     it("renders no connections table, form or default-connection control, and offers link to /connections with origin state", async () => {
       fetchMock = stub({
         connections: [
-          { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true },
+          { id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true },
         ],
       });
       vi.stubGlobal("fetch", fetchMock);
@@ -640,8 +594,8 @@ describe("Connect", () => {
     it("returning from connection management resolves afresh without restoring hand-picked connection or its rows", async () => {
       fetchMock = stub({
         connections: [
-          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
         ],
         settings: {
           default_connection_id: { value: "c1", is_default: false },
@@ -677,7 +631,7 @@ describe("Connect", () => {
     it("a connection created while away resolves on return when it sorts first", async () => {
       fetchMock = stub({
         connections: [
-          { id: "c2", connector: "homebox", name: "Zeta", base_url: "http://hb2", enabled: true, has_credential: true },
+          { id: "c2", connector: "homebox", name: "Zeta", base_url: "http://hb2", has_credential: true },
         ],
       });
       vi.stubGlobal("fetch", fetchMock);
@@ -694,10 +648,9 @@ describe("Connect", () => {
         connector: "homebox",
         name: "Alpha",
         base_url: "http://hb1",
-        enabled: true,
         has_credential: true,
       };
-      fetchMock.setConnections([c1, { id: "c2", connector: "homebox", name: "Zeta", base_url: "http://hb2", enabled: true, has_credential: true }]);
+      fetchMock.setConnections([c1, { id: "c2", connector: "homebox", name: "Zeta", base_url: "http://hb2", has_credential: true }]);
       await queryClient.removeQueries({ queryKey: ["connections"] });
 
       // Visit 2: returns to Connect
@@ -721,7 +674,6 @@ describe("Connect", () => {
         connector: "homebox",
         name: "First Home",
         base_url: "http://hb1",
-        enabled: true,
         has_credential: true,
       };
       fetchMock.setConnections([c1]);
@@ -734,11 +686,11 @@ describe("Connect", () => {
       expect(screen.queryByText(/no connections configured/i)).not.toBeInTheDocument();
     });
 
-    it("a connection saved disabled, renamed or deleted while away reflects on return", async () => {
+    it("a connection renamed or deleted while away reflects on return", async () => {
       fetchMock = stub({
         connections: [
-          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
         ],
         settings: {
           default_connection_id: { value: "c1", is_default: false },
@@ -746,30 +698,15 @@ describe("Connect", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      // 1. Saved disabled while away:
       const { unmount: unmount1, queryClient } = renderConnect();
       const picker1 = await screen.findByLabelText(/^connection$/i);
       await waitFor(() => expect((picker1 as HTMLSelectElement).value).toBe("c1"));
       unmount1();
 
-      // Disable c1 while away
+      // 1. Renamed while away:
       fetchMock.setConnections([
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
-      ]);
-      await queryClient.removeQueries({ queryKey: ["connections"] });
-
-      const { unmount: unmount2 } = renderConnect(queryClient);
-      const picker2 = await screen.findByLabelText(/^connection$/i);
-      // c1 is disabled so fallback c2 resolves!
-      await waitFor(() => expect((picker2 as HTMLSelectElement).value).toBe("c2"));
-      expect(screen.queryByRole("option", { name: "Home 1" })).not.toBeInTheDocument();
-      unmount2();
-
-      // 2. Renamed while away:
-      fetchMock.setConnections([
-        { id: "c1", connector: "homebox", name: "Home 1 Renamed", base_url: "http://hb1", enabled: true, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        { id: "c1", connector: "homebox", name: "Home 1 Renamed", base_url: "http://hb1", has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
       ]);
       await queryClient.removeQueries({ queryKey: ["connections"] });
 
@@ -779,9 +716,9 @@ describe("Connect", () => {
       await waitFor(() => expect((picker3 as HTMLSelectElement).value).toBe("c1"));
       unmount3();
 
-      // 3. Deleted while away:
+      // 2. Deleted while away:
       fetchMock.setConnections([
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
       ]);
       fetchMock.setSettings({ default_connection_id: { value: null, is_default: true } });
       await queryClient.removeQueries({ queryKey: ["connections"] });
@@ -806,14 +743,14 @@ describe("Connect", () => {
         if (url === "/api/connections" && method === "POST") return savePromise;
         if (url === "/api/connections" && method === "GET") {
           return json([
-            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
           ]);
         }
         if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
         if (url === "/api/templates") return json({ templates: [] });
         if (url === "/api/printers") return json([]);
         if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
-        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], has_more: false, count: 0 });
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
       vi.stubGlobal("fetch", fetchMock);
@@ -830,7 +767,7 @@ describe("Connect", () => {
 
       // Resolve save
       await act(async () => {
-        resolveSave(json({ id: "c_new", connector: "homebox", name: "New Connection", base_url: "http://hb-new.lan", enabled: true, has_credential: true, transforms: [] }, 201));
+        resolveSave(json({ id: "c_new", connector: "homebox", name: "New Connection", base_url: "http://hb-new.lan", has_credential: true }, 201));
       });
 
       // Once resolved, waiting message clears and Connect resolves
@@ -850,7 +787,7 @@ describe("Connect", () => {
         if (url === "/api/connections/c1" && method === "DELETE") return deletePromise;
         if (url === "/api/connections" && method === "GET") {
           return json([
-            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
           ]);
         }
         if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
@@ -861,7 +798,7 @@ describe("Connect", () => {
           return json(schema);
         }
         if (url.includes("/api/connections/c2/schema")) return json(schema);
-        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], has_more: false, count: 0 });
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
       vi.stubGlobal("fetch", fetchMock);
@@ -902,8 +839,8 @@ describe("Connect", () => {
         }
         if (url === "/api/connections" && method === "GET") {
           return json([
-            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
           ]);
         }
         if (url === "/api/settings" && method === "GET") {
@@ -912,7 +849,7 @@ describe("Connect", () => {
         if (url === "/api/templates") return json({ templates: [] });
         if (url === "/api/printers") return json([]);
         if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
-        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], has_more: false, count: 0 });
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
       vi.stubGlobal("fetch", fetchMock);
@@ -947,7 +884,7 @@ describe("Connect", () => {
         if (url === "/api/settings/default_connection_id" && method === "DELETE") return clearPromise;
         if (url === "/api/connections" && method === "GET") {
           return json([
-            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
           ]);
         }
         if (url === "/api/settings" && method === "GET") {
@@ -956,7 +893,7 @@ describe("Connect", () => {
         if (url === "/api/templates") return json({ templates: [] });
         if (url === "/api/printers") return json([]);
         if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
-        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], has_more: false, count: 0 });
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
       vi.stubGlobal("fetch", fetchMock);
@@ -1014,7 +951,7 @@ describe("Connect", () => {
 
       // Resolve save
       await act(async () => {
-        resolveSave(json({ id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true, transforms: [] }, 201));
+        resolveSave(json({ id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true }, 201));
       });
     });
   });
@@ -1027,11 +964,11 @@ describe("Connect", () => {
         const method = (init?.method ?? "GET").toUpperCase();
         if (url === "/api/connections/c1" && method === "PUT") {
           isUpdated = true;
-          return json({ id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb-updated", enabled: true, has_credential: true, transforms: [] });
+          return json({ id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb-updated", has_credential: true });
         }
         if (url === "/api/connections" && method === "GET") {
           return json([
-            { id: "c1", connector: "homebox", name: "Home 1", base_url: isUpdated ? "http://hb-updated" : "http://hb1", enabled: true, has_credential: true, transforms: [] },
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: isUpdated ? "http://hb-updated" : "http://hb1", has_credential: true },
           ]);
         }
         if (url === "/api/connections/c1/schema") return json(schema);
@@ -1043,7 +980,6 @@ describe("Connect", () => {
                 cells: { name: isUpdated ? "Hammer from updated upstream" : "Drill from old upstream" },
               },
             ],
-            next_cursor: null,
             has_more: false,
             count: 1,
           });
@@ -1096,12 +1032,12 @@ describe("Connect", () => {
         const method = (init?.method ?? "GET").toUpperCase();
         if (url === "/api/connections/c1" && method === "PUT") {
           saved = true;
-          return json({ id: "c1", connector: "homebox", name: "Home Updated", base_url: "http://hb-updated", enabled: true, has_credential: true, transforms: [] });
+          return json({ id: "c1", connector: "homebox", name: "Home Updated", base_url: "http://hb-updated", has_credential: true });
         }
         if (url === "/api/connections" && method === "GET") {
           connectionsFetches++;
           return json([
-            { id: "c1", connector: "homebox", name: saved ? "Home Post-Write" : "Home Pre-Write", base_url: "http://hb", enabled: true, has_credential: true, transforms: [] },
+            { id: "c1", connector: "homebox", name: saved ? "Home Post-Write" : "Home Pre-Write", base_url: "http://hb", has_credential: true },
           ]);
         }
         if (url === "/api/connections/c1/schema") {
@@ -1119,7 +1055,6 @@ describe("Connect", () => {
         if (url.startsWith("/api/connections/c1/browse")) {
           return json({
             rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }],
-            next_cursor: null,
             has_more: false,
             count: 1,
           });
@@ -1171,7 +1106,7 @@ describe("Connect", () => {
       fetchMock = vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input);
         if (url === "/api/connections") {
-          return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+          return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
         }
         if (url === "/api/settings") return json({ default_connection_id: { value: "c1", is_default: false } });
         if (url === "/api/templates") return json({ templates: [] });
@@ -1182,7 +1117,7 @@ describe("Connect", () => {
         }
         if (url.includes("/api/connections/c1/browse")) {
           browseCalls++;
-          return json({ rows: [{ id: { resource: "entities", key: "1" }, cells: { name: "Item" } }], next_cursor: null, has_more: false, count: 1 });
+          return json({ rows: [{ id: { resource: "entities", key: "1" }, cells: { name: "Item" } }], has_more: false, count: 1 });
         }
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
@@ -1216,7 +1151,7 @@ describe("Connect", () => {
         }
         if (url === "/api/connections" && method === "GET") {
           return json([
-            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
           ]);
         }
         if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
@@ -1224,7 +1159,7 @@ describe("Connect", () => {
         if (url === "/api/printers") return json([]);
         if (url.startsWith("/api/connections/c1/schema")) return json(schema);
         if (url.startsWith("/api/connections/c1/browse")) {
-          return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+          return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], has_more: false, count: 1 });
         }
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
@@ -1268,8 +1203,8 @@ describe("Connect", () => {
         if (url === "/api/connections" && method === "GET") {
           connectionsFetches++;
           return json([
-            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+            { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+            { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
           ]);
         }
         if (url === "/api/settings/default_connection_id" && method === "PUT") {
@@ -1282,7 +1217,7 @@ describe("Connect", () => {
         if (url === "/api/templates") return json({ templates: [] });
         if (url === "/api/printers") return json([]);
         if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
-        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], has_more: false, count: 0 });
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
       vi.stubGlobal("fetch", fetchMock);
@@ -1327,10 +1262,10 @@ describe("Connect", () => {
         if (url === "/api/connections" && method === "GET") {
           return json(
             deleteResolved
-              ? [{ id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true }]
+              ? [{ id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true }]
               : [
-                  { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-                  { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+                  { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+                  { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
                 ],
           );
         }
@@ -1342,7 +1277,7 @@ describe("Connect", () => {
           return json(schema);
         }
         if (url.includes("/api/connections/c2/schema")) return json(schema);
-        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], next_cursor: null, has_more: false, count: 0 });
+        if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [], has_more: false, count: 0 });
         throw new Error(`unexpected fetch: ${url}`);
       }) as ReturnType<typeof stub>;
       vi.stubGlobal("fetch", fetchMock);
@@ -1378,8 +1313,8 @@ describe("Connect", () => {
     it("rows selected against a connection do not come back when connection is cleared and another is picked", async () => {
       fetchMock = stub({
         connections: [
-          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
         ],
       });
       vi.stubGlobal("fetch", fetchMock);
@@ -1394,10 +1329,9 @@ describe("Connect", () => {
       expect(screen.getByLabelText("select entities:e1")).toBeChecked();
       expect(screen.getByLabelText("select entities:e2")).toBeChecked();
 
-      // Disable c1 in background (e.g. another operator disabled it)
+      // Delete c1 in background (e.g. another operator deleted it)
       fetchMock.setConnections([
-        { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: false, has_credential: true },
-        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+        { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
       ]);
       await queryClient.invalidateQueries({ queryKey: ["connections"] });
 
@@ -1428,7 +1362,7 @@ describe("Connect", () => {
     it("leaves selected connection, browse table and row selection unchanged when a later connections request fails", async () => {
       fetchMock = stub({
         connections: [
-          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
         ],
       });
       vi.stubGlobal("fetch", fetchMock);
@@ -1454,8 +1388,8 @@ describe("Connect", () => {
     it("naming a different connection as default while working on one leaves selection unchanged", async () => {
       fetchMock = stub({
         connections: [
-          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", enabled: true, has_credential: true },
-          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", enabled: true, has_credential: true },
+          { id: "c1", connector: "homebox", name: "Home 1", base_url: "http://hb1", has_credential: true },
+          { id: "c2", connector: "homebox", name: "Home 2", base_url: "http://hb2", has_credential: true },
         ],
         settings: {
           default_connection_id: { value: "c1", is_default: false },
@@ -1636,10 +1570,10 @@ describe("Connect: datetime parameters", () => {
         });
       }
       if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
-      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
+      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], has_more: false, count: 2 });
       if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([{ source: { resource: "entities", key: "e1" }, data: { name: "" } }, { source: { resource: "entities", key: "e2" }, data: { name: "" } }]);
       if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/printers") return json([]);
       if (url.startsWith("/api/render/label")) return new Response(new Blob(["img"]), { status: 200, headers: { "content-type": "image/png" } });
@@ -1682,10 +1616,10 @@ describe("Connect: datetime parameters", () => {
           ]),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(multiValuedSchema);
-      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS"] } }], next_cursor: null, has_more: false, count: 1 });
+      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS"] } }], has_more: false, count: 1 });
       if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([{ source: { resource: "entities", key: "e1" }, data: { name: "Drill", tags: ["KIDS"] } }]);
       if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
       if (url === "/api/templates/tpl") {
@@ -1775,7 +1709,7 @@ describe("Connect: datetime parameters", () => {
           ]),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(multiValuedSchema);
       if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({
@@ -1783,7 +1717,6 @@ describe("Connect: datetime parameters", () => {
           { id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } },
           { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer", tags: [] } },
         ],
-        next_cursor: null,
         has_more: false,
         count: 2,
       });
@@ -1858,10 +1791,10 @@ describe("Connect: datetime parameters", () => {
           ]),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url.startsWith("/api/connections/") && url.endsWith("/schema")) return json(schema);
-      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+      if (url.startsWith("/api/connections/") && url.endsWith("/browse")) return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], has_more: false, count: 1 });
       if (url.startsWith("/api/connections/") && url.endsWith("/materialize")) return json([{ source: { resource: "entities", key: "e1" }, data: { name: "Drill" } }]);
       if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
       if (url === "/api/templates/tpl") {
@@ -1897,309 +1830,6 @@ describe("Connect: datetime parameters", () => {
     expect(within(grid).getByDisplayValue("Drill")).toBeInTheDocument();
     expect(screen.getByLabelText("map tags")).toHaveValue("");
     expect(screen.getByRole("button", { name: /download/i })).toBeEnabled();
-  });
-});
-
-describe("8.6 Field transforms scenarios at their new timing", () => {
-  beforeEach(() => {
-    vi.unstubAllGlobals();
-    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
-    vi.spyOn(URL, "revokeObjectURL").mockReturnValue(undefined);
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-  });
-
-  it("newly derived field reaches the rows on return, showing column without choosing it and values on matching rows", async () => {
-    let hasRule = false;
-    const baseSchema = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-    const schemaWithRule = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections") {
-        return json([{
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: hasRule ? [{ resource: "entities", source: "name", pattern: "(\\d+)" }] : [],
-        }]);
-      }
-      if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
-      if (url === "/api/connections/c1/browse") {
-        return json({
-          rows: hasRule
-            ? [
-                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill 42", location_id: "42" } },
-                { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
-              ]
-            : [
-                { id: { resource: "entities", key: "e1" }, cells: { name: "Drill 42" } },
-                { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } },
-              ],
-          next_cursor: null, has_more: false, count: 2,
-        });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { unmount } = renderConnect(qc);
-    await screen.findByText("Drill 42");
-    expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument();
-    expect(screen.queryByText("42")).not.toBeInTheDocument();
-    unmount();
-
-    // Operator saves rule deriving location_id on c1
-    hasRule = true;
-    await qc.removeQueries({ queryKey: ["connections"] });
-    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
-
-    // Operator returns to Connect with c1 selected
-    renderConnect(qc);
-    await screen.findByText("Drill 42");
-
-    // The browse table shows location_id column without the operator choosing it
-    expect(await screen.findByRole("columnheader", { name: "Location ID" })).toBeInTheDocument();
-    // Matching row carries captured value, non-matching carries no location_id cell
-    expect(screen.getByText("42")).toBeInTheDocument();
-    expect(screen.getByText("Hammer")).toBeInTheDocument();
-  });
-
-  it("rule edit that changes values but no column shows the new values on return", async () => {
-    let currentRuleVal = "LOC-OLD";
-    const schemaWithDerived = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections") {
-        return json([{
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: [{ resource: "entities", source: "name", pattern: currentRuleVal === "LOC-OLD" ? "pat1" : "pat2" }],
-        }]);
-      }
-      if (url === "/api/connections/c1/schema") return json(schemaWithDerived);
-      if (url === "/api/connections/c1/browse") {
-        return json({
-          rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: currentRuleVal } }],
-          next_cursor: null, has_more: false, count: 1,
-        });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { unmount } = renderConnect(qc);
-    await screen.findByText("Drill");
-    expect(await screen.findByText("LOC-OLD")).toBeInTheDocument();
-    unmount();
-
-    // Rule edited to capture different value, derived name unchanged, connection saved
-    currentRuleVal = "LOC-NEW";
-    await qc.removeQueries({ queryKey: ["connections"] });
-    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
-
-    // Returns to Connect
-    renderConnect(qc);
-    await screen.findByText("Drill");
-    expect(await screen.findByText("LOC-NEW")).toBeInTheDocument();
-    expect(screen.queryByText("LOC-OLD")).not.toBeInTheDocument();
-  });
-
-  it("removing a rule removes its column and its cells on return", async () => {
-    let hasRule = true;
-    const baseSchema = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-    const schemaWithRule = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections") {
-        return json([{
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: hasRule ? [{ resource: "entities", source: "name", pattern: "pat" }] : [],
-        }]);
-      }
-      if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
-      if (url === "/api/connections/c1/browse") {
-        return json({
-          rows: hasRule
-            ? [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", location_id: "LOC-42" } }]
-            : [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }],
-          next_cursor: null, has_more: false, count: 1,
-        });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { unmount } = renderConnect(qc);
-    await screen.findByText("Drill");
-    expect(await screen.findByRole("columnheader", { name: "Location ID" })).toBeInTheDocument();
-    expect(screen.getByText("LOC-42")).toBeInTheDocument();
-    unmount();
-
-    // Rule deleted and saved
-    hasRule = false;
-    await qc.removeQueries({ queryKey: ["connections"] });
-    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
-
-    // Returns to Connect
-    renderConnect(qc);
-    await screen.findByText("Drill");
-    expect(screen.queryByRole("columnheader", { name: "Location ID" })).not.toBeInTheDocument();
-    expect(screen.queryByText("LOC-42")).not.toBeInTheDocument();
-  });
-
-  it("composer field mapping offers newly derived field on return with connection selected and template chosen", async () => {
-    let hasRule = false;
-    const baseSchema = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-    const schemaWithRule = {
-      version: "homebox-1",
-      resources: [{
-        id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
-        columns: [
-          { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-          { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-        ],
-        filters: [],
-      }],
-      relationships: [],
-    };
-
-    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.includes("/inputs")) return json({ inputs: [[{ name: "name", control: "text" }]] });
-      if (url === "/api/connections") {
-        return json([{
-          id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true,
-          transforms: hasRule ? [{ resource: "entities", source: "name", pattern: "pat" }] : [],
-        }]);
-      }
-      if (url === "/api/connections/c1/schema") return json(hasRule ? schemaWithRule : baseSchema);
-      if (url === "/api/connections/c1/browse") {
-        return json({
-          rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }],
-          next_cursor: null, has_more: false, count: 1,
-        });
-      }
-      if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
-      if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
-      if (url === "/api/templates/tpl") return json(templateDetail);
-      if (url === "/api/printers") return json([]);
-      throw new Error(`unexpected fetch: ${url}`);
-    }) as ReturnType<typeof stub>;
-    vi.stubGlobal("fetch", fetchMock);
-
-    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { unmount } = renderConnect(qc);
-    await screen.findByRole("option", { name: "Home" });
-    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
-    await screen.findByLabelText(/map name/i);
-
-    // Initial mapping options do not include location_id
-    expect(screen.queryByRole("option", { name: "Location ID" })).not.toBeInTheDocument();
-    unmount();
-
-    // Rule saved deriving location_id
-    hasRule = true;
-    await qc.removeQueries({ queryKey: ["connections"] });
-    await qc.removeQueries({ queryKey: ["connector-schema", "c1"] });
-
-    // Returns to Connect and chooses template
-    renderConnect(qc);
-    await screen.findByRole("option", { name: "Home" });
-    fireEvent.change(await screen.findByLabelText(/template/i), { target: { value: "tpl" } });
-    await screen.findByLabelText(/map name/i);
-
-    // Derived field is offered as connector field in mapping
-    expect(await screen.findByRole("option", { name: "location_id" })).toBeInTheDocument();
   });
 });
 
@@ -2248,10 +1878,10 @@ describe("issue-385: connector grid shows fields of every variant", () => {
           }),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/connections/c1/schema") return json(schema);
-      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], has_more: false, count: 2 });
       if (url === "/api/connections/c1/materialize") {
         return json([
           { source: { resource: "entities", key: "e1" }, data: {} },
@@ -2331,10 +1961,10 @@ describe("issue-385: connector grid shows fields of every variant", () => {
           }),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/connections/c1/schema") return json(schema);
-      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], next_cursor: null, has_more: false, count: 1 });
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }], has_more: false, count: 1 });
       if (url === "/api/connections/c1/materialize") return json([{ source: { resource: "entities", key: "e1" }, data: {} }]);
       if (url === "/api/templates") return json({ templates: [{ id: "tpl", name: "Tape", description: "", unit: "mm", dpi: 300, format: { type: "single" } }] });
       if (url === "/api/templates/tpl") return json(testDetail);
@@ -2398,7 +2028,7 @@ describe("issue-385: connector grid shows fields of every variant", () => {
       version: "homebox-1",
       resources: [{
         id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
+    fields_incomplete: false,
         columns: [
           { key: "orientation", label: "Orientation", ty: "text", tier: "cheap", multi_valued: false },
           { key: "subtitle", label: "Subtitle", ty: "text", tier: "cheap", multi_valued: false },
@@ -2431,10 +2061,10 @@ describe("issue-385: connector grid shows fields of every variant", () => {
           }),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/connections/c1/schema") return json(connSchema);
-      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { orientation: "horizontal", subtitle: "sub-1" } }, { id: { resource: "entities", key: "e2" }, cells: { orientation: "vertical", subtitle: "" } }], next_cursor: null, has_more: false, count: 2 });
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { orientation: "horizontal", subtitle: "sub-1" } }, { id: { resource: "entities", key: "e2" }, cells: { orientation: "vertical", subtitle: "" } }], has_more: false, count: 2 });
       if (url === "/api/connections/c1/materialize") {
         return json([
           { source: { resource: "entities", key: "e1" }, data: { orientation: "horizontal", subtitle: "sub-1" } },
@@ -2536,10 +2166,10 @@ describe("issue-385: connector grid shows fields of every variant", () => {
           ]),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/connections/c1/schema") return json(schema);
-      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], next_cursor: null, has_more: false, count: 2 });
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill" } }, { id: { resource: "entities", key: "e2" }, cells: { name: "Hammer" } }], has_more: false, count: 2 });
       if (url === "/api/connections/c1/materialize") {
         return json([
           { source: { resource: "entities", key: "e1" }, data: {} },
@@ -2590,7 +2220,7 @@ describe("issue-385: connector grid shows fields of every variant", () => {
       version: "homebox-1",
       resources: [{
         id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
+    fields_incomplete: false,
         columns: [
           { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
           { key: "tags", label: "Tags", ty: "text", tier: "cheap", multi_valued: true },
@@ -2617,10 +2247,10 @@ describe("issue-385: connector grid shows fields of every variant", () => {
           }),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/connections/c1/schema") return json(listSchema);
-      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } }], next_cursor: null, has_more: false, count: 1 });
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } }], has_more: false, count: 1 });
       if (url === "/api/connections/c1/materialize") {
         return json([
           { source: { resource: "entities", key: "e1" }, data: { tags: ["KIDS", "CONSUMABLE"] } },
@@ -2678,7 +2308,7 @@ describe("issue-385: connector grid shows fields of every variant", () => {
       version: "homebox-1",
       resources: [{
         id: "entities", label: "Items", view: "table",
-        dynamic_source_prefix: "custom:", fields_incomplete: false,
+    fields_incomplete: false,
         columns: [
           { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
           { key: "tags", label: "Tags", ty: "text", tier: "cheap", multi_valued: true },
@@ -2705,10 +2335,10 @@ describe("issue-385: connector grid shows fields of every variant", () => {
           }),
         });
       }
-      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", enabled: true, has_credential: true }]);
+      if (url === "/api/connections") return json([{ id: "c1", connector: "homebox", name: "Home", base_url: "http://hb", has_credential: true }]);
       if (url === "/api/settings") return json({ default_connection_id: { value: null, is_default: true } });
       if (url === "/api/connections/c1/schema") return json(listSchema);
-      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } }], next_cursor: null, has_more: false, count: 1 });
+      if (url === "/api/connections/c1/browse") return json({ rows: [{ id: { resource: "entities", key: "e1" }, cells: { name: "Drill", tags: ["KIDS", "CONSUMABLE"] } }], has_more: false, count: 1 });
       if (url === "/api/connections/c1/materialize") {
         return json([
           { source: { resource: "entities", key: "e1" }, data: { tags: ["KIDS", "CONSUMABLE"] } },

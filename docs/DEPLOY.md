@@ -114,7 +114,7 @@ Labeler is an IPP client. Each printer's URI must start with `ipp://` or `ipps:/
 | CUPS server on the LAN | `ipp://cups-host:631/printers/<queue>` |
 | CUPS on the Docker host | `ipp://host.docker.internal:631/printers/<queue>` |
 
-Loopback addresses are refused, so `localhost` never reaches the Docker host. The compose file maps `host.docker.internal` to the host gateway; on Docker Desktop, which provides its own mapping, remove the `extra_hosts` line if resolution misbehaves.
+`localhost` is the Labeler container itself, so it reaches CUPS on the Docker host only under host networking; otherwise use `host.docker.internal`. The compose file maps `host.docker.internal` to the host gateway; on Docker Desktop, which provides its own mapping, remove the `extra_hosts` line if resolution misbehaves.
 
 Host CUPS listens only on `localhost` by default. To reach it from the container:
 

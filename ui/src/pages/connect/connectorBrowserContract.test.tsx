@@ -17,11 +17,10 @@ const schema: ConnectorSchema = {
       id: "entities",
       label: "Items",
       view: "table",
-      dynamic_source_prefix: "custom:",
       fields_incomplete: false,
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "assetId", label: "Asset ID", ty: "text", tier: "cheap", multi_valued: false },
       ],
       filters: [],
     },
@@ -29,9 +28,8 @@ const schema: ConnectorSchema = {
       id: "parts",
       label: "Parts",
       view: "table",
-      dynamic_source_prefix: null,
       fields_incomplete: false,
-      columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true }],
+      columns: [{ key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false }],
       filters: [],
     },
   ],
@@ -58,7 +56,7 @@ function makeFetchMock() {
   return vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async (_input, init) => {
     const body = init?.body ? JSON.parse(init.body as string) : {};
     const rows = body.resource === "parts" ? partRows : entityRows;
-    return json({ rows, next_cursor: null, has_more: false, count: rows.length });
+    return json({ rows, has_more: false, count: rows.length });
   });
 }
 

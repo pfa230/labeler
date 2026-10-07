@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 
 use url::Url;
 
-use super::cursor::{self, CursorBinding, CursorClaims, SigningKey};
 use super::{
     BrowsePage, BrowseRequest, CellValue, ColumnDef, ConnectorError, ConnectorSchema, DisplayRow,
     FieldSpec, FieldType, FilterSpec, FilterType, LabelRow, MaterializeRequest, RelationshipSpec,
@@ -126,12 +126,10 @@ pub static HOMEBOX_RESOURCES: &[ResourceDescriptor] = &[
     ResourceDescriptor {
         id: "entities",
         columns: ENTITIES_COLUMNS,
-        dynamic_text_prefix: Some("custom:"),
     },
     ResourceDescriptor {
         id: "locations",
         columns: LOCATIONS_COLUMNS,
-        dynamic_text_prefix: None,
     },
 ];
 
@@ -213,26 +211,6 @@ impl EffectiveHomeboxFilters {
 
         Ok(Self { q, parent, tags })
     }
-
-    fn to_hash(&self, resource: &str, req_parent: Option<&str>) -> String {
-        let parent_val = req_parent.or(self.parent.as_deref()).unwrap_or("");
-        let mut m = serde_json::Map::new();
-        if let Some(q) = &self.q {
-            m.insert("q".into(), serde_json::Value::String(q.clone()));
-        }
-        if !self.tags.is_empty() {
-            let mut sorted = self.tags.clone();
-            sorted.sort();
-            m.insert(
-                "tags".into(),
-                serde_json::Value::Array(
-                    sorted.into_iter().map(serde_json::Value::String).collect(),
-                ),
-            );
-        }
-        let json_str = serde_json::to_string(&m).unwrap();
-        crate::auth::sha256_hex(&format!("{}|{}|{}", resource, parent_val, json_str))
-    }
 }
 
 impl HomeboxConnector {
@@ -240,36 +218,36 @@ impl HomeboxConnector {
         HOMEBOX_RESOURCES
     }
 
-    pub fn clamp_page_size(&self, requested: Option<u32>, default_size: u32) -> u32 {
-        requested.unwrap_or(default_size).clamp(1, 200)
-    }
-
     pub async fn schema(
         &self,
         conn: &Connection,
         egress: &Egress,
     ) -> Result<ConnectorSchema, ConnectorError> {
-        let entities_desc = &HOMEBOX_RESOURCES[0];
-        let mut columns: Vec<FieldSpec> =
-            entities_desc.columns.iter().map(FieldSpec::from).collect();
         let b = base(conn)?;
         let custom_res: Result<Vec<String>, _> = egress
             .get_json(&b, "/api/v1/entities/fields", &[], &conn.credential)
             .await;
         let fields_incomplete = custom_res.is_err();
-        if let Ok(custom) = custom_res {
-            for name in custom {
-                columns.push(field(
+        let custom_columns: Vec<FieldSpec> = custom_res
+            .unwrap_or_default()
+            .iter()
+            .map(|name| {
+                field(
                     &format!("custom:{name}"),
-                    &name,
+                    name,
                     FieldType::Text,
                     Tier::Hydrated,
-                ));
-            }
-        }
-        let locations_desc = &HOMEBOX_RESOURCES[1];
-        let location_columns: Vec<FieldSpec> =
-            locations_desc.columns.iter().map(FieldSpec::from).collect();
+                )
+            })
+            .collect();
+        // Homebox lists item and location custom fields together, so both resources get the set.
+        let columns_with_custom = |desc: &ResourceDescriptor| -> Vec<FieldSpec> {
+            desc.columns
+                .iter()
+                .map(FieldSpec::from)
+                .chain(custom_columns.iter().cloned())
+                .collect()
+        };
         Ok(ConnectorSchema {
             version: "homebox-1".into(),
             resources: vec![
@@ -277,7 +255,7 @@ impl HomeboxConnector {
                     id: "entities".into(),
                     label: "Items".into(),
                     view: View::Table,
-                    columns,
+                    columns: columns_with_custom(&HOMEBOX_RESOURCES[0]),
                     filters: vec![
                         FilterSpec {
                             key: "q".into(),
@@ -295,17 +273,15 @@ impl HomeboxConnector {
                             ty: FilterType::LabelId,
                         },
                     ],
-                    dynamic_source_prefix: entities_desc.dynamic_text_prefix.map(Into::into),
                     fields_incomplete,
                 },
                 ResourceSpec {
                     id: "locations".into(),
                     label: "Locations".into(),
                     view: View::Table,
-                    columns: location_columns,
+                    columns: columns_with_custom(&HOMEBOX_RESOURCES[1]),
                     filters: vec![],
-                    dynamic_source_prefix: locations_desc.dynamic_text_prefix.map(Into::into),
-                    fields_incomplete: false,
+                    fields_incomplete,
                 },
             ],
             relationships: vec![RelationshipSpec {
@@ -321,31 +297,12 @@ impl HomeboxConnector {
         &self,
         conn: &Connection,
         egress: &Egress,
-        key: &SigningKey,
         req: BrowseRequest,
     ) -> Result<BrowsePage, ConnectorError> {
         let b = base(conn)?;
         let eff = EffectiveHomeboxFilters::parse(&req)?;
-        let filter_hash = eff.to_hash(&req.resource, req.parent.as_ref().map(|p| p.key.as_str()));
-
-        let mut page_size = self.clamp_page_size(req.page_size, PAGE_DEFAULT);
-        let page = match &req.cursor {
-            Some(tok) => {
-                let claims = cursor::verify(
-                    key,
-                    tok,
-                    &CursorBinding {
-                        connector: "homebox",
-                        connection: &conn.id,
-                        resource: &req.resource,
-                        filter_hash: &filter_hash,
-                    },
-                )?;
-                page_size = claims.page_size;
-                claims.page
-            }
-            None => 1,
-        };
+        let page = req.page.map_or(1, NonZeroU32::get);
+        let page_size = req.page_size.map_or(PAGE_DEFAULT, NonZeroU32::get);
 
         let is_location = req.resource == "locations";
         let mut query: Vec<(String, String)> = vec![
@@ -374,26 +331,11 @@ impl HomeboxConnector {
             .iter()
             .map(|e| summary_to_row(e, &req.resource, ext_base))
             .collect();
-        let total = resp.total.unwrap_or(0);
-        let has_more = (page as u64) * (page_size as u64) < total;
-        let next_cursor = has_more.then(|| {
-            cursor::sign(
-                key,
-                &CursorClaims {
-                    connector: "homebox".into(),
-                    connection: conn.id.clone(),
-                    resource: req.resource.clone(),
-                    filter_hash,
-                    page: page + 1,
-                    page_size,
-                },
-            )
-        });
+        let has_more = (page as u64) * (page_size as u64) < resp.total;
         Ok(BrowsePage {
             rows,
-            next_cursor,
             has_more,
-            count: Some(total),
+            count: resp.total,
         })
     }
 
@@ -442,7 +384,7 @@ impl HomeboxConnector {
 #[derive(serde::Deserialize)]
 struct EntityList {
     items: Vec<EntitySummary>,
-    total: Option<u64>,
+    total: u64,
 }
 
 #[derive(serde::Deserialize)]
@@ -485,7 +427,6 @@ fn field(key: &str, label: &str, ty: FieldType, tier: Tier) -> FieldSpec {
         ty,
         tier,
         multi_valued: false,
-        transform_source: ty == FieldType::Text,
     }
 }
 
@@ -533,18 +474,17 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
             cells.insert("serialNumber".into(), CellValue::Text(s.clone()));
         }
         cells.insert("item_url".into(), CellValue::Text(entity_url.clone()));
-
-        if let Some(ref fields) = e.fields {
-            for f in fields {
-                if let Some(name) = f.get("name").and_then(|n| n.as_str()) {
-                    let val = f
-                        .get("textValue")
-                        .or_else(|| f.get("value"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_default();
-                    cells.insert(format!("custom:{name}"), CellValue::Text(val));
-                }
+    }
+    if let Some(ref fields) = e.fields {
+        for f in fields {
+            if let Some(name) = f.get("name").and_then(|n| n.as_str()) {
+                let val = f
+                    .get("textValue")
+                    .or_else(|| f.get("value"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                cells.insert(format!("custom:{name}"), CellValue::Text(val));
             }
         }
     }
@@ -558,13 +498,6 @@ fn summary_to_row(e: &EntitySummary, resource: &str, base_url: &str) -> DisplayR
     }
 }
 
-fn type_name(v: &Option<serde_json::Value>) -> String {
-    v.as_ref()
-        .and_then(|t| t.get("name"))
-        .and_then(|n| n.as_str())
-        .unwrap_or("")
-        .to_string()
-}
 fn json_name(v: &Option<serde_json::Value>) -> String {
     v.as_ref()
         .and_then(|t| t.get("name"))
@@ -599,7 +532,6 @@ fn extract_field(
     match key {
         "item_url" | "location_url" => RowValue::Text(build_entity_url(base_url, id)),
         "location" => RowValue::Text(json_name(&detail.get("parent").cloned())),
-        "entityType" => RowValue::Text(type_name(&detail.get("entityType").cloned())),
         k if k.starts_with("custom:") => {
             let want = &k["custom:".len()..];
             let val = detail
@@ -608,18 +540,20 @@ fn extract_field(
                 .and_then(|arr| {
                     arr.iter()
                         .find(|f| f.get("name").and_then(|n| n.as_str()) == Some(want))
-                        .and_then(|f| f.get("textValue").or_else(|| f.get("value")))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
                 })
-                .unwrap_or_default();
-            RowValue::Text(val)
+                .and_then(|f| f.get("textValue").or_else(|| f.get("value")));
+            scalar_text(val)
         }
-        _ => match detail.get(key) {
-            Some(serde_json::Value::String(s)) => RowValue::Text(s.clone()),
-            Some(serde_json::Value::Number(n)) => RowValue::Text(n.to_string()),
-            _ => RowValue::Text(String::new()),
-        },
+        _ => scalar_text(detail.get(key)),
+    }
+}
+
+/// A string as is, a number stringified, anything else (absent included) as `""`.
+fn scalar_text(value: Option<&serde_json::Value>) -> RowValue {
+    match value {
+        Some(serde_json::Value::String(s)) => RowValue::Text(s.clone()),
+        Some(serde_json::Value::Number(n)) => RowValue::Text(n.to_string()),
+        _ => RowValue::Text(String::new()),
     }
 }
 
@@ -632,12 +566,12 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
-    fn effective_filters_parsing_and_hashing() {
+    fn effective_filters_parsing() {
         let mut req = BrowseRequest {
             resource: "entities".into(),
             filters: BTreeMap::new(),
             parent: None,
-            cursor: None,
+            page: None,
             page_size: None,
         };
         req.filters
@@ -650,17 +584,6 @@ mod tests {
         let eff = EffectiveHomeboxFilters::parse(&req).unwrap();
         assert_eq!(eff.q.as_deref(), Some("search"));
         assert_eq!(eff.tags, vec!["t2", "t1"]);
-
-        let hash1 = eff.to_hash("entities", None);
-
-        // Reverse tag order should yield same hash due to sorting
-        req.filters.insert(
-            "tag".into(),
-            FilterValue::Multiple(vec!["t1".into(), "t2".into()]),
-        );
-        let eff2 = EffectiveHomeboxFilters::parse(&req).unwrap();
-        let hash2 = eff2.to_hash("entities", None);
-        assert_eq!(hash1, hash2);
     }
 
     #[test]
@@ -669,7 +592,7 @@ mod tests {
             resource: "entities".into(),
             filters: BTreeMap::new(),
             parent: None,
-            cursor: None,
+            page: None,
             page_size: None,
         };
         let long_tag = "a".repeat(65);
@@ -690,7 +613,7 @@ mod tests {
                 relationship: "r".into(),
                 key: "k1".into(),
             }),
-            cursor: None,
+            page: None,
             page_size: None,
         };
         req.filters
@@ -709,8 +632,6 @@ mod tests {
             base_url: base.into(),
             public_url: None,
             credential: "hb_key".into(),
-            enabled: true,
-            transforms: vec![],
         }
     }
 
@@ -728,20 +649,18 @@ mod tests {
                 "total": 2
             })))
             .mount(&server).await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+        let egress = crate::egress::Egress::new();
         let c = HomeboxConnector;
         let page = c
             .browse(
                 &conn(&server.uri()),
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "entities".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
-                    page_size: Some(50),
+                    page: None,
+                    page_size: None,
                 },
             )
             .await
@@ -778,20 +697,18 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+        let egress = crate::egress::Egress::new();
         let c = HomeboxConnector;
         let page = c
             .browse(
                 &conn(&server.uri()),
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "entities".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
-                    page_size: Some(50),
+                    page: None,
+                    page_size: None,
                 },
             )
             .await
@@ -849,18 +766,16 @@ mod tests {
             .respond_with(ResponseTemplate::new(401))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+        let egress = crate::egress::Egress::new();
         let err = HomeboxConnector
             .browse(
                 &conn(&server.uri()),
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "entities".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
+                    page: None,
                     page_size: None,
                 },
             )
@@ -880,7 +795,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
+        let egress = crate::egress::Egress::new();
         let s = HomeboxConnector
             .schema(&conn(&server.uri()), &egress)
             .await
@@ -900,7 +815,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
+        let egress = crate::egress::Egress::new();
         let c = HomeboxConnector;
         let s = c.schema(&conn(&server.uri()), &egress).await.unwrap();
         let descriptors = c.resources();
@@ -929,7 +844,7 @@ mod tests {
                 "id":"e1","name":"Drill","manufacturer":"Acme","serialNumber":"SN9","entityType":{"name":"item"}
             })))
             .mount(&server).await;
-        let egress = crate::egress::Egress::with_loopback();
+        let egress = crate::egress::Egress::new();
         let rows = HomeboxConnector
             .materialize(
                 &conn(&server.uri()),
@@ -970,7 +885,7 @@ mod tests {
 
     #[tokio::test]
     async fn materialize_rejects_traversal_key() {
-        let egress = crate::egress::Egress::with_loopback();
+        let egress = crate::egress::Egress::new();
         let err = HomeboxConnector
             .materialize(
                 &conn("http://hb.lan:7745"),
@@ -1003,19 +918,17 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+        let egress = crate::egress::Egress::new();
         let page = HomeboxConnector
             .browse(
                 &conn(&server.uri()),
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "entities".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
-                    page_size: Some(50),
+                    page: None,
+                    page_size: None,
                 },
             )
             .await
@@ -1033,21 +946,19 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+        let egress = crate::egress::Egress::new();
         let c = conn(&server.uri());
         let expected = format!("{}/entity/e1", c.base_url.trim_end_matches('/'));
         let page = HomeboxConnector
             .browse(
                 &c,
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "entities".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
-                    page_size: Some(50),
+                    page: None,
+                    page_size: None,
                 },
             )
             .await
@@ -1062,22 +973,22 @@ mod tests {
             .and(path("/api/v1/entities"))
             .and(query_param("isLocation", "true"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id":"l1","name":"Garage","description":"cold","itemCount": 7}], "total": 1
+                "items": [{"id":"l1","name":"Garage","description":"cold","itemCount": 7,
+                           "fields": [{"name": "Code", "textValue": "BOX.123"}]}], "total": 1
             })))
-            .mount(&server).await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+            .mount(&server)
+            .await;
+        let egress = crate::egress::Egress::new();
         let page = HomeboxConnector
             .browse(
                 &conn(&server.uri()),
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "locations".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
-                    page_size: Some(50),
+                    page: None,
+                    page_size: None,
                 },
             )
             .await
@@ -1086,6 +997,10 @@ mod tests {
         assert_eq!(row.id.resource, "locations");
         assert!(matches!(row.cells.get("name"), Some(CellValue::Text(s)) if s == "Garage"));
         assert!(matches!(row.cells.get("itemCount"), Some(CellValue::Number(n)) if *n == 7.0));
+        assert_eq!(
+            row.cells.get("custom:Code"),
+            Some(&CellValue::Text("BOX.123".into()))
+        );
     }
 
     #[tokio::test]
@@ -1098,21 +1013,19 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+        let egress = crate::egress::Egress::new();
         let mut c = conn(&server.uri());
         c.public_url = Some("https://public.homebox.domain/".into());
         let page = HomeboxConnector
             .browse(
                 &c,
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "entities".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
-                    page_size: Some(50),
+                    page: None,
+                    page_size: None,
                 },
             )
             .await
@@ -1137,20 +1050,18 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
-        let key = crate::connector::cursor::SigningKey::random();
+        let egress = crate::egress::Egress::new();
         let c = conn(&server.uri());
         let page = HomeboxConnector
             .browse(
                 &c,
                 &egress,
-                &key,
                 crate::connector::BrowseRequest {
                     resource: "entities".into(),
                     filters: Default::default(),
                     parent: None,
-                    cursor: None,
-                    page_size: Some(50),
+                    page: None,
+                    page_size: None,
                 },
             )
             .await
@@ -1180,7 +1091,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let egress = crate::egress::Egress::with_loopback();
+        let egress = crate::egress::Egress::new();
         let mut c = conn(&server.uri());
         c.public_url = Some("https://public.homebox.domain".into());
 
@@ -1255,76 +1166,62 @@ mod tests {
         assert_eq!(external_base_url(&c), "https://homebox.domain.com");
     }
 
+    /// Custom fields are discovered once and reported on both resources, and so is a failed discovery.
     #[tokio::test]
-    async fn schema_reports_prefixes_and_handles_discovery_success_and_failure() {
+    async fn schema_reports_custom_columns_and_discovery_failure_on_both_resources() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/entities/fields"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(vec!["Internal SKU", "Warranty Date"]),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(vec!["Code"]))
             .mount(&server)
             .await;
 
-        let egress = Egress::with_loopback();
-        let c = conn(&server.uri());
+        let egress = Egress::new();
         let connector = HomeboxConnector;
 
-        // Successful discovery
-        let schema = connector.schema(&c, &egress).await.unwrap();
-        let entities = schema
-            .resources
-            .iter()
-            .find(|r| r.id == "entities")
+        let schema = connector
+            .schema(&conn(&server.uri()), &egress)
+            .await
             .unwrap();
-        assert_eq!(entities.dynamic_source_prefix.as_deref(), Some("custom:"));
-        assert!(!entities.fields_incomplete);
-        assert!(entities
-            .columns
-            .iter()
-            .any(|col| col.key == "custom:Internal SKU" && col.transform_source));
-        assert!(entities
-            .columns
-            .iter()
-            .any(|col| col.key == "custom:Warranty Date" && col.transform_source));
+        for resource in &schema.resources {
+            assert!(!resource.fields_incomplete, "{}", resource.id);
+            let custom = resource
+                .columns
+                .iter()
+                .find(|col| col.key == "custom:Code")
+                .unwrap_or_else(|| panic!("{} lacks custom:Code", resource.id));
+            assert_eq!(custom.label, "Code");
+            assert_eq!(custom.ty, FieldType::Text);
+            assert_eq!(custom.tier, Tier::Hydrated);
+        }
+        let wire = serde_json::to_value(&schema).unwrap();
+        for resource in wire["resources"].as_array().unwrap() {
+            assert!(
+                resource.get("dynamic_source_prefix").is_none(),
+                "{resource}"
+            );
+            for column in resource["columns"].as_array().unwrap() {
+                assert!(column.get("transform_source").is_none(), "{column}");
+            }
+        }
 
-        let locations = schema
-            .resources
-            .iter()
-            .find(|r| r.id == "locations")
-            .unwrap();
-        assert_eq!(locations.dynamic_source_prefix, None);
-        assert!(!locations.fields_incomplete);
-
-        // Discovery failure (e.g. 500 error from upstream)
         let fail_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/v1/entities/fields"))
             .respond_with(ResponseTemplate::new(500))
             .mount(&fail_server)
             .await;
-
-        let fail_conn = conn(&fail_server.uri());
-        let fail_schema = connector.schema(&fail_conn, &egress).await.unwrap();
-        let fail_entities = fail_schema
-            .resources
-            .iter()
-            .find(|r| r.id == "entities")
+        let fail_schema = connector
+            .schema(&conn(&fail_server.uri()), &egress)
+            .await
             .unwrap();
-        assert_eq!(
-            fail_entities.dynamic_source_prefix.as_deref(),
-            Some("custom:")
-        );
-        assert!(fail_entities.fields_incomplete);
-        // Statically declared columns are still present
-        assert!(fail_entities.columns.iter().any(|col| col.key == "name"));
-        assert!(fail_entities
-            .columns
-            .iter()
-            .any(|col| col.key == "item_url"));
-        assert!(!fail_entities
-            .columns
-            .iter()
-            .any(|col| col.key.starts_with("custom:")));
+        for resource in &fail_schema.resources {
+            assert!(resource.fields_incomplete, "{}", resource.id);
+            assert!(resource.columns.iter().any(|col| col.key == "name"));
+            assert!(!resource
+                .columns
+                .iter()
+                .any(|col| col.key.starts_with("custom:")));
+        }
     }
 }
