@@ -272,8 +272,9 @@ pub fn resolve_parameters_mode(
                                     mode,
                                 )?;
                             } else {
-                                return Err(AppError::invalid_request(
-                                    Reason::DatetimeParamInvalid,
+                                return Err(AppError::param_value_invalid(
+                                    name,
+                                    None,
                                     format!(
                                         "Invalid value for datetime parameter '{name}': {bad_str}"
                                     ),
@@ -313,14 +314,19 @@ pub fn resolve_parameters_mode(
                                     &mut resolved,
                                     mode,
                                 )?;
-                            } else if let Some(pos) = bad_str.strip_prefix("position ") {
-                                return Err(AppError::invalid_request(
-                                    Reason::RequestBodyInvalid,
+                            } else if let Some(pos) = bad_str
+                                .strip_prefix("position ")
+                                .and_then(|pos| pos.parse::<usize>().ok())
+                            {
+                                return Err(AppError::param_value_invalid(
+                                    name,
+                                    Some(pos),
                                     format!("element at position {pos} of parameter '{name}' must be a string"),
                                 ));
                             } else {
-                                return Err(AppError::invalid_request(
-                                    Reason::RequestBodyInvalid,
+                                return Err(AppError::param_value_invalid(
+                                    name,
+                                    None,
                                     format!("parameter '{name}' is not a valid list"),
                                 ));
                             }
@@ -349,36 +355,41 @@ pub fn resolve_parameters_mode(
                             } else {
                                 match &spec.param_type {
                                     crate::models::ParamType::Enum { values } => {
-                                        let mut selection = BTreeMap::new();
-                                        selection.insert(name.clone(), bad_str);
-                                        let mut allowed = BTreeMap::new();
-                                        allowed.insert(name.clone(), values.clone());
-                                        return Err(AppError::invalid_enum_value(
-                                            &selection, &allowed,
+                                        return Err(AppError::param_value_invalid(
+                                            name,
+                                            None,
+                                            format!(
+                                                "'{bad_str}' is not one of the values of parameter '{name}': {}",
+                                                values.join(", ")
+                                            ),
                                         ));
                                     }
                                     crate::models::ParamType::Boolean => {
-                                        return Err(AppError::invalid_request(
-                                            Reason::RequestBodyInvalid,
+                                        return Err(AppError::param_value_invalid(
+                                            name,
+                                            None,
                                             format!("parameter '{name}' is not a valid boolean"),
                                         ));
                                     }
                                     crate::models::ParamType::Integer => {
-                                        return Err(AppError::invalid_request(
-                                            Reason::RequestBodyInvalid,
+                                        return Err(AppError::param_value_invalid(
+                                            name,
+                                            None,
                                             format!("parameter '{name}' is not a valid integer"),
                                         ));
                                     }
                                     crate::models::ParamType::Length
                                     | crate::models::ParamType::Number => {
-                                        return Err(AppError::invalid_request(
-                                            Reason::RequestBodyInvalid,
+                                        return Err(AppError::param_value_invalid(
+                                            name,
+                                            None,
                                             format!("parameter '{name}' is not a valid number"),
                                         ));
                                     }
                                     crate::models::ParamType::String { .. } => {
-                                        return Err(AppError::invalid_request(
-                                            Reason::RequestBodyInvalid,
+                                        return Err(AppError::param_value_invalid(
+                                            name,
+                                            None,
                                             format!("parameter '{name}' is not a valid string"),
                                         ));
                                     }
@@ -706,12 +717,9 @@ fn compile_paged(source: String, files: Vec<(String, Vec<u8>)>) -> Result<PagedD
     }
     let engine = builder.build();
     let warned = engine.compile::<PagedDocument>();
-    warned.output.map_err(|err| {
-        AppError::render_failed(
-            Reason::TypstCompileFailed,
-            format!("typst compile failed: {err}"),
-        )
-    })
+    warned
+        .output
+        .map_err(|err| AppError::internal(format!("typst compile failed: {err}")))
 }
 
 fn compile_single_doc(
@@ -720,8 +728,9 @@ fn compile_single_doc(
     env: &RenderEnv,
 ) -> Result<PagedDocument, AppError> {
     if !matches!(template.format, TemplateFormat::Single { .. }) {
-        return Err(AppError::unsupported_format(
-            "render_label only supports single format",
+        return Err(AppError::invalid_request(
+            Reason::FormatUnsupported,
+            "this endpoint renders single templates only; render a sheet as a batch",
         ));
     }
     compile_label_doc(template, data, env)
@@ -778,12 +787,12 @@ fn compile_label_source(
             .as_ref()
             .map(|v| resolve_dynamic_value_f32(v, resolved_data))
             .transpose()?
-            .ok_or_else(|| AppError::unsupported_format("dynamic single width requires max"))?;
+            .ok_or_else(|| AppError::internal("dynamic single width requires max"))?;
         let min_w = min
             .as_ref()
             .map(|v| resolve_dynamic_value_f32(v, resolved_data))
             .transpose()?
-            .ok_or_else(|| AppError::unsupported_format("dynamic single width requires min"))?;
+            .ok_or_else(|| AppError::internal("dynamic single width requires min"))?;
 
         check_dimension_limit(min_w, unit, max_dim_mm, "width min")?;
         check_dimension_limit(max_w, unit, max_dim_mm, "width max")?;
@@ -835,18 +844,9 @@ fn compile_label_source(
         source,
         "#set page(width: {page_width}, height: {page_height}, margin: 0{unit})"
     )
-    .map_err(|err| {
-        AppError::render_failed(
-            Reason::TypstSourceBuildFailed,
-            format!("failed to build typst source: {err}"),
-        )
-    })?;
-    writeln!(source, "#set text(font: \"Inter\")").map_err(|err| {
-        AppError::render_failed(
-            Reason::TypstSourceBuildFailed,
-            format!("failed to build typst source: {err}"),
-        )
-    })?;
+    .map_err(|err| AppError::internal(format!("failed to build typst source: {err}")))?;
+    writeln!(source, "#set text(font: \"Inter\")")
+        .map_err(|err| AppError::internal(format!("failed to build typst source: {err}")))?;
 
     let context = RenderContext::new(unit, template.dpi, resolved_data, env, &images)
         .with_instants(&resolved.instants);
@@ -888,16 +888,14 @@ pub fn render_thumbnail_png(
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
     let doc = compile_label_doc(template, data, &env)?;
-    let page = doc.pages().first().ok_or_else(|| {
-        AppError::render_failed(Reason::TypstNoPages, "typst did not produce any pages")
-    })?;
+    let page = doc
+        .pages()
+        .first()
+        .ok_or_else(|| AppError::internal("typst did not produce any pages"))?;
     let pixmap = typst_render::render(page, &render_options(template.dpi as f32 / 72.0));
-    pixmap.encode_png().map_err(|err| {
-        AppError::render_failed(
-            Reason::PngEncodeFailed,
-            format!("failed to encode png: {err}"),
-        )
-    })
+    pixmap
+        .encode_png()
+        .map_err(|err| AppError::internal(format!("failed to encode png: {err}")))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -937,21 +935,19 @@ pub fn render_single_label_image(
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
     let doc = compile_single_doc(template, data, &env)?;
-    let page = doc.pages().first().ok_or_else(|| {
-        AppError::render_failed(Reason::TypstNoPages, "typst did not produce any pages")
-    })?;
+    let page = doc
+        .pages()
+        .first()
+        .ok_or_else(|| AppError::internal("typst did not produce any pages"))?;
 
     let dpi = opts.resolution_dpi.unwrap_or(template.dpi);
     let mut pixmap = typst_render::render(page, &render_options(dpi as f32 / 72.0));
     if opts.color_mode == ColorMode::BiLevel {
         binarize_rgba(pixmap.data_mut());
     }
-    pixmap.encode_png().map_err(|err| {
-        AppError::render_failed(
-            Reason::PngEncodeFailed,
-            format!("failed to encode png: {err}"),
-        )
-    })
+    pixmap
+        .encode_png()
+        .map_err(|err| AppError::internal(format!("failed to encode png: {err}")))
 }
 
 pub fn render_single_label_pdf(
@@ -962,12 +958,8 @@ pub fn render_single_label_pdf(
 ) -> Result<Vec<u8>, AppError> {
     let env = RenderEnv { settings, datetime };
     let doc = compile_single_doc(template, data, &env)?;
-    typst_pdf::pdf(&doc, &Default::default()).map_err(|err| {
-        AppError::render_failed(
-            Reason::PdfEncodeFailed,
-            format!("failed to encode pdf: {err:?}"),
-        )
-    })
+    typst_pdf::pdf(&doc, &Default::default())
+        .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))
 }
 
 pub fn render_sheet_pages(
@@ -986,7 +978,7 @@ pub fn render_sheet_pages(
         positions,
     } = &template.format
     else {
-        return Err(AppError::unsupported_format(
+        return Err(AppError::internal(
             "render_sheet_pages only supports sheet format",
         ));
     };
@@ -1036,12 +1028,7 @@ pub fn render_sheet_pages(
     let mut failures: Vec<crate::errors::BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
         if let Err(err) = validate_label_data_keys(template, &lbl.data) {
-            failures.push(crate::errors::BatchFailure {
-                index: idx,
-                code: err.code(),
-                reason: err.reason(),
-                message: err.message_text(),
-            });
+            failures.push(crate::errors::BatchFailure::new(idx, err));
             rendered.push(String::new());
             continue;
         }
@@ -1049,12 +1036,7 @@ pub fn render_sheet_pages(
             match resolve_parameters(template, &lbl.data, Some(env.settings), Some(env.datetime)) {
                 Ok(data) => data,
                 Err(err) => {
-                    failures.push(crate::errors::BatchFailure {
-                        index: idx,
-                        code: err.code(),
-                        reason: err.reason(),
-                        message: err.message_text(),
-                    });
+                    failures.push(crate::errors::BatchFailure::new(idx, err));
                     rendered.push(String::new());
                     continue;
                 }
@@ -1071,12 +1053,7 @@ pub fn render_sheet_pages(
         ) {
             Ok(m) => m,
             Err(err) => {
-                failures.push(crate::errors::BatchFailure {
-                    index: idx,
-                    code: err.code(),
-                    reason: err.reason(),
-                    message: err.message_text(),
-                });
+                failures.push(crate::errors::BatchFailure::new(idx, err));
                 rendered.push(String::new());
                 continue;
             }
@@ -1091,12 +1068,7 @@ pub fn render_sheet_pages(
         ) {
             Ok(content) => rendered.push(content),
             Err(err) => {
-                failures.push(crate::errors::BatchFailure {
-                    index: idx,
-                    code: err.code(),
-                    reason: err.reason(),
-                    message: err.message_text(),
-                });
+                failures.push(crate::errors::BatchFailure::new(idx, err));
                 rendered.push(String::new());
             }
         }
@@ -1114,24 +1086,13 @@ pub fn render_sheet_pages(
                 source,
                 "#set page(width: {page_w}, height: {page_h}, margin: 0{unit})"
             )
-            .map_err(|err| {
-                AppError::render_failed(
-                    Reason::TypstSourceBuildFailed,
-                    format!("failed to build typst source: {err}"),
-                )
-            })?;
+            .map_err(|err| AppError::internal(format!("failed to build typst source: {err}")))?;
             writeln!(source, "#set text(font: \"Inter\")").map_err(|err| {
-                AppError::render_failed(
-                    Reason::TypstSourceBuildFailed,
-                    format!("failed to build typst source: {err}"),
-                )
+                AppError::internal(format!("failed to build typst source: {err}"))
             })?;
         } else {
             writeln!(source, "#pagebreak()").map_err(|err| {
-                AppError::render_failed(
-                    Reason::TypstSourceBuildFailed,
-                    format!("failed to build typst source: {err}"),
-                )
+                AppError::internal(format!("failed to build typst source: {err}"))
             })?;
         }
         for (idx, (lp, ls)) in placements.iter().enumerate() {
@@ -1150,22 +1111,15 @@ pub fn render_sheet_pages(
                 rendered[idx]
             )
             .map_err(|err| {
-                AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            )
+                AppError::internal(format!("failed to build typst source: {err}"))
             })?;
         }
     }
     tracing::debug!(name = %template.name, typst = %source, "render typst source");
 
     let doc = compile_paged(source, images.into_inner().files)?;
-    typst_pdf::pdf(&doc, &Default::default()).map_err(|err| {
-        AppError::render_failed(
-            Reason::PdfEncodeFailed,
-            format!("failed to encode pdf: {err:?}"),
-        )
-    })
+    typst_pdf::pdf(&doc, &Default::default())
+        .map_err(|err| AppError::internal(format!("failed to encode pdf: {err:?}")))
 }
 
 /// Count rendered PDF pages by counting "/Type /Page" objects (excluding the "/Type /Pages" tree
@@ -1764,8 +1718,8 @@ impl<'a> RenderContext<'a> {
                     .unwrap_or(qrcode::EcLevel::M);
                 let code = qrcode::QrCode::with_error_correction_level(payload.as_bytes(), ecc)
                     .map_err(|err| {
-                        AppError::render_failed(
-                            Reason::QrGenerationFailed,
+                        AppError::unsupported_layout_item(
+                            Reason::QrPayloadInvalid,
                             format!("qr generation failed: {err}"),
                         )
                     })?;
@@ -2257,10 +2211,7 @@ impl<'a> RenderContext<'a> {
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
         .map_err(|err| {
-            AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            )
+            AppError::internal(format!("failed to build typst source: {err}"))
         })?;
 
         Ok(())
@@ -2291,10 +2242,7 @@ impl<'a> RenderContext<'a> {
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
         .map_err(|err| {
-            AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            )
+            AppError::internal(format!("failed to build typst source: {err}"))
         })?;
 
         Ok(())
@@ -2353,10 +2301,7 @@ impl<'a> RenderContext<'a> {
             "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{content}]]"
         )
         .map_err(|err| {
-            AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            )
+            AppError::internal(format!("failed to build typst source: {err}"))
         })?;
 
         Ok(())
@@ -2397,12 +2342,7 @@ impl<'a> RenderContext<'a> {
             out,
             "#place(top + left, dx: {start_x}, dy: {start_y})[{content}]"
         )
-        .map_err(|err| {
-            AppError::render_failed(
-                Reason::TypstSourceBuildFailed,
-                format!("failed to build typst source: {err}"),
-            )
-        })?;
+        .map_err(|err| AppError::internal(format!("failed to build typst source: {err}")))?;
 
         Ok(())
     }
@@ -2489,10 +2429,7 @@ impl<'a> RenderContext<'a> {
                     "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, fill: {fill}, stroke: {stroke}, radius: {radius}, clip: true)[{rotated}]]"
                 )
                 .map_err(|err| {
-                    AppError::render_failed(
-                        Reason::TypstSourceBuildFailed,
-                        format!("failed to build typst source: {err}"),
-                    )
+                    AppError::internal(format!("failed to build typst source: {err}"))
                 })?;
             }
             Shape::Ellipse | Shape::Circle => {
@@ -2505,10 +2442,7 @@ impl<'a> RenderContext<'a> {
                         "#place(top + left, dx: {dx}, dy: {dy})[{frame_content}]"
                     )
                     .map_err(|err| {
-                        AppError::render_failed(
-                            Reason::TypstSourceBuildFailed,
-                            format!("failed to build typst source: {err}"),
-                        )
+                        AppError::internal(format!("failed to build typst source: {err}"))
                     })?;
                 }
                 writeln!(
@@ -2516,10 +2450,7 @@ impl<'a> RenderContext<'a> {
                     "#place(top + left, dx: {dx}, dy: {dy})[#box(width: {box_width}, height: {box_height}, clip: true)[{rotated}]]"
                 )
                 .map_err(|err| {
-                    AppError::render_failed(
-                        Reason::TypstSourceBuildFailed,
-                        format!("failed to build typst source: {err}"),
-                    )
+                    AppError::internal(format!("failed to build typst source: {err}"))
                 })?;
             }
         }
@@ -8054,7 +7985,7 @@ layout:
 
     fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
         let content = crate::parse::parse_template(body).map_err(|err| {
-            AppError::template_invalid(Reason::TemplateParseFailed, err.to_string())
+            AppError::template_invalid(Reason::TemplateValidationFailed, err.to_string())
         })?;
         content
             .validate()
@@ -8182,7 +8113,7 @@ layout:
         let mut data = HashMap::new();
         data.insert("orientation".to_string(), json!("h"));
         data.insert("h_text".to_string(), json!("Horizontal only"));
-        // v_text is omitted; must succeed without MissingField
+        // v_text is omitted; must succeed without missing_field
 
         let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
         assert!(
@@ -8215,7 +8146,7 @@ layout:
         let data = HashMap::new(); // message omitted
 
         let res = render_single_label(&template, &data, &BTreeMap::new(), &resolver());
-        assert!(matches!(res, Err(err) if err.code() == "MissingField"));
+        assert!(matches!(res, Err(err) if err.reason() == Some("missing_field")));
     }
 
     #[test]
@@ -8414,7 +8345,7 @@ layout:
             let err = interpolated(&template, &bad_data, &resolver).unwrap_err();
             assert_eq!(
                 err.reason(),
-                Some("datetime_param_invalid"),
+                Some("param_value_invalid"),
                 "{bad} should be refused"
             );
             assert!(err.message_text().contains("printed_on"));
@@ -8473,7 +8404,7 @@ layout:
         let template = parse_and_validate(yaml).unwrap();
         let err = render_single_label(&template, &HashMap::new(), &BTreeMap::new(), &resolver())
             .unwrap_err();
-        assert_eq!(err.code(), "MissingField");
+        assert_eq!(err.code(), "UnsupportedLayoutItem");
         assert!(err.message_text().contains("printed_on:no_such_format"));
     }
 
@@ -9372,7 +9303,7 @@ layout:
         let failures = &err.details().as_ref().unwrap()["failures"];
         assert_eq!(failures[0]["index"], 1);
         assert_eq!(failures[0]["code"], "UnsupportedLayoutItem");
-        assert_eq!(failures[0]["reason"], "circle_box_not_square");
+        assert_eq!(failures[0]["details"]["reason"], "circle_box_not_square");
         assert!(failures[0]["message"]
             .as_str()
             .unwrap()
@@ -11526,7 +11457,7 @@ layout:
         .unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
             "parameter 'title' is not a valid string"
@@ -11536,7 +11467,7 @@ layout:
         let err = run_strict("flag", crate::models::ParamType::Boolean).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
             "parameter 'flag' is not a valid boolean"
@@ -11546,7 +11477,7 @@ layout:
         let err = run_strict("count", crate::models::ParamType::Integer).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
             "parameter 'count' is not a valid integer"
@@ -11556,7 +11487,7 @@ layout:
         let err = run_strict("ratio", crate::models::ParamType::Number).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
             "parameter 'ratio' is not a valid number"
@@ -11565,10 +11496,10 @@ layout:
         let err = run_strict("size", crate::models::ParamType::Length).unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(err.message_text(), "parameter 'size' is not a valid number");
 
-        // 5. Enum (422 Unprocessable Entity, InvalidEnumValue)
+        // 5. Enum
         let err = run_strict(
             "tier",
             crate::models::ParamType::Enum {
@@ -11576,19 +11507,9 @@ layout:
             },
         )
         .unwrap_err();
-        assert_eq!(err.status().as_u16(), 422);
-        assert_eq!(err.code(), "InvalidEnumValue");
-        assert_eq!(err.reason(), None); // invalid_enum_value uses unreasoned new()
-        assert_eq!(err.message_text(), "Invalid option selection");
-        let details = err.details().expect("details");
-        assert_eq!(details["selection"]["tier"], "[\"foo\",\"bar\"]");
-        assert_eq!(details["allowed"]["tier"], serde_json::json!(["A", "B"]));
-        assert!(details.get("reason").is_none(), "must carry no reason");
-        assert_eq!(
-            details.as_object().unwrap().len(),
-            2,
-            "details must be exactly selection+allowed"
-        );
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
+        assert_eq!(err.reason(), Some("param_value_invalid"));
 
         // 6. Datetime
         let err = run_strict(
@@ -11598,7 +11519,7 @@ layout:
         .unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("datetime_param_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
             "Invalid value for datetime parameter 'created_at': [\"foo\",\"bar\"]"
@@ -11618,7 +11539,7 @@ layout:
         .unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(err.message_text(), "parameter 'tags' is not a valid list");
 
         // 8. List with non-string element
@@ -11634,7 +11555,7 @@ layout:
         .unwrap_err();
         assert_eq!(err.status().as_u16(), 400);
         assert_eq!(err.code(), "InvalidRequest");
-        assert_eq!(err.reason(), Some("request_body_invalid"));
+        assert_eq!(err.reason(), Some("param_value_invalid"));
         assert_eq!(
             err.message_text(),
             "element at position 1 of parameter 'tags' must be a string"
@@ -11642,7 +11563,7 @@ layout:
     }
 
     #[test]
-    fn invalid_enum_value_pins_spec_selection_and_allowed() {
+    fn an_enum_value_outside_values_is_param_value_invalid() {
         let orientation_param = crate::models::ParamType::Enum {
             values: vec!["horizontal".to_string(), "vertical".to_string()],
         };
@@ -11683,28 +11604,11 @@ layout:
             super::ResolveMode::Strict,
         )
         .unwrap_err();
-        assert_eq!(err.status().as_u16(), 422);
-        assert_eq!(err.code(), "InvalidEnumValue");
-        assert_eq!(err.reason(), None);
-        assert_eq!(err.message_text(), "Invalid option selection");
-        let details = err.details().expect("details");
-        assert_eq!(details["selection"]["orientation"], "sideways");
+        assert_eq!(err.status().as_u16(), 400);
+        assert_eq!(err.code(), "InvalidRequest");
         assert_eq!(
-            details["allowed"]["orientation"],
-            serde_json::json!(["horizontal", "vertical"])
-        );
-        assert!(details.get("reason").is_none(), "must carry no reason");
-        assert_eq!(
-            details.as_object().unwrap().len(),
-            2,
-            "details must be exactly selection and allowed"
-        );
-        // Verify byte-identical keys: only selection and allowed present
-        let keys: std::collections::BTreeSet<&String> =
-            details.as_object().unwrap().keys().collect();
-        assert_eq!(
-            keys.into_iter().cloned().collect::<Vec<_>>(),
-            vec!["allowed".to_string(), "selection".to_string()]
+            err.details(),
+            Some(&serde_json::json!({ "reason": "param_value_invalid", "param": "orientation" }))
         );
     }
 
@@ -12480,43 +12384,5 @@ layout:
             .or_else(|| src.find("Tag: C"))
             .expect("Tag: C in Typst");
         assert!(p_a < p_b && p_b < p_c, "instances must be drawn in order");
-    }
-
-    #[test]
-    fn issue_360_render_coercion_multi_error_surfaces_first_declared() {
-        let yaml = r#"
-name: CoercionOrder
-unit: mm
-dpi: 200
-format: { type: single, width: 50, height: 20 }
-params:
-  - name: zebra
-    type: integer
-  - name: alpha
-    type: integer
-layout:
-  - type: text
-    value: "{zebra} {alpha}"
-    at: [0, 0]
-    size: [50, 10]
-    font_size: 8
-"#;
-        let template = crate::parse::parse_template(yaml).unwrap();
-        let mut data = HashMap::new();
-        data.insert("zebra".to_string(), serde_json::json!("not_an_int"));
-        data.insert("alpha".to_string(), serde_json::json!("also_not_an_int"));
-        let dt = no_datetime();
-        let settings = no_settings();
-        let err = render_single_label(&template, &data, &settings, &dt).unwrap_err();
-        assert!(
-            err.message_text().contains("zebra"),
-            "expected render coercion error to surface zebra first in declaration order, got: {}",
-            err.message_text()
-        );
-        assert!(
-            !err.message_text().contains("alpha"),
-            "alpha should not be reported before zebra: {}",
-            err.message_text()
-        );
     }
 }

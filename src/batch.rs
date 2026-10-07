@@ -92,12 +92,7 @@ fn render_single_batch(
     let mut failures: Vec<BatchFailure> = Vec::new();
     for (idx, lbl) in labels.iter().enumerate() {
         if let Err(err) = crate::render::validate_label_data_keys(template, &lbl.data) {
-            failures.push(BatchFailure {
-                index: idx,
-                code: err.code(),
-                reason: err.reason(),
-                message: err.message_text(),
-            });
+            failures.push(BatchFailure::new(idx, err));
             artifacts.push(Vec::new());
             continue;
         }
@@ -114,12 +109,7 @@ fn render_single_batch(
         match res {
             Ok(bytes) => artifacts.push(bytes),
             Err(err) => {
-                failures.push(BatchFailure {
-                    index: idx,
-                    code: err.code(),
-                    reason: err.reason(),
-                    message: err.message_text(),
-                });
+                failures.push(BatchFailure::new(idx, err));
                 artifacts.push(Vec::new());
             }
         }
@@ -147,16 +137,13 @@ fn render_single_batch(
                 .compression_method(zip::CompressionMethod::Deflated);
             for (i, bytes) in artifacts.iter().enumerate() {
                 let name = format!("{:0width$}.{ext}", i + 1, width = width);
-                zip.start_file(name, opts).map_err(|e| {
-                    AppError::render_failed(Reason::ZipWriteFailed, format!("zip error: {e}"))
-                })?;
-                zip.write_all(bytes).map_err(|e| {
-                    AppError::render_failed(Reason::ZipWriteFailed, format!("zip error: {e}"))
-                })?;
+                zip.start_file(name, opts)
+                    .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
+                zip.write_all(bytes)
+                    .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
             }
-            zip.finish().map_err(|e| {
-                AppError::render_failed(Reason::ZipWriteFailed, format!("zip error: {e}"))
-            })?;
+            zip.finish()
+                .map_err(|e| AppError::internal(format!("zip error: {e}")))?;
             Ok(RenderedBatch::Download {
                 bytes: cursor.into_inner(),
                 content_type: "application/zip",
@@ -406,6 +393,6 @@ mod tests {
             1,
         )
         .unwrap_err();
-        assert_eq!(err.code(), "BatchTooLarge");
+        assert_eq!(err.code(), "PayloadTooLarge");
     }
 }

@@ -5781,18 +5781,12 @@ layout:
         );
         let strict_enum_err =
             crate::render::resolve_parameters(&template, &bad_enum, None, None).unwrap_err();
-        assert_eq!(strict_enum_err.code(), "InvalidEnumValue");
-        assert_eq!(strict_enum_err.status().as_u16(), 422);
-        assert_eq!(strict_enum_err.message_text(), "Invalid option selection");
-        assert_eq!(strict_enum_err.reason(), None);
-        let details = strict_enum_err.details().expect("details");
-        assert_eq!(details["selection"]["choice"], "invalid_choice");
+        assert_eq!(strict_enum_err.code(), "InvalidRequest");
+        assert_eq!(strict_enum_err.status().as_u16(), 400);
         assert_eq!(
-            details["allowed"]["choice"],
-            serde_json::json!(["one", "two"])
+            strict_enum_err.reason(),
+            Some(Reason::ParamValueInvalid.as_slug())
         );
-        assert!(details.get("reason").is_none());
-        assert_eq!(details.as_object().unwrap().len(), 2);
 
         // 2. Non-numeric integer
         let mut bad_int = HashMap::new();
@@ -5810,7 +5804,7 @@ layout:
             crate::render::resolve_parameters(&template, &bad_int, None, None).unwrap_err();
         assert_eq!(
             strict_int_err.reason(),
-            Some(Reason::RequestBodyInvalid.as_slug())
+            Some(Reason::ParamValueInvalid.as_slug())
         );
 
         // 3. Unparseable datetime
@@ -5822,7 +5816,7 @@ layout:
             crate::render::resolve_parameters(&template, &bad_dt, None, None).unwrap_err();
         assert_eq!(
             strict_dt_err.reason(),
-            Some(Reason::DatetimeParamInvalid.as_slug())
+            Some(Reason::ParamValueInvalid.as_slug())
         );
     }
 
@@ -8339,7 +8333,7 @@ layout:
         );
         assert!(png.is_ok());
 
-        // Render omitting logo -> 422 MissingField naming logo
+        // Render omitting logo -> 422 missing_field naming logo
         let empty_data = HashMap::new();
         let err = crate::render::render_single_label_image(
             &template,
@@ -8349,7 +8343,7 @@ layout:
             crate::render::ImageRenderOptions::default(),
         )
         .unwrap_err();
-        assert_eq!(err.code(), "MissingField");
+        assert_eq!(err.code(), "UnsupportedLayoutItem");
         assert_eq!(err.details().unwrap()["field"], "logo");
     }
 

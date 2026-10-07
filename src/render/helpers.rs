@@ -200,8 +200,9 @@ pub(super) fn resolve_dynamic_value_f32(
                 .ok_or_else(|| AppError::missing_field(name))?;
             match val {
                 JsonValue::Number(n) => n.as_f64().map(|f| f as f32).ok_or_else(|| {
-                    AppError::invalid_request(
-                        Reason::RequestBodyInvalid,
+                    AppError::param_value_invalid(
+                        name,
+                        None,
                         format!("parameter '{name}' is not a valid number"),
                     )
                 }),
@@ -212,14 +213,16 @@ pub(super) fn resolve_dynamic_value_f32(
                         .or_else(|| trimmed.strip_suffix("in"))
                         .unwrap_or(trimmed);
                     num_str.trim().parse::<f32>().map_err(|_| {
-                        AppError::invalid_request(
-                            Reason::RequestBodyInvalid,
+                        AppError::param_value_invalid(
+                            name,
+                            None,
                             format!("parameter '{name}' is not a valid number"),
                         )
                     })
                 }
-                _ => Err(AppError::invalid_request(
-                    Reason::RequestBodyInvalid,
+                _ => Err(AppError::param_value_invalid(
+                    name,
+                    None,
                     format!("parameter '{name}' is not a valid number"),
                 )),
             }
@@ -243,19 +246,22 @@ pub(super) fn resolve_dynamic_value_u16(
                     .map(|u| u as u16)
                     .or_else(|| n.as_f64().map(|f| f.round() as u16))
                     .ok_or_else(|| {
-                        AppError::invalid_request(
-                            Reason::RequestBodyInvalid,
+                        AppError::param_value_invalid(
+                            name,
+                            None,
                             format!("parameter '{name}' is not a valid integer"),
                         )
                     }),
                 JsonValue::String(s) => s.trim().parse::<u16>().map_err(|_| {
-                    AppError::invalid_request(
-                        Reason::RequestBodyInvalid,
+                    AppError::param_value_invalid(
+                        name,
+                        None,
                         format!("parameter '{name}' is not a valid integer"),
                     )
                 }),
-                _ => Err(AppError::invalid_request(
-                    Reason::RequestBodyInvalid,
+                _ => Err(AppError::param_value_invalid(
+                    name,
+                    None,
                     format!("parameter '{name}' is not a valid integer"),
                 )),
             }
@@ -312,7 +318,7 @@ pub(super) fn resolve_dimension(
                 .transpose()?;
             max_val
                 .or(min_val)
-                .ok_or_else(|| AppError::unsupported_format("dynamic dimension missing min/max"))
+                .ok_or_else(|| AppError::internal("dynamic dimension missing min/max"))
         }
     }
 }
@@ -320,7 +326,7 @@ pub(super) fn resolve_dimension(
 pub(super) fn format_length(value: f32, unit: &str) -> Result<String, AppError> {
     let unit = match unit {
         "mm" | "in" => unit,
-        _ => return Err(AppError::unsupported_format("unknown unit")),
+        _ => return Err(AppError::internal("unknown unit")),
     };
     Ok(format!("{}{}", format_float(value), unit))
 }
@@ -382,8 +388,8 @@ pub(super) fn build_qr_svg(payload: &[u8], params: &Option<QrParams>) -> Result<
         .unwrap_or(EcLevel::M);
 
     let code = QrCode::with_error_correction_level(payload, ecc).map_err(|err| {
-        AppError::render_failed(
-            Reason::QrGenerationFailed,
+        AppError::unsupported_layout_item(
+            Reason::QrPayloadInvalid,
             format!("qr generation failed: {err}"),
         )
     })?;
@@ -582,12 +588,8 @@ const OPSZ: ttf_parser::Tag = ttf_parser::Tag::from_bytes(b"opsz");
 /// Parse a face and confirm it carries the axes the fitter varies. Byte-taking and free of the cache
 /// so a test can hand it any font without depending on which font some earlier test loaded first.
 fn load_face(bytes: &[u8]) -> Result<ttf_parser::Face<'_>, AppError> {
-    let face = ttf_parser::Face::parse(bytes, 0).map_err(|err| {
-        AppError::render_failed(
-            Reason::FontParseFailed,
-            format!("failed to parse font: {err}"),
-        )
-    })?;
+    let face = ttf_parser::Face::parse(bytes, 0)
+        .map_err(|err| AppError::internal(format!("failed to parse font: {err}")))?;
     // `set_variation` reports success for any variable face even when no axis matches the tag, so it
     // cannot serve as the check. Verify up front: a font without these axes would measure silently
     // unweighted, which is the bug this measurement path exists to remove (#96).
@@ -597,10 +599,9 @@ fn load_face(bytes: &[u8]) -> Result<ttf_parser::Face<'_>, AppError> {
             .into_iter()
             .any(|axis| axis.tag == tag)
         {
-            return Err(AppError::render_failed(
-                Reason::FontAxisMissing,
-                format!("measurement font lacks the '{tag}' variation axis"),
-            ));
+            return Err(AppError::internal(format!(
+                "measurement font lacks the '{tag}' variation axis"
+            )));
         }
     }
     Ok(face)
@@ -613,12 +614,8 @@ fn font_bytes() -> Result<&'static [u8], AppError> {
     }
     let path = crate::resolve_dir(std::env::var_os("LABELER_FONTS_DIR"), "fonts")
         .join("InterVariable.ttf");
-    let bytes = std::fs::read(&path).map_err(|err| {
-        AppError::render_failed(
-            Reason::FontReadFailed,
-            format!("failed to read font: {err}"),
-        )
-    })?;
+    let bytes = std::fs::read(&path)
+        .map_err(|err| AppError::internal(format!("failed to read font: {err}")))?;
     load_face(&bytes)?;
     // A concurrent caller may win the race to populate the cache; either value is valid, so fall
     // back to the stored bytes rather than treating the lost race as an error.
@@ -3201,7 +3198,7 @@ mod dynamic_resolution_tests {
 
         let err = resolve_dynamic_value_f32(&DynamicValue::Ref("missing".to_string()), &data)
             .unwrap_err();
-        assert_eq!(err.code(), "MissingField");
+        assert_eq!(err.reason(), Some("missing_field"));
 
         let err =
             resolve_dynamic_value_f32(&DynamicValue::Ref("bad".to_string()), &data).unwrap_err();

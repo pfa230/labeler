@@ -19,7 +19,7 @@ export interface LabelGridRow {
   annotation?: { status: "ok" | "failed"; message?: string }; // from a print summary
 }
 
-// The backend caps a batch at 500 labels (413 BatchTooLarge); the grid enforces it client-side.
+// The backend caps a batch at 500 labels (413 PayloadTooLarge); the grid enforces it client-side.
 export const MAX_BATCH_LABELS = 500;
 
 export function newId(): string {

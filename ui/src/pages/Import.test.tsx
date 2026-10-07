@@ -227,7 +227,7 @@ describe("CSV Import screen", () => {
   it("maps a 422 BatchInvalid failure to its row and shows a form error", async () => {
     fetchMock = stubFetch(() =>
       json(
-        { error: { code: "BatchInvalid", message: "row invalid", details: { failures: [{ index: 0, code: "MissingField", message: "missing sku" }] } } },
+        { error: { code: "BatchInvalid", message: "row invalid", details: { failures: [{ index: 0, code: "UnsupportedLayoutItem", message: "missing sku", details: { reason: "missing_field", field: "sku" } }] } } },
         422,
       ),
     );

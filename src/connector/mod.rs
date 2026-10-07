@@ -494,10 +494,9 @@ pub struct LabelRow {
 #[derive(Debug)]
 pub enum ConnectorError {
     AuthFailed,
-    Forbidden,
     ConnectionFailed(String),
     InvalidFilter(String),
-    UpstreamSchemaMismatch(String),
+    RowKeyInvalid(String),
     RateLimited,
     BudgetExceeded,
     Upstream(String),
@@ -513,6 +512,7 @@ impl From<crate::egress::EgressError> for ConnectorError {
             Timeout => ConnectorError::ConnectionFailed("timeout".into()),
             TooLarge => ConnectorError::Upstream("response too large".into()),
             Status(s) => ConnectorError::Upstream(format!("upstream status {s}")),
+            Transport(m) if m.starts_with("json:") => ConnectorError::Upstream(m),
             Transport(m) => ConnectorError::ConnectionFailed(m),
         }
     }
@@ -687,6 +687,13 @@ impl ConnectorRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An upstream body that is not the JSON expected is a bad response, not an unreachable host.
+    #[test]
+    fn an_unparseable_upstream_body_is_a_bad_response() {
+        let err = ConnectorError::from(crate::egress::EgressError::Transport("json: eof".into()));
+        assert!(matches!(err, ConnectorError::Upstream(_)), "{err:?}");
+    }
 
     fn test_connection(base: &str, transforms: Vec<FieldTransform>) -> Connection {
         Connection {

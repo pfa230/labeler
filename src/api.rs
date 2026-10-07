@@ -23,7 +23,7 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::{
     connector::{BrowsePage, BrowseRequest, ConnectorSchema, LabelRow, MaterializeRequest},
-    errors::AppError,
+    errors::{AppError, NotFoundKind},
     extract::{Json, Path},
     fs_safe::{self, PublishResult},
     models::{
@@ -408,7 +408,7 @@ pub fn app(state: Arc<AppState>) -> Router {
 
 async fn fallback(State(state): State<Arc<AppState>>, uri: axum::http::Uri) -> Response {
     if uri.path() == "/api" || uri.path().starts_with("/api/") {
-        return AppError::not_found(uri.path()).into_response();
+        return AppError::not_found(NotFoundKind::Route, uri.path()).into_response();
     }
     // SPA: serve index.html for any non-API, non-asset route (client-side routing).
     match tokio::fs::read(state.ui_dir().join("index.html")).await {
@@ -523,7 +523,7 @@ pub async fn list_groups(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<String>>, AppError> {
     let groups = crate::templates::list_template_groups(&state.templates_dir)
-        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
+        .map_err(|err| AppError::internal(err.to_string()))?;
     Ok(Json(groups))
 }
 
@@ -600,7 +600,7 @@ pub async fn delete_group(
         Err(rustix::io::Errno::NOTEMPTY) | Err(rustix::io::Errno::EXIST) => Err(
             AppError::conflict(format!("group '{validated}' is not empty")),
         ),
-        Err(rustix::io::Errno::NOENT) => Err(AppError::not_found(&validated)),
+        Err(rustix::io::Errno::NOENT) => Err(AppError::not_found(NotFoundKind::Group, &validated)),
         Err(err) => Err(AppError::internal(format!(
             "failed to delete group '{validated}': {err}"
         ))),
@@ -694,26 +694,22 @@ pub async fn update_template_group_name(
     for descendant_rel in &post_descendant_rels {
         let post_rename_descendant = format!("{new_group_path}/{descendant_rel}");
         if validate_group_name(&post_rename_descendant).is_err() {
-            return Err(AppError::render_failed(
-                Reason::TemplateRegistryIo,
-                format!(
-                    "post-rename descendant '{post_rename_descendant}' exceeds whole-path limits"
-                ),
-            ));
+            return Err(AppError::internal(format!(
+                "post-rename descendant '{post_rename_descendant}' exceeds whole-path limits"
+            )));
         }
     }
 
     // Post-rename confirmation
     state.reload()?;
     let groups = crate::templates::list_template_groups(&state.templates_dir)
-        .map_err(|err| AppError::render_failed(Reason::TemplateRegistryIo, err.to_string()))?;
+        .map_err(|err| AppError::internal(err.to_string()))?;
 
     if validated_src != new_group_path
         && (groups.iter().any(|g| g == &validated_src)
             || !groups.iter().any(|g| g == &new_group_path))
     {
-        return Err(AppError::render_failed(
-            Reason::TemplateRegistryIo,
+        return Err(AppError::internal(
             "group rename confirmation failed: new group not listed or old group still listed",
         ));
     }
@@ -728,8 +724,9 @@ pub async fn update_template_group_name(
 }
 
 fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
-    let content = parse_template(body)
-        .map_err(|err| AppError::template_invalid(Reason::TemplateParseFailed, err.to_string()))?;
+    let content = parse_template(body).map_err(|err| {
+        AppError::template_invalid(Reason::TemplateValidationFailed, err.to_string())
+    })?;
     content
         .validate()
         .map_err(|err| AppError::template_invalid(Reason::TemplateValidationFailed, err))?;
@@ -758,15 +755,12 @@ fn confirm_written_template(
     }
 
     let missing = || {
-        AppError::render_failed(
-            Reason::TemplateMissingAfterWrite,
-            format!(
-                "template '{id}' is missing after the write to {}",
-                path.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| path.display().to_string())
-            ),
-        )
+        AppError::internal(format!(
+            "template '{id}' is missing after the write to {}",
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        ))
     };
 
     let Some(winner) = served.filter(|served| *served != path) else {
@@ -783,21 +777,6 @@ fn confirm_written_template(
 
     match std::fs::read_to_string(path) {
         Ok(on_disk) if on_disk == body => {
-            let winner_rel = registry
-                .rel_path(id)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|| {
-                    winner
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| winner.display().to_string())
-                });
-            let mut files = vec![winner_rel];
-            files.extend(
-                refused
-                    .iter()
-                    .map(|p| p.to_string_lossy().replace('\\', "/")),
-            );
             let this_file_display = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -806,10 +785,7 @@ fn confirm_written_template(
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| winner.display().to_string());
-            Err(AppError::template_id_collision(
-                id,
-                files,
-                format!(
+            Err(AppError::conflict(format!(
                     "template id '{id}' is declared by both {winner_display} and {this_file_display}; {winner_display} is served and the file just written is refused"
                 ),
             ))
@@ -921,17 +897,15 @@ pub async fn put_template(
         ) {
             Ok(_) => {}
             Err(rustix::io::Errno::LOOP) => {
-                return Err(AppError::render_failed(
-                    Reason::TemplateGroupUnsafePath,
+                return Err(AppError::internal(
                     "destination template file is a symbolic link",
                 ));
             }
             Err(rustix::io::Errno::NOENT) => {}
             Err(err) => {
-                return Err(AppError::render_failed(
-                    Reason::TemplateWriteFailed,
-                    format!("failed to check destination: {err}"),
-                ));
+                return Err(AppError::internal(format!(
+                    "failed to check destination: {err}"
+                )));
             }
         }
 
@@ -947,12 +921,7 @@ pub async fn put_template(
         confirm_written_template(&new_registry, &id, &dest_path, &body)?;
         let detail = new_registry
             .detail(&id, &variables, &dt_resolver)
-            .ok_or_else(|| {
-                AppError::render_failed(
-                    Reason::TemplateMissingAfterWrite,
-                    "template missing after write",
-                )
-            })?;
+            .ok_or_else(|| AppError::internal("template missing after write"))?;
         Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
     } else {
         let group_req = query
@@ -979,12 +948,7 @@ pub async fn put_template(
                 confirm_written_template(&new_registry, &id, &dest_path, &body)?;
                 let detail = new_registry
                     .detail(&id, &variables, &dt_resolver)
-                    .ok_or_else(|| {
-                        AppError::render_failed(
-                            Reason::TemplateMissingAfterWrite,
-                            "template missing after write",
-                        )
-                    })?;
+                    .ok_or_else(|| AppError::internal("template missing after write"))?;
                 Ok((axum::http::StatusCode::CREATED, Json(detail)).into_response())
             }
             Ok(PublishResult::AlreadyExists) => {
@@ -1004,17 +968,15 @@ pub async fn put_template(
                     Ok(_) => {}
                     Err(rustix::io::Errno::LOOP) => {
                         fs_safe::cleanup_created_dirs(resolved.created_dirs);
-                        return Err(AppError::render_failed(
-                            Reason::TemplateGroupUnsafePath,
+                        return Err(AppError::internal(
                             "destination template file is a symbolic link",
                         ));
                     }
                     Err(err) => {
                         fs_safe::cleanup_created_dirs(resolved.created_dirs);
-                        return Err(AppError::render_failed(
-                            Reason::TemplateWriteFailed,
-                            format!("failed to check destination: {err}"),
-                        ));
+                        return Err(AppError::internal(format!(
+                            "failed to check destination: {err}"
+                        )));
                     }
                 }
 
@@ -1035,12 +997,7 @@ pub async fn put_template(
                 confirm_written_template(&new_registry, &id, &dest_path, &body)?;
                 let detail = new_registry
                     .detail(&id, &variables, &dt_resolver)
-                    .ok_or_else(|| {
-                        AppError::render_failed(
-                            Reason::TemplateMissingAfterWrite,
-                            "template missing after write",
-                        )
-                    })?;
+                    .ok_or_else(|| AppError::internal("template missing after write"))?;
                 Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
             }
             Err(err) => {
@@ -1092,10 +1049,10 @@ pub async fn update_template_group(
     let registry = state.templates.load_full();
     let existing = registry
         .get(&id)
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
     let src_path = registry
         .path(&id)
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
     let src_filename = src_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -1154,11 +1111,9 @@ pub async fn update_template_group(
             .join(&dest_filename)
             .to_string_lossy()
             .replace('\\', "/");
-        return Err(AppError::template_id_collision(
-            &id,
-            vec![rel_dest.clone()],
-            format!("destination '{rel_dest}' already exists"),
-        ));
+        return Err(AppError::conflict(format!(
+            "destination '{rel_dest}' already exists"
+        )));
     }
 
     state.before_publish();
@@ -1179,17 +1134,12 @@ pub async fn update_template_group(
         .templates_dir
         .join(&dest_resolved.target_path)
         .join(&dest_filename);
-    let content_str = std::fs::read_to_string(&dest_full_path)
-        .map_err(|e| AppError::render_failed(Reason::TemplateRegistryIo, e.to_string()))?;
+    let content_str =
+        std::fs::read_to_string(&dest_full_path).map_err(|e| AppError::internal(e.to_string()))?;
     confirm_written_template(&new_registry, &id, &dest_full_path, &content_str)?;
     let detail = new_registry
         .detail(&id, &variables, &dt_resolver)
-        .ok_or_else(|| {
-            AppError::render_failed(
-                Reason::TemplateMissingAfterWrite,
-                "template missing after move",
-            )
-        })?;
+        .ok_or_else(|| AppError::internal("template missing after move"))?;
     Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
 }
 
@@ -1221,7 +1171,7 @@ pub async fn delete_template(
         Some(t) => t,
         None => {
             state.publish(registry);
-            return Err(AppError::template_not_found(id));
+            return Err(AppError::not_found(NotFoundKind::Template, id));
         }
     };
     let path = registry
@@ -1239,10 +1189,7 @@ pub async fn delete_template(
         let mut files = vec![file_label(&state.templates_dir, &path)];
         files.extend(refused.iter().map(|p| file_label(&state.templates_dir, p)));
         let named = files.join(", ");
-        return Err(AppError::template_id_collision(
-            &id,
-            files,
-            format!(
+        return Err(AppError::conflict(format!(
                 "template id '{id}' is declared by more than one file ({named}); remove or re-id the extra file before deleting"
             ),
         ));
@@ -1290,7 +1237,7 @@ pub async fn get_template(
         .load_full()
         .detail(&id, &variables, &dt_resolver)
         .map(Json)
-        .ok_or_else(|| AppError::template_not_found(id))
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id))
 }
 
 #[utoipa::path(
@@ -1316,8 +1263,9 @@ pub async fn template_source(
     let registry = state.templates.load_full();
     let path = registry
         .path(&id)
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
-    let yaml = std::fs::read_to_string(path).map_err(|_| AppError::template_not_found(id))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
+    let yaml = std::fs::read_to_string(path)
+        .map_err(|_| AppError::not_found(NotFoundKind::Template, id))?;
     Ok((
         axum::http::StatusCode::OK,
         [("content-type", "text/yaml; charset=utf-8")],
@@ -1345,7 +1293,7 @@ pub async fn thumbnail(
     let registry = state.templates.load_full();
     let template = registry
         .get(&id)
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
         .await
         .map_err(|e| AppError::internal(e.to_string()))?;
@@ -1414,7 +1362,7 @@ pub async fn template_inputs(
     let registry = state.templates.load_full();
     let template = registry
         .get(&id)
-        .ok_or_else(|| AppError::template_not_found(id.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
 
     let variables = state.store().all_variables().await?;
     let dt_formats = crate::settings::resolve_datetime_formats(state.store())
@@ -1484,8 +1432,8 @@ pub async fn list_printers(
     request_body = Printer,
     responses(
         (status = 201, description = "Printer created", body = Printer),
-        (status = 409, description = "Printer id already exists", body = ErrorResponse),
-        (status = 422, description = "Invalid printer", body = ErrorResponse)
+        (status = 400, description = "Invalid printer", body = ErrorResponse),
+        (status = 409, description = "Printer id already exists", body = ErrorResponse)
     )
 )]
 pub async fn create_printer(
@@ -1495,7 +1443,10 @@ pub async fn create_printer(
     validate_printer(&printer)?;
     let _guard = state.write_lock.lock().await;
     if state.store().get_printer(&printer.id).await?.is_some() {
-        return Err(AppError::printer_exists(&printer.id));
+        return Err(AppError::conflict(format!(
+            "A printer with id '{}' already exists",
+            printer.id
+        )));
     }
     crate::driver::merge_secrets(&printer.kind, &mut printer.config, None);
     state.store().upsert_printer(&printer).await?;
@@ -1521,7 +1472,7 @@ pub async fn get_printer(
         .store()
         .get_printer(&id)
         .await?
-        .ok_or_else(|| AppError::printer_not_found(id))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Printer, id))?;
     printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
     Ok(Json(printer))
 }
@@ -1666,7 +1617,7 @@ pub async fn put_setting(
     Json(body): Json<SettingValue>,
 ) -> Result<Response, AppError> {
     if !crate::settings::is_known(&key) {
-        return Err(AppError::setting_not_found(&key));
+        return Err(AppError::not_found(NotFoundKind::Setting, &key));
     }
     let canonical = crate::settings::validate(&key, &body.value)
         .map_err(|err| AppError::invalid_request(Reason::SettingValueInvalid, err))?;
@@ -1712,7 +1663,7 @@ pub async fn delete_setting(
     Path(key): Path<String>,
 ) -> Result<Response, AppError> {
     if !crate::settings::is_known(&key) {
-        return Err(AppError::setting_not_found(&key));
+        return Err(AppError::not_found(NotFoundKind::Setting, &key));
     }
     let _guard = state.write_lock.lock().await;
     // idempotent: a known setting that was never overridden is already at its default
@@ -1758,9 +1709,8 @@ pub async fn preview_datetime_format(
     request_body = Printer,
     responses(
         (status = 200, description = "Printer replaced", body = Printer),
-        (status = 400, description = "Body id does not match path id", body = ErrorResponse),
-        (status = 404, description = "Printer not found", body = ErrorResponse),
-        (status = 422, description = "Invalid printer", body = ErrorResponse)
+        (status = 400, description = "Invalid printer, or body id does not match path id", body = ErrorResponse),
+        (status = 404, description = "Printer not found", body = ErrorResponse)
     )
 )]
 pub async fn replace_printer(
@@ -1781,7 +1731,7 @@ pub async fn replace_printer(
     let _guard = state.write_lock.lock().await;
     let existing = state.store().get_printer(&id).await?;
     let Some(existing) = existing else {
-        return Err(AppError::printer_not_found(id));
+        return Err(AppError::not_found(NotFoundKind::Printer, id));
     };
     crate::driver::merge_secrets(&printer.kind, &mut printer.config, Some(&existing.config));
     state.store().upsert_printer(&printer).await?;
@@ -1807,7 +1757,7 @@ pub async fn delete_printer(
     if state.store().delete_printer(&id).await? {
         Ok(axum::http::StatusCode::NO_CONTENT.into_response())
     } else {
-        Err(AppError::printer_not_found(id))
+        Err(AppError::not_found(NotFoundKind::Printer, id))
     }
 }
 
@@ -1828,7 +1778,7 @@ pub async fn set_printer_default(
     if state.store().set_default_printer(&id).await? {
         Ok(axum::http::StatusCode::NO_CONTENT.into_response())
     } else {
-        Err(AppError::printer_not_found(id))
+        Err(AppError::not_found(NotFoundKind::Printer, id))
     }
 }
 
@@ -1902,7 +1852,7 @@ impl ProbeResponse {
     request_body = ProbeRequest,
     responses(
         (status = 200, description = "Probe result (ok or unreachable)", body = ProbeResponse),
-        (status = 422, description = "Invalid printer config", body = ErrorResponse)
+        (status = 400, description = "Invalid printer config", body = ErrorResponse)
     )
 )]
 pub async fn probe_printer(Json(req): Json<ProbeRequest>) -> Result<Json<ProbeResponse>, AppError> {
@@ -2125,7 +2075,7 @@ pub async fn get_connection_h(
         .store()
         .get_connection(&id)
         .await?
-        .ok_or_else(|| AppError::not_found(&id))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, &id))?;
     Ok(Json(ConnectionView::from(&c)).into_response())
 }
 
@@ -2149,7 +2099,7 @@ pub async fn update_connection_h(
         .store()
         .get_connection(&id)
         .await?
-        .ok_or_else(|| AppError::not_found(&id))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, &id))?;
     if body.connector != existing.connector {
         return Err(AppError::invalid_request(
             Reason::ConnectorImmutable,
@@ -2212,14 +2162,14 @@ pub async fn update_connection_h(
         )
         .await?;
     if !ok {
-        return Err(AppError::not_found(&id));
+        return Err(AppError::not_found(NotFoundKind::Connection, &id));
     }
     state.after_connection_update().await;
     let c = state
         .store()
         .get_connection(&id)
         .await?
-        .ok_or_else(|| AppError::not_found(&id))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, &id))?;
     Ok(Json(ConnectionView::from(&c)).into_response())
 }
 
@@ -2238,7 +2188,7 @@ pub async fn delete_connection_h(
 ) -> Result<Response, AppError> {
     let _g = state.write_lock.lock().await;
     if !state.store().delete_connection_and_default(&id).await? {
-        return Err(AppError::not_found(&id));
+        return Err(AppError::not_found(NotFoundKind::Connection, &id));
     }
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -2251,7 +2201,7 @@ async fn load_conn_and_connector<'a>(
         .store()
         .get_connection(id)
         .await?
-        .ok_or_else(|| AppError::not_found(id))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, id))?;
     let c = state.connectors().get(&conn.connector).ok_or_else(|| {
         AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
     })?;
@@ -2589,7 +2539,7 @@ async fn run_batch(
     );
     if start_slot > 0 && is_single {
         return Err(AppError::invalid_request(
-            Reason::StartSlotNotApplicable,
+            Reason::FieldNotApplicable,
             "start_slot applies only to sheet templates",
         ));
     }
@@ -2632,7 +2582,7 @@ async fn run_batch(
         crate::batch::BatchMode::Print => {
             if format.is_some() {
                 return Err(AppError::invalid_request(
-                    Reason::FormatNotApplicable,
+                    Reason::FieldNotApplicable,
                     "format applies only to download; omit it when printing",
                 ));
             }
@@ -2643,7 +2593,9 @@ async fn run_batch(
                 .store()
                 .get_printer(printer_id)
                 .await?
-                .ok_or_else(|| AppError::printer_not_found(printer_id.to_string()))?;
+                .ok_or_else(|| {
+                    AppError::not_found(NotFoundKind::Printer, printer_id.to_string())
+                })?;
             let driver = crate::driver::build_driver(&printer.kind, &printer.config)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
             let ovr = driver.configured_render_override();
@@ -2667,7 +2619,9 @@ async fn run_batch(
             ) {
                 let want_mm = if template.unit == "in" { mw * 25.4 } else { mw };
                 if (want_mm - got).abs() > 1.0 {
-                    return Err(AppError::media_mismatch(want_mm, got));
+                    return Err(AppError::conflict(format!(
+                        "template requires {want_mm}mm media but {got}mm is loaded"
+                    )));
                 }
             }
             let render_opts = crate::driver::effective_render(&ovr, caps.as_ref());
@@ -2753,8 +2707,7 @@ async fn run_batch(
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
         (status = 409, description = "Media mismatch", body = ErrorResponse),
         (status = 413, description = "Batch too large", body = ErrorResponse),
-        (status = 422, description = "One or more labels invalid", body = ErrorResponse),
-        (status = 502, description = "Printer transport failure", body = ErrorResponse)
+        (status = 422, description = "One or more labels invalid", body = ErrorResponse)
     )
 )]
 pub async fn batch(
@@ -2765,7 +2718,7 @@ pub async fn batch(
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
-        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, req.template.clone()))?;
     let mode = parse_batch_mode(&req.mode)?;
     run_batch(
         &state,
@@ -2791,8 +2744,7 @@ pub async fn batch(
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
         (status = 409, description = "Media mismatch", body = ErrorResponse),
-        (status = 413, description = "Request body too large", body = ErrorResponse),
-        (status = 502, description = "Printer transport failure", body = ErrorResponse)
+        (status = 413, description = "Request body too large", body = ErrorResponse)
     )
 )]
 pub async fn print_label(
@@ -2809,7 +2761,7 @@ pub async fn print_label(
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
-        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, req.template.clone()))?;
     let label = crate::models::LabelInput { data: req.data };
     let labels = vec![label; req.copies as usize];
     run_batch(
@@ -2841,8 +2793,7 @@ pub async fn print_label(
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Template not found", body = ErrorResponse),
         (status = 415, description = "Unsupported media type", body = ErrorResponse),
-        (status = 422, description = "Validation error", body = ErrorResponse),
-        (status = 501, description = "Not implemented", body = ErrorResponse)
+        (status = 422, description = "Validation error", body = ErrorResponse)
     )
 )]
 pub async fn render_label(
@@ -2853,7 +2804,7 @@ pub async fn render_label(
     let registry = state.templates.load_full();
     let template = registry
         .get(&req.template)
-        .ok_or_else(|| AppError::template_not_found(req.template.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, req.template.clone()))?;
 
     tracing::debug!(
         template = %template.id,
@@ -2966,8 +2917,7 @@ pub async fn render_label(
         (status = 400, description = "Invalid CSV or request", body = ErrorResponse),
         (status = 404, description = "Template or printer not found", body = ErrorResponse),
         (status = 413, description = "Batch too large", body = ErrorResponse),
-        (status = 422, description = "One or more rows invalid (batch is atomic)", body = ErrorResponse),
-        (status = 502, description = "Printer/transport failure", body = ErrorResponse)
+        (status = 422, description = "One or more rows invalid (batch is atomic)", body = ErrorResponse)
     )
 )]
 pub async fn import_csv(
@@ -2979,7 +2929,7 @@ pub async fn import_csv(
     let registry = state.templates.load_full();
     let template = registry
         .get(&params.template)
-        .ok_or_else(|| AppError::template_not_found(params.template.clone()))?;
+        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, params.template.clone()))?;
     let mode = parse_batch_mode(params.mode.as_deref().unwrap_or("download"))?;
     let parsed_rows = parse_csv_rows(&body)?;
     if let Some(first_row) = parsed_rows.first() {
@@ -3053,7 +3003,7 @@ pub async fn add_favorite(
     // Under the lock, not before it: an in-flight delete would otherwise prune between this check
     // and the insert below, leaving exactly the stale row the prune exists to remove (#140).
     if state.templates.load_full().get(&template_id).is_none() {
-        return Err(AppError::template_not_found(template_id));
+        return Err(AppError::not_found(NotFoundKind::Template, template_id));
     }
     state
         .store()
@@ -3442,7 +3392,7 @@ pub async fn delete_user_h(
         .await
         .map_err(AppError::from)?
     {
-        return Err(AppError::not_found(&id));
+        return Err(AppError::not_found(NotFoundKind::User, &id));
     }
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -3579,7 +3529,7 @@ pub async fn delete_token_h(
         .await
         .map_err(AppError::from)?
     {
-        return Err(AppError::not_found(&id));
+        return Err(AppError::not_found(NotFoundKind::Token, &id));
     }
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -3675,26 +3625,10 @@ mod tests {
             .expect_err("the id is served from another file");
         let (status, value) = error_response(err).await;
         assert_eq!(status, axum::http::StatusCode::CONFLICT);
-        assert_eq!(value["error"]["code"], "TemplateIdCollision");
-        assert_eq!(value["error"]["details"]["template"], "t");
-        let mut files: Vec<&str> = value["error"]["details"]["files"]
-            .as_array()
-            .expect("files")
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        files.sort_unstable();
-        assert_eq!(
-            files,
-            vec!["a/t.yaml", "m/t.yaml", "z/t.yaml"],
-            "every file declaring the id, and nothing else"
-        );
+        assert_eq!(value["error"]["code"], "Conflict");
         assert!(
-            !value["error"]["details"]
-                .as_object()
-                .expect("details object")
-                .contains_key("reason"),
-            "a 409 carries no details.reason key at all"
+            value["error"].get("details").is_none(),
+            "a 409 carries no details, got {value}"
         );
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3717,7 +3651,7 @@ mod tests {
 
         let err = confirm_written_template(&registry, "t", &ours, &body)
             .expect_err("the reading did not refuse our file");
-        assert_eq!(err.reason(), Some("template_missing_after_write"));
+        assert_eq!(err.code(), "Internal");
         let (status, _) = error_response(err).await;
         assert_eq!(
             status,
@@ -3742,14 +3676,14 @@ mod tests {
 
         let err =
             confirm_written_template(&registry, "t", &ours, &body).expect_err("our file is gone");
-        assert_eq!(err.reason(), Some("template_missing_after_write"));
+        assert_eq!(err.code(), "Internal");
         let (status, value) = error_response(err).await;
         assert_eq!(
             status,
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "a vanished write is a 500, not a 409"
         );
-        assert_eq!(value["error"]["code"], "RenderFailed");
+        assert_eq!(value["error"]["code"], "Internal");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3764,7 +3698,7 @@ mod tests {
 
         let err = confirm_written_template(&registry, "t", &path, &confirm_yaml("mine"))
             .expect_err("the file no longer holds what we wrote");
-        assert_eq!(err.reason(), Some("template_missing_after_write"));
+        assert_eq!(err.code(), "Internal");
         let (status, _) = error_response(err).await;
         assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
         std::fs::remove_dir_all(&dir).ok();

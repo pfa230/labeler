@@ -152,7 +152,7 @@ function stubFetch(opts?: {
       }
       if (failRefresh) {
         return new Response(
-          JSON.stringify({ error: { code: "TemplateRegistryIo", message: "Failed to reload templates" } }),
+          JSON.stringify({ error: { code: "Internal", message: "Failed to reload templates" } }),
           { status: 500, headers: { "content-type": "application/json" } },
         );
       }
