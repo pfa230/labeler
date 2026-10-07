@@ -48,22 +48,18 @@ export function Connect() {
         typeof settings?.default_connection_id?.value === "string"
           ? settings.default_connection_id.value
           : null;
-      const defaultConn = defaultId
-        ? connections.find((c) => c.id === defaultId && c.enabled)
-        : null;
-      const fallbackConn = connections.find((c) => c.enabled);
-      const resolved = (defaultConn ?? fallbackConn)?.id ?? "";
-      setLatchedConnectionId(resolved);
+      const resolved = connections.find((c) => c.id === defaultId) ?? connections[0];
+      setLatchedConnectionId(resolved?.id ?? "");
     }
   }
 
   const effectiveId = selectedConnectionId !== null ? selectedConnectionId : (latchedConnectionId ?? "");
   const connectionId = !isWaiting && (connections !== undefined || connectionsFailed)
-    ? (connections && !connectionsFailed ? (connections.some((c) => c.id === effectiveId && c.enabled) ? effectiveId : "") : effectiveId)
+    ? (connections && !connectionsFailed ? (connections.some((c) => c.id === effectiveId) ? effectiveId : "") : effectiveId)
     : "";
 
   if (connections !== undefined && !connectionsFailed && effectiveId !== "") {
-    const isOffered = connections.some((c) => c.id === effectiveId && c.enabled);
+    const isOffered = connections.some((c) => c.id === effectiveId);
     if (!isOffered) {
       setSelectedConnectionId("");
       setSelected([]);
@@ -108,7 +104,7 @@ export function Connect() {
             style={inputStyle}
           >
             <option value="">choose a connection</option>
-            {(connections ?? []).filter((c) => c.enabled).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
+            {(connections ?? []).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
           </select>
         </label>
         <Link to="/connections" state={{ from: "/connect" }} className="text-sm underline self-end pb-2" style={{ color: "var(--ink)" }}>

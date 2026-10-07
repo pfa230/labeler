@@ -13,7 +13,6 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use sha2::Digest;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -73,7 +72,6 @@ pub struct AppState {
     no_auth: bool,
     egress: crate::egress::Egress,
     connectors: crate::connector::ConnectorRegistry,
-    cursor_key: crate::connector::cursor::SigningKey,
     /// Fires between a write and its reload, so a test can stage the mid-request directory change
     /// the post-write confirmation exists to catch. Compiled out of the shipped binary: the service
     /// cannot cause that interleaving itself, and without a seam the endpoints' collision handling
@@ -84,19 +82,7 @@ pub struct AppState {
     /// request cannot stage: a file arriving at the destination name once the guard has passed.
     #[cfg(test)]
     pre_publish_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-    /// Fires between update_connection and the read-back in update_connection_h.
-    #[cfg(test)]
-    mid_connection_update_hook: std::sync::Mutex<Option<MidConnectionUpdateHook>>,
 }
-
-#[cfg(test)]
-type MidConnectionUpdateHook = std::sync::Arc<
-    dyn for<'a> Fn(
-            &'a Store,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>
-        + Send
-        + Sync,
->;
 
 impl AppState {
     pub fn new(registry: TemplateRegistry, templates_dir: PathBuf, store: Store) -> Self {
@@ -115,14 +101,11 @@ impl AppState {
             mid_write_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             pre_publish_hook: std::sync::Mutex::new(None),
-            #[cfg(test)]
-            mid_connection_update_hook: std::sync::Mutex::new(None),
             no_auth: std::env::var("LABELER_NO_AUTH")
                 .map(|v| v == "true")
                 .unwrap_or(false),
             egress: crate::egress::Egress::new(),
             connectors: crate::connector::ConnectorRegistry::default(),
-            cursor_key: crate::connector::cursor::SigningKey::random(),
         }
     }
 
@@ -160,16 +143,6 @@ impl AppState {
         &self.connectors
     }
 
-    pub fn cursor_key(&self) -> &crate::connector::cursor::SigningKey {
-        &self.cursor_key
-    }
-
-    #[cfg(test)]
-    pub fn with_loopback_egress(mut self) -> Self {
-        self.egress = crate::egress::Egress::with_loopback();
-        self
-    }
-
     /// Install the between-write-and-reload hook. Test-only; see the field.
     #[cfg(test)]
     pub fn set_mid_write_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
@@ -180,22 +153,6 @@ impl AppState {
     #[cfg(test)]
     pub fn set_pre_publish_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self.pre_publish_hook.lock().expect("hook lock") = Some(Box::new(hook));
-    }
-
-    /// Install the between-update-and-readback hook. Test-only; see the field.
-    #[cfg(test)]
-    pub fn set_mid_connection_update_hook(
-        &self,
-        hook: impl for<'a> Fn(
-                &'a Store,
-            )
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>
-            + Send
-            + Sync
-            + 'static,
-    ) {
-        *self.mid_connection_update_hook.lock().expect("hook lock") =
-            Some(std::sync::Arc::new(hook));
     }
 
     /// Called by each write endpoint after its write and before its reload.
@@ -216,21 +173,6 @@ impl AppState {
             let hook = self.pre_publish_hook.lock().expect("hook lock");
             if let Some(hook) = hook.as_ref() {
                 hook();
-            }
-        }
-    }
-
-    /// Called by update_connection_h after update_connection and before read-back.
-    async fn after_connection_update(&self) {
-        #[cfg(test)]
-        {
-            let hook = self
-                .mid_connection_update_hook
-                .lock()
-                .expect("hook lock")
-                .clone();
-            if let Some(hook) = hook {
-                hook(&self.store).await;
             }
         }
     }
@@ -309,10 +251,6 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/connections/{id}/materialize",
             post(connection_materialize),
-        )
-        .route(
-            "/connections/{id}/transforms/preview",
-            post(connection_transforms_preview),
         )
         .route("/variables", get(get_variables))
         .route("/variables/{key}", put(put_variable))
@@ -1875,9 +1813,7 @@ pub struct ConnectionView {
     pub name: String,
     pub base_url: String,
     pub public_url: Option<String>,
-    pub enabled: bool,
     pub has_credential: bool,
-    pub transforms: Vec<crate::connector::FieldTransform>,
 }
 
 impl From<&crate::store::Connection> for ConnectionView {
@@ -1888,39 +1824,37 @@ impl From<&crate::store::Connection> for ConnectionView {
             name: c.name.clone(),
             base_url: c.base_url.clone(),
             public_url: c.public_url.clone(),
-            enabled: c.enabled,
             has_credential: !c.credential.is_empty(),
-            transforms: c.transforms.clone(),
         }
     }
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
-pub struct ConnectionInput {
+#[serde(deny_unknown_fields)]
+pub struct ConnectionCreate {
     pub connector: String,
     pub name: String,
     pub base_url: String,
-    #[serde(default, deserialize_with = "deserialize_optional_field")]
-    #[schema(value_type = Option<String>)]
-    pub public_url: Option<Option<String>>,
+    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[schema(nullable = false)]
+    pub public_url: Option<String>,
+    // Required; optional here only so an omitted one is refused as `credential_required`.
+    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[schema(nullable = false)]
     pub credential: Option<String>,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default, deserialize_with = "deserialize_optional_field")]
-    #[schema(value_type = Option<Vec<crate::connector::FieldTransform>>)]
-    pub transforms: Option<Option<Vec<crate::connector::FieldTransform>>>,
 }
 
-fn deserialize_optional_field<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    serde::Deserialize::deserialize(deserializer).map(Some)
-}
-
-fn default_true() -> bool {
-    true
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConnectionUpdate {
+    pub name: String,
+    pub base_url: String,
+    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[schema(nullable = false)]
+    pub public_url: Option<String>,
+    #[serde(default, deserialize_with = "crate::models::deserialize_some")]
+    #[schema(nullable = false)]
+    pub credential: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1947,9 +1881,19 @@ impl UrlField {
 
 pub(crate) fn validate_and_normalize_url(raw: &str, field: UrlField) -> Result<String, AppError> {
     let trimmed = raw.trim();
-    let parsed = url::Url::parse(trimmed).map_err(|_| {
-        AppError::invalid_request(field.reason(), format!("invalid {}", field.wire_name()))
-    })?;
+    // The parser drops empty userinfo (`https://@host`), so only its syntax violation shows it.
+    let embedded_credentials = std::cell::Cell::new(false);
+    let report_violation = |violation| {
+        if violation == url::SyntaxViolation::EmbeddedCredentials {
+            embedded_credentials.set(true);
+        }
+    };
+    let parsed = url::Url::options()
+        .syntax_violation_callback(Some(&report_violation))
+        .parse(trimmed)
+        .map_err(|_| {
+            AppError::invalid_request(field.reason(), format!("invalid {}", field.wire_name()))
+        })?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(AppError::invalid_request(
             field.reason(),
@@ -1962,7 +1906,7 @@ pub(crate) fn validate_and_normalize_url(raw: &str, field: UrlField) -> Result<S
             format!("{} must include a host", field.wire_name()),
         ));
     }
-    if !parsed.username().is_empty() || parsed.password().is_some() {
+    if embedded_credentials.get() || !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(AppError::invalid_request(
             field.reason(),
             format!("{} must not contain userinfo", field.wire_name()),
@@ -1995,7 +1939,7 @@ pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Resp
 #[utoipa::path(
     post,
     path = "/connections",
-    request_body = ConnectionInput,
+    request_body = ConnectionCreate,
     responses(
         (status = 201, description = "Connection created (credential redacted in response)", body = ConnectionView),
         (status = 400, description = "Invalid request", body = ErrorResponse)
@@ -2003,22 +1947,12 @@ pub async fn list_connections(State(state): State<Arc<AppState>>) -> Result<Resp
 )]
 pub async fn create_connection(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<ConnectionInput>,
+    Json(body): Json<ConnectionCreate>,
 ) -> Result<Response, AppError> {
-    let connector = state
+    state
         .connectors()
         .get(&body.connector)
         .ok_or_else(|| AppError::invalid_request(Reason::ConnectorUnknown, "unknown connector"))?;
-    let transforms = match &body.transforms {
-        Some(Some(t)) => t.as_slice(),
-        _ => &[],
-    };
-    if let Err((idx, msg)) = connector.validate_transforms(transforms) {
-        return Err(AppError::invalid_request(
-            Reason::ConnectionTransformInvalid,
-            format!("rule {idx}: {msg}"),
-        ));
-    }
     let cred = body.credential.unwrap_or_default();
     if cred.is_empty() {
         return Err(AppError::invalid_request(
@@ -2027,17 +1961,7 @@ pub async fn create_connection(
         ));
     }
     let base_url = validate_and_normalize_url(&body.base_url, UrlField::Base)?;
-    let pub_url = match &body.public_url {
-        Some(Some(raw)) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(validate_and_normalize_url(trimmed, UrlField::Public)?)
-            }
-        }
-        _ => None,
-    };
+    let pub_url = optional_public_url(body.public_url.as_deref())?;
     let _g = state.write_lock.lock().await;
     let c = state
         .store()
@@ -2047,8 +1971,6 @@ pub async fn create_connection(
             base_url: &base_url,
             public_url: pub_url.as_deref(),
             credential: &cred,
-            enabled: body.enabled,
-            transforms,
         })
         .await?;
     Ok((
@@ -2056,6 +1978,14 @@ pub async fn create_connection(
         Json(ConnectionView::from(&c)),
     )
         .into_response())
+}
+
+/// A missing or blank `public_url` is none; anything else must be a valid URL.
+fn optional_public_url(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(url) => validate_and_normalize_url(url, UrlField::Public).map(Some),
+    }
 }
 
 #[utoipa::path(
@@ -2083,7 +2013,7 @@ pub async fn get_connection_h(
     put,
     path = "/connections/{id}",
     params(("id" = String, Path, description = "Connection ID")),
-    request_body = ConnectionInput,
+    request_body = ConnectionUpdate,
     responses(
         (status = 200, description = "Connection updated (credential redacted)", body = ConnectionView),
         (status = 400, description = "Invalid request", body = ErrorResponse),
@@ -2093,60 +2023,25 @@ pub async fn get_connection_h(
 pub async fn update_connection_h(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<ConnectionInput>,
+    Json(body): Json<ConnectionUpdate>,
 ) -> Result<Response, AppError> {
     let existing = state
         .store()
         .get_connection(&id)
         .await?
         .ok_or_else(|| AppError::not_found(NotFoundKind::Connection, &id))?;
-    if body.connector != existing.connector {
-        return Err(AppError::invalid_request(
-            Reason::ConnectorImmutable,
-            format!(
-                "connector cannot be changed (existing '{}', requested '{}')",
-                existing.connector, body.connector
-            ),
-        ));
-    }
-    let connector = state.connectors().get(&existing.connector).ok_or_else(|| {
+    state.connectors().get(&existing.connector).ok_or_else(|| {
         AppError::invalid_request(Reason::ConnectionConnectorMissing, "unknown connector")
     })?;
+    if body.credential.as_deref() == Some("") {
+        return Err(AppError::invalid_request(
+            Reason::CredentialRequired,
+            "credential must not be empty; omit it to keep the stored one",
+        ));
+    }
     let base_url = validate_and_normalize_url(&body.base_url, UrlField::Base)?;
-    let public_url = match &body.public_url {
-        None => crate::store::UpdateField::Keep,
-        Some(None) => crate::store::UpdateField::Clear,
-        Some(Some(raw)) => {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                crate::store::UpdateField::Clear
-            } else {
-                crate::store::UpdateField::Set(validate_and_normalize_url(
-                    trimmed,
-                    UrlField::Public,
-                )?)
-            }
-        }
-    };
-    let transforms = match &body.transforms {
-        None => crate::store::UpdateField::Keep,
-        Some(None) => crate::store::UpdateField::Clear,
-        Some(Some(rules)) => {
-            if let Err((idx, msg)) = connector.validate_transforms(rules) {
-                return Err(AppError::invalid_request(
-                    Reason::ConnectionTransformInvalid,
-                    format!("rule {idx}: {msg}"),
-                ));
-            }
-            if rules.is_empty() {
-                crate::store::UpdateField::Clear
-            } else {
-                crate::store::UpdateField::Set(rules.clone())
-            }
-        }
-    };
+    let public_url = optional_public_url(body.public_url.as_deref())?;
     let _g = state.write_lock.lock().await;
-    let cred = body.credential.filter(|c| !c.is_empty());
     let ok = state
         .store()
         .update_connection(
@@ -2154,17 +2049,14 @@ pub async fn update_connection_h(
             crate::store::UpdateConnection {
                 name: &body.name,
                 base_url: &base_url,
-                public_url,
-                credential: cred.as_deref(),
-                enabled: body.enabled,
-                transforms,
+                public_url: public_url.as_deref(),
+                credential: body.credential.as_deref(),
             },
         )
         .await?;
     if !ok {
         return Err(AppError::not_found(NotFoundKind::Connection, &id));
     }
-    state.after_connection_update().await;
     let c = state
         .store()
         .get_connection(&id)
@@ -2236,7 +2128,7 @@ pub async fn connection_schema(
     params(("id" = String, Path, description = "Connection ID")),
     request_body = BrowseRequest,
     responses(
-        (status = 200, description = "A page of browse rows with an opaque cursor", body = BrowsePage),
+        (status = 200, description = "A page of browse rows", body = BrowsePage),
         (status = 400, description = "Invalid request", body = ErrorResponse),
         (status = 404, description = "Connection not found", body = ErrorResponse),
         (status = 502, description = "Upstream failure", body = ErrorResponse)
@@ -2249,7 +2141,7 @@ pub async fn connection_browse(
 ) -> Result<Response, AppError> {
     let (conn, c) = load_conn_and_connector(&state, &id).await?;
     let page = c
-        .browse(&conn, state.egress(), state.cursor_key(), req)
+        .browse(&conn, state.egress(), req)
         .await
         .map_err(AppError::from)?;
     Ok(Json(page).into_response())
@@ -2278,161 +2170,6 @@ pub async fn connection_materialize(
         .await
         .map_err(AppError::from)?;
     Ok(Json(rows).into_response())
-}
-
-#[derive(serde::Deserialize, utoipa::ToSchema, Debug)]
-pub struct TransformPreviewRequest {
-    pub transforms: Vec<crate::connector::FieldTransform>,
-    pub rule: usize,
-    #[serde(default)]
-    pub page_size: Option<u32>,
-}
-
-#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
-pub struct TransformPreviewRow {
-    pub id: crate::connector::RowRef,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_value: Option<String>,
-    pub matched: bool,
-    pub value_truncated: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub derived: Option<BTreeMap<String, String>>,
-}
-
-#[derive(serde::Serialize, utoipa::ToSchema, Debug)]
-pub struct TransformPreviewResponse {
-    pub rule: usize,
-    pub resource: String,
-    pub source: String,
-    pub row_count: usize,
-    pub matched_count: usize,
-    pub rows: Vec<TransformPreviewRow>,
-}
-
-fn truncate_to_512_bytes(s: &str) -> (&str, bool) {
-    if s.len() <= 512 {
-        (s, false)
-    } else {
-        let mut idx = 512;
-        while !s.is_char_boundary(idx) {
-            idx -= 1;
-        }
-        (&s[..idx], true)
-    }
-}
-
-#[utoipa::path(
-    post,
-    path = "/connections/{id}/transforms/preview",
-    params(("id" = String, Path, description = "Connection ID")),
-    request_body = TransformPreviewRequest,
-    responses(
-        (status = 200, description = "Preview results for a transform rule", body = TransformPreviewResponse),
-        (status = 400, description = "Invalid request", body = ErrorResponse),
-        (status = 404, description = "Connection not found", body = ErrorResponse),
-        (status = 502, description = "Upstream failure", body = ErrorResponse)
-    )
-)]
-pub async fn connection_transforms_preview(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(req): Json<TransformPreviewRequest>,
-) -> Result<Response, AppError> {
-    let (conn, connector) = load_conn_and_connector(&state, &id).await?;
-
-    if req.rule >= req.transforms.len() {
-        return Err(AppError::invalid_request(
-            Reason::RequestBodyInvalid,
-            format!("rule index {} out of range", req.rule),
-        ));
-    }
-
-    if let Err((idx, msg)) = connector.validate_transforms(&req.transforms) {
-        return Err(AppError::invalid_request(
-            Reason::ConnectionTransformInvalid,
-            format!("rule {idx}: {msg}"),
-        ));
-    }
-
-    let target_rule = &req.transforms[req.rule];
-    let target_resource = target_rule.resource.clone();
-    let target_source = target_rule.source.clone();
-
-    let effective_page_size = connector.clamp_page_size(req.page_size, 10);
-
-    let browse_req = crate::connector::BrowseRequest {
-        resource: target_resource.clone(),
-        filters: BTreeMap::new(),
-        parent: None,
-        cursor: None,
-        page_size: Some(effective_page_size),
-    };
-
-    let mut page = connector
-        .browse(&conn, state.egress(), state.cursor_key(), browse_req)
-        .await
-        .map_err(AppError::from)?;
-
-    if page.rows.len() > effective_page_size as usize {
-        page.rows.truncate(effective_page_size as usize);
-    }
-
-    let row_count = page.rows.len();
-
-    let compiled = crate::connector::CompiledTransforms::compile(&req.transforms).map_err(|e| {
-        AppError::invalid_request(Reason::ConnectionTransformInvalid, e.to_string())
-    })?;
-
-    let mut matched_count = 0;
-    let mut rows = Vec::with_capacity(row_count);
-
-    for display_row in page.rows {
-        let eval = compiled.evaluate_rule(req.rule, &target_resource, &display_row.cells);
-
-        let (source_value, src_cut) = match eval.as_ref().and_then(|e| e.source_value) {
-            Some(sv) => {
-                let (truncated, cut) = truncate_to_512_bytes(sv);
-                (Some(truncated.to_string()), cut)
-            }
-            None => (None, false),
-        };
-
-        let (matched, derived, val_cut) = match eval.and_then(|e| e.captures) {
-            Some(caps) => {
-                matched_count += 1;
-                let mut derived_map = BTreeMap::new();
-                let mut caps_cut = false;
-                for (k, v) in caps {
-                    let (truncated, cut) = truncate_to_512_bytes(v);
-                    if cut {
-                        caps_cut = true;
-                    }
-                    derived_map.insert(k.to_string(), truncated.to_string());
-                }
-                (true, Some(derived_map), src_cut || caps_cut)
-            }
-            None => (false, None, src_cut),
-        };
-
-        rows.push(TransformPreviewRow {
-            id: display_row.id,
-            source_value,
-            matched,
-            value_truncated: val_cut,
-            derived,
-        });
-    }
-
-    let response = TransformPreviewResponse {
-        rule: req.rule,
-        resource: target_resource,
-        source: target_source,
-        row_count,
-        matched_count,
-        rows,
-    };
-
-    Ok(Json(response).into_response())
 }
 
 struct ParsedCsvRow {
@@ -3775,30 +3512,6 @@ mod tests {
     }
 
     #[test]
-    fn connection_input_deserialization_public_url_tri_state() {
-        // Omitted -> None
-        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan"}"#;
-        let input: ConnectionInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.public_url, None);
-
-        // Null -> Some(None)
-        let json =
-            r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":null}"#;
-        let input: ConnectionInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.public_url, Some(None));
-
-        // Empty string -> Some(Some(""))
-        let json =
-            r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":""}"#;
-        let input: ConnectionInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.public_url, Some(Some(String::new())));
-
-        // String value -> Some(Some("https://example.com"))
-        let json = r#"{"connector":"homebox","name":"test","base_url":"http://hb.lan","public_url":"https://example.com"}"#;
-        let input: ConnectionInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.public_url, Some(Some("https://example.com".into())));
-    }
-    #[test]
     fn connection_view_from_connection() {
         let conn = crate::store::Connection {
             id: "conn-1".into(),
@@ -3807,8 +3520,6 @@ mod tests {
             base_url: "http://hb.lan:7745".into(),
             public_url: Some("https://homebox.example.com".into()),
             credential: "secret".into(),
-            enabled: true,
-            transforms: vec![],
         };
         let view = ConnectionView::from(&conn);
         assert_eq!(
@@ -3819,9 +3530,7 @@ mod tests {
                 name: "Homebox".into(),
                 base_url: "http://hb.lan:7745".into(),
                 public_url: Some("https://homebox.example.com".into()),
-                enabled: true,
                 has_credential: true,
-                transforms: vec![],
             }
         );
 
@@ -3832,13 +3541,9 @@ mod tests {
             base_url: "http://hb.lan:7745".into(),
             public_url: None,
             credential: "".into(),
-            enabled: false,
-            transforms: vec![],
         };
         let view2 = ConnectionView::from(&conn_no_cred);
         assert!(!view2.has_credential);
         assert_eq!(view2.public_url, None);
-        assert!(!view2.enabled);
-        assert!(view2.transforms.is_empty());
     }
 }

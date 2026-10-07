@@ -20,12 +20,9 @@ export function ConnectionsList() {
   const rawFrom = (location.state as { from?: unknown } | null)?.from;
   const from = rawFrom !== undefined && rawFrom !== null ? rawFrom : undefined;
 
-  const storedDefault = settings?.default_connection_id;
-  const storedDefaultId = typeof storedDefault?.value === "string" ? storedDefault.value : null;
-  const isDefault = storedDefault?.is_default ?? true;
-  const matchingConn = storedDefaultId ? (connections ?? []).find((c) => c.id === storedDefaultId) : null;
+  const storedDefault = settings?.default_connection_id?.value;
+  const chosen = (connections ?? []).find((c) => c.id === storedDefault);
   const connectionsKnown = !isPending && !isError;
-  const isDangling = connectionsKnown && storedDefaultId !== null && !matchingConn && !isDefault;
 
   const handleDefaultChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = e.target.value;
@@ -72,7 +69,6 @@ export function ConnectionsList() {
                 <th className={th} style={{ color: "var(--muted)" }}>Base URL</th>
                 <th className={th} style={{ color: "var(--muted)" }}>Public URL</th>
                 <th className={th} style={{ color: "var(--muted)" }}>API key</th>
-                <th className={th} style={{ color: "var(--muted)" }}>Enabled</th>
                 <th className={th} style={{ color: "var(--muted)" }}></th>
               </tr>
             </thead>
@@ -84,7 +80,6 @@ export function ConnectionsList() {
                   <td className={`${td} font-mono`}>{c.base_url}</td>
                   <td className={`${td} font-mono`}>{c.public_url || "-"}</td>
                   <td className={td}>{c.has_credential ? "set" : "none"}</td>
-                  <td className={td}>{c.enabled ? "yes" : "no"}</td>
                   <td className={`${td} flex gap-2`}>
                     <Link
                       to={`/connections/${encodeURIComponent(c.id)}`}
@@ -107,24 +102,16 @@ export function ConnectionsList() {
           <span className="text-sm font-medium">Default connection</span>
           <select
             aria-label="default connection"
-            value={isDefault || !storedDefaultId ? "" : storedDefaultId}
+            value={chosen?.id ?? ""}
             disabled={setDefaultConn.isPending || clearDefaultConn.isPending || !connectionsKnown}
             onChange={handleDefaultChange}
             className={inputClass}
             style={inputStyle}
           >
             <option value="">(no default)</option>
-            {isDangling && (
-              <option value={storedDefaultId}>
-                {storedDefaultId} (unavailable)
-              </option>
-            )}
-            {!connectionsKnown && storedDefaultId !== null && !isDefault && (
-              <option value={storedDefaultId}>{storedDefaultId}</option>
-            )}
             {(connections ?? []).map((c) => (
               <option key={c.id} value={c.id}>
-                {c.name} ({c.id}){c.enabled ? "" : " (disabled)"}
+                {c.name} ({c.id})
               </option>
             ))}
           </select>

@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach } from "vitest";
 import type { FieldSpec } from "../../api/connectors";
 import {
   defaultColumnKeys,
-  isTransformDerived,
   loadSavedColumnChoice,
   makeColumnChoice,
   resolveColumnKeys,
@@ -10,24 +9,15 @@ import {
 } from "./connectorColumns";
 
 const mockColumns: FieldSpec[] = [
-  { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-  { key: "description", label: "Description", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-  { key: "manufacturer", label: "Manufacturer", ty: "text", tier: "hydrated", multi_valued: false, transform_source: true },
-  { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived", multi_valued: false, transform_source: true },
+  { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+  { key: "description", label: "Description", ty: "text", tier: "cheap", multi_valued: false },
+  { key: "manufacturer", label: "Manufacturer", ty: "text", tier: "hydrated", multi_valued: false },
+  { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived", multi_valued: false },
 ];
 
 describe("connectorColumns helpers", () => {
   beforeEach(() => {
     window.localStorage.clear();
-  });
-
-  describe("isTransformDerived", () => {
-    it("identifies transform-derived columns by tier derived and not transform_source", () => {
-      expect(isTransformDerived({ key: "k", label: "K", ty: "text", tier: "derived", multi_valued: false, transform_source: false })).toBe(true);
-      expect(isTransformDerived({ key: "k", label: "K", ty: "text", tier: "derived", multi_valued: false, transform_source: true })).toBe(false);
-      expect(isTransformDerived({ key: "k", label: "K", ty: "text", tier: "cheap", multi_valued: false, transform_source: false })).toBe(false);
-      expect(isTransformDerived({ key: "k", label: "K", ty: "text", tier: "hydrated", multi_valued: false, transform_source: false })).toBe(false);
-    });
   });
 
   describe("defaultColumnKeys", () => {
@@ -36,56 +26,20 @@ describe("connectorColumns helpers", () => {
       expect(Array.from(keys)).toEqual(["name", "description"]);
     });
 
-    it("shows cheap columns plus transform-derived columns by default, keeping connector-derived hidden", () => {
-      const columnsWithDerived: FieldSpec[] = [
-        ...mockColumns,
-        { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
+    it("returns all columns if no cheap columns exist", () => {
+      const noCheap: FieldSpec[] = [
+        { key: "mfg", label: "Mfg", ty: "text", tier: "hydrated", multi_valued: false },
+        { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived", multi_valued: false },
       ];
-      const keys = defaultColumnKeys(columnsWithDerived);
-      expect(Array.from(keys)).toEqual(["name", "description", "location_id"]);
-    });
-
-    it("returns all columns if no cheap or transform-derived columns exist", () => {
-      const neither: FieldSpec[] = [
-        { key: "mfg", label: "Mfg", ty: "text", tier: "hydrated", multi_valued: false, transform_source: true },
-        { key: "item_url", label: "Homebox URL", ty: "text", tier: "derived", multi_valued: false, transform_source: true },
-      ];
-      const keys = defaultColumnKeys(neither);
+      const keys = defaultColumnKeys(noCheap);
       expect(Array.from(keys)).toEqual(["mfg", "item_url"]);
     });
   });
 
   describe("makeColumnChoice", () => {
-    it("records visible keys and tracks hidden transform-derived columns", () => {
-      const columnsWithDerived: FieldSpec[] = [
-        ...mockColumns,
-        { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-      ];
-      const choice = makeColumnChoice(columnsWithDerived, ["name"]);
-      expect(choice).toEqual({
-        visible: ["name"],
-        hiddenDerived: ["location_id"],
-      });
-    });
-
-    it("does not include visible transform-derived columns in hiddenDerived", () => {
-      const columnsWithDerived: FieldSpec[] = [
-        ...mockColumns,
-        { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-      ];
-      const choice = makeColumnChoice(columnsWithDerived, ["name", "location_id"]);
-      expect(choice).toEqual({
-        visible: ["name", "location_id"],
-        hiddenDerived: [],
-      });
-    });
-
-    it("accepts a Set of visible keys", () => {
-      const choice = makeColumnChoice(mockColumns, new Set(["name", "manufacturer"]));
-      expect(choice).toEqual({
-        visible: ["name", "manufacturer"],
-        hiddenDerived: [],
-      });
+    it("records the visible keys from a Set", () => {
+      const choice = makeColumnChoice(new Set(["name", "manufacturer"]));
+      expect(choice).toEqual({ visible: ["name", "manufacturer"] });
     });
   });
 
@@ -95,20 +49,25 @@ describe("connectorColumns helpers", () => {
     });
 
     it("persists and reloads saved ColumnChoice", () => {
-      const choice = { visible: ["name", "manufacturer"], hiddenDerived: ["location_id"] };
+      const choice = { visible: ["name", "manufacturer"] };
       saveColumnChoice("c1", "entities", choice);
       expect(loadSavedColumnChoice("c1", "entities")).toEqual(choice);
     });
 
-    it("reads legacy array-shaped storage as visible keys with empty hiddenDerived", () => {
+    it("reads a stored plain array as no choice", () => {
       window.localStorage.setItem(
         "labeler:connector-columns:c1:entities",
         JSON.stringify(["name", "description"])
       );
-      expect(loadSavedColumnChoice("c1", "entities")).toEqual({
-        visible: ["name", "description"],
-        hiddenDerived: [],
-      });
+      expect(loadSavedColumnChoice("c1", "entities")).toBeNull();
+    });
+
+    it("reads the visible keys of a stored value that also carries hiddenDerived", () => {
+      window.localStorage.setItem(
+        "labeler:connector-columns:c1:entities",
+        JSON.stringify({ visible: ["name"], hiddenDerived: ["location_id"] })
+      );
+      expect(loadSavedColumnChoice("c1", "entities")).toEqual({ visible: ["name"] });
     });
 
     it("returns null on corrupt JSON in storage", () => {
@@ -118,76 +77,35 @@ describe("connectorColumns helpers", () => {
   });
 
   describe("resolveColumnKeys", () => {
-    const columnsWithDerived: FieldSpec[] = [
-      ...mockColumns,
-      { key: "location_id", label: "Location ID", ty: "text", tier: "derived", multi_valued: false, transform_source: false },
-    ];
-
     it("returns default column keys when choice is null or undefined", () => {
       expect(Array.from(resolveColumnKeys(mockColumns, null))).toEqual(["name", "description"]);
-      expect(Array.from(resolveColumnKeys(columnsWithDerived, undefined))).toEqual(["name", "description", "location_id"]);
+      expect(Array.from(resolveColumnKeys(mockColumns, undefined))).toEqual(["name", "description"]);
     });
 
-    it("resolves visible regular columns from choice", () => {
-      const choice = { visible: ["name", "manufacturer"], hiddenDerived: [] };
-      const resolved = resolveColumnKeys(mockColumns, choice);
+    it("resolves visible columns from choice", () => {
+      const resolved = resolveColumnKeys(mockColumns, { visible: ["name", "manufacturer"] });
       expect(Array.from(resolved)).toEqual(["name", "manufacturer"]);
     });
 
     it("filters out obsolete/removed column keys from choice", () => {
-      const choice = { visible: ["name", "removed_custom"], hiddenDerived: [] };
-      const resolved = resolveColumnKeys(mockColumns, choice);
+      const resolved = resolveColumnKeys(mockColumns, { visible: ["name", "removed_custom"] });
       expect(Array.from(resolved)).toEqual(["name"]);
     });
 
     it("falls back to defaults if stored keys are all invalid or empty array", () => {
-      const choice = { visible: [], hiddenDerived: [] };
-      const resolved = resolveColumnKeys(mockColumns, choice);
+      const resolved = resolveColumnKeys(mockColumns, { visible: [] });
       expect(Array.from(resolved)).toEqual(["name", "description"]);
     });
 
-    it("stored choice hides what it hid and still shows a transform-derived column it never saw", () => {
-      // Stored choice made before location_id existed (only hid description, chose name)
-      const choice = { visible: ["name"], hiddenDerived: [] };
-      const resolved = resolveColumnKeys(columnsWithDerived, choice);
-      expect(Array.from(resolved)).toEqual(["name", "location_id"]);
-    });
-
-    it("hidden transform-derived column is kept hidden by hiddenDerived list", () => {
-      // Choice explicitly hid location_id
-      const choice = { visible: ["name"], hiddenDerived: ["location_id"] };
-      const resolved = resolveColumnKeys(columnsWithDerived, choice);
-      expect(Array.from(resolved)).toEqual(["name"]);
-    });
-
     it("preserves definition order of columns when resolving", () => {
-      // Visible keys in different order in choice
-      const choice = { visible: ["manufacturer", "name"], hiddenDerived: [] };
-      const resolved = resolveColumnKeys(mockColumns, choice);
+      const resolved = resolveColumnKeys(mockColumns, { visible: ["manufacturer", "name"] });
       expect(Array.from(resolved)).toEqual(["name", "manufacturer"]);
     });
 
-    it("end-to-end: reloads choice from legacy storage and resolves showing new transform-derived column", () => {
-      window.localStorage.setItem(
-        "labeler:connector-columns:c1:entities",
-        JSON.stringify(["name"])
-      );
-      const choice = loadSavedColumnChoice("c1", "entities");
-      const resolved = resolveColumnKeys(columnsWithDerived, choice);
-      // "name" is visible, "description" (cheap) is hidden, "item_url" (connector-derived) is hidden,
-      // "location_id" (transform-derived) is shown
-      expect(Array.from(resolved)).toEqual(["name", "location_id"]);
-    });
-
     it("end-to-end: saves choice via makeColumnChoice + saveColumnChoice and resolves on reload", () => {
-      // User hid location_id and description, selected only name
-      const choice = makeColumnChoice(columnsWithDerived, new Set(["name"]));
-      saveColumnChoice("c1", "entities", choice);
-
-      const loadedChoice = loadSavedColumnChoice("c1", "entities");
-      const resolved = resolveColumnKeys(columnsWithDerived, loadedChoice);
+      saveColumnChoice("c1", "entities", makeColumnChoice(new Set(["name"])));
+      const resolved = resolveColumnKeys(mockColumns, loadSavedColumnChoice("c1", "entities"));
       expect(Array.from(resolved)).toEqual(["name"]);
     });
   });
 });
-

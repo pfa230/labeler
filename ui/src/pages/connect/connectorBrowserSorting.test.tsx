@@ -18,11 +18,10 @@ const schema: ConnectorSchema = {
       id: "entities",
       label: "Items",
       view: "table",
-      dynamic_source_prefix: "custom:",
       fields_incomplete: false,
       columns: [
-        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false, transform_source: true },
-        { key: "price", label: "Price", ty: "number", tier: "cheap", multi_valued: false, transform_source: false },
+        { key: "name", label: "Name", ty: "text", tier: "cheap", multi_valued: false },
+        { key: "price", label: "Price", ty: "number", tier: "cheap", multi_valued: false },
       ],
       filters: [],
     },
@@ -81,7 +80,7 @@ afterEach(() => {
 describe("connector browser sorting", () => {
   it("cycles a header through ascending, descending, and back to the connector's original order", async () => {
     const rows = [row("Banana", 2), row("Cherry", 3), row("Apple", 1)];
-    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, next_cursor: null, has_more: false, count: 3 })));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, has_more: false, count: 3 })));
     render(<Harness />);
     await screen.findByText("Banana");
     expect(rowNames()).toEqual(["Banana", "Cherry", "Apple"]);
@@ -103,7 +102,7 @@ describe("connector browser sorting", () => {
     // A text sort of "10", "2", "99.95" would read "10" < "2" < "99.95" lexicographically
     // (comparing the leading "1" against "2" and "9"); numeric order is 2, 10, 99.95.
     const rows = [row("A", 10), row("B", 2), row("C", 99.95)];
-    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, next_cursor: null, has_more: false, count: 3 })));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, has_more: false, count: 3 })));
     render(<Harness />);
     await screen.findByText("A");
 
@@ -113,7 +112,7 @@ describe("connector browser sorting", () => {
 
   it("orders rows with no value for the sorted column after every row that has one, in both directions", async () => {
     const rows = [row("A", 10), row("B"), row("C", 2)];
-    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, next_cursor: null, has_more: false, count: 3 })));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, has_more: false, count: 3 })));
     render(<Harness />);
     await screen.findByText("A");
 
@@ -130,8 +129,8 @@ describe("connector browser sorting", () => {
     const page1 = [row("A", 10), row("B", 90)];
     const page2 = [row("C", 50)];
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
-    fetchMock.mockResolvedValueOnce(json({ rows: page1, next_cursor: "cursor1", has_more: true, count: 2 }));
-    fetchMock.mockResolvedValueOnce(json({ rows: page2, next_cursor: null, has_more: false, count: 3 }));
+    fetchMock.mockResolvedValueOnce(json({ rows: page1, has_more: true, count: 2 }));
+    fetchMock.mockResolvedValueOnce(json({ rows: page2, has_more: false, count: 3 }));
     vi.stubGlobal("fetch", fetchMock);
     render(<Harness />);
     await screen.findByText("A");
@@ -148,7 +147,7 @@ describe("connector browser sorting", () => {
 
   it("releases the first column's sort state when a second column is sorted", async () => {
     const rows = [row("Banana", 2), row("Apple", 1)];
-    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, next_cursor: null, has_more: false, count: 2 })));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, has_more: false, count: 2 })));
     render(<Harness />);
     await screen.findByText("Banana");
 
@@ -163,7 +162,7 @@ describe("connector browser sorting", () => {
 
   it("treats Ctrl- and Meta-click exactly like a plain click, never entering multi-column sorting", async () => {
     const rows = [row("Banana", 2), row("Apple", 1)];
-    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, next_cursor: null, has_more: false, count: 2 })));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, has_more: false, count: 2 })));
     const { container } = render(<Harness />);
     await screen.findByText("Banana");
 
@@ -189,7 +188,7 @@ describe("connector browser sorting", () => {
 
   it("reports aria-sort correctly, with the filter row always none and exactly one non-none header cell per sorted column", async () => {
     const rows = [row("Banana", 2), row("Apple", 1)];
-    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, next_cursor: null, has_more: false, count: 2 })));
+    vi.stubGlobal("fetch", vi.fn(async () => json({ rows, has_more: false, count: 2 })));
     render(<Harness />);
     await screen.findByText("Banana");
 
