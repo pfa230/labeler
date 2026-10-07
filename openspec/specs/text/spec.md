@@ -15,14 +15,12 @@ A `text` item SHALL accept the keys below in addition to placement and `when` (o
 | `value` | string, interpolated (`interpolation`) | required | |
 | `font_size` | number, or `{ min, max }`, in points | required | every number > 0; `min` ≤ `max` |
 | `font_weight` | integer, or `"{param}"` | 400 | literal: multiple of 100 from 100 to 900; reference: a declared `integer` parameter whose `default`, if any, meets the literal rule |
-| `color` | colour (`layout` colour vocabulary), or `"{param}"` | black | reference: a declared `string` or `enum` parameter; `null` reads as absent |
+| `color` | colour (`layout` colour vocabulary) | black | |
 | `wrap` | boolean | `false` | |
-| `line_spacing` | number, or `"{param}"` | 1.2 | literal: finite and > 0; reference: a declared `number` or `integer` parameter (`"{ pitch }"` is `"{pitch}"`); any other value, including `null`, a numeric or unit-bearing string and `"{{name}}"`, is refused |
+| `line_spacing` | number | 1.2 | finite and > 0 |
 | `alignment.horizontal` | `left`, `center`, `right` | `left` | |
 | `alignment.vertical` | `top`, `center`, `bottom` | `top` | |
 | `overflow` | `ellipsis`, `fail` | `ellipsis` | |
-
-A reference is written `"{name}"`. Apart from the `font_weight` default, load checks only that a referenced parameter exists and has an accepted type, never its default.
 
 #### Scenario: A weight off the hundreds is refused
 
@@ -34,42 +32,28 @@ A reference is written `"{name}"`. Apart from the `font_weight` default, load ch
 - **WHEN** a `text` item declares `font_size: { min: 12, max: 8 }`
 - **THEN** the template fails to load
 
-#### Scenario: A pitch literal or reference of the wrong kind is refused
+#### Scenario: A pitch other than a positive number is refused
 
-- **WHEN** a `text` item declares `line_spacing` as `0`, `-0.5`, `.nan`, `"1.2"`, `"1.2em"`, `"{{ pitch }}"`, `true` or `null`, or as `"{pitch}"` against a `length`, `string`, `boolean`, `enum`, `datetime` or `list` parameter or an undeclared one
+- **WHEN** a `text` item declares `line_spacing` as `0`, `-0.5`, `.nan`, `"1.2"`, `"{pitch}"` or `true`
 - **THEN** the template fails to load with an error naming `line_spacing`
-
-#### Scenario: A reference whose default is an unusable pitch still loads
-
-- **WHEN** `line_spacing: "{pitch}"` names a `number` parameter whose `default` is `0`
-- **THEN** the template loads; the value is judged at render
-
-### Requirement: Read-back reports declared optional keys as written
-
-`GET /templates/{id}` SHALL report `font_weight`, `color` and `line_spacing` only when the item declared them, in the spelling declared: a number as that number, a reference as the string `"{name}"`, a colour as written. `wrap`, `alignment` and `overflow` SHALL always be reported, with defaults filled in.
-
-#### Scenario: Undeclared keys are omitted
-
-- **WHEN** an item declaring no `color` and no `line_spacing` is read back
-- **THEN** it carries neither key, while an item declaring `color: red` and `line_spacing: "{pitch}"` reports `"red"` and `"{pitch}"`
 
 ### Requirement: Fonts
 
-Text SHALL be measured and rendered in Inter, loaded from `InterVariable.ttf` in `LABELER_FONTS_DIR` (default `fonts/`); host system fonts SHALL never be used. The font file MUST carry the `wght` and `opsz` variation axes. Every measurement and render of an item SHALL use the instance at the item's weight (`wght`) and the candidate font size (`opsz`). A font file that cannot be read, cannot be parsed, or lacks either axis SHALL fail the render with `500 RenderFailed` and reason `font_read_failed`, `font_parse_failed` or `font_axis_missing` respectively. A character Inter does not map SHALL be fitted and rendered, drawn by Typst from a fallback face, and lies outside the ink guarantee of "Measured block and ink reservation".
+Text SHALL be measured and rendered in Inter, loaded from `InterVariable.ttf` in `LABELER_FONTS_DIR` (default `fonts/`); host system fonts SHALL never be used. The font file MUST carry the `wght` and `opsz` variation axes. Every measurement and render of an item SHALL use the instance at the item's weight (`wght`) and the candidate font size (`opsz`). A font file that cannot be read, cannot be parsed, or lacks either axis SHALL fail the render with `500 Internal`. A character Inter does not map SHALL be fitted and rendered, drawn by Typst from a fallback face, and lies outside the ink guarantee of "Measured block and ink reservation".
 
 #### Scenario: A font without an opsz axis fails loudly
 
 - **WHEN** `LABELER_FONTS_DIR` holds an `InterVariable.ttf` with no `opsz` axis and a text item is rendered
-- **THEN** the render fails with `500 RenderFailed` and reason `font_axis_missing`
+- **THEN** the render fails with `500 Internal`
 
 ### Requirement: Font weight resolution
 
-A literal `font_weight` SHALL be the weight. A reference SHALL be resolved per render from the request data with defaults applied (`parameters`); the resolved integer SHALL be the weight, and a supplied value SHALL NOT be checked against the literal rule. An absent value fails with `422 MissingField` and a non-integer with `400 InvalidRequest` / `request_body_invalid`.
+A literal `font_weight` SHALL be the weight. A reference SHALL be resolved per render from the request data with defaults applied (`parameters`); the resolved integer SHALL be the weight. A supplied value SHALL meet the literal rule, else the render fails with `400 InvalidRequest` reason `param_value_invalid` naming the parameter. An absent value fails with `422 UnsupportedLayoutItem` reason `missing_field`.
 
 #### Scenario: A referenced weight renders that weight
 
 - **WHEN** `font_weight: "{w}"` is rendered with `w` of `700`, and then of `450`
-- **THEN** each render succeeds, measured and drawn at that weight
+- **THEN** the first render is measured and drawn at weight 700, and the second fails with `400 InvalidRequest` reason `param_value_invalid` naming `w`
 
 ### Requirement: Line breaking
 
@@ -172,19 +156,12 @@ Shortening SHALL keep the first `k` lines for the largest `k` whose emitted form
 
 ### Requirement: Line spacing
 
-For an item at font size `s`, the baseline-to-baseline pitch SHALL be `line_spacing × s`, with `line_spacing` the literal, the reference's resolved value, or 1.2 when undeclared. A single-line item SHALL render identically at any `line_spacing`. A reference SHALL be resolved once per rendered item, and that value SHALL drive both fitting and drawing.
-
-A resolved value that is not finite and > 0 SHALL refuse the render with `400 InvalidRequest`, reason `line_spacing_param_invalid`, naming the item's layout path and the parameter; it SHALL never be clamped or replaced with 1.2. A value the parameter's type cannot read fails as `request_body_invalid` and an absent one as `422 MissingField` (`parameters`). In a batch each refusal is a per-label failure (`rendering`).
+For an item at font size `s`, the baseline-to-baseline pitch SHALL be `line_spacing × s`, with `line_spacing` 1.2 when undeclared. A single-line item SHALL render identically at any `line_spacing`.
 
 #### Scenario: An authored pitch lands on the render
 
 - **WHEN** an item with `line_spacing: 0.99` renders `"Hxy\nHxy"`
 - **THEN** the two lines' ink bands are 0.99 font sizes apart on the rendered image, and 1.2 font sizes apart with no `line_spacing`
-
-#### Scenario: A supplied zero pitch is refused
-
-- **WHEN** an item with `line_spacing: "{pitch}"` is rendered with `pitch` of `0`
-- **THEN** the render fails with `400 InvalidRequest` and `line_spacing_param_invalid`, and no image is produced
 
 ### Requirement: Measured block and ink reservation
 
@@ -248,14 +225,9 @@ Lines SHALL fit a box of height `H` when `metric_block + reserve ≤ H + 0.01 pt
 
 ### Requirement: Text colour
 
-`color` SHALL paint the item's glyphs and SHALL NOT affect sizing, breaking or fitting. An absent or `null` `color` SHALL render black. A reference SHALL be resolved per render under the `layout` colour vocabulary, failing as `color_param_invalid`.
+`color` SHALL paint the item's glyphs and SHALL NOT affect sizing, breaking or fitting.
 
 #### Scenario: Colour does not move text
 
 - **WHEN** two otherwise identical items differ only in that one declares `color: red`
 - **THEN** both resolve the same box, font size and lines
-
-#### Scenario: A null colour is black
-
-- **WHEN** a `text` item declares `color: null`
-- **THEN** the template loads and the item renders black

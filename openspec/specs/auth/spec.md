@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Who may call the API and how: users, sessions, API tokens, the origin check, first-run setup, no-auth mode, and the screens that manage them.
+Who may call the API and how: users, sessions, personal API tokens, the origin check, first-run setup, no-auth mode, and the screens that manage them.
 
 ## Requirements
 
 ### Requirement: Gated routes
 
-Every `/api` route SHALL require authentication except `GET /api/health`, `POST /api/auth/login`, `POST /api/auth/setup`, `GET /api/auth/me`, `GET /api/openapi.json` and `/api/docs*`. The caller SHALL be resolved from an `Authorization: Bearer <token>` header first, then the `labeler_session` cookie; an unknown token, an unknown or expired session, or no credential SHALL be `401 Unauthorized`. All users are equal and MAY manage users and tokens.
+Every `/api` route SHALL require authentication except `GET /api/health`, `POST /api/auth/login`, `POST /api/auth/setup`, `GET /api/auth/me`, `GET /api/openapi.json` and `/api/docs*`. The caller SHALL be resolved from an `Authorization: Bearer <token>` header first, then the `labeler_session` cookie; an unknown token, an unknown or expired session, or no credential SHALL be `401 Unauthorized`. Every authenticated request SHALL act as a user (the session's user, or the token's owner), which is its actor for favorites, recents and the job log. All users are equal and MAY manage users.
 
 #### Scenario: An unknown bearer token beats a valid cookie
 
@@ -44,10 +44,10 @@ Login and setup SHALL set cookie `labeler_session` to a random 256-bit value, st
 | POST | `/api/auth/password` | `{current_password, new_password}` | `200 {ok: true}`; the user's other sessions are deleted | `403` token caller; `401` wrong current password |
 | GET | `/api/users` | | `[{id, username}]` by username | |
 | POST | `/api/users` | `{username, password}` | `201 {id, username}` | `409 Conflict` taken username |
-| DELETE | `/api/users/{id}` | | `204` | `409 Conflict` if one user remains (checked first) or the id is the caller's; `404 NotFound` |
-| GET | `/api/tokens` | | `[{id, name, last_used_at, created_at}]` by creation | |
-| POST | `/api/tokens` | `{name}` | `201 {id, name, secret}` | |
-| DELETE | `/api/tokens/{id}` | | `204` | `404 NotFound` |
+| DELETE | `/api/users/{id}` | | `204` | `409 Conflict` if one user remains or the id is the caller's; `404 NotFound` |
+| GET | `/api/tokens` | | the caller's own `[{id, name, last_used_at, created_at}]` by creation | |
+| POST | `/api/tokens` | `{name}` | `201 {id, name, secret}`, owned by the caller | |
+| DELETE | `/api/tokens/{id}` | | `204` | `404 NotFound` unless the token is the caller's |
 
 Passwords SHALL be argon2id hashes. A new username MUST be non-blank (else `400`, reason `username_empty`) and is stored as sent; a new password MUST be non-empty (else reason `password_empty`), with no minimum length.
 
@@ -58,38 +58,44 @@ Passwords SHALL be argon2id hashes. A new username MUST be non-blank (else `400`
 
 ### Requirement: API tokens
 
-A token secret SHALL be `lbl_` plus 256 random bits in URL-safe base64, shown only in the create response and stored only as its SHA-256 hash. Using it SHALL update `last_used_at`, at most hourly.
+A token SHALL belong to the user who created it and act as that user, and SHALL die with its user. A token secret SHALL be `lbl_` plus 256 random bits in URL-safe base64, shown only in the create response and stored only as its SHA-256 hash. Using it SHALL update `last_used_at`, at most hourly.
 
 #### Scenario: Using a token
 
 - **WHEN** a client calls `GET /api/templates` with `Authorization: Bearer <secret>`
 - **THEN** the response is `200` and the token's `last_used_at` is set
 
+#### Scenario: Tokens are personal
+
+- **WHEN** user A creates a token and user B calls `GET /api/tokens` and `DELETE /api/tokens/{id}` for it
+- **THEN** B's list does not include it and the delete answers `404`
+
+#### Scenario: Deleting a user deletes their tokens
+
+- **WHEN** user A holds a token and another user deletes A
+- **THEN** that token answers `401`
+
 ### Requirement: Auth state
 
-`GET /api/auth/me` SHALL answer `200` with `Cache-Control: no-store`: `{authed: true, needsSetup: false, me: {id, username}}` for a session, `me: {id: "token", username: "api-token"}` for a token, and otherwise `{authed: false, needsSetup}` with `needsSetup` true exactly when no user exists.
+`GET /api/auth/me` SHALL answer `200` with `Cache-Control: no-store`: `{authed: true, needsSetup: false, me: {id, username}}` for the caller's user, whether by session or token, and otherwise `{authed: false, needsSetup}` with `needsSetup` true exactly when no user exists.
 
 #### Scenario: Fresh install
 
 - **WHEN** no user exists and an anonymous client calls it
 - **THEN** the body is `{"authed": false, "needsSetup": true}`
 
-### Requirement: Startup bootstrap
+#### Scenario: A token reports its owner
 
-When `LABELER_INIT_USER` and `LABELER_INIT_PASSWORD` are both non-empty and no user exists, startup SHALL create that user, and SHALL abort if it cannot.
-
-#### Scenario: Headless first user
-
-- **WHEN** the server starts on an empty store with both set
-- **THEN** that user can log in and setup returns `409`
+- **WHEN** user `ana`'s token calls `GET /api/auth/me`
+- **THEN** `me` is `ana`'s `{id, username}`
 
 ### Requirement: No-auth mode
 
-With `LABELER_NO_AUTH=true` every `/api` route SHALL run as actor `local`, except that every method on `/api/auth/setup`, `login`, `logout`, `password`, `/api/users*` and `/api/tokens*` SHALL be `403 Forbidden` before the body is read, and a state-changing request whose `Origin` (else `Referer`) is present and mismatched or unparseable SHALL be `403`. `GET /api/auth/me` SHALL return `{authed: true, needsSetup: false, me: {id: "local", username: "local"}, noAuth: true}`. The startup bootstrap still runs.
+With `LABELER_NO_AUTH=true` every `/api` route SHALL run as actor `local`, except that every method on `/api/auth/setup`, `login`, `logout`, `password`, `/api/users*` and `/api/tokens*` SHALL be `403 Forbidden` before the body is read, and a state-changing request whose `Origin` (else `Referer`) is present and mismatched or unparseable SHALL be `403`. `GET /api/auth/me` SHALL return `{authed: true, needsSetup: false, me: {id: "local", username: "local"}, noAuth: true}`.
 
 #### Scenario: Scripted write without Origin
 
-- **WHEN** curl posts to `/api/batch` with no `Origin` in no-auth mode
+- **WHEN** curl posts to `/api/render` with no `Origin` in no-auth mode
 - **THEN** the request is processed
 
 ### Requirement: Auth UI

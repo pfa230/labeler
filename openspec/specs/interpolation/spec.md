@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the `{...}` token grammar used in interpolated template strings: escaping, the `params`, `vars` and `sys` namespaces, the `{sys.now}` instant and its formats, the `join` reader, and how tokens bind into `text`, `qr` and `image` items.
+Defines the `{...}` token grammar used in interpolated template strings: escaping, the `params`, `vars` and `sys` namespaces, the per-request snapshot, datetime formats, the `join` reader, and how tokens bind into `text`, `qr` and `image` items.
 
 ## Requirements
 
@@ -32,9 +32,9 @@ separator   := any characters except "'", "{" and "}"
 - **WHEN** a template declares a parameter `vars` and prints `{vars}` and `{vars.qr_base_url}`
 - **THEN** `{vars}` prints the parameter and `{vars.qr_base_url}` prints the store value
 
-### Requirement: Malformed tokens are refused when the template loads
+### Requirement: Interpolation syntax is checked when the template loads
 
-Every token in an interpolated string SHALL be parsed when the template loads; a malformed token SHALL fail validation with a message naming the token (`template contains '<token>': ...`), under the general invalid-template rule owned by `templates`. Refused at load:
+Every interpolated string SHALL be parsed when the template loads; a malformed token or an unbalanced brace SHALL fail validation with a message naming the token (`template contains '<token>': ...`) and the key's path, under the invalid-template rule owned by `templates`. Refused at load:
 
 | Case | Examples |
 |---|---|
@@ -43,38 +43,26 @@ Every token in an interpolated string SHALL be parsed when the template loads; a
 | Unknown root (message: `unknown source '<root>'`) | `{datetime.long_date}`, `{a.b}`, `{VARS.x}`, `{Sys.now}` |
 | Unknown `sys` value (message: `unknown system value '<v>'`) | `{sys.nwo}`, `{sys.now.long_date}` |
 | Empty, doubled or malformed reader | `{x:}`, `{x:a:b}`, `{sys.now:long_date(', ')}`, `{tags:join( ', ' )}`, `{tags:join(a)}`, `{tags:join(', ')x}`, `{tags:join(''')}` |
+| An undoubled `{` with no token, or an unmatched `}` | `50% {off`, `a } b` |
 
-Where the dotted form looks like a format attached with a dot, the message SHALL name the replacement: `{datetime.<f>}` and `{sys.now.<f>}` suggest `{sys.now:<f>}`, and `{<p>.<f>}` for a declared `datetime` parameter `p` suggests `{<p>:<f>}`.
-
-A brace inside a `join` separator re-pairs the braces: `{tags:join('}')}` is refused at load as the token `{tags:join('}`, `{tags:join('{')}` as the token `{')}`, and `{tags:join('{{')}` yields no token and fails the brace-balance rule.
-
-#### Scenario: A retired spelling names its replacement
+#### Scenario: An unknown root is refused
 
 - **WHEN** a template file contains `{datetime.long_date}`
-- **THEN** it fails validation reporting `datetime` as an unknown source and naming `{sys.now:long_date}`
+- **THEN** it fails validation reporting `datetime` as an unknown source
 
 #### Scenario: An unknown system value is not a missing field
 
 - **WHEN** a template file contains `{sys.now.long_date}`
-- **THEN** it fails validation reporting `now.long_date` as an unknown system value and naming `{sys.now:long_date}`
+- **THEN** it fails validation reporting `now.long_date` as an unknown system value
 
-### Requirement: Unbalanced braces
-
-An undoubled `{` with no token or an unmatched `}` in a `text` or `qr` `value:` or an `image` `src:` SHALL be refused when the label renders, as `400 InvalidRequest` with reason `interpolation_syntax`. The same in a parameter `default:` SHALL instead be refused when the template loads, naming the parameter.
-
-#### Scenario: Unbalanced brace in a value fails at render
+#### Scenario: An unbalanced brace is refused at load
 
 - **WHEN** a `text` item's `value:` is `"50% {off"`
-- **THEN** the template loads, and rendering returns `400 InvalidRequest` with reason `interpolation_syntax`
-
-#### Scenario: Unbalanced brace in a default fails at load
-
-- **WHEN** a template declares `label: { type: string, default: "50% {off" }`
-- **THEN** the template fails validation naming `label`
+- **THEN** the template fails validation naming that item's `value` path
 
 ### Requirement: A bare token names a declared parameter
 
-A bare token SHALL name a parameter the template declares in `params:`, or the template SHALL fail validation at load (`template contains '{sku}': undeclared parameter 'sku'`). It resolves to that parameter's resolved value (request value or default, owned by `parameters`); there is no fallback to another source. A parameter of any type may be named. A value absent at render SHALL be `422 MissingField` naming the parameter.
+A bare token SHALL name a parameter the template declares in `params:`, or the template SHALL fail validation at load (`template contains '{sku}': undeclared parameter 'sku'`). It resolves to that parameter's resolved value (request value or default, owned by `parameters`); there is no fallback to another source. A parameter of any type may be named. A value absent at render SHALL be `422 UnsupportedLayoutItem` with reason `missing_field` naming the parameter.
 
 Inside a container repeating a list parameter, the bare repeated name is one element; that scope is owned by `layout`.
 
@@ -91,11 +79,11 @@ Inside a container repeating a list parameter, the bare repeated name is one ele
 #### Scenario: An absent value fails at render
 
 - **WHEN** a template declaring `id: { type: string }` with no default renders `"{id}"` and the request carries no `id`
-- **THEN** the response is `422 MissingField` naming `id`
+- **THEN** the response is `422 UnsupportedLayoutItem` with reason `missing_field` naming `id`
 
 ### Requirement: Value stringification
 
-A resolved value SHALL print as: a string as-is, a number or boolean in its JSON text form, `null` as the empty string, an object as its JSON text. A JSON array SHALL NOT print in a scalar slot (a token without `join`, or an image `name:`); reaching one at render SHALL be `422 UnsupportedLayoutItem` with reason `field_value_not_scalar` naming the field, decided before an image data URI is parsed. A resolved value SHALL print literally: no character in it is interpreted as renderer markup.
+A resolved value SHALL print as: a string as-is, a number or boolean in its JSON text form. A resolved value SHALL print literally: no character in it is interpreted as renderer markup.
 
 #### Scenario: Scalars print their text
 
@@ -104,7 +92,7 @@ A resolved value SHALL print as: a string as-is, a number or boolean in its JSON
 
 ### Requirement: The `vars` namespace
 
-`{vars.<key>}` SHALL resolve from the variables store (owned by `settings`). The key is everything between the first dot and the reader or closing brace, so it may contain dots. An absent key SHALL NOT fail at load; it SHALL be `422 MissingField` naming `vars.<key>` at render.
+`{vars.<key>}` SHALL resolve from the variables store (owned by `settings`). The key is everything between the first dot and the reader or closing brace, so it may contain dots. An absent key SHALL NOT fail at load; it SHALL be `422 UnsupportedLayoutItem` with reason `missing_field` naming `vars.<key>` at render.
 
 #### Scenario: A dotted key resolves
 
@@ -114,20 +102,25 @@ A resolved value SHALL print as: a string as-is, a number or boolean in its JSON
 #### Scenario: An absent key fails at render
 
 - **WHEN** a template references `{vars.not_set}` and the store has no such key
-- **THEN** the template loads, and rendering returns `422 MissingField` naming `vars.not_set`
+- **THEN** the template loads, and rendering returns `422 UnsupportedLayoutItem` with reason `missing_field` naming `vars.not_set`
 
-### Requirement: `{sys.now}` is one captured instant per request
+### Requirement: One snapshot per request
 
-`sys` has exactly one value, `now`. Each render request SHALL read the clock once, in the server-local timezone (`TZ`), and every `{sys.now}` token on every label of that request (batch, sheet or ZIP) SHALL print that instant. A request cannot supply or override it, and it is never a request input. Thumbnails and previews SHALL print a real instant, not the token text.
+`sys` has exactly one value, `now`. Each render request SHALL read the clock once, in the server-local timezone (`TZ`), and read the variables store and the `datetime_formats` setting once. Every token on every label of that request, including a token in a parameter default, SHALL resolve against that snapshot, so every `{sys.now}` prints the same instant. A request cannot supply or override `{sys.now}`, and it is never a request input. Thumbnails and previews SHALL print a real instant, not the token text.
 
 #### Scenario: One sheet prints one instant
 
 - **WHEN** every slot of a sheet prints `{sys.now:time}` and rendering crosses a minute boundary
 - **THEN** every slot prints the same time
 
+#### Scenario: One batch resolves a default once
+
+- **WHEN** every label of a batch omits a parameter declaring `default: "{sys.now}"` and the run crosses midnight
+- **THEN** every label prints the same date
+
 ### Requirement: Format readers apply to instants
 
-A format reader SHALL be attached only to an instant: `sys.now`, or a bare token naming a parameter declared `type: datetime`. Any other value path with a format SHALL fail validation at load, stating that a format applies to an instant only. An instant with no reader SHALL print as `%Y-%m-%d`. A format name SHALL resolve to a strftime pattern in the `datetime_formats` setting (owned by `settings`); a name the setting lacks SHALL NOT fail at load and SHALL be `422 MissingField` at render naming `<value-path>:<format-name>`. A bare reader is always a format name, so `{sys.now:join}` reads a `datetime_formats` entry named `join`.
+A format reader SHALL be attached only to an instant: `sys.now`, or a bare token naming a parameter declared `type: datetime`. Any other value path with a format SHALL fail validation at load, stating that a format applies to an instant only. An instant with no reader SHALL print as `%Y-%m-%d`. A format name SHALL name an entry of the `datetime_formats` setting (owned by `settings`), whose strftime pattern prints the instant; a name the setting lacks SHALL NOT fail at load and SHALL fail the render as `422 UnsupportedLayoutItem` with reason `missing_field` naming the token's `<value-path>:<format-name>`.
 
 #### Scenario: A format renders an instant
 
@@ -147,7 +140,7 @@ A format reader SHALL be attached only to an instant: `sys.now`, or a bare token
 #### Scenario: An unknown format name fails at render
 
 - **WHEN** a template contains `{sys.now:no_such_format}`
-- **THEN** it loads, and rendering returns `422 MissingField` naming `sys.now:no_such_format`
+- **THEN** it loads, and rendering returns `422 UnsupportedLayoutItem` with reason `missing_field` naming `sys.now:no_such_format`
 
 ### Requirement: The `join` reader reads a list parameter
 
@@ -170,7 +163,7 @@ A format reader SHALL be attached only to an instant: `sys.now`, or a bare token
 
 ### Requirement: Tokens in a parameter default
 
-A string `default:` SHALL be interpolated with this grammar when the default is used, and only dotted tokens (`vars`, `sys`) are allowed: a bare token, including one carrying `join`, SHALL fail validation at load naming the parameter and the token. A non-string default carries no tokens. How a failure while resolving a default is reported is owned by `parameters`.
+A string `default:` SHALL be interpolated with this grammar when the default is used, and only dotted tokens (`vars`, `sys`) are allowed: a bare token, including one carrying `join`, SHALL fail validation at load naming the parameter and the token. A non-string default carries no tokens. When a default is used and how its failures are reported is owned by `parameters`.
 
 #### Scenario: A namespaced default resolves
 
@@ -184,19 +177,14 @@ A string `default:` SHALL be interpolated with this grammar when the default is 
 
 ### Requirement: Image binding
 
-An `image` item SHALL take its bytes from `src:`, an interpolated path under the assets root, or from `name:`, which binds one parameter whose value is a base64 data URI. `name:` SHALL match `^[a-zA-Z0-9_-]+$` (checked first, reported as a character-class error) and SHALL name a parameter declared `type: string`; an undeclared name or another type SHALL fail validation at load naming the parameter and, for a wrong type, its type. A `name:` parameter with no value at render SHALL be `422 MissingField` naming it. Which of `src:` and `name:` an item may carry, and data URI decoding, are owned by `layout`.
+An `image` item SHALL take its bytes from `src:`, interpolated. How the resolved string is read, as a data URI or as a path under the assets root, is owned by `layout`.
 
 #### Scenario: An image source is interpolated
 
 - **WHEN** an `image` carries `src: "logos/{vars.brand}.png"` and the store holds `brand = acme`
 - **THEN** the asset `logos/acme.png` is used
 
-#### Scenario: A declared image name binds the request data URI
+#### Scenario: A parameter supplies a per-label image
 
-- **WHEN** a template declares `logo: { type: string }`, an `image` carries `name: "logo"`, and the request sends `logo` as a PNG data URI
+- **WHEN** a template declares `photo: { type: string }`, an `image` carries `src: "{photo}"`, and the request sends `photo` as a PNG data URI
 - **THEN** the label renders that image
-
-#### Scenario: An image name of the wrong type is refused
-
-- **WHEN** a template declares `logo: { type: integer }` and an `image` carries `name: "logo"`
-- **THEN** it fails validation naming `logo` and its type
