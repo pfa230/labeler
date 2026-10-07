@@ -242,7 +242,7 @@ describe("PrintersSection", () => {
       const url = typeof input === "string" ? input : input.toString();
       const method = (init?.method ?? "GET").toUpperCase();
       if (url.startsWith("/api/printers") && method === "POST") {
-        return json({ error: { code: "PrinterInvalid", message: "cups uri rejected by server" } }, 422);
+        return json({ error: { code: "InvalidRequest", message: "cups uri rejected by server", details: { reason: "printer_invalid" } } }, 400);
       }
       if (url.startsWith("/api/printers")) return json([]);
       throw new Error(`unexpected fetch: ${url}`);

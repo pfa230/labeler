@@ -47,7 +47,7 @@ function stubFetch(deleteStatus = 204, putStatus = 200, sourceStatus = 200, slow
         return deleteStatus === 204
           ? new Response(null, { status: 204 })
           : new Response(
-              JSON.stringify({ error: { code: "RenderFailed", message: "delete failed" } }),
+              JSON.stringify({ error: { code: "Internal", message: "delete failed" } }),
               { status: deleteStatus, headers: { "content-type": "application/json" } },
             );
       }

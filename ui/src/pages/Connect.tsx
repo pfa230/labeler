@@ -24,7 +24,7 @@ type BatchFailures = { failures?: { index: number; code: string; message: string
 const buttonBase = "rounded-md px-4 py-2 text-sm font-medium disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2";
 const inputClass = "rounded-md border px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2";
 const inputStyle = { background: "var(--surface)", borderColor: "var(--border)", color: "var(--ink)" } as const;
-const MATERIALIZE_CAP = 200; // backend /materialize rejects more than this in one call (400 BudgetExceeded)
+const MATERIALIZE_CAP = 200; // backend /materialize rejects more than this in one call (400 row_limit_exceeded)
 
 export function Connect() {
   const { data: connections, isError: connectionsFailed } = useConnections();

@@ -9,7 +9,7 @@ use labeler::templates::{TemplateContent, TemplateDefinition};
 fn parse_and_validate(yaml: &str) -> Result<TemplateContent, labeler::errors::AppError> {
     let content = parse_template(yaml).map_err(|e| {
         labeler::errors::AppError::template_invalid(
-            labeler::reason::Reason::TemplateParseFailed,
+            labeler::reason::Reason::TemplateValidationFailed,
             e.to_string(),
         )
     })?;
@@ -629,7 +629,7 @@ layout:
     assert_eq!(err_zero.reason(), Some("item_out_of_frame"));
     assert!(err_zero.message_text().contains("items[0]"));
 
-    // A text child interpolating a missing field fails with MissingField whether extent is zero or not
+    // A text child interpolating a missing field fails with missing_field whether extent is zero or not
     let yaml_missing_param = r#"
 name: Missing Field In Flow
 unit: mm
@@ -652,7 +652,7 @@ layout:
     let t_missing = parse_and_validate(yaml_missing_param).unwrap();
     let err_missing =
         render_single_label_image(&t_missing, &HashMap::new(), &vars, &dt, opts).unwrap_err();
-    assert_eq!(err_missing.code(), "MissingField");
+    assert_eq!(err_missing.reason(), Some("missing_field"));
 
     // 4. A quarter turn packs in author space
     let yaml_turn_flow = r#"

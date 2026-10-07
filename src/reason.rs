@@ -28,9 +28,7 @@ macro_rules! reasons {
 
 reasons! {
     // TemplateInvalid
-    TemplateParseFailed => "template_parse_failed",
     TemplateValidationFailed => "template_validation_failed",
-    TemplateDuplicateId => "template_duplicate_id",
     TemplateGroupInvalid => "template_group_invalid",
     TemplateGroupCaseConflict => "template_group_case_conflict",
     TemplateGroupUnsafePath => "template_group_unsafe_path",
@@ -43,7 +41,6 @@ reasons! {
     LineDegenerate => "line_degenerate",
     EdgeRectInverted => "edge_rect_inverted",
     SizeInvalid => "size_invalid",
-    MaxSizeInvalid => "max_size_invalid",
     IntrinsicSizeUndefined => "intrinsic_size_undefined",
     TextDoesNotFit => "text_does_not_fit",
     ImageSourceMissing => "image_source_missing",
@@ -57,19 +54,25 @@ reasons! {
     DimensionExceedsLimit => "dimension_exceeds_limit",
     CircleBoxNotSquare => "circle_box_not_square",
     FieldValueNotScalar => "field_value_not_scalar",
+    MissingField => "missing_field",
+    QrPayloadInvalid => "qr_payload_invalid",
 
     // InvalidRequest
     JsonMalformed => "json_malformed",
     RequestBodyInvalid => "request_body_invalid",
     PathParamInvalid => "path_param_invalid",
+    ParamValueInvalid => "param_value_invalid",
+    FieldNotApplicable => "field_not_applicable",
+    FormatUnsupported => "format_unsupported",
+    PrinterInvalid => "printer_invalid",
+    FilterInvalid => "filter_invalid",
+    RowKeyInvalid => "row_key_invalid",
+    RowLimitExceeded => "row_limit_exceeded",
     StartSlotOutOfRange => "start_slot_out_of_range",
-    StartSlotNotApplicable => "start_slot_not_applicable",
     BatchEmpty => "batch_empty",
     FormatUnknown => "format_unknown",
-    FormatNotApplicable => "format_not_applicable",
     InterpolationSyntax => "interpolation_syntax",
     TemplateIdInvalid => "template_id_invalid",
-    TemplateIdMismatch => "template_id_mismatch",
     TemplateGroupMismatch => "template_group_mismatch",
     UnsupportedPrecondition => "unsupported_precondition",
     PrinterIdInvalid => "printer_id_invalid",
@@ -77,7 +80,6 @@ reasons! {
     VariableKeyInvalid => "variable_key_invalid",
     SettingValueInvalid => "setting_value_invalid",
     DatetimePatternInvalid => "datetime_pattern_invalid",
-    DatetimeParamInvalid => "datetime_param_invalid",
     ColorParamInvalid => "color_param_invalid",
     LineSpacingParamInvalid => "line_spacing_param_invalid",
     WidthBoundsInverted => "width_bounds_inverted",
@@ -102,23 +104,11 @@ reasons! {
     UsernameEmpty => "username_empty",
     PasswordEmpty => "password_empty",
 
-    // RenderFailed
-    TypstCompileFailed => "typst_compile_failed",
-    TypstSourceBuildFailed => "typst_source_build_failed",
-    TypstNoPages => "typst_no_pages",
-    PngEncodeFailed => "png_encode_failed",
-    PdfEncodeFailed => "pdf_encode_failed",
-    ItemHasNoSource => "item_has_no_source",
-    QrGenerationFailed => "qr_generation_failed",
-    FontReadFailed => "font_read_failed",
-    FontParseFailed => "font_parse_failed",
-    FontAxisMissing => "font_axis_missing",
-    TemplatePathInvalid => "template_path_invalid",
-    TemplateWriteFailed => "template_write_failed",
-    TemplateMissingAfterWrite => "template_missing_after_write",
-    TemplateDeleteFailed => "template_delete_failed",
-    TemplateRegistryIo => "template_registry_io",
-    ZipWriteFailed => "zip_write_failed",
+    // Upstream
+    Auth => "auth",
+    Unreachable => "unreachable",
+    RateLimited => "rate_limited",
+    BadResponse => "bad_response",
 }
 
 #[cfg(test)]
@@ -149,21 +139,5 @@ mod tests {
                 "slug '{slug}' is not snake_case"
             );
         }
-    }
-
-    #[test]
-    fn template_invalid_slugs_are_exact() {
-        assert_eq!(
-            Reason::TemplateParseFailed.as_slug(),
-            "template_parse_failed"
-        );
-        assert_eq!(
-            Reason::TemplateValidationFailed.as_slug(),
-            "template_validation_failed"
-        );
-        assert_eq!(
-            Reason::TemplateDuplicateId.as_slug(),
-            "template_duplicate_id"
-        );
     }
 }

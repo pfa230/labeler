@@ -11,32 +11,19 @@ use crate::reason::Reason;
 use crate::store::StoreError;
 use crate::templates::TemplateRegistryError;
 
-const CODE_TEMPLATE_NOT_FOUND: &str = "TemplateNotFound";
 const CODE_INVALID_REQUEST: &str = "InvalidRequest";
-const CODE_UNSUPPORTED_MEDIA_TYPE: &str = "UnsupportedMediaType";
-const CODE_NOT_IMPLEMENTED: &str = "NotImplemented";
-const CODE_INVALID_ENUM_VALUE: &str = "InvalidEnumValue";
-const CODE_MISSING_FIELD: &str = "MissingField";
-const CODE_UNSUPPORTED_LAYOUT: &str = "UnsupportedLayoutItem";
-const CODE_UNSUPPORTED_FORMAT: &str = "UnsupportedFormat";
-const CODE_RENDER_FAILED: &str = "RenderFailed";
-const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
-const CODE_PRECONDITION_FAILED: &str = "PreconditionFailed";
-const CODE_TEMPLATE_ID_COLLISION: &str = "TemplateIdCollision";
-const CODE_PRINTER_NOT_FOUND: &str = "PrinterNotFound";
-const CODE_PRINTER_EXISTS: &str = "PrinterExists";
-const CODE_PRINTER_INVALID: &str = "PrinterInvalid";
-const CODE_MEDIA_MISMATCH: &str = "MediaMismatch";
-const CODE_PRINT_FAILED: &str = "PrintFailed";
-const CODE_INTERNAL: &str = "Internal";
-const CODE_BATCH_INVALID: &str = "BatchInvalid";
-const CODE_BATCH_TOO_LARGE: &str = "BatchTooLarge";
-const CODE_PAYLOAD_TOO_LARGE: &str = "PayloadTooLarge";
-const CODE_NOT_FOUND: &str = "NotFound";
 const CODE_UNAUTHORIZED: &str = "Unauthorized";
 const CODE_FORBIDDEN: &str = "Forbidden";
+const CODE_NOT_FOUND: &str = "NotFound";
 const CODE_CONFLICT: &str = "Conflict";
-const CODE_SETTING_NOT_FOUND: &str = "SettingNotFound";
+const CODE_PRECONDITION_FAILED: &str = "PreconditionFailed";
+const CODE_PAYLOAD_TOO_LARGE: &str = "PayloadTooLarge";
+const CODE_UNSUPPORTED_MEDIA_TYPE: &str = "UnsupportedMediaType";
+const CODE_TEMPLATE_INVALID: &str = "TemplateInvalid";
+const CODE_UNSUPPORTED_LAYOUT: &str = "UnsupportedLayoutItem";
+const CODE_BATCH_INVALID: &str = "BatchInvalid";
+const CODE_INTERNAL: &str = "Internal";
+const CODE_UPSTREAM: &str = "Upstream";
 
 #[derive(Debug)]
 pub struct AppError {
@@ -48,16 +35,55 @@ pub struct AppError {
     response_only_detail_keys: Vec<&'static str>,
 }
 
-/// One label's validation failure within a batch (its 0-based index + the error code/reason/message).
+/// What a `NotFound` names, serialized as `details.kind`.
+#[derive(Debug, Clone, Copy)]
+pub enum NotFoundKind {
+    Route,
+    Template,
+    /// A template group directory; goes with groups (#411).
+    Group,
+    Printer,
+    Connection,
+    Setting,
+    User,
+    Token,
+}
+
+impl NotFoundKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            NotFoundKind::Route => "route",
+            NotFoundKind::Template => "template",
+            NotFoundKind::Group => "group",
+            NotFoundKind::Printer => "printer",
+            NotFoundKind::Connection => "connection",
+            NotFoundKind::Setting => "setting",
+            NotFoundKind::User => "user",
+            NotFoundKind::Token => "token",
+        }
+    }
+}
+
+/// One label's failure within a batch: the label's 0-based index plus the error object it would
+/// have produced on its own.
 #[derive(Debug, serde::Serialize)]
 pub struct BatchFailure {
     pub index: usize,
     pub code: &'static str,
-    /// Present exactly when the failure's code carries a reason. A per-label failure
-    /// can be a code outside the migrated four, so this is optional rather than required.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<&'static str>,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
+}
+
+impl BatchFailure {
+    pub fn new(index: usize, err: AppError) -> Self {
+        Self {
+            index,
+            code: err.code,
+            message: err.message,
+            details: err.details,
+        }
+    }
 }
 
 impl AppError {
@@ -117,6 +143,11 @@ impl AppError {
         self.message.clone()
     }
 
+    /// The stable error `code` string (for tests / introspection).
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
     /// A JSON body that axum could not parse. Keeps the parser's own text under `details.error`.
     pub fn malformed_json(parser_error: String) -> Self {
         let mut extra = serde_json::Map::new();
@@ -142,12 +173,7 @@ impl AppError {
     }
 
     pub fn batch_too_large(count: usize, max: usize) -> Self {
-        Self::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            CODE_BATCH_TOO_LARGE,
-            format!("batch has {count} labels; the maximum is {max}"),
-            Some(json!({ "count": count, "max": max })),
-        )
+        Self::payload_too_large(format!("batch has {count} labels; the maximum is {max}"))
     }
 
     pub fn payload_too_large(message: impl Into<String>) -> Self {
@@ -159,65 +185,51 @@ impl AppError {
         )
     }
 
-    /// The stable error `code` string (for tests / introspection).
-    pub fn code(&self) -> &'static str {
-        self.code
-    }
-
-    pub fn template_not_found(id: String) -> Self {
-        Self::new(
-            StatusCode::NOT_FOUND,
-            CODE_TEMPLATE_NOT_FOUND,
-            format!("No template with id '{}' was found", id),
-            Some(json!({ "template": id })),
-        )
-    }
-
-    pub fn not_found(path: &str) -> Self {
+    /// An unknown `/api/*` route (`id` is the path) or a named record that does not exist.
+    pub fn not_found(kind: NotFoundKind, id: impl Into<String>) -> Self {
+        let id = id.into();
+        let message = match kind {
+            NotFoundKind::Route => format!("no API route for '{id}'"),
+            _ => format!("no {} '{id}' was found", kind.as_str()),
+        };
         Self::new(
             StatusCode::NOT_FOUND,
             CODE_NOT_FOUND,
-            format!("no API route for '{path}'"),
-            Some(json!({ "path": path })),
+            message,
+            Some(json!({ "kind": kind.as_str(), "id": id })),
         )
     }
 
-    pub fn setting_not_found(key: &str) -> Self {
-        Self::new(
-            StatusCode::NOT_FOUND,
-            CODE_SETTING_NOT_FOUND,
-            format!("No setting named '{key}'"),
-            Some(json!({ "setting": key })),
-        )
-    }
-
-    pub fn not_implemented(endpoint: &str) -> Self {
-        Self::new(
-            StatusCode::NOT_IMPLEMENTED,
-            CODE_NOT_IMPLEMENTED,
-            "Rendering pipeline not implemented yet",
-            Some(json!({ "endpoint": endpoint })),
-        )
-    }
-
-    pub fn invalid_enum_value(
-        selection: &std::collections::BTreeMap<String, String>,
-        allowed: &std::collections::BTreeMap<String, Vec<String>>,
-    ) -> Self {
-        Self::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            CODE_INVALID_ENUM_VALUE,
-            "Invalid option selection".to_string(),
-            Some(json!({ "selection": selection, "allowed": allowed })),
-        )
-    }
-
+    /// A value the render needs is absent; `field` names it.
     pub fn missing_field(field: &str) -> Self {
-        Self::new(
+        let mut extra = serde_json::Map::new();
+        extra.insert("field".to_string(), Value::from(field));
+        Self::reasoned(
             StatusCode::UNPROCESSABLE_ENTITY,
-            CODE_MISSING_FIELD,
+            CODE_UNSUPPORTED_LAYOUT,
+            Reason::MissingField,
             format!("Missing required field '{field}'"),
-            Some(json!({ "field": field })),
+            Some(extra),
+        )
+    }
+
+    /// A supplied parameter value its type refuses; `element` is a `list` element's position.
+    pub fn param_value_invalid(
+        param: &str,
+        element: Option<usize>,
+        message: impl Into<String>,
+    ) -> Self {
+        let mut extra = serde_json::Map::new();
+        extra.insert("param".to_string(), Value::from(param));
+        if let Some(element) = element {
+            extra.insert("element".to_string(), Value::from(element));
+        }
+        Self::reasoned(
+            StatusCode::BAD_REQUEST,
+            CODE_INVALID_REQUEST,
+            Reason::ParamValueInvalid,
+            message,
+            Some(extra),
         )
     }
 
@@ -243,25 +255,6 @@ impl AppError {
                 "field '{f}' is an array; only scalar values can be rendered in this layout item"
             ),
             Some(extra),
-        )
-    }
-
-    pub fn unsupported_format(message: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            CODE_UNSUPPORTED_FORMAT,
-            message,
-            None,
-        )
-    }
-
-    pub fn render_failed(reason: Reason, message: impl Into<String>) -> Self {
-        Self::reasoned(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            CODE_RENDER_FAILED,
-            reason,
-            message,
-            None,
         )
     }
 
@@ -312,6 +305,10 @@ impl AppError {
             Reason::WidthBoundsInverted,
             format!("{max_part} is below {min_part}"),
         )
+    }
+
+    pub fn printer_invalid(message: impl Into<String>) -> Self {
+        Self::invalid_request(Reason::PrinterInvalid, message)
     }
 
     pub fn template_invalid(reason: Reason, message: impl Into<String>) -> Self {
@@ -373,61 +370,7 @@ impl AppError {
         )
     }
 
-    /// Two files on disk declare one template id, and the service will not guess which was meant.
-    ///
-    /// `files` are bare filenames from the directory reading the decision was made on, never paths:
-    /// the templates directory's location is server configuration. This code carries no
-    /// `details.reason` on purpose. `reason` is scoped to `RenderFailed`, `InvalidRequest`,
-    /// `UnsupportedLayoutItem` and `TemplateInvalid`, and a `409` is none of them (#183, #184).
-    pub fn template_id_collision(id: &str, files: Vec<String>, message: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::CONFLICT,
-            CODE_TEMPLATE_ID_COLLISION,
-            message,
-            Some(json!({ "template": id, "files": files })),
-        )
-    }
-
-    pub fn printer_not_found(id: String) -> Self {
-        Self::new(
-            StatusCode::NOT_FOUND,
-            CODE_PRINTER_NOT_FOUND,
-            format!("No printer with id '{id}' was found"),
-            Some(json!({ "printer": id })),
-        )
-    }
-
-    pub fn printer_exists(id: &str) -> Self {
-        Self::new(
-            StatusCode::CONFLICT,
-            CODE_PRINTER_EXISTS,
-            format!("A printer with id '{id}' already exists"),
-            Some(json!({ "printer": id })),
-        )
-    }
-
-    pub fn printer_invalid(message: impl Into<String>) -> Self {
-        Self::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            CODE_PRINTER_INVALID,
-            message,
-            None,
-        )
-    }
-
-    pub fn media_mismatch(want_mm: f32, got_mm: f32) -> Self {
-        Self::new(
-            StatusCode::CONFLICT,
-            CODE_MEDIA_MISMATCH,
-            format!("template requires {want_mm}mm media but {got_mm}mm is loaded"),
-            None,
-        )
-    }
-
-    pub fn print_failed(message: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_GATEWAY, CODE_PRINT_FAILED, message, None)
-    }
-
+    /// The service failed for a reason not attributable to the request. The message is logged.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -452,6 +395,16 @@ impl AppError {
 
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, CODE_CONFLICT, message, None)
+    }
+
+    fn upstream(reason: Reason, message: impl Into<String>) -> Self {
+        Self::reasoned(
+            StatusCode::BAD_GATEWAY,
+            CODE_UPSTREAM,
+            reason,
+            message,
+            None,
+        )
     }
 
     fn unsupported_media_type(message: impl Into<String>) -> Self {
@@ -545,56 +498,25 @@ impl From<PathRejection> for AppError {
 
 impl From<TemplateRegistryError> for AppError {
     fn from(err: TemplateRegistryError) -> Self {
-        let message = err.to_string();
-        match err {
-            TemplateRegistryError::Io { .. } => {
-                AppError::render_failed(Reason::TemplateRegistryIo, message)
-            }
-            TemplateRegistryError::Parse { .. } => {
-                AppError::template_invalid(Reason::TemplateParseFailed, message)
-            }
-            TemplateRegistryError::Validation { .. } => {
-                AppError::template_invalid(Reason::TemplateValidationFailed, message)
-            }
-            TemplateRegistryError::DuplicateId { .. } => {
-                AppError::template_invalid(Reason::TemplateDuplicateId, message)
-            }
-        }
+        // Only `Io` is ever returned as an error; the other variants describe quarantined files.
+        AppError::internal(err.to_string())
     }
 }
 
 impl From<crate::connector::ConnectorError> for AppError {
     fn from(err: crate::connector::ConnectorError) -> Self {
         use crate::connector::ConnectorError::*;
-        // These codes sit outside the four that carry a `details.reason`: they describe
-        // upstream transport, not a layout or request fault.
-        let (status, code, message): (StatusCode, &'static str, String) = match err {
-            AuthFailed => (
-                StatusCode::BAD_GATEWAY,
-                "ConnectorAuthFailed",
-                "upstream authentication failed".into(),
-            ),
-            Forbidden => (
-                StatusCode::BAD_GATEWAY,
-                "ConnectorForbidden",
-                "upstream forbidden".into(),
-            ),
-            ConnectionFailed(m) => (StatusCode::BAD_GATEWAY, "ConnectorUnreachable", m),
-            InvalidFilter(m) => (StatusCode::BAD_REQUEST, "InvalidFilter", m),
-            UpstreamSchemaMismatch(m) => (StatusCode::BAD_GATEWAY, "UpstreamSchemaMismatch", m),
-            RateLimited => (
-                StatusCode::TOO_MANY_REQUESTS,
-                "RateLimited",
-                "upstream rate limited".into(),
-            ),
-            BudgetExceeded => (
-                StatusCode::BAD_REQUEST,
-                "BudgetExceeded",
-                "too many rows requested".into(),
-            ),
-            Upstream(m) => (StatusCode::BAD_GATEWAY, "Upstream", m),
-        };
-        Self::new(status, code, message, None)
+        match err {
+            AuthFailed => AppError::upstream(Reason::Auth, "upstream authentication failed"),
+            ConnectionFailed(m) => AppError::upstream(Reason::Unreachable, m),
+            RateLimited => AppError::upstream(Reason::RateLimited, "upstream rate limited"),
+            Upstream(m) => AppError::upstream(Reason::BadResponse, m),
+            InvalidFilter(m) => AppError::invalid_request(Reason::FilterInvalid, m),
+            RowKeyInvalid(m) => AppError::invalid_request(Reason::RowKeyInvalid, m),
+            BudgetExceeded => {
+                AppError::invalid_request(Reason::RowLimitExceeded, "too many rows requested")
+            }
+        }
     }
 }
 
@@ -678,99 +600,78 @@ impl std::error::Error for TemplateError {}
 #[cfg(test)]
 mod tests {
     use super::{AppError, BatchFailure};
-    use crate::reason::Reason;
     use axum::http::StatusCode;
 
+    /// A per-label failure is the label's own error object plus `index`: its reason and any other
+    /// details travel under `details`, never beside `code`.
     #[test]
-    fn new_size_resolution_reasons_are_registered() {
+    fn batch_failure_carries_the_error_details() {
+        let failure = BatchFailure::new(2, AppError::missing_field("sku"));
+        let json = serde_json::to_value(&failure).expect("serialize");
         assert_eq!(
-            Reason::IntrinsicSizeUndefined.as_slug(),
-            "intrinsic_size_undefined"
-        );
-        assert_eq!(Reason::TextDoesNotFit.as_slug(), "text_does_not_fit");
-    }
-
-    /// A per-label failure carries `reason` exactly when its code is one of
-    /// the migrated four. Both halves matter — a required field would contradict the scoping, and a
-    /// missing one would leave the nested failures prose-discriminated.
-    #[test]
-    fn batch_failure_carries_reason_only_for_reasoned_codes() {
-        use crate::reason::Reason;
-
-        let reasoned = AppError::template_invalid(Reason::TemplateParseFailed, "boom");
-        let failure = BatchFailure {
-            index: 0,
-            code: reasoned.code(),
-            reason: reasoned.reason(),
-            message: reasoned.message_text(),
-        };
-        let json = serde_json::to_value(&failure).expect("serialize");
-        assert_eq!(json["reason"], "template_parse_failed");
-
-        let unreasoned = AppError::missing_field("code");
-        let failure = BatchFailure {
-            index: 1,
-            code: unreasoned.code(),
-            reason: unreasoned.reason(),
-            message: unreasoned.message_text(),
-        };
-        let json = serde_json::to_value(&failure).expect("serialize");
-        assert!(
-            json.get("reason").is_none(),
-            "an unreasoned code must omit the key, got {json}"
+            json,
+            serde_json::json!({
+                "index": 2,
+                "code": "UnsupportedLayoutItem",
+                "message": "Missing required field 'sku'",
+                "details": { "reason": "missing_field", "field": "sku" },
+            })
         );
     }
 
     #[test]
-    fn connector_errors_keep_their_codes_and_statuses() {
+    fn connector_errors_map_to_upstream_or_invalid_request() {
         use crate::connector::ConnectorError;
         let cases = [
             (
                 ConnectorError::AuthFailed,
                 StatusCode::BAD_GATEWAY,
-                "ConnectorAuthFailed",
-            ),
-            (
-                ConnectorError::Forbidden,
-                StatusCode::BAD_GATEWAY,
-                "ConnectorForbidden",
-            ),
-            (
-                ConnectorError::RateLimited,
-                StatusCode::TOO_MANY_REQUESTS,
-                "RateLimited",
-            ),
-            (
-                ConnectorError::BudgetExceeded,
-                StatusCode::BAD_REQUEST,
-                "BudgetExceeded",
-            ),
-            (
-                ConnectorError::InvalidFilter("x".into()),
-                StatusCode::BAD_REQUEST,
-                "InvalidFilter",
+                "Upstream",
+                "auth",
             ),
             (
                 ConnectorError::ConnectionFailed("x".into()),
                 StatusCode::BAD_GATEWAY,
-                "ConnectorUnreachable",
+                "Upstream",
+                "unreachable",
             ),
             (
-                ConnectorError::UpstreamSchemaMismatch("x".into()),
+                ConnectorError::RateLimited,
                 StatusCode::BAD_GATEWAY,
-                "UpstreamSchemaMismatch",
+                "Upstream",
+                "rate_limited",
             ),
             (
                 ConnectorError::Upstream("x".into()),
                 StatusCode::BAD_GATEWAY,
                 "Upstream",
+                "bad_response",
+            ),
+            (
+                ConnectorError::InvalidFilter("x".into()),
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "filter_invalid",
+            ),
+            (
+                ConnectorError::RowKeyInvalid("x".into()),
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "row_key_invalid",
+            ),
+            (
+                ConnectorError::BudgetExceeded,
+                StatusCode::BAD_REQUEST,
+                "InvalidRequest",
+                "row_limit_exceeded",
             ),
         ];
-        for (err, status, code) in cases {
+        for (err, status, code, reason) in cases {
             let app_err = AppError::from(err);
             // `status` is private, but this module is a child of `errors`, so it is visible here.
-            assert_eq!(app_err.status, status, "status for {code}");
-            assert_eq!(app_err.code(), code);
+            assert_eq!(app_err.status, status, "status for {reason}");
+            assert_eq!(app_err.code(), code, "code for {reason}");
+            assert_eq!(app_err.reason(), Some(reason));
         }
     }
 

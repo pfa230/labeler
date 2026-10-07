@@ -1241,6 +1241,55 @@ mod http_tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "NotFound");
+        assert_eq!(
+            body["error"]["details"],
+            json!({ "kind": "route", "id": "/api/nope" })
+        );
+    }
+
+    /// errors "A request fault outranks label faults": the unknown printer is reported, not the
+    /// label's undeclared key.
+    #[tokio::test]
+    async fn unknown_printer_outranks_a_bad_label() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "mode": "print",
+            "printer": "missing",
+            "labels": [{ "data": { "code": "A", "message": "m", "bad_key": "x" } }]
+        });
+        let res = app
+            .oneshot(json_req("POST", "/api/batch", payload.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "NotFound");
+        assert_eq!(
+            body["error"]["details"],
+            json!({ "kind": "printer", "id": "missing" })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_qr_payload_too_long_to_encode_is_qr_payload_invalid() {
+        let app = build_app();
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "data": { "code": "x".repeat(4000), "message": "m" }
+        });
+        let res = app
+            .oneshot(json_req(
+                "POST",
+                "/api/render/label?format=png",
+                payload.to_string(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = json_response(res).await;
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
+        assert_eq!(body["error"]["details"]["reason"], "qr_payload_invalid");
     }
 
     #[tokio::test]
@@ -1825,7 +1874,7 @@ layout:
             .expect("request");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "TemplateNotFound");
+        assert_eq!(body["error"]["code"], "NotFound");
     }
 
     #[tokio::test]
@@ -1845,7 +1894,7 @@ layout:
             .expect("request");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "TemplateNotFound");
+        assert_eq!(body["error"]["code"], "NotFound");
     }
 
     #[tokio::test]
@@ -1970,10 +2019,10 @@ layout:
             assert_eq!(
                 response.status(),
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "{data} should fail with 422 MissingField"
+                "{data} should fail with 422 missing_field"
             );
             let body = json_response(response).await;
-            assert_eq!(body["error"]["code"], "MissingField");
+            assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
             assert_eq!(body["error"]["details"]["field"], "printed_on");
         }
 
@@ -2031,7 +2080,7 @@ layout:
             );
             let body = json_response(response).await;
             assert_eq!(body["error"]["code"], "InvalidRequest");
-            assert_eq!(body["error"]["details"]["reason"], "datetime_param_invalid");
+            assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
             assert!(
                 body["error"]["message"]
                     .as_str()
@@ -2071,7 +2120,7 @@ layout:
         );
         assert_eq!(failures[0]["index"], 1);
         assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "datetime_param_invalid");
+        assert_eq!(failures[0]["details"]["reason"], "param_value_invalid");
     }
 
     /// The template advertises `message` and not the datetime parameter or its namespace: the
@@ -2195,14 +2244,9 @@ layout:
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "BatchInvalid");
         assert_eq!(body["error"]["details"]["failures"][0]["index"], 1);
-        // MissingField is outside the four codes that carry a reason, so the key is absent rather
-        // than null. That optionality is the contract, not an oversight.
-        assert!(
-            body["error"]["details"]["failures"][0]
-                .get("reason")
-                .is_none(),
-            "an unreasoned code must omit the key entirely, got {}",
-            body["error"]["details"]["failures"][0]
+        assert_eq!(
+            body["error"]["details"]["failures"][0]["details"]["reason"],
+            "missing_field"
         );
     }
 
@@ -2376,6 +2420,8 @@ layout:
             .await
             .expect("request");
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(response).await;
+        assert_eq!(body["error"]["details"]["reason"], "field_not_applicable");
     }
 
     #[tokio::test]
@@ -2453,7 +2499,7 @@ layout:
     }
 
     #[tokio::test]
-    async fn render_label_pdf_on_sheet_template_returns_422() {
+    async fn render_label_on_a_sheet_template_is_format_unsupported() {
         let app = build_app();
         let payload = json!({ "template": "avery5163", "data": {} });
         let response = app
@@ -2467,9 +2513,10 @@ layout:
             )
             .await
             .expect("request");
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "UnsupportedFormat");
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "format_unsupported");
     }
 
     #[tokio::test]
@@ -2547,10 +2594,9 @@ layout:
         assert_eq!(body["error"]["details"]["reason"], "csv_header_invalid");
     }
 
-    /// The contract is scoped to four codes. Nothing else gains a reason, and `details`
-    /// keeps carrying exactly what it carried before.
+    /// `NotFound` names what is missing by `kind` and `id`, and carries no reason.
     #[tokio::test]
-    async fn unreasoned_codes_have_no_reason() {
+    async fn unknown_template_is_not_found_by_kind_and_id() {
         let app = build_app();
         let response = app
             .oneshot(
@@ -2563,12 +2609,10 @@ layout:
             .expect("request");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "TemplateNotFound");
-        assert_eq!(body["error"]["details"]["template"], "does-not-exist");
-        assert!(
-            body["error"]["details"].get("reason").is_none(),
-            "TemplateNotFound is outside the migrated set and must not gain a reason, got {}",
-            body["error"]["details"]
+        assert_eq!(body["error"]["code"], "NotFound");
+        assert_eq!(
+            body["error"]["details"],
+            serde_json::json!({ "kind": "template", "id": "does-not-exist" })
         );
     }
 
@@ -2596,7 +2640,7 @@ layout:
             .as_array()
             .expect("failures array");
         assert_eq!(failures[0]["index"], 0);
-        assert_eq!(failures[0]["code"], "MissingField");
+        assert_eq!(failures[0]["details"]["reason"], "missing_field");
     }
 
     #[tokio::test]
@@ -2719,7 +2763,7 @@ layout:
     async fn import_csv_disallowed_option_value_is_atomic() {
         let app = build_app();
         // A disallowed option value flows through the shared batch path and fails the row as
-        // BatchInvalid with a per-row InvalidEnumValue (not a top-level InvalidEnumValue).
+        // BatchInvalid with a per-row param_value_invalid (not a top-level error).
         let csv = "id,url,name,tags,description,orientation\n\
             A1,https://x,Widget,t,desc,sideways\n";
         let response = app
@@ -2739,16 +2783,15 @@ layout:
         let failures = body["error"]["details"]["failures"]
             .as_array()
             .expect("failures array");
-        assert_eq!(failures[0]["code"], "InvalidEnumValue");
-        assert_eq!(failures[0]["message"], "Invalid option selection");
-        assert!(
-            failures[0].get("reason").is_none(),
-            "per-row failure must carry no reason"
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(
+            failures[0]["details"],
+            serde_json::json!({ "reason": "param_value_invalid", "param": "orientation" })
         );
     }
 
     #[tokio::test]
-    async fn render_enum_out_of_range_is_422_invalid_enum_value() {
+    async fn render_enum_out_of_range_is_400_param_value_invalid() {
         let yaml = r#"
 name: Orientation Label
 unit: mm
@@ -2776,24 +2819,12 @@ layout:
         .to_string();
         let req = json_req("POST", "/api/render/label?format=png", payload);
         let res = app.oneshot(req).await.expect("request");
-        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidEnumValue");
-        assert_eq!(body["error"]["message"], "Invalid option selection");
-        let details = &body["error"]["details"];
-        assert_eq!(details["selection"]["orientation"], "sideways");
+        assert_eq!(body["error"]["code"], "InvalidRequest");
         assert_eq!(
-            details["allowed"]["orientation"],
-            serde_json::json!(["horizontal", "vertical"])
-        );
-        assert!(
-            details.get("reason").is_none(),
-            "details must carry no reason"
-        );
-        assert_eq!(
-            details.as_object().unwrap().len(),
-            2,
-            "details must be exactly selection and allowed"
+            body["error"]["details"],
+            serde_json::json!({ "reason": "param_value_invalid", "param": "orientation" })
         );
     }
 
@@ -2837,11 +2868,10 @@ layout:
             .as_array()
             .expect("failures");
         assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0]["code"], "InvalidEnumValue");
-        assert_eq!(failures[0]["message"], "Invalid option selection");
-        assert!(
-            failures[0].get("reason").is_none(),
-            "per-row failure must carry no reason"
+        assert_eq!(failures[0]["code"], "InvalidRequest");
+        assert_eq!(
+            failures[0]["details"],
+            serde_json::json!({ "reason": "param_value_invalid", "param": "orientation" })
         );
         // top-level details must be BatchInvalid shape, not reshaped
         assert!(body["error"]["details"].get("failures").is_some());
@@ -2913,7 +2943,10 @@ layout:
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(response).await;
         assert_eq!(body["error"]["code"], "TemplateInvalid");
-        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
     }
 
     /// The point of #151: one code, two causes, told apart without reading the prose.
@@ -3805,7 +3838,7 @@ layout:
             let body = json_response(response).await;
             assert_eq!(body["error"]["code"], "TemplateInvalid", "case: {id}");
             assert_eq!(
-                body["error"]["details"]["reason"], "template_parse_failed",
+                body["error"]["details"]["reason"], "template_validation_failed",
                 "case: {id}, got: {:?}",
                 body["error"]["details"]
             );
@@ -3846,7 +3879,10 @@ layout:
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let json = json_response(response).await;
         assert_eq!(json["error"]["code"], "TemplateInvalid");
-        assert_eq!(json["error"]["details"]["reason"], "template_parse_failed");
+        assert_eq!(
+            json["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
         let msg = json["error"]["message"].as_str().unwrap_or("");
         assert!(
             msg.contains("unknown field `options`"),
@@ -3902,7 +3938,10 @@ layout:
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let json = json_response(response).await;
         assert_eq!(json["error"]["code"], "TemplateInvalid");
-        assert_eq!(json["error"]["details"]["reason"], "template_parse_failed");
+        assert_eq!(
+            json["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
         let msg = json["error"]["message"].as_str().unwrap_or("");
         assert!(
             msg.contains("layout[0]") && msg.contains("unknown field `option`"),
@@ -3917,18 +3956,11 @@ layout:
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The fourth migrated code at the wire. Most RenderFailed causes are internal invariants a
-    /// request cannot provoke (`item_has_no_source` in particular is unreachable, since raw deserialization
-    /// requires a mandatory `value` string for text/qr items at parse time). Deleting the templates
-    /// directory out from under a built app reaches one without depending on the test user's uid,
-    /// which a read-only directory would.
-    ///
-    /// The reason is `template_registry_io`, not `template_write_failed`: since #184 a create re-reads
-    /// the directory before it decides anything, so a directory that cannot be read is reported as
-    /// exactly that, before any write is attempted. `template_write_failed` still covers a write that
-    /// fails on a readable directory (a full disk, an I/O fault), which no portable test provokes.
+    /// A templates directory that cannot be read is the service's fault: `500 Internal` with no
+    /// details. Deleting the directory out from under a built app reaches it without depending on
+    /// the test user's uid, which a read-only directory would.
     #[tokio::test]
-    async fn a_failed_templates_directory_read_carries_a_reason() {
+    async fn a_failed_templates_directory_read_is_internal() {
         let dir = temp_templates_dir();
         let app = build_app_in(&dir);
         std::fs::remove_dir_all(&dir).expect("remove templates dir");
@@ -3939,8 +3971,8 @@ layout:
             .expect("request");
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "RenderFailed");
-        assert_eq!(body["error"]["details"]["reason"], "template_registry_io");
+        assert_eq!(body["error"]["code"], "Internal");
+        assert!(body["error"].get("details").is_none(), "{body}");
     }
 
     async fn template_ids(app: &axum::Router) -> Vec<String> {
@@ -4250,8 +4282,8 @@ layout:
             .expect("request");
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = json_response(response).await;
-        assert_eq!(body["error"]["code"], "RenderFailed");
-        assert_eq!(body["error"]["details"]["reason"], "template_registry_io");
+        assert_eq!(body["error"]["code"], "Internal");
+        assert!(body["error"].get("details").is_none(), "{body}");
 
         assert_eq!(template_count(&app).await, 1);
     }
@@ -4771,7 +4803,7 @@ layout:
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateNotFound");
+        assert_eq!(body["error"]["code"], "NotFound");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -5136,15 +5168,11 @@ layout:
 
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateIdCollision");
-        let mut files: Vec<&str> = body["error"]["details"]["files"]
-            .as_array()
-            .expect("files array")
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        files.sort_unstable();
-        assert_eq!(files, vec!["moved.yaml", "zzz/moved.yaml"]);
+        assert_eq!(body["error"]["code"], "Conflict");
+        assert!(
+            body["error"].get("details").is_none(),
+            "a 409 carries no details: {body}"
+        );
         assert_eq!(
             std::fs::read_to_string(dir.join("zzz/moved.yaml")).unwrap(),
             edited,
@@ -5269,7 +5297,7 @@ layout:
 
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateIdCollision");
+        assert_eq!(body["error"]["code"], "Conflict");
         assert_eq!(
             std::fs::read_to_string(dir.join("late.yaml")).unwrap(),
             template_yaml("late"),
@@ -5308,7 +5336,7 @@ layout:
 
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateIdCollision");
+        assert_eq!(body["error"]["code"], "Conflict");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -5388,26 +5416,10 @@ layout:
 
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "TemplateIdCollision");
-        assert_eq!(body["error"]["details"]["template"], "contested");
-        let mut files: Vec<&str> = body["error"]["details"]["files"]
-            .as_array()
-            .expect("files array")
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
-        files.sort_unstable();
-        assert_eq!(
-            files,
-            vec!["contested.yaml", "zzz/contested.yaml"],
-            "exactly the files declaring the id, and no others"
-        );
+        assert_eq!(body["error"]["code"], "Conflict");
         assert!(
-            !body["error"]["details"]
-                .as_object()
-                .expect("details object")
-                .contains_key("reason"),
-            "a 409 carries no details.reason key at all"
+            body["error"].get("details").is_none(),
+            "a 409 carries no details: {body}"
         );
         assert!(dir.join("contested.yaml").exists(), "nothing was unlinked");
         assert!(
@@ -5630,7 +5642,7 @@ layout:
         std::fs::write(dir.join("test_tpl.yaml"), template_yaml("test_tpl")).unwrap();
         let app = build_app_in(&dir);
 
-        // 1. params: null is rejected with 422 template_parse_failed
+        // 1. params: null is rejected with 422 template_validation_failed
         let yaml_null = "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 10 }\nparams: null\nlayout: []\n";
         let resp = app
             .clone()
@@ -5644,9 +5656,12 @@ layout:
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(resp).await;
         assert_eq!(body["error"]["code"], "TemplateInvalid");
-        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
 
-        // 2. legacy mapping params: is rejected with 422 template_parse_failed
+        // 2. legacy mapping params: is rejected with 422 template_validation_failed
         let yaml_map = "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 10 }\nparams:\n  a:\n    type: string\nlayout: []\n";
         let resp = app
             .clone()
@@ -5660,9 +5675,12 @@ layout:
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(resp).await;
         assert_eq!(body["error"]["code"], "TemplateInvalid");
-        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
 
-        // 3. duplicate parameter name is rejected with 422 template_parse_failed naming duplicate
+        // 3. duplicate parameter name is rejected with 422 template_validation_failed naming duplicate
         let yaml_dup = "name: T\nunit: mm\ndpi: 200\nformat: { type: single, width: 20, height: 10 }\nparams:\n  - name: title\n    type: string\n  - name: title\n    type: string\nlayout: []\n";
         let resp = app
             .clone()
@@ -5676,7 +5694,10 @@ layout:
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(resp).await;
         assert_eq!(body["error"]["code"], "TemplateInvalid");
-        assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+        assert_eq!(
+            body["error"]["details"]["reason"],
+            "template_validation_failed"
+        );
         assert!(body["error"]["message"]
             .as_str()
             .unwrap()
@@ -6488,11 +6509,11 @@ layout:
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::CONFLICT);
-        assert_eq!(json_response(resp).await["error"]["code"], "PrinterExists");
+        assert_eq!(json_response(resp).await["error"]["code"], "Conflict");
     }
 
     #[tokio::test]
-    async fn printer_create_invalid_kind_returns_422() {
+    async fn printer_create_invalid_kind_returns_400() {
         let app = build_app();
         let body = json!({ "id": "p", "name": "P", "kind": "zebra", "config": {} }).to_string();
         let resp = app
@@ -6500,8 +6521,10 @@ layout:
             .oneshot(json_req("POST", "/api/printers", body))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(json_response(resp).await["error"]["code"], "PrinterInvalid");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = json_response(resp).await;
+        assert_eq!(body["error"]["code"], "InvalidRequest");
+        assert_eq!(body["error"]["details"]["reason"], "printer_invalid");
     }
 
     #[tokio::test]
@@ -6523,7 +6546,7 @@ layout:
         let app = build_app();
         let (status, body) = get_json(&app, "/api/printers/nope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body["error"]["code"], "PrinterNotFound");
+        assert_eq!(body["error"]["code"], "NotFound");
     }
 
     #[tokio::test]
@@ -6606,25 +6629,25 @@ layout:
     }
 
     #[tokio::test]
-    async fn probe_missing_uri_is_422() {
+    async fn probe_missing_uri_is_400() {
         let app = build_app();
         let body = json!({ "kind": "cups", "config": {} }).to_string();
         let resp = app
             .oneshot(json_req("POST", "/api/printers/probe", body))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
-    async fn probe_malformed_uri_is_422() {
+    async fn probe_malformed_uri_is_400() {
         let app = build_app();
         let body = json!({ "kind": "cups", "config": { "uri": "ipp://" } }).to_string();
         let resp = app
             .oneshot(json_req("POST", "/api/printers/probe", body))
             .await
             .expect("request");
-        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -6640,10 +6663,7 @@ layout:
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        assert_eq!(
-            json_response(resp).await["error"]["code"],
-            "PrinterNotFound"
-        );
+        assert_eq!(json_response(resp).await["error"]["code"], "NotFound");
     }
 
     #[tokio::test]
@@ -9294,11 +9314,11 @@ layout:
                 .expect("req")
         }
 
-        // 1. brother_24mm (media_width 24) + loaded 12mm -> mismatch -> 409 MediaMismatch
+        // 1. brother_24mm (media_width 24) + loaded 12mm -> mismatch -> 409 Conflict
         mk(&app, "wrong", json!({ "loaded_media_width": 12 })).await;
         let r = print_resp(&app, "brother_24mm", "wrong").await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
-        assert_eq!(json_response(r).await["error"]["code"], "MediaMismatch");
+        assert_eq!(json_response(r).await["error"]["code"], "Conflict");
 
         // 2. brother_24mm + loaded 24mm -> match -> 200
         mk(&app, "match", json!({ "loaded_media_width": 24 })).await;
@@ -9837,7 +9857,7 @@ layout:
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_ne!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-        // Request reached handler and returned 404 TemplateNotFound
+        // Request reached handler and returned 404 NotFound
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
@@ -10481,7 +10501,7 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        // 5. Non-array string is refused with 400 InvalidRequest, request_body_invalid
+        // 5. Non-array string is refused with 400 InvalidRequest, param_value_invalid
         let res = app
             .clone()
             .oneshot(json_req(
@@ -10494,10 +10514,10 @@ layout:
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
         assert!(body["error"]["message"].as_str().unwrap().contains("tags"));
 
-        // 6. Non-string element is refused with 400 InvalidRequest, request_body_invalid with position
+        // 6. Non-string element is refused with 400 InvalidRequest, param_value_invalid naming its position
         let res = app
             .clone()
             .oneshot(json_req(
@@ -10510,9 +10530,9 @@ layout:
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
-        let msg = body["error"]["message"].as_str().unwrap();
-        assert!(msg.contains("tags") && msg.contains("1"));
+        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
+        assert_eq!(body["error"]["details"]["param"], "tags");
+        assert_eq!(body["error"]["details"]["element"], 1);
     }
 
     #[tokio::test]
@@ -10546,7 +10566,7 @@ layout:
             .unwrap();
         assert_eq!(put_res.status(), StatusCode::CREATED);
 
-        // Omitted -> 422 MissingField
+        // Omitted -> 422 missing_field
         let res = app
             .clone()
             .oneshot(json_req(
@@ -10558,10 +10578,10 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "tags");
 
-        // Null -> 422 MissingField
+        // Null -> 422 missing_field
         let res = app
             .clone()
             .oneshot(json_req(
@@ -10573,7 +10593,7 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "tags");
 
         // Provided -> 200 OK
@@ -10682,7 +10702,7 @@ layout:
             "template_validation_failed"
         );
 
-        // Declared string parameter refusing an array value -> 400 InvalidRequest, request_body_invalid
+        // Declared string parameter refusing an array value -> 400 InvalidRequest, param_value_invalid
         let string_param_tpl = r#"
 name: StringParamTemplate
 unit: mm
@@ -10722,7 +10742,7 @@ layout:
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
         assert_eq!(
             body["error"]["message"],
             "parameter 'title' is not a valid string"
@@ -10781,7 +10801,7 @@ layout:
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0]["index"], 1);
         assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "request_body_invalid");
+        assert_eq!(failures[0]["details"]["reason"], "param_value_invalid");
     }
 
     #[tokio::test]
@@ -11021,7 +11041,7 @@ layout:
         assert_eq!(
             res_empty_render.status(),
             StatusCode::OK,
-            "default: [] must render without MissingField"
+            "default: [] must render without missing_field"
         );
     }
 
@@ -11199,7 +11219,7 @@ layout:
         assert_eq!(res_def_empty.status(), StatusCode::OK);
         assert_eq!(res_def_empty.headers()["content-type"], "image/png");
 
-        // 4.7: Absent undefaulted list is 422 MissingField
+        // 4.7: Absent undefaulted list is 422 missing_field
         let res_missing = app
             .clone()
             .oneshot(json_req(
@@ -11211,7 +11231,7 @@ layout:
             .unwrap();
         assert_eq!(res_missing.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body_missing = json_response(res_missing).await;
-        assert_eq!(body_missing["error"]["code"], "MissingField");
+        assert_eq!(body_missing["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body_missing["error"]["details"]["field"], "tags");
     }
 
@@ -11993,7 +12013,10 @@ layout:
             );
             let body = json_response(res).await;
             assert_eq!(body["error"]["code"], "TemplateInvalid");
-            assert_eq!(body["error"]["details"]["reason"], "template_parse_failed");
+            assert_eq!(
+                body["error"]["details"]["reason"],
+                "template_validation_failed"
+            );
             assert!(
                 body["error"]["message"]
                     .as_str()
@@ -12148,7 +12171,7 @@ layout:
         let post_inputs_arr = post_inputs["inputs"][0].as_array().unwrap();
         assert!(post_inputs_arr.iter().any(|i| i["name"] == "extra"));
 
-        // 5.5: Thumbnail of repeat-only template draws 1 instance without 422 MissingField
+        // 5.5: Thumbnail of repeat-only template draws 1 instance without 422 missing_field
         let thumb_res = app
             .clone()
             .oneshot(
@@ -12308,10 +12331,10 @@ layout:
         assert_eq!(failures.len(), 2);
         assert_eq!(failures[0]["index"], 0);
         assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "data_key_unknown");
+        assert_eq!(failures[0]["details"]["reason"], "data_key_unknown");
         assert_eq!(failures[1]["index"], 2);
         assert_eq!(failures[1]["code"], "InvalidRequest");
-        assert_eq!(failures[1]["reason"], "data_key_unknown");
+        assert_eq!(failures[1]["details"]["reason"], "data_key_unknown");
     }
 
     #[tokio::test]
@@ -12350,9 +12373,9 @@ layout:
         let failures3 = body3["error"]["details"]["failures"].as_array().unwrap();
         assert_eq!(failures3.len(), 2);
         assert_eq!(failures3[0]["index"], 0);
-        assert_eq!(failures3[0]["reason"], "data_key_unknown");
+        assert_eq!(failures3[0]["details"]["reason"], "data_key_unknown");
         assert_eq!(failures3[1]["index"], 2);
-        assert_eq!(failures3[1]["reason"], "data_key_unknown");
+        assert_eq!(failures3[1]["details"]["reason"], "data_key_unknown");
 
         // 2. Multi-page sheet: 11 labels (10 per page), only label index 10 (page 2) fails
         let mut labels11 = Vec::new();
@@ -12376,7 +12399,7 @@ layout:
         let failures11 = body11["error"]["details"]["failures"].as_array().unwrap();
         assert_eq!(failures11.len(), 1);
         assert_eq!(failures11[0]["index"], 10);
-        assert_eq!(failures11[0]["reason"], "data_key_unknown");
+        assert_eq!(failures11[0]["details"]["reason"], "data_key_unknown");
     }
 
     #[tokio::test]
@@ -12403,13 +12426,13 @@ layout:
         assert_eq!(failures3.len(), 3);
         assert_eq!(failures3[0]["index"], 0);
         assert_eq!(failures3[0]["code"], "InvalidRequest");
-        assert_eq!(failures3[0]["reason"], "data_key_unknown");
+        assert_eq!(failures3[0]["details"]["reason"], "data_key_unknown");
         assert_eq!(failures3[1]["index"], 1);
         assert_eq!(failures3[1]["code"], "InvalidRequest");
-        assert_eq!(failures3[1]["reason"], "data_key_unknown");
+        assert_eq!(failures3[1]["details"]["reason"], "data_key_unknown");
         assert_eq!(failures3[2]["index"], 2);
         assert_eq!(failures3[2]["code"], "InvalidRequest");
-        assert_eq!(failures3[2]["reason"], "data_key_unknown");
+        assert_eq!(failures3[2]["details"]["reason"], "data_key_unknown");
 
         // copies omitted -> exactly 1 entry at index 0
         let payload_copies1 = json!({
@@ -12429,7 +12452,7 @@ layout:
         assert_eq!(failures1.len(), 1);
         assert_eq!(failures1[0]["index"], 0);
         assert_eq!(failures1[0]["code"], "InvalidRequest");
-        assert_eq!(failures1[0]["reason"], "data_key_unknown");
+        assert_eq!(failures1[0]["details"]["reason"], "data_key_unknown");
 
         // No print job dispatched: recent-templates remains empty
         let recents = app
@@ -12447,7 +12470,7 @@ layout:
     }
 
     #[tokio::test]
-    async fn issue_324_4_7_unrecognized_key_precedes_coercion_failure() {
+    async fn issue_324_4_7_uncoercible_integer_is_param_value_invalid() {
         let yaml = r#"
 name: Integer Param Test
 unit: mm
@@ -12468,30 +12491,7 @@ layout:
 "#;
         let (app, _) = build_app_with_custom_templates(vec![("int_param_tpl", yaml)]);
 
-        // 1. Both unrecognized key and bad integer value -> reports data_key_unknown
-        let payload_both = json!({
-            "template": "int_param_tpl",
-            "data": {
-                "title": "Item",
-                "count": "abc",
-                "stale_key": "stale"
-            }
-        });
-        let res = app
-            .clone()
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label",
-                payload_both.to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "data_key_unknown");
-
-        // 2. Without unrecognized key -> reports invalid request for uncoercible integer
+        // An uncoercible integer is refused naming the parameter.
         let payload_bad_val = json!({
             "template": "int_param_tpl",
             "data": {
@@ -12511,32 +12511,7 @@ layout:
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = json_response(res).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
-    }
-
-    #[tokio::test]
-    async fn issue_324_4_8_query_validation_precedes_data_key_validation() {
-        let app = build_app();
-        let payload = json!({
-            "template": "homebox-qr",
-            "data": {
-                "id": "1",
-                "message": "m",
-                "bad_key": "val"
-            }
-        });
-        let res = app
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label?format=svg",
-                payload.to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "format_unknown");
+        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
     }
 
     #[tokio::test]
@@ -12563,7 +12538,7 @@ layout:
             .unwrap();
         assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let body = json_response(res).await;
-        assert_eq!(body["error"]["code"], "BatchTooLarge");
+        assert_eq!(body["error"]["code"], "PayloadTooLarge");
     }
 
     #[tokio::test]
@@ -12753,10 +12728,10 @@ layout:
         assert_eq!(failures.len(), 2);
         assert_eq!(failures[0]["index"], 0);
         assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "data_key_unknown");
+        assert_eq!(failures[0]["details"]["reason"], "data_key_unknown");
         assert_eq!(failures[1]["index"], 1);
-        assert_eq!(failures[1]["code"], "MissingField");
-        assert!(failures[1].get("reason").is_none());
+        assert_eq!(failures[1]["code"], "UnsupportedLayoutItem");
+        assert_eq!(failures[1]["details"]["reason"], "missing_field");
     }
 
     #[tokio::test]
@@ -12821,52 +12796,45 @@ layout:
         );
     }
 
+    /// errors "Two labels fail differently": each failing label is its own error object plus
+    /// `index`, its reason and details under `details`.
     #[tokio::test]
-    async fn issue_324_6_4_batch_label_with_unrecognized_key_and_missing_required_param_reports_data_key_unknown(
-    ) {
+    async fn batch_failures_are_per_label_error_objects() {
         let app = build_app();
-        // brother_24mm_qr requires `code` and `message`.
-        // Send a label that omits `code` and carries unrecognized key `bad_key`.
+        // brother_24mm_qr reads `code` and `message`, neither with a default.
         let payload = json!({
             "template": "brother_24mm_qr",
             "mode": "download",
             "labels": [
-                { "data": { "message": "hello", "bad_key": "x" } }
+                { "data": { "code": "A", "message": "hello", "bad_key": "x" } },
+                { "data": { "code": "B", "message": "fine" } },
+                { "data": { "message": "no code" } }
             ]
         });
         let res = app
-            .clone()
             .oneshot(json_req("POST", "/api/batch", payload.to_string()))
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = json_response(res).await;
+        let mut body = json_response(res).await;
         assert_eq!(body["error"]["code"], "BatchInvalid");
-        let failures = body["error"]["details"]["failures"].as_array().unwrap();
-        assert_eq!(failures.len(), 1);
-        assert_eq!(failures[0]["index"], 0);
-        assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "data_key_unknown");
-
-        // Same label against single render endpoint reports 400 InvalidRequest data_key_unknown
-        let render_payload = json!({
-            "template": "brother_24mm_qr",
-            "data": { "message": "hello", "bad_key": "x" }
-        });
-        let res_render = app
-            .oneshot(json_req(
-                "POST",
-                "/api/render/label",
-                render_payload.to_string(),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res_render.status(), StatusCode::BAD_REQUEST);
-        let render_body = json_response(res_render).await;
-        assert_eq!(render_body["error"]["code"], "InvalidRequest");
+        let failures = body["error"]["details"]["failures"]
+            .as_array_mut()
+            .expect("failures");
+        for failure in failures.iter_mut() {
+            assert!(failure["message"].as_str().is_some_and(|m| !m.is_empty()));
+            failure.as_object_mut().unwrap().remove("message");
+        }
         assert_eq!(
-            render_body["error"]["details"]["reason"],
-            "data_key_unknown"
+            json!(failures),
+            json!([
+                { "index": 0, "code": "InvalidRequest", "details": { "reason": "data_key_unknown" } },
+                {
+                    "index": 2,
+                    "code": "UnsupportedLayoutItem",
+                    "details": { "reason": "missing_field", "field": "code" }
+                }
+            ])
         );
     }
 
@@ -13829,7 +13797,7 @@ mod auth_http_tests {
             assert_eq!(body_json(res).await["error"]["code"], "InvalidRequest");
         }
 
-        // unknown key on PUT and DELETE is 404 SettingNotFound
+        // unknown key on PUT and DELETE is 404 NotFound
         let res = app
             .clone()
             .oneshot(req_put_json_cookie(
@@ -13840,7 +13808,7 @@ mod auth_http_tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert_eq!(body_json(res).await["error"]["code"], "SettingNotFound");
+        assert_eq!(body_json(res).await["error"]["code"], "NotFound");
 
         let res = app
             .clone()
@@ -13848,7 +13816,7 @@ mod auth_http_tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert_eq!(body_json(res).await["error"]["code"], "SettingNotFound");
+        assert_eq!(body_json(res).await["error"]["code"], "NotFound");
     }
 
     #[tokio::test]
@@ -14334,7 +14302,7 @@ layout:
 "#;
         let (app, _state) = test_app_with_custom_templates(vec![("missing_param_tpl", yaml)]);
 
-        // 1. Omit flag -> 422 MissingField named 'flag'
+        // 1. Omit flag -> 422 missing_field named 'flag'
         let req = req_post_json(
             "/api/render/label",
             &serde_json::json!({
@@ -14346,10 +14314,10 @@ layout:
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "flag");
 
-        // 2. Omit choice -> 422 MissingField named 'choice'
+        // 2. Omit choice -> 422 missing_field named 'choice'
         let req = req_post_json(
             "/api/render/label",
             &serde_json::json!({
@@ -14361,7 +14329,7 @@ layout:
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "choice");
     }
 
@@ -14409,7 +14377,7 @@ layout:
             ("dt_with_default", yaml_with_default),
         ]);
 
-        // Omission without default -> 422 MissingField naming 'printed_on'
+        // Omission without default -> 422 missing_field naming 'printed_on'
         let req = req_post_json(
             "/api/render/label",
             &serde_json::json!({
@@ -14421,10 +14389,10 @@ layout:
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "printed_on");
 
-        // Blank string without default -> also treated as omission -> 422 MissingField
+        // Blank string without default -> also treated as omission -> 422 missing_field
         let req = req_post_json(
             "/api/render/label",
             &serde_json::json!({
@@ -14436,10 +14404,10 @@ layout:
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "printed_on");
 
-        // null without default -> 422 MissingField
+        // null without default -> 422 missing_field
         let req = req_post_json(
             "/api/render/label",
             &serde_json::json!({
@@ -14451,7 +14419,7 @@ layout:
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "printed_on");
 
         // Omission, blank, null with default: "{sys.now}" all render 200 OK
@@ -14702,7 +14670,7 @@ layout:
         assert_eq!(body_supplied["error"]["code"], "InvalidRequest");
         assert_eq!(
             body_supplied["error"]["details"]["reason"],
-            "datetime_param_invalid"
+            "param_value_invalid"
         );
 
         // Path 2: Exact same value reached through resolved default (data: {}) -> 422 Unprocessable Entity / param_default_unresolvable
@@ -14772,10 +14740,16 @@ layout:
         assert_eq!(failures.len(), 2);
         assert_eq!(failures[0]["index"], 0);
         assert_eq!(failures[0]["code"], "TemplateInvalid");
-        assert_eq!(failures[0]["reason"], "param_default_unresolvable");
+        assert_eq!(
+            failures[0]["details"]["reason"],
+            "param_default_unresolvable"
+        );
         assert_eq!(failures[1]["index"], 2);
         assert_eq!(failures[1]["code"], "TemplateInvalid");
-        assert_eq!(failures[1]["reason"], "param_default_unresolvable");
+        assert_eq!(
+            failures[1]["details"]["reason"],
+            "param_default_unresolvable"
+        );
     }
 
     #[tokio::test]
@@ -15051,7 +15025,7 @@ layout:
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = body_json(response).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(body["error"]["details"]["field"], "missing");
 
         let response = app
@@ -15214,7 +15188,7 @@ layout:
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0]["index"], 1);
         assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "color_param_invalid");
+        assert_eq!(failures[0]["details"]["reason"], "color_param_invalid");
         let msg3 = failures[0]["message"].as_str().unwrap();
         assert!(
             msg3.contains("bg_color"),
@@ -16735,7 +16709,7 @@ layout:
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0]["index"], 0);
         assert_eq!(failures[0]["code"], "UnsupportedLayoutItem");
-        assert_eq!(failures[0]["reason"], "circle_box_not_square");
+        assert_eq!(failures[0]["details"]["reason"], "circle_box_not_square");
         assert!(failures[0]["message"]
             .as_str()
             .unwrap()
@@ -17357,7 +17331,7 @@ layout:
             );
         }
 
-        // Task 6.5: supplied value numeric resolution cannot read as a number is refused with 400, request_body_invalid, naming pitch, not line_spacing_param_invalid
+        // Task 6.5: supplied value numeric resolution cannot read as a number is refused with 400, param_value_invalid, naming pitch, not line_spacing_param_invalid
         let res = post_render(
             "tpl_pitch_num_refusal",
             serde_json::json!({ "pitch": "invalid_num" }),
@@ -17366,11 +17340,11 @@ layout:
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = body_json(res).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
         let msg = body["error"]["message"].as_str().unwrap();
         assert!(msg.contains("pitch"), "message must name pitch: {msg}");
 
-        // Task 6.6: supplied NaN or magnitude beyond number range: refused with 400, request_body_invalid, naming pitch
+        // Task 6.6: supplied NaN or magnitude beyond number range: refused with 400, param_value_invalid, naming pitch
         for bad_num in [
             serde_json::json!("NaN"),
             serde_json::json!("inf"),
@@ -17384,9 +17358,8 @@ layout:
             assert_eq!(res.status(), StatusCode::BAD_REQUEST);
             let body = body_json(res).await;
             assert_eq!(body["error"]["code"], "InvalidRequest");
-            assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
-            let msg = body["error"]["message"].as_str().unwrap();
-            assert!(msg.contains("pitch"), "message must name pitch: {msg}");
+            assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
+            assert_eq!(body["error"]["details"]["param"], "pitch");
         }
 
         // Task 6.8: integer-typed pitch supplied as JSON number 1e300 saturates to legal enormous pitch; overflow: fail refuses with 422, text_does_not_fit
@@ -17418,7 +17391,7 @@ layout:
             "message must name layout[0] and pitch: {msg}"
         );
 
-        // Task 6.10: integer-typed pitch supplied as string "9223372036854775808" fails integer parsing -> 400 request_body_invalid
+        // Task 6.10: integer-typed pitch supplied as string "9223372036854775808" fails integer parsing -> 400 param_value_invalid
         let res = post_render(
             "tpl_pitch_int_refusal",
             serde_json::json!({ "pitch": "9223372036854775808" }),
@@ -17427,15 +17400,15 @@ layout:
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
         let body = body_json(res).await;
         assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "request_body_invalid");
+        assert_eq!(body["error"]["details"]["reason"], "param_value_invalid");
         let msg = body["error"]["message"].as_str().unwrap();
         assert!(msg.contains("pitch"), "message must name pitch: {msg}");
 
-        // Task 6.11: omitting pitch parameter that declares no default refuses with 422 MissingField
+        // Task 6.11: omitting pitch parameter that declares no default refuses with 422 missing_field
         let res = post_render("tpl_pitch_num_refusal", serde_json::json!({})).await;
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let body = body_json(res).await;
-        assert_eq!(body["error"]["code"], "MissingField");
+        assert_eq!(body["error"]["code"], "UnsupportedLayoutItem");
         let msg = body["error"]["message"].as_str().unwrap();
         assert!(msg.contains("pitch"), "message must name pitch: {msg}");
 
@@ -17534,7 +17507,10 @@ layout:
         assert_eq!(failures1.len(), 1);
         assert_eq!(failures1[0]["index"], 1);
         assert_eq!(failures1[0]["code"], "InvalidRequest");
-        assert_eq!(failures1[0]["reason"], "line_spacing_param_invalid");
+        assert_eq!(
+            failures1[0]["details"]["reason"],
+            "line_spacing_param_invalid"
+        );
         let msg1 = failures1[0]["message"].as_str().unwrap();
         assert!(
             msg1.contains("layout[0]") && msg1.contains("pitch"),
@@ -17542,7 +17518,7 @@ layout:
         );
 
         // Task 7.2: 2-label batch whose second label omits pitch with no default ->
-        // 422 BatchInvalid, failure at index 1 with code MissingField and NO reason key.
+        // 422 BatchInvalid, failure at index 1 with reason missing_field.
         let req2 = req_post_json(
             "/api/batch",
             &serde_json::json!({
@@ -17562,11 +17538,8 @@ layout:
         let failures2 = body2["error"]["details"]["failures"].as_array().unwrap();
         assert_eq!(failures2.len(), 1);
         assert_eq!(failures2[0]["index"], 1);
-        assert_eq!(failures2[0]["code"], "MissingField");
-        assert!(
-            failures2[0].get("reason").is_none(),
-            "MissingField must have no reason key"
-        );
+        assert_eq!(failures2[0]["code"], "UnsupportedLayoutItem");
+        assert_eq!(failures2[0]["details"]["reason"], "missing_field");
 
         // Task 7.3: same batch against template with default: .nan, second label omitting pitch ->
         // code TemplateInvalid and reason param_default_unresolvable.
@@ -17590,7 +17563,10 @@ layout:
         assert_eq!(failures3.len(), 1);
         assert_eq!(failures3[0]["index"], 1);
         assert_eq!(failures3[0]["code"], "TemplateInvalid");
-        assert_eq!(failures3[0]["reason"], "param_default_unresolvable");
+        assert_eq!(
+            failures3[0]["details"]["reason"],
+            "param_default_unresolvable"
+        );
     }
 
     // Issue 235: dynamic width max resolved below min tests
@@ -17657,13 +17633,13 @@ layout:
         let res_equal = post_render(serde_json::json!({ "max_width": 10 })).await;
         assert_eq!(res_equal.status(), StatusCode::OK);
 
-        // max_width: 0 asserts 422 UnsupportedLayoutItem, dimension_exceeds_limit (dimension check precedes ordering check)
-        let res_zero = post_render(serde_json::json!({ "max_width": 0 })).await;
-        assert_eq!(res_zero.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body_zero = body_json(res_zero).await;
-        assert_eq!(body_zero["error"]["code"], "UnsupportedLayoutItem");
+        // max_width: 2000 exceeds the 1000 mm limit while staying above min
+        let res_big = post_render(serde_json::json!({ "max_width": 2000 })).await;
+        assert_eq!(res_big.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body_big = body_json(res_big).await;
+        assert_eq!(body_big["error"]["code"], "UnsupportedLayoutItem");
         assert_eq!(
-            body_zero["error"]["details"]["reason"],
+            body_big["error"]["details"]["reason"],
             "dimension_exceeds_limit"
         );
     }
@@ -17859,22 +17835,6 @@ layout:
         let (app, _state) =
             test_app_with_custom_templates(vec![("tpl_precedence", tpl_precedence)]);
 
-        // max_width: 5, w: 0 asserts 400 width_bounds_inverted (not size_invalid)
-        // Against unchanged tree, measurement runs before clamp and this fails with 422 size_invalid.
-        let req1 = req_post_json(
-            "/api/render/label?format=png",
-            &serde_json::json!({
-                "template": "tpl_precedence",
-                "data": { "max_width": 5, "w": 0 }
-            })
-            .to_string(),
-        );
-        let res1 = app.clone().oneshot(req1).await.unwrap();
-        assert_eq!(res1.status(), StatusCode::BAD_REQUEST);
-        let body1 = body_json(res1).await;
-        assert_eq!(body1["error"]["code"], "InvalidRequest");
-        assert_eq!(body1["error"]["details"]["reason"], "width_bounds_inverted");
-
         // max_width: 40, w: 0 asserts 422 UnsupportedLayoutItem, size_invalid
         let req2 = req_post_json(
             "/api/render/label?format=png",
@@ -17950,6 +17910,6 @@ layout:
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0]["index"], 1);
         assert_eq!(failures[0]["code"], "InvalidRequest");
-        assert_eq!(failures[0]["reason"], "width_bounds_inverted");
+        assert_eq!(failures[0]["details"]["reason"], "width_bounds_inverted");
     }
 }

@@ -367,15 +367,7 @@ impl HomeboxConnector {
 
         let resp: EntityList = egress
             .get_json(&b, "/api/v1/entities", &query, &conn.credential)
-            .await
-            .map_err(|e| {
-                if let crate::egress::EgressError::Transport(ref m) = e {
-                    if m.starts_with("json:") {
-                        return ConnectorError::UpstreamSchemaMismatch(m.clone());
-                    }
-                }
-                ConnectorError::from(e)
-            })?;
+            .await?;
         let ext_base = external_base_url(conn);
         let rows: Vec<DisplayRow> = resp
             .items
@@ -421,7 +413,7 @@ impl HomeboxConnector {
             // The key is interpolated into the upstream path; reject anything that could traverse
             // out of /v1/entities/{id} (URL path normalization would collapse `..` segments).
             if r.key.is_empty() || r.key.contains('/') || r.key.starts_with('.') {
-                return Err(ConnectorError::InvalidFilter("invalid row key".into()));
+                return Err(ConnectorError::RowKeyInvalid("invalid row key".into()));
             }
             let detail: serde_json::Value = egress
                 .get_json(
@@ -996,7 +988,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             err,
-            crate::connector::ConnectorError::InvalidFilter(_)
+            crate::connector::ConnectorError::RowKeyInvalid(_)
         ));
     }
 

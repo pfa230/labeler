@@ -7,7 +7,7 @@ use rustix::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::fs::{AtFlags, Mode, OFlags, RenameFlags};
 use std::path::{Path, PathBuf};
 
-use crate::errors::AppError;
+use crate::errors::{AppError, NotFoundKind};
 use crate::reason::Reason;
 use crate::templates::validate_group_name;
 
@@ -30,28 +30,21 @@ pub fn open_dir_handle(path: &Path) -> Result<OwnedFd, AppError> {
         Mode::empty(),
     )
     .map_err(|err| {
-        AppError::render_failed(
-            Reason::TemplateRegistryIo,
-            format!("failed to open directory '{}': {err}", path.display()),
-        )
+        AppError::internal(format!(
+            "failed to open directory '{}': {err}",
+            path.display()
+        ))
     })
 }
 
 /// List entry names in a directory handle.
 pub fn list_dir_entries(dir_fd: BorrowedFd<'_>) -> Result<Vec<String>, AppError> {
-    let dir = rustix::fs::Dir::read_from(dir_fd).map_err(|err| {
-        AppError::render_failed(
-            Reason::TemplateRegistryIo,
-            format!("failed to read directory entries: {err}"),
-        )
-    })?;
+    let dir = rustix::fs::Dir::read_from(dir_fd)
+        .map_err(|err| AppError::internal(format!("failed to read directory entries: {err}")))?;
     let mut names = Vec::new();
     for entry in dir {
         let entry = entry.map_err(|err| {
-            AppError::render_failed(
-                Reason::TemplateRegistryIo,
-                format!("failed to read directory entries: {err}"),
-            )
+            AppError::internal(format!("failed to read directory entries: {err}"))
         })?;
         let Ok(name) = entry.file_name().to_str() else {
             continue;
@@ -101,16 +94,12 @@ pub fn open_exact_segment_dir(
                     msg,
                 ))
             } else {
-                Err(AppError::render_failed(
-                    Reason::TemplateGroupUnsafePath,
-                    msg,
-                ))
+                Err(AppError::internal(msg))
             }
         }
-        Err(err) => Err(AppError::render_failed(
-            Reason::TemplateRegistryIo,
-            format!("failed to open group directory '{segment}': {err}"),
-        )),
+        Err(err) => Err(AppError::internal(format!(
+            "failed to open group directory '{segment}': {err}"
+        ))),
     }
 }
 
@@ -147,10 +136,9 @@ fn classify_eexist(
         // No exact entry in listing: resolve requested spelling without following symlinks
         match rustix::fs::statat(parent_fd, segment, AtFlags::SYMLINK_NOFOLLOW) {
             Err(rustix::io::Errno::NOENT) => Ok(EexistClassification::Vanished),
-            Err(err) => Err(AppError::render_failed(
-                Reason::TemplateRegistryIo,
-                format!("failed to stat group directory '{segment}': {err}"),
-            )),
+            Err(err) => Err(AppError::internal(format!(
+                "failed to stat group directory '{segment}': {err}"
+            ))),
             Ok(stat) => {
                 let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
                 if file_type.is_symlink() {
@@ -158,7 +146,7 @@ fn classify_eexist(
                     let err = if caller_supplied {
                         AppError::template_invalid(Reason::TemplateGroupUnsafePath, msg)
                     } else {
-                        AppError::render_failed(Reason::TemplateGroupUnsafePath, msg)
+                        AppError::internal(msg)
                     };
                     Ok(EexistClassification::Unsafe(err))
                 } else if !file_type.is_dir() {
@@ -166,7 +154,7 @@ fn classify_eexist(
                     let err = if caller_supplied {
                         AppError::template_invalid(Reason::TemplateGroupUnsafePath, msg)
                     } else {
-                        AppError::render_failed(Reason::TemplateGroupUnsafePath, msg)
+                        AppError::internal(msg)
                     };
                     Ok(EexistClassification::Unsafe(err))
                 } else {
@@ -214,12 +202,7 @@ pub fn resolve_or_create_group(
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|err| {
-        AppError::render_failed(
-            Reason::TemplateRegistryIo,
-            format!("failed to clone root fd: {err}"),
-        )
-    })?;
+    .map_err(|err| AppError::internal(format!("failed to clone root fd: {err}")))?;
 
     let Some(raw_group) = group else {
         return Ok(ResolvedGroup {
@@ -260,10 +243,7 @@ pub fn resolve_or_create_group(
                         Mode::empty(),
                     )
                     .map_err(|err| {
-                        AppError::render_failed(
-                            Reason::TemplateRegistryIo,
-                            format!("failed to clone parent fd: {err}"),
-                        )
+                        AppError::internal(format!("failed to clone parent fd: {err}"))
                     })?;
 
                     created_dirs.push((parent_clone, segment.to_string()));
@@ -301,10 +281,9 @@ pub fn resolve_or_create_group(
                                         Mode::empty(),
                                     )
                                     .map_err(|err| {
-                                        AppError::render_failed(
-                                            Reason::TemplateRegistryIo,
-                                            format!("failed to clone parent fd: {err}"),
-                                        )
+                                        AppError::internal(format!(
+                                            "failed to clone parent fd: {err}"
+                                        ))
                                     })?;
 
                                     created_dirs.push((parent_clone, segment.to_string()));
@@ -332,30 +311,23 @@ pub fn resolve_or_create_group(
                                         EexistClassification::Unsafe(err) => return Err(err),
                                         EexistClassification::CaseConflict(err) => return Err(err),
                                         EexistClassification::Vanished => {
-                                            return Err(AppError::render_failed(
-                                                Reason::TemplateRegistryIo,
-                                                format!("unstable concurrent race creating group directory '{segment}'"),
-                                            ));
+                                            return Err(AppError::internal(format!("unstable concurrent race creating group directory '{segment}'")));
                                         }
                                     }
                                 }
                                 Err(err) => {
-                                    return Err(AppError::render_failed(
-                                        Reason::TemplateRegistryIo,
-                                        format!(
-                                            "failed to create group directory '{segment}': {err}"
-                                        ),
-                                    ));
+                                    return Err(AppError::internal(format!(
+                                        "failed to create group directory '{segment}': {err}"
+                                    )));
                                 }
                             }
                         }
                     }
                 }
                 Err(err) => {
-                    return Err(AppError::render_failed(
-                        Reason::TemplateRegistryIo,
-                        format!("failed to create group directory '{segment}': {err}"),
-                    ));
+                    return Err(AppError::internal(format!(
+                        "failed to create group directory '{segment}': {err}"
+                    )));
                 }
             }
         }
@@ -386,7 +358,7 @@ pub fn resolve_group_for_delete(
 ) -> Result<(OwnedFd, String), AppError> {
     let segments: Vec<&str> = group_path.split('/').collect();
     if segments.is_empty() {
-        return Err(AppError::not_found(group_path));
+        return Err(AppError::not_found(NotFoundKind::Group, group_path));
     }
 
     let mut current_fd = rustix::fs::openat(
@@ -395,12 +367,7 @@ pub fn resolve_group_for_delete(
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|err| {
-        AppError::render_failed(
-            Reason::TemplateRegistryIo,
-            format!("failed to clone root fd: {err}"),
-        )
-    })?;
+    .map_err(|err| AppError::internal(format!("failed to clone root fd: {err}")))?;
 
     for (idx, segment) in segments.iter().enumerate() {
         let is_last = idx == segments.len() - 1;
@@ -408,7 +375,7 @@ pub fn resolve_group_for_delete(
 
         let exact_found = entries.iter().any(|e| e == *segment);
         if !exact_found {
-            return Err(AppError::not_found(group_path));
+            return Err(AppError::not_found(NotFoundKind::Group, group_path));
         }
 
         if is_last {
@@ -427,13 +394,12 @@ pub fn resolve_group_for_delete(
                     ));
                 }
                 Err(err) if err == rustix::io::Errno::NOENT => {
-                    return Err(AppError::not_found(group_path));
+                    return Err(AppError::not_found(NotFoundKind::Group, group_path));
                 }
                 Err(err) => {
-                    return Err(AppError::render_failed(
-                        Reason::TemplateRegistryIo,
-                        format!("failed to open directory '{segment}': {err}"),
-                    ));
+                    return Err(AppError::internal(format!(
+                        "failed to open directory '{segment}': {err}"
+                    )));
                 }
             }
         } else {
@@ -454,32 +420,31 @@ pub fn resolve_group_for_delete(
                     ));
                 }
                 Err(err) if err == rustix::io::Errno::NOENT => {
-                    return Err(AppError::not_found(group_path));
+                    return Err(AppError::not_found(NotFoundKind::Group, group_path));
                 }
                 Err(err) => {
-                    return Err(AppError::render_failed(
-                        Reason::TemplateRegistryIo,
-                        format!("failed to open directory '{segment}': {err}"),
-                    ));
+                    return Err(AppError::internal(format!(
+                        "failed to open directory '{segment}': {err}"
+                    )));
                 }
             }
         }
     }
 
-    Err(AppError::not_found(group_path))
+    Err(AppError::not_found(NotFoundKind::Group, group_path))
 }
 
 /// Resolve an existing group path for rename.
 /// Returns `(parent_dir_fd, old_segment_name, group_dir_fd)`.
 /// Every component must match exact entry name (404 on mismatch).
-/// A symbolic link or regular file component produces `422 TemplateGroupUnsafePath`.
+/// A symbolic link or regular file component produces `422 TemplateInvalid` with `template_group_unsafe_path`.
 pub fn resolve_group_for_rename(
     root_fd: BorrowedFd<'_>,
     group_path: &str,
 ) -> Result<(OwnedFd, String, OwnedFd), AppError> {
     let segments: Vec<&str> = group_path.split('/').collect();
     if segments.is_empty() {
-        return Err(AppError::not_found(group_path));
+        return Err(AppError::not_found(NotFoundKind::Group, group_path));
     }
 
     let mut current_fd = rustix::fs::openat(
@@ -488,12 +453,7 @@ pub fn resolve_group_for_rename(
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
         Mode::empty(),
     )
-    .map_err(|err| {
-        AppError::render_failed(
-            Reason::TemplateRegistryIo,
-            format!("failed to clone root fd: {err}"),
-        )
-    })?;
+    .map_err(|err| AppError::internal(format!("failed to clone root fd: {err}")))?;
 
     for (idx, segment) in segments.iter().enumerate() {
         let is_last = idx == segments.len() - 1;
@@ -501,7 +461,7 @@ pub fn resolve_group_for_rename(
 
         let exact_found = entries.iter().any(|e| e == *segment);
         if !exact_found {
-            return Err(AppError::not_found(group_path));
+            return Err(AppError::not_found(NotFoundKind::Group, group_path));
         }
 
         match rustix::fs::openat(
@@ -536,18 +496,17 @@ pub fn resolve_group_for_rename(
                 ));
             }
             Err(err) if err == rustix::io::Errno::NOENT => {
-                return Err(AppError::not_found(group_path));
+                return Err(AppError::not_found(NotFoundKind::Group, group_path));
             }
             Err(err) => {
-                return Err(AppError::render_failed(
-                    Reason::TemplateRegistryIo,
-                    format!("failed to open directory '{segment}': {err}"),
-                ));
+                return Err(AppError::internal(format!(
+                    "failed to open directory '{segment}': {err}"
+                )));
             }
         }
     }
 
-    Err(AppError::not_found(group_path))
+    Err(AppError::not_found(NotFoundKind::Group, group_path))
 }
 
 /// Recursively collect relative subgroup paths within a directory descriptor.
@@ -585,10 +544,9 @@ pub fn collect_subgroup_rel_paths_fd(
                 continue;
             }
             Err(err) => {
-                return Err(AppError::render_failed(
-                    Reason::TemplateRegistryIo,
-                    format!("failed to open subdirectory '{entry}': {err}"),
-                ));
+                return Err(AppError::internal(format!(
+                    "failed to open subdirectory '{entry}': {err}"
+                )));
             }
         }
     }
@@ -616,17 +574,13 @@ pub fn rename_group_dir(
         Err(rustix::io::Errno::EXIST) => Err(AppError::conflict(format!(
             "destination group directory '{new_name}' already exists"
         ))),
-        Err(rustix::io::Errno::NOSYS) | Err(rustix::io::Errno::INVAL) => {
-            Err(AppError::render_failed(
-                Reason::TemplateRegistryIo,
-                "platform does not support atomic no-replace directory rename",
-            ))
-        }
-        Err(rustix::io::Errno::NOENT) => Err(AppError::not_found(old_name)),
-        Err(err) => Err(AppError::render_failed(
-            Reason::TemplateRegistryIo,
-            format!("failed to rename group directory '{old_name}' to '{new_name}': {err}"),
+        Err(rustix::io::Errno::NOSYS) | Err(rustix::io::Errno::INVAL) => Err(AppError::internal(
+            "platform does not support atomic no-replace directory rename",
         )),
+        Err(rustix::io::Errno::NOENT) => Err(AppError::not_found(NotFoundKind::Group, old_name)),
+        Err(err) => Err(AppError::internal(format!(
+            "failed to rename group directory '{old_name}' to '{new_name}': {err}"
+        ))),
     }
 }
 
@@ -657,19 +611,17 @@ pub fn stage_and_publish_new(
                 Err(rustix::io::Errno::EXIST) => PublishResult::AlreadyExists,
                 Err(err) => {
                     let _ = rustix::fs::unlinkat(dest_fd, &staging_name, AtFlags::empty());
-                    return Err(AppError::render_failed(
-                        Reason::TemplateWriteFailed,
-                        format!("failed to persist template: {err}"),
-                    ));
+                    return Err(AppError::internal(format!(
+                        "failed to persist template: {err}"
+                    )));
                 }
             }
         }
         Err(err) => {
             let _ = rustix::fs::unlinkat(dest_fd, &staging_name, AtFlags::empty());
-            return Err(AppError::render_failed(
-                Reason::TemplateWriteFailed,
-                format!("failed to persist template: {err}"),
-            ));
+            return Err(AppError::internal(format!(
+                "failed to persist template: {err}"
+            )));
         }
     };
 
@@ -690,10 +642,9 @@ pub fn stage_and_replace(
         Ok(()) => Ok(()),
         Err(err) => {
             let _ = rustix::fs::unlinkat(dest_fd, &staging_name, AtFlags::empty());
-            Err(AppError::render_failed(
-                Reason::TemplateWriteFailed,
-                format!("failed to persist template: {err}"),
-            ))
+            Err(AppError::internal(format!(
+                "failed to persist template: {err}"
+            )))
         }
     }
 }
@@ -714,16 +665,14 @@ pub fn move_template_file(
     ) {
         Ok(_) => {}
         Err(rustix::io::Errno::LOOP) => {
-            return Err(AppError::render_failed(
-                Reason::TemplateGroupUnsafePath,
-                format!("source file '{src_filename}' is a symbolic link"),
-            ));
+            return Err(AppError::internal(format!(
+                "source file '{src_filename}' is a symbolic link"
+            )));
         }
         Err(err) => {
-            return Err(AppError::render_failed(
-                Reason::TemplateRegistryIo,
-                format!("failed to open source file '{src_filename}': {err}"),
-            ));
+            return Err(AppError::internal(format!(
+                "failed to open source file '{src_filename}': {err}"
+            )));
         }
     }
 
@@ -736,14 +685,9 @@ pub fn move_template_file(
         RenameFlags::NOREPLACE,
     ) {
         Ok(()) => Ok(()),
-        Err(rustix::io::Errno::EXIST) => Err(AppError::template_id_collision(
-            dest_filename
-                .strip_suffix(".yaml")
-                .or_else(|| dest_filename.strip_suffix(".yml"))
-                .unwrap_or(dest_filename),
-            vec![dest_filename.to_string()],
-            format!("destination file '{dest_filename}' already exists"),
-        )),
+        Err(rustix::io::Errno::EXIST) => Err(AppError::conflict(format!(
+            "destination file '{dest_filename}' already exists"
+        ))),
         Err(rustix::io::Errno::NOSYS) | Err(rustix::io::Errno::INVAL) => {
             // Fallback to linkat + unlinkat
             match rustix::fs::linkat(
@@ -761,24 +705,17 @@ pub fn move_template_file(
                     }
                     Ok(())
                 }
-                Err(rustix::io::Errno::EXIST) => Err(AppError::template_id_collision(
-                    dest_filename
-                        .strip_suffix(".yaml")
-                        .or_else(|| dest_filename.strip_suffix(".yml"))
-                        .unwrap_or(dest_filename),
-                    vec![dest_filename.to_string()],
-                    format!("destination file '{dest_filename}' already exists"),
-                )),
-                Err(err) => Err(AppError::render_failed(
-                    Reason::TemplateWriteFailed,
-                    format!("failed to move template: {err}"),
-                )),
+                Err(rustix::io::Errno::EXIST) => Err(AppError::conflict(format!(
+                    "destination file '{dest_filename}' already exists"
+                ))),
+                Err(err) => Err(AppError::internal(format!(
+                    "failed to move template: {err}"
+                ))),
             }
         }
-        Err(err) => Err(AppError::render_failed(
-            Reason::TemplateWriteFailed,
-            format!("failed to move template: {err}"),
-        )),
+        Err(err) => Err(AppError::internal(format!(
+            "failed to move template: {err}"
+        ))),
     }
 }
 
@@ -787,10 +724,9 @@ pub fn unlink_file(dir_fd: BorrowedFd<'_>, filename: &str) -> Result<(), AppErro
     match rustix::fs::unlinkat(dir_fd, filename, AtFlags::empty()) {
         Ok(()) => Ok(()),
         Err(rustix::io::Errno::NOENT) => Ok(()),
-        Err(err) => Err(AppError::render_failed(
-            Reason::TemplateDeleteFailed,
-            format!("failed to delete template '{filename}': {err}"),
-        )),
+        Err(err) => Err(AppError::internal(format!(
+            "failed to delete template '{filename}': {err}"
+        ))),
     }
 }
 
@@ -824,10 +760,9 @@ fn stage_file_in_dir(
                     .and_then(|()| file.sync_all())
                 {
                     let _ = rustix::fs::unlinkat(dest_fd, &tmp_name, AtFlags::empty());
-                    return Err(AppError::render_failed(
-                        Reason::TemplateWriteFailed,
-                        format!("failed to write staging file: {err}"),
-                    ));
+                    return Err(AppError::internal(format!(
+                        "failed to write staging file: {err}"
+                    )));
                 }
                 return Ok((tmp_name, file.into()));
             }
@@ -835,29 +770,24 @@ fn stage_file_in_dir(
                 last_err = Some(rustix::io::Errno::EXIST);
             }
             Err(rustix::io::Errno::LOOP) => {
-                return Err(AppError::render_failed(
-                    Reason::TemplateGroupUnsafePath,
-                    format!("staging path for '{filename}' is a symbolic link"),
-                ));
+                return Err(AppError::internal(format!(
+                    "staging path for '{filename}' is a symbolic link"
+                )));
             }
             Err(err) => {
-                return Err(AppError::render_failed(
-                    Reason::TemplateWriteFailed,
-                    format!("failed to open staging file: {err}"),
-                ));
+                return Err(AppError::internal(format!(
+                    "failed to open staging file: {err}"
+                )));
             }
         }
     }
 
-    Err(AppError::render_failed(
-        Reason::TemplateWriteFailed,
-        format!(
-            "failed to write template: no free staging name for '{filename}': {}",
-            last_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "unknown".into())
-        ),
-    ))
+    Err(AppError::internal(format!(
+        "failed to write template: no free staging name for '{filename}': {}",
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown".into())
+    )))
 }
 
 /// Probe the volume containing `dir` for case sensitivity by attempting to
