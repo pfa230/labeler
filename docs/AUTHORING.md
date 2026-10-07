@@ -2,7 +2,7 @@
 
 A template is one YAML file that describes one label. This guide teaches the model by example; the rules themselves live in [`openspec/specs/`](../openspec/specs/), one spec per domain, and where this guide and a spec disagree, the guide is wrong.
 
-Every example quotes a template that ships under `catalog/` or `tests/fixtures/templates/`, except the flow snippet, which is marked.
+Examples are drawn from templates under `catalog/` and `tests/fixtures/templates/`, except the flow snippet, which is marked.
 
 ## The authoring loop
 
@@ -23,20 +23,21 @@ curl -s -X POST 'localhost:8080/api/render/label?format=png' \
   -H 'Content-Type: application/json' \
   -d '{"template":"brother_24mm","data":{"message":"Kitchen Utensils"}}' -o out.png
 
-# A sheet template renders through /api/batch, always to PDF.
-curl -s -X POST localhost:8080/api/batch \
+# A sheet template renders through /api/render, always to PDF.
+curl -s -X POST localhost:8080/api/render \
   -H 'Content-Type: application/json' \
-  -d '{"template":"avery5163","mode":"download","labels":[{"data":{"message":"Hello"}}]}' -o out.pdf
+  -d '{"template":"avery5163","labels":[{"data":{"message":"Hello"}}]}' -o out.pdf
 ```
 
 Nothing is seeded into a fresh config directory, so copy templates in yourself. After each edit, `POST /api/templates/reload` and render again. Open the image and check it against your intent: text inside the printable area, a square QR, no unexpected shrinking, nothing clipped at an edge. A `200` hides all of these.
 
-A file that fails to load does not stop the server. It is left out and listed under `broken` in `GET /api/templates`, with a message naming the offending key or item path.
+A file that fails to load does not stop the server. It is left out and listed under `broken` in `GET /api/templates`, with a message naming the offending key or item path. So is anything in `templates/` that is not a `<id>.yaml` file, such as a subfolder or a `.yml`.
 
 ## Anatomy of a template
 
 ```yaml
 name: My Label        # shown in the UI
+categories: [Tape]    # optional; the Labels view filters by these
 unit: mm              # mm | in: every coordinate and size is in this unit
 dpi: 180              # PNG raster resolution
 params: [ ... ]       # the inputs a request supplies
@@ -44,7 +45,7 @@ format: { ... }       # the label's physical shape
 layout: [ ... ]       # the items to draw, back to front
 ```
 
-The id is the filename stem (`templates/Shipping/pallet.yaml` is `pallet`, in group `Shipping`); there is no `id:` or `group:` key. A key the template does not define fails the load and names itself, except inside a `qr`'s `params:`, where unknown keys are ignored.
+`templates/` is one flat folder, and the id is the filename stem: `templates/pallet.yaml` is `pallet`; there is no `id:` key. A key the template does not define, or any key written as `null`, fails the load and names itself.
 
 `format` comes in two shapes, and most surprises follow from which one you picked:
 
@@ -116,7 +117,7 @@ layout:
 
 ![Kitchen Utensils on 24mm tape](images/authoring-tape-basic.png)
 
-The label has no width until a request arrives. The engine lays the content out against `width.max`, asks each top-level item how wide a frame it needs, takes the largest answer and clamps it into `[min, max]`. `height` is the printable height (18.1mm on 24mm tape); `media_width` matters only to the printer's media check.
+The label has no width until a request arrives. The engine lays the content out against `width.max`, asks each top-level item how wide a frame it needs, takes the largest answer and clamps it into `[min, max]`. `height` is the printable height (18.1mm on 24mm tape); `media_width` is sent with each print job, so a printer that knows its loaded tape can refuse the wrong one.
 
 What an item needs is the smallest frame that contains it: `at.x` plus its width for an ordinary item. Two placements contribute less than they look like they should. An item anchored to the right edge needs only its inset, because its position depends on the width being decided. A `line` contributes only the coordinates you wrote for its endpoints, never content of its own, so a rule drawn to the right edge follows the text rather than holding the label open.
 
@@ -128,15 +129,15 @@ Governing specs: [auto-length labels](../openspec/specs/templates/spec.md#requir
 
 ### `content` and `fill`
 
-Each component of `size` is a number, a `"{param}"` reference, `content` (hug the item's own size: laid-out text, QR matrix, image dimensions, a container's children plus padding) or `fill` (stretch to the room left in the frame from the item's anchor). A container with neither `size` nor `to` is `[fill, fill]`.
+Each component of `size` is a number, a `"{param}"` reference, `content` (hug the item's own size: laid-out text, QR matrix, a container's children plus padding) or `fill` (stretch to the room left in the frame from the item's anchor). Every boxed item, containers included, sets `size` or `to`.
 
 On an auto-length label the two contribute the same width, because a `fill` item reports its content upward and then takes the frame. They differ afterwards: when the label is wider than the content asked for (clamped up to `width.min`, or widened by another item), a `fill` box takes the slack and `content` does not. That is why the tape above writes `fill`: a short message widens to 10mm and `horizontal: center` centres it there, where a `content` box would sit against the left padding.
 
-A `qr` sized `content` or `fill` needs `params.module_size` so it has an intrinsic size; an image needs dimensions or a `viewBox`. Governing spec: [extent sources](../openspec/specs/layout/spec.md#requirement-an-extent-comes-from-the-author-the-content-or-the-frame), [intrinsic sizes](../openspec/specs/layout/spec.md#requirement-intrinsic-sizes).
+A `qr` sized `content` or `fill` needs `module_size` so it has an intrinsic size. An image has none: its box is always authored, and `fit` (`contain`, `cover`, `stretch`) scales the image into it. Governing spec: [extent sources](../openspec/specs/layout/spec.md#requirement-an-extent-comes-from-the-author-the-content-or-the-frame), [intrinsic sizes](../openspec/specs/layout/spec.md#requirement-intrinsic-sizes).
 
 ### `max_w` and `max_h` are caps
 
-A cap bounds a `content` or `fill` extent, never a number you wrote: `size: [40.0, …]` with `max_w: 30.0` is 40 wide. `tests/fixtures/templates/brother_24mm_max_w_cap.yaml` puts an 18.1mm QR at `[1.0, 0.0]`, then:
+A cap bounds a `content` or `fill` extent; on a number you wrote, or on a `to`, it is refused at load. `tests/fixtures/templates/brother_24mm_max_w_cap.yaml` puts an 18.1mm QR at `[1.0, 0.0]`, then:
 
 ```yaml
   - type: text
@@ -196,7 +197,7 @@ Governing spec: [coordinates](../openspec/specs/layout/spec.md#requirement-coord
 
 ### Containers, `when:` and rotation
 
-A container groups items into a new frame, its padded inner box, and may paint a `shape` (`rect`, `ellipse`, `circle`), `stroke`, `background` and `rounded` corners. `when:` shows an item only when every listed parameter matches; an inactive item is not measured, not drawn, and does not require its fields. `tests/fixtures/templates/avery5163_asset_tag.yaml` declares two enums:
+A container groups items into a new frame, its padded inner box, and may paint a `shape` (`rect` or `ellipse`), `stroke`, `background` and `rounded` corners. `when:` shows an item only when every listed parameter matches; an inactive item is not measured, not drawn, and does not require its fields. `tests/fixtures/templates/avery5163_asset_tag.yaml` declares two enums:
 
 ```yaml
   - name: orientation
@@ -224,8 +225,7 @@ The `vertical` branch is a portrait design rotated onto the landscape slot. `rot
         value: "{url}"
         at: [0.2, 2.3]
         size: [1.6, 1.6]
-        params:
-          quiet_zone: 0.0
+        quiet_zone: 0.0
 ```
 
 ![The horizontal and vertical branches side by side](images/authoring-asset-tag.png)
@@ -276,21 +276,15 @@ Load refuses whatever the template alone shows to be wrong; on an auto-length la
 | Symptom or reason | Fix |
 | --- | --- |
 | Template missing, listed under `broken` | Read its message: it names the key or the item path (`layout[0].items[2]`). Fix, then reload. |
-| `template_parse_failed` | A misspelled or misplaced key, or a wrong YAML shape. The message names it. |
-| `template_validation_failed` | Follow the item path in the message. Common: geometry past `width.max`, `size` and `to` together, a `when:` naming an undeclared parameter, a `qr` sized `content` without `module_size`. |
-| `MissingField` | Supply the named field, or declare a `default:`. For `vars.x` set the variable; for `x:fmt` add the format to `datetime_formats`. |
+| `template_validation_failed` | Follow the key or item path in the message. Common: a misspelled, misplaced or `null` key, geometry past `width.max`, `size` and `to` together or neither, a `when:` naming an undeclared parameter, a `qr` sized `content` without `module_size`, an unbalanced brace (write literal braces as `{{` and `}}`). |
+| `missing_field` | Supply the named field, or declare a `default:`. For `vars.x` set the variable; for `x:fmt` add the format to `datetime_formats`. |
 | `data_key_unknown` | The request sends a key the template does not declare. Declare it or drop it. |
-| `InvalidEnumValue` | Send one of the declared `values`. |
-| `param_default_unresolvable` | The default names an absent variable, or resolves to a value its type cannot read. |
+| `param_value_invalid` | Send a value the parameter's type accepts: one of an enum's `values`, a number within `min`/`max`, a whole number for `integer`. The same applies to what a tokened `default:` resolves to. |
 | `text_does_not_fit` | Enlarge the box, lower `font_size.min`, or (under `fail` only) switch to `ellipsis`. |
 | `item_out_of_frame`, `coord_out_of_frame`, `line_endpoint_out_of_frame` | Children resolve against the padded inner box, not the container's outer size. In a flow, cap `content`/`fill` children with `max_w`/`max_h`. |
 | `edge_rect_inverted` | Check signs: `-0.0` is the far edge, `0.0` the near one. |
 | `size_invalid` | A parameter supplied a size of zero or less. |
-| `intrinsic_size_undefined` | Give the SVG absolute `width`/`height` or a `viewBox`, or write a numeric `size`. |
-| `circle_box_not_square` | Make both extents resolve equal, or use `shape: ellipse`. |
 | `width_bounds_inverted` | A supplied `width` bound put `max` below `min`. |
-| `dimension_exceeds_limit` | Check dimension parameters, or the `max_label_dimension_mm` setting. |
-| `interpolation_syntax` | An unbalanced brace in a value; write literal braces as `{{` and `}}`. |
-| `color_param_invalid` | Send one of the sixteen colour names or a `#hex` value. |
+| `dimension_exceeds_limit` | A label dimension is zero or less, or over 1000 mm. Check dimension parameters. |
 | Text smaller than expected | A `font_size` range shrank it to fit; the box is too small for the value, accents and descenders included. |
 | Top-aligned lowercase sits lower than capitals | Alignment places the cap-height-to-baseline box, not the ink. Use `vertical: center` where baselines must match across labels. |
