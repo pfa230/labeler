@@ -1635,6 +1635,17 @@ impl<'a> RenderContext<'a> {
                     }
                 });
 
+                if let Some(crate::models::DynamicValue::Literal(w)) = &dyn_weight {
+                    if !(100..=900).contains(w) || w % 100 != 0 {
+                        return Err(AppError::invalid_request(
+                            crate::errors::Reason::RequestBodyInvalid,
+                            format!(
+                                "font_weight must be a multiple of 100 between 100 and 900, got {w}"
+                            ),
+                        ));
+                    }
+                }
+
                 let resolved_line_spacing = match line_spacing {
                     None => None,
                     Some(dyn_val) => {
