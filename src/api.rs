@@ -26,16 +26,17 @@ use crate::{
     extract::{Json, Path},
     fs_safe::{self, PublishResult},
     models::{
-        BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, PrintRequest,
-        ReloadResponse, RenameGroupRequest, RenameGroupResponse, RenderLabelRequest,
-        TemplateDetail, TemplateGroupUpdate, TemplateInputsRequest, TemplateInputsResponse,
-        TemplateList, VariableValue,
+        BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, NewPrinter,
+        PrintRequest, Printer, PrinterConnection, PrinterUpdate, ReloadResponse,
+        RenameGroupRequest, RenameGroupResponse, RenderLabelRequest, TemplateDetail,
+        TemplateGroupUpdate, TemplateInputsRequest, TemplateInputsResponse, TemplateList,
+        VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
     reason::Reason,
     render::{render_single_label_image, render_single_label_pdf, ColorMode, ImageRenderOptions},
-    store::{Printer, Store},
+    store::Store,
     templates::{
         validate_group_name, validate_template_id_stem, TemplateContent, TemplateDefinition,
         TemplateRegistry, TemplateRegistryError,
@@ -231,10 +232,6 @@ fn api_router() -> Router<Arc<AppState>> {
         .route(
             "/printers/{id}",
             get(get_printer).put(replace_printer).delete(delete_printer),
-        )
-        .route(
-            "/printers/{id}/default",
-            post(set_printer_default).delete(clear_printer_default),
         )
         .route(
             "/connections",
@@ -1326,25 +1323,23 @@ pub async fn template_inputs(
     Ok(Json(TemplateInputsResponse { inputs }))
 }
 
-fn validate_printer(printer: &Printer) -> Result<(), AppError> {
-    if printer.id.is_empty()
-        || !printer
-            .id
+fn validate_printer(id: &str, name: &str, connection: &PrinterConnection) -> Result<(), AppError> {
+    if id.is_empty()
+        || !id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(AppError::invalid_request(
             Reason::PrinterIdInvalid,
             format!(
-                "printer id '{}' must be non-empty and contain only letters, digits, '-' or '_'",
-                printer.id
+                "printer id '{id}' must be non-empty and contain only letters, digits, '-' or '_'"
             ),
         ));
     }
-    if printer.name.trim().is_empty() {
+    if name.trim().is_empty() {
         return Err(AppError::printer_invalid("printer name must not be empty"));
     }
-    crate::driver::validate_config(&printer.kind, &printer.config)
+    crate::driver::driver_for(connection)
         .map_err(|err| AppError::printer_invalid(err.to_string()))?;
     Ok(())
 }
@@ -1357,17 +1352,13 @@ fn validate_printer(printer: &Printer) -> Result<(), AppError> {
 pub async fn list_printers(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<Printer>>, AppError> {
-    let mut printers = state.store().list_printers().await?;
-    for p in &mut printers {
-        p.config = crate::driver::redact_config(&p.kind, &p.config);
-    }
-    Ok(Json(printers))
+    Ok(Json(state.store().list_printers().await?))
 }
 
 #[utoipa::path(
     post,
     path = "/printers",
-    request_body = Printer,
+    request_body = NewPrinter,
     responses(
         (status = 201, description = "Printer created", body = Printer),
         (status = 400, description = "Invalid printer", body = ErrorResponse),
@@ -1376,20 +1367,22 @@ pub async fn list_printers(
 )]
 pub async fn create_printer(
     State(state): State<Arc<AppState>>,
-    Json(mut printer): Json<Printer>,
+    Json(body): Json<NewPrinter>,
 ) -> Result<Response, AppError> {
-    validate_printer(&printer)?;
+    let connection = body.connection();
+    validate_printer(&body.id, &body.name, &connection)?;
     let _guard = state.write_lock.lock().await;
-    if state.store().get_printer(&printer.id).await?.is_some() {
+    if state.store().get_printer(&body.id).await?.is_some() {
         return Err(AppError::conflict(format!(
             "A printer with id '{}' already exists",
-            printer.id
+            body.id
         )));
     }
-    crate::driver::merge_secrets(&printer.kind, &mut printer.config, None);
-    state.store().upsert_printer(&printer).await?;
-    printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
-    printer.is_default = false; // a new row is never default; upsert_printer ignores is_default
+    state
+        .store()
+        .insert_printer(&body.id, &body.name, &connection)
+        .await?;
+    let printer = Printer::new(body.id, body.name, connection);
     Ok((axum::http::StatusCode::CREATED, Json(printer)).into_response())
 }
 
@@ -1406,12 +1399,11 @@ pub async fn get_printer(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Printer>, AppError> {
-    let mut printer = state
+    let printer = state
         .store()
         .get_printer(&id)
         .await?
         .ok_or_else(|| AppError::not_found(NotFoundKind::Printer, id))?;
-    printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
     Ok(Json(printer))
 }
 
@@ -1476,65 +1468,31 @@ pub struct SettingValue {
     responses((status = 200, description = "Resolved application settings", body = std::collections::BTreeMap<String, ResolvedSetting>))
 )]
 pub async fn get_settings(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
-    use std::collections::BTreeMap;
-    let stored = state
-        .store()
-        .get_setting(crate::settings::JOB_LOG_RETENTION_DAYS)
-        .await?;
-    let is_default = stored.is_none();
-    let days = crate::settings::resolve_retention_days_from(stored)
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    let mut out: BTreeMap<String, ResolvedSetting> = BTreeMap::new();
-    out.insert(
-        crate::settings::JOB_LOG_RETENTION_DAYS.to_string(),
-        ResolvedSetting {
-            value: serde_json::json!(days),
-            is_default,
-        },
-    );
-    let dt_stored = state
-        .store()
-        .get_setting(crate::settings::DATETIME_FORMATS)
-        .await?;
-    let dt_is_default = dt_stored.is_none();
-    let dt_formats = crate::settings::resolve_datetime_formats_from(dt_stored)
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    out.insert(
-        crate::settings::DATETIME_FORMATS.to_string(),
-        ResolvedSetting {
-            value: serde_json::json!(dt_formats),
-            is_default: dt_is_default,
-        },
-    );
-    let max_dim_stored = state
-        .store()
-        .get_setting(crate::settings::MAX_LABEL_DIMENSION_MM)
-        .await?;
-    let max_dim_is_default = max_dim_stored.is_none();
-    let max_dim = crate::settings::resolve_max_label_dimension_mm_from(max_dim_stored)
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    out.insert(
-        crate::settings::MAX_LABEL_DIMENSION_MM.to_string(),
-        ResolvedSetting {
-            value: serde_json::json!(max_dim),
-            is_default: max_dim_is_default,
-        },
-    );
-    let def_conn_stored = state
-        .store()
-        .get_setting(crate::settings::DEFAULT_CONNECTION_ID)
-        .await?;
-    let def_conn_is_default = def_conn_stored.is_none();
-    let def_conn_id = crate::settings::resolve_default_connection_id_from(def_conn_stored)
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    out.insert(
-        crate::settings::DEFAULT_CONNECTION_ID.to_string(),
-        ResolvedSetting {
-            value: serde_json::json!(def_conn_id),
-            is_default: def_conn_is_default,
-        },
-    );
+    let mut out = std::collections::BTreeMap::new();
+    for key in crate::settings::KNOWN {
+        let stored = state.store().get_setting(key).await?;
+        out.insert(key.to_string(), resolved_setting(key, stored)?);
+    }
     Ok(Json(out).into_response())
+}
+
+/// A known setting's effective value from its stored override (`None`: the in-code default). A
+/// stored override that no longer parses is a `500`.
+fn resolved_setting(key: &str, stored: Option<String>) -> Result<ResolvedSetting, AppError> {
+    use crate::settings::{
+        resolve_datetime_formats_from, resolve_default_id_from, DATETIME_FORMATS,
+        DEFAULT_CONNECTION_ID, DEFAULT_PRINTER_ID,
+    };
+    let is_default = stored.is_none();
+    let value = match key {
+        DATETIME_FORMATS => resolve_datetime_formats_from(stored).map(|v| serde_json::json!(v)),
+        DEFAULT_CONNECTION_ID | DEFAULT_PRINTER_ID => {
+            resolve_default_id_from(key, stored).map(|v| serde_json::json!(v))
+        }
+        _ => return Err(AppError::internal(format!("unknown setting '{key}'"))),
+    }
+    .map_err(|e| AppError::internal(e.to_string()))?;
+    Ok(ResolvedSetting { value, is_default })
 }
 
 #[utoipa::path(
@@ -1560,30 +1518,29 @@ pub async fn put_setting(
     let canonical = crate::settings::validate(&key, &body.value)
         .map_err(|err| AppError::invalid_request(Reason::SettingValueInvalid, err))?;
     let _guard = state.write_lock.lock().await;
-    if key == crate::settings::DEFAULT_CONNECTION_ID {
-        let exists = state.store().get_connection(&canonical).await?.is_some();
-        if !exists {
-            return Err(AppError::invalid_request(
-                Reason::SettingValueInvalid,
-                format!("connection '{canonical}' does not exist"),
-            ));
-        }
+    let missing = match key.as_str() {
+        crate::settings::DEFAULT_CONNECTION_ID => state
+            .store()
+            .get_connection(&canonical)
+            .await?
+            .is_none()
+            .then_some("connection"),
+        crate::settings::DEFAULT_PRINTER_ID => state
+            .store()
+            .get_printer(&canonical)
+            .await?
+            .is_none()
+            .then_some("printer"),
+        _ => None,
+    };
+    if let Some(kind) = missing {
+        return Err(AppError::invalid_request(
+            Reason::SettingValueInvalid,
+            format!("{kind} '{canonical}' does not exist"),
+        ));
     }
     state.store().set_setting(&key, &canonical).await?;
-    let value: serde_json::Value = if key == crate::settings::DEFAULT_CONNECTION_ID {
-        serde_json::Value::String(canonical)
-    } else {
-        // canonical is the validated integer text; reflect it back as a JSON number
-        canonical
-            .parse::<u32>()
-            .map(serde_json::Value::from)
-            .unwrap_or(body.value)
-    };
-    Ok(Json(ResolvedSetting {
-        value,
-        is_default: false,
-    })
-    .into_response())
+    Ok(Json(resolved_setting(&key, Some(canonical))?).into_response())
 }
 
 #[utoipa::path(
@@ -1644,38 +1601,34 @@ pub async fn preview_datetime_format(
     put,
     path = "/printers/{id}",
     params(("id" = String, Path, description = "Printer ID")),
-    request_body = Printer,
+    request_body = PrinterUpdate,
     responses(
         (status = 200, description = "Printer replaced", body = Printer),
-        (status = 400, description = "Invalid printer, or body id does not match path id", body = ErrorResponse),
+        (status = 400, description = "Invalid printer", body = ErrorResponse),
         (status = 404, description = "Printer not found", body = ErrorResponse)
     )
 )]
 pub async fn replace_printer(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(mut printer): Json<Printer>,
+    Json(body): Json<PrinterUpdate>,
 ) -> Result<Response, AppError> {
-    if printer.id != id {
-        return Err(AppError::invalid_request(
-            Reason::PrinterIdMismatch,
-            format!(
-                "printer id in body ('{}') must match path id ('{id}')",
-                printer.id
-            ),
-        ));
-    }
-    validate_printer(&printer)?;
+    let mut connection = body.connection();
+    validate_printer(&id, &body.name, &connection)?;
     let _guard = state.write_lock.lock().await;
-    let existing = state.store().get_printer(&id).await?;
-    let Some(existing) = existing else {
+    let Some(existing) = state.store().get_printer_connection(&id).await? else {
         return Err(AppError::not_found(NotFoundKind::Printer, id));
     };
-    crate::driver::merge_secrets(&printer.kind, &mut printer.config, Some(&existing.config));
-    state.store().upsert_printer(&printer).await?;
-    printer.config = crate::driver::redact_config(&printer.kind, &printer.config);
-    printer.is_default = existing.is_default; // replace preserves stored default; upsert ignores it
-    Ok((axum::http::StatusCode::OK, Json(printer)).into_response())
+    connection.password = match connection.password {
+        None => existing.password,
+        Some(p) if p.is_empty() => None,
+        replaced => replaced,
+    };
+    state
+        .store()
+        .replace_printer(&id, &body.name, &connection)
+        .await?;
+    Ok(Json(Printer::new(id, body.name, connection)).into_response())
 }
 
 #[utoipa::path(
@@ -1692,56 +1645,11 @@ pub async fn delete_printer(
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
     let _guard = state.write_lock.lock().await;
-    if state.store().delete_printer(&id).await? {
+    if state.store().delete_printer_and_default(&id).await? {
         Ok(axum::http::StatusCode::NO_CONTENT.into_response())
     } else {
         Err(AppError::not_found(NotFoundKind::Printer, id))
     }
-}
-
-#[utoipa::path(
-    post,
-    path = "/printers/{id}/default",
-    params(("id" = String, Path, description = "Printer ID")),
-    responses(
-        (status = 204, description = "Printer set as the global default"),
-        (status = 404, description = "Printer not found", body = ErrorResponse)
-    )
-)]
-pub async fn set_printer_default(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let _guard = state.write_lock.lock().await;
-    if state.store().set_default_printer(&id).await? {
-        Ok(axum::http::StatusCode::NO_CONTENT.into_response())
-    } else {
-        Err(AppError::not_found(NotFoundKind::Printer, id))
-    }
-}
-
-#[utoipa::path(
-    delete,
-    path = "/printers/{id}/default",
-    params(("id" = String, Path, description = "Printer ID")),
-    responses((status = 204, description = "Default flag cleared on the printer (idempotent)"))
-)]
-pub async fn clear_printer_default(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let _guard = state.write_lock.lock().await;
-    state.store().clear_default_printer(&id).await?;
-    Ok(axum::http::StatusCode::NO_CONTENT.into_response())
-}
-
-/// Request body for `POST /printers/probe`: an unsaved driver config to test-connect. Auth is out of
-/// scope (#118), so no `id` and no stored-secret merge.
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-pub struct ProbeRequest {
-    #[serde(default)]
-    pub kind: Option<String>,
-    pub config: serde_json::Value,
 }
 
 /// The printer's self-reported capabilities, shaped for UI feedback.
@@ -1787,18 +1695,16 @@ impl ProbeResponse {
 #[utoipa::path(
     post,
     path = "/printers/probe",
-    request_body = ProbeRequest,
+    request_body = PrinterConnection,
     responses(
         (status = 200, description = "Probe result (ok or unreachable)", body = ProbeResponse),
-        (status = 400, description = "Invalid printer config", body = ErrorResponse)
+        (status = 400, description = "Invalid printer", body = ErrorResponse)
     )
 )]
-pub async fn probe_printer(Json(req): Json<ProbeRequest>) -> Result<Json<ProbeResponse>, AppError> {
-    let kind = req.kind.as_deref().unwrap_or("cups").to_string();
-    let config = req.config;
-    crate::driver::validate_config(&kind, &config)
-        .map_err(|e| AppError::printer_invalid(e.to_string()))?;
-    let driver = crate::driver::build_driver(&kind, &config)
+pub async fn probe_printer(
+    Json(connection): Json<PrinterConnection>,
+) -> Result<Json<ProbeResponse>, AppError> {
+    let driver = crate::driver::driver_for(&connection)
         .map_err(|e| AppError::printer_invalid(e.to_string()))?;
     Ok(Json(match driver.probe().await {
         crate::driver::ProbeOutcome::Ok(c) => ProbeResponse::ok(c),
@@ -2326,14 +2232,14 @@ async fn run_batch(
             let printer_id = printer.ok_or_else(|| {
                 AppError::invalid_request(Reason::PrinterRequired, "mode=print requires a printer")
             })?;
-            let printer = state
+            let connection = state
                 .store()
-                .get_printer(printer_id)
+                .get_printer_connection(printer_id)
                 .await?
                 .ok_or_else(|| {
                     AppError::not_found(NotFoundKind::Printer, printer_id.to_string())
                 })?;
-            let driver = crate::driver::build_driver(&printer.kind, &printer.config)
+            let driver = crate::driver::driver_for(&connection)
                 .map_err(|err| AppError::printer_invalid(err.to_string()))?;
             let ovr = driver.configured_render_override();
             let template_media_width = match &template.format {
@@ -2765,23 +2671,15 @@ pub async fn remove_favorite(
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
 
-#[derive(serde::Deserialize)]
-pub struct RecentQuery {
-    pub limit: Option<u32>,
-}
-
 #[utoipa::path(get, path = "/recent-templates", tag = "favorites",
-    params(("limit" = Option<u32>, Query, description = "Max results (default 6, cap 20)")),
-    responses((status = 200, description = "Recently printed template ids", body = Vec<String>)))]
+    responses((status = 200, description = "The caller's 6 most recently printed template ids", body = Vec<String>)))]
 pub async fn recent_templates(
     State(state): State<Arc<AppState>>,
     axum::Extension(principal): axum::Extension<crate::middleware::Principal>,
-    Query(q): Query<RecentQuery>,
 ) -> Result<Json<Vec<String>>, AppError> {
-    let limit = q.limit.unwrap_or(6).clamp(1, 20);
     let ids = state
         .store()
-        .recent_templates(&principal.actor_id(), limit)
+        .recent_templates(&principal.actor_id())
         .await?;
     let registry = state.templates.load_full();
     Ok(Json(
@@ -3009,22 +2907,16 @@ pub async fn me(
             .into_response(),
         ));
     }
-    if let Some(p) = crate::middleware::resolve_optional(&state, &headers).await {
-        let me = match p {
-            crate::middleware::Principal::User { id, username } => {
-                serde_json::json!({"id": id, "username": username})
-            }
-            crate::middleware::Principal::Token { .. } => {
-                serde_json::json!({"id": "token", "username": "api-token"})
-            }
-            // resolve_optional never returns Local, but the match must be exhaustive.
-            crate::middleware::Principal::Local => {
-                serde_json::json!({"id": "local", "username": "local"})
-            }
-        };
+    if let Some(crate::middleware::Principal::User { id, username, .. }) =
+        crate::middleware::resolve_optional(&state, &headers).await
+    {
         return Ok(no_store(
-            Json(serde_json::json!({"authed": true, "needsSetup": false, "me": me}))
-                .into_response(),
+            Json(serde_json::json!({
+                "authed": true,
+                "needsSetup": false,
+                "me": {"id": id, "username": username}
+            }))
+            .into_response(),
         ));
     }
     let needs_setup = state.store().count_users().await.map_err(AppError::from)? == 0;
@@ -3157,7 +3049,12 @@ pub async fn change_password(
     axum::Extension(p): axum::Extension<crate::middleware::Principal>,
     Json(body): Json<PasswordChange>,
 ) -> Result<Response, AppError> {
-    let crate::middleware::Principal::User { id, .. } = p else {
+    let crate::middleware::Principal::User {
+        id,
+        by_token: false,
+        ..
+    } = p
+    else {
         return Err(AppError::forbidden("token cannot change a password"));
     };
     let user = state
@@ -3195,17 +3092,35 @@ pub struct TokenCreate {
     pub name: String,
 }
 
+/// The calling user's id for the token endpoints. No-auth mode refuses `/tokens*` in the middleware,
+/// so `Local` cannot reach a handler; it is refused rather than trusted.
+fn token_owner(principal: &crate::middleware::Principal) -> Result<&str, AppError> {
+    match principal {
+        crate::middleware::Principal::User { id, .. } => Ok(id),
+        crate::middleware::Principal::Local => {
+            Err(AppError::forbidden("authentication is disabled"))
+        }
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/tokens",
     tag = "auth",
     responses(
-        (status = 200, description = "List API tokens (never the secret)", body = [TokenSummary]),
+        (status = 200, description = "The caller's own API tokens (never the secret)", body = [TokenSummary]),
         (status = 401, description = "Not authenticated", body = ErrorResponse)
     )
 )]
-pub async fn list_tokens(State(state): State<Arc<AppState>>) -> Result<Response, AppError> {
-    let t = state.store().list_tokens().await.map_err(AppError::from)?;
+pub async fn list_tokens(
+    State(state): State<Arc<AppState>>,
+    axum::Extension(p): axum::Extension<crate::middleware::Principal>,
+) -> Result<Response, AppError> {
+    let t = state
+        .store()
+        .list_tokens(token_owner(&p)?)
+        .await
+        .map_err(AppError::from)?;
     Ok(Json(
         t.into_iter()
             .map(|t| {
@@ -3222,19 +3137,21 @@ pub async fn list_tokens(State(state): State<Arc<AppState>>) -> Result<Response,
     tag = "auth",
     request_body = TokenCreate,
     responses(
-        (status = 201, description = "Token created; secret returned once", body = TokenCreated),
+        (status = 201, description = "Token created for the caller; secret returned once", body = TokenCreated),
         (status = 401, description = "Not authenticated", body = ErrorResponse)
     )
 )]
 pub async fn create_token_h(
     State(state): State<Arc<AppState>>,
+    axum::Extension(p): axum::Extension<crate::middleware::Principal>,
     Json(body): Json<TokenCreate>,
 ) -> Result<Response, AppError> {
+    let owner = token_owner(&p)?;
     let _guard = state.write_lock.lock().await;
     let secret = format!("lbl_{}", crate::auth::random_secret());
     let t = state
         .store()
-        .create_token(&body.name, &crate::auth::sha256_hex(&secret))
+        .create_token(owner, &body.name, &crate::auth::sha256_hex(&secret))
         .await
         .map_err(AppError::from)?;
     Ok((
@@ -3252,17 +3169,19 @@ pub async fn create_token_h(
     responses(
         (status = 204, description = "Token revoked"),
         (status = 401, description = "Not authenticated", body = ErrorResponse),
-        (status = 404, description = "Token not found", body = ErrorResponse)
+        (status = 404, description = "No such token of the caller's", body = ErrorResponse)
     )
 )]
 pub async fn delete_token_h(
     State(state): State<Arc<AppState>>,
+    axum::Extension(p): axum::Extension<crate::middleware::Principal>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
+    let owner = token_owner(&p)?;
     let _guard = state.write_lock.lock().await;
     if !state
         .store()
-        .delete_token(&id)
+        .delete_token(owner, &id)
         .await
         .map_err(AppError::from)?
     {

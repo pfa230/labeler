@@ -1,6 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, getJson, sendJson, del, putVoid } from "./client";
-import type { TemplateListResponse, TemplateDetail, Printer, ProbeResult } from "./types";
+import type { TemplateListResponse, TemplateDetail, Printer, PrinterConnection, PrinterUpdate, ProbeResult } from "./types";
 
 export function useTemplates(params?: { group?: string; nested?: boolean }) {
   const queryParams = new URLSearchParams();
@@ -194,7 +194,7 @@ export function useVariables() {
 }
 
 export interface ResolvedSetting {
-  value: unknown; // JSON: number for retention, Record<string,string> for datetime_formats
+  value: unknown; // JSON: Record<string,string> for datetime_formats, string|null for the default ids
   is_default: boolean;
 }
 
@@ -238,10 +238,10 @@ export function useUpsertVariable() {
 export function useSavePrinter() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ printer, isNew }: { printer: Printer; isNew: boolean }) =>
+    mutationFn: ({ id, printer, isNew }: { id: string; printer: PrinterUpdate; isNew: boolean }) =>
       isNew
-        ? sendJson<Printer>("POST", "/printers", printer)
-        : sendJson<Printer>("PUT", `/printers/${encodeURIComponent(printer.id)}`, printer),
+        ? sendJson<Printer>("POST", "/printers", { id, ...printer })
+        : sendJson<Printer>("PUT", `/printers/${encodeURIComponent(id)}`, printer),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
   });
 }
@@ -250,31 +250,18 @@ export function useDeletePrinter() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => del(`/printers/${encodeURIComponent(id)}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["printers"] });
+      // The server clears default_printer_id when it named the deleted printer.
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
   });
 }
 
-// Test-connect an unsaved cups config; returns the printer's self-reported capabilities.
+// Test-connect an unsaved printer; returns its self-reported capabilities.
 export function useProbePrinter() {
   return useMutation({
-    mutationFn: (config: unknown) =>
-      sendJson<ProbeResult>("POST", "/printers/probe", { kind: "cups", config }),
-  });
-}
-
-export function useSetDefaultPrinter() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => sendJson("POST", `/printers/${encodeURIComponent(id)}/default`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
-  });
-}
-
-export function useClearDefaultPrinter() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => del(`/printers/${encodeURIComponent(id)}/default`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["printers"] }),
+    mutationFn: (connection: PrinterConnection) => sendJson<ProbeResult>("POST", "/printers/probe", connection),
   });
 }
 

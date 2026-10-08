@@ -106,7 +106,29 @@ export interface TemplateInputsResponse {
   inputs: InputSpec[][];
 }
 export interface BatchSummary { total: number; succeeded: number; failed: { index: number; error: string }[]; jobs: number }
-export interface Printer { id: string; name: string; kind: string; config: unknown; is_default?: boolean }
+export interface RenderProfile { color_mode?: "color" | "bilevel"; resolution?: number }
+
+export interface Printer {
+  id: string;
+  name: string;
+  uri: string;
+  username?: string;
+  ca_cert?: string;
+  insecure: boolean;
+  render?: RenderProfile;
+}
+
+// The probe body: a printer's connection fields without its id or name.
+export interface PrinterConnection {
+  uri: string;
+  username?: string;
+  ca_cert?: string;
+  insecure?: boolean;
+  render?: RenderProfile;
+}
+
+// The PUT body; POST adds the id.
+export interface PrinterUpdate extends PrinterConnection { name: string }
 
 export interface ProbeCapabilities {
   model?: string | null;

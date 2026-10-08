@@ -46,13 +46,19 @@ const sheet: TemplateDetail = {
   variables: [],
 };
 
-const printers = [{ id: "p1", name: "Label Printer", kind: "cups", config: null }];
+const printers = [{ id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false }];
 const summary = { total: 1, succeeded: 1, failed: [], jobs: 1 };
 
-function stubFetch(printersList: unknown[] = printers) {
+function stubFetch(printersList: unknown[] = printers, defaultPrinterId: string | null = null) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     void init;
     const url = typeof input === "string" ? input : input.toString();
+    if (url === "/api/settings") {
+      return new Response(
+        JSON.stringify({ default_printer_id: { value: defaultPrinterId, is_default: defaultPrinterId === null } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (url.startsWith("/api/printers")) {
       return new Response(JSON.stringify(printersList), {
         status: 200,
@@ -194,6 +200,34 @@ describe("PrintForm copies", () => {
   });
 });
 
+describe("PrintForm printer preselect", () => {
+  const two = [
+    { id: "p1", name: "Label Printer", uri: "ipp://p1/q", insecure: false },
+    { id: "p2", name: "Backup Printer", uri: "ipp://p2/q", insecure: false },
+  ];
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("preselects the printer named by default_printer_id", async () => {
+    fetchMock = stubFetch(two, "p2");
+    vi.stubGlobal("fetch", fetchMock);
+    renderForm(tape);
+    const select = (await screen.findByLabelText("printer")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("p2"));
+  });
+
+  // Regression guard: the sole-printer fallback predates the setting.
+  it("preselects the only printer when no default is set", async () => {
+    fetchMock = stubFetch(printers, null);
+    vi.stubGlobal("fetch", fetchMock);
+    renderForm(tape);
+    const select = (await screen.findByLabelText("printer")) as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe("p1"));
+  });
+});
+
 describe("PrintForm phone-first layout", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -263,7 +297,7 @@ describe("PrintForm gating and submission pruning", () => {
       void init;
       const url = typeof input === "string" ? input : input.toString();
       if (url.startsWith("/api/printers")) {
-        return new Response(JSON.stringify([{ id: "p1", name: "P1", kind: "cups", is_default: true }]), {
+        return new Response(JSON.stringify([{ id: "p1", name: "P1", uri: "ipp://p1/q", insecure: false }]), {
           status: 200,
           headers: { "content-type": "application/json" },
         });

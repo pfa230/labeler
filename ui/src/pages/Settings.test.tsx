@@ -14,7 +14,11 @@ function stubFetch(noAuth: boolean) {
     if (url.startsWith("/api/auth/me"))
       return json({ authed: true, needsSetup: false, me: { id: "local", username: "local" }, noAuth });
     if (url.startsWith("/api/settings"))
-      return json({ job_log_retention_days: { value: 90, is_default: true }, datetime_formats: { value: {}, is_default: true } });
+      return json({
+        datetime_formats: { value: {}, is_default: true },
+        default_connection_id: { value: null, is_default: true },
+        default_printer_id: { value: null, is_default: true },
+      });
     if (url.startsWith("/api/variables")) return json({ qr_base_url: "https://x" });
     if (url.startsWith("/api/printers")) return json([]);
     if (url.startsWith("/api/users")) return json([]);
@@ -49,6 +53,14 @@ describe("Settings page", () => {
     // credential sections present when auth is on
     expect(await screen.findByRole("heading", { name: "Users" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "API tokens" })).toBeInTheDocument();
+  });
+
+  it("shows Variables, Datetime formats, Printers, Users and API tokens in that order, with no Job log", async () => {
+    vi.stubGlobal("fetch", stubFetch(false));
+    renderPage();
+    await screen.findByRole("heading", { name: "Users" });
+    const sections = screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent);
+    expect(sections).toEqual(["Variables", expect.stringMatching(/^Datetime formats/), "Printers", "Users", "API tokens"]);
   });
 
   it("hides Users and API tokens sections in no-auth mode", async () => {

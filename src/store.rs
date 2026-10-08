@@ -1,25 +1,9 @@
+use crate::models::{Printer, PrinterConnection, RenderProfile};
 use rusqlite::Connection as SqlConnection;
 use rusqlite::OptionalExtension;
 use rusqlite_migration::{Migrations, M};
-use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use std::path::Path;
 use std::sync::Mutex;
-use utoipa::ToSchema;
-
-/// A configured printer (a "machine" instance). `config` is an opaque per-kind JSON blob
-/// that the driver for `kind` parses.
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct Printer {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub config: JsonValue,
-    // Read-only in the API: set only via POST/DELETE /printers/{id}/default; create/replace ignore it.
-    #[serde(default)]
-    #[schema(read_only)]
-    pub is_default: bool,
-}
 
 #[derive(Debug, Clone)]
 pub struct User {
@@ -157,6 +141,44 @@ fn migrations() -> Migrations<'static> {
             "ALTER TABLE connections DROP COLUMN enabled;
         ALTER TABLE connections DROP COLUMN transforms;",
         ),
+        // Flat printer record. `kind` is dropped unchecked: only `cups` ever existed outside tests.
+        M::up(
+            "CREATE TABLE printers_new (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            uri        TEXT NOT NULL,
+            username   TEXT,
+            password   TEXT,
+            ca_cert    TEXT,
+            insecure   INTEGER NOT NULL DEFAULT 0,
+            color_mode TEXT,
+            resolution INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        INSERT INTO printers_new
+            SELECT id, name, json_extract(config, '$.uri'),
+                   json_extract(config, '$.username'), json_extract(config, '$.password'),
+                   json_extract(config, '$.ca_cert'), coalesce(json_extract(config, '$.insecure'), 0),
+                   json_extract(config, '$.render.color_mode'),
+                   json_extract(config, '$.render.resolution'), created_at
+            FROM printers;
+        INSERT OR REPLACE INTO app_settings (key, value)
+            SELECT 'default_printer_id', id FROM printers WHERE is_default = 1 ORDER BY id LIMIT 1;
+        DROP TABLE printers;
+        ALTER TABLE printers_new RENAME TO printers;",
+        ),
+        // Tokens belong to a user. No token existed when owners were introduced, so none is kept.
+        M::up(
+            "DROP TABLE api_tokens;
+        CREATE TABLE api_tokens (
+            id           TEXT PRIMARY KEY,
+            owner        TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            name         TEXT NOT NULL,
+            token_hash   TEXT NOT NULL UNIQUE,
+            last_used_at TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );",
+        ),
     ])
 }
 
@@ -182,71 +204,110 @@ impl Store {
 
     pub async fn list_printers(&self) -> Result<Vec<Printer>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let mut stmt =
-            conn.prepare("SELECT id, name, kind, config, is_default FROM printers ORDER BY id")?;
-        let rows = stmt.query_map([], row_to_printer_parts)?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.push(printer_from_parts(row?)?);
-        }
-        Ok(out)
+        let mut stmt = conn.prepare(&format!("{SELECT_PRINTER} ORDER BY id"))?;
+        let rows = stmt.query_map([], row_to_printer)?;
+        Ok(rows
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .map(|(id, name, connection)| Printer::new(id, name, connection))
+            .collect())
     }
 
     pub async fn get_printer(&self, id: &str) -> Result<Option<Printer>, StoreError> {
-        let conn = self.conn.lock().expect("store lock");
-        let mut stmt =
-            conn.prepare("SELECT id, name, kind, config, is_default FROM printers WHERE id = ?1")?;
-        let mut rows = stmt.query_map([id], row_to_printer_parts)?;
-        match rows.next() {
-            Some(row) => Ok(Some(printer_from_parts(row?)?)),
-            None => Ok(None),
-        }
+        Ok(self
+            .get_printer_record(id)?
+            .map(|(id, name, connection)| Printer::new(id, name, connection)))
     }
 
-    pub async fn upsert_printer(&self, printer: &Printer) -> Result<(), StoreError> {
+    /// The stored connection, password included, for the driver and the `PUT` keep rule.
+    pub async fn get_printer_connection(
+        &self,
+        id: &str,
+    ) -> Result<Option<PrinterConnection>, StoreError> {
+        Ok(self
+            .get_printer_record(id)?
+            .map(|(_, _, connection)| connection))
+    }
+
+    fn get_printer_record(&self, id: &str) -> Result<Option<PrinterRecord>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
+        conn.query_row(
+            &format!("{SELECT_PRINTER} WHERE id = ?1"),
+            [id],
+            row_to_printer,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub async fn insert_printer(
+        &self,
+        id: &str,
+        name: &str,
+        connection: &PrinterConnection,
+    ) -> Result<(), StoreError> {
+        let conn = self.conn.lock().expect("store lock");
+        let render = connection.render.as_ref();
         conn.execute(
-            "INSERT INTO printers (id, name, kind, config) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET name = ?2, kind = ?3, config = ?4",
+            "INSERT INTO printers (id, name, uri, username, password, ca_cert, insecure, color_mode, resolution)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
-                printer.id,
-                printer.name,
-                printer.kind,
-                serde_json::to_string(&printer.config)?,
+                id,
+                name,
+                connection.uri,
+                connection.username,
+                connection.password,
+                connection.ca_cert,
+                connection.insecure,
+                render.and_then(|r| r.color_mode.as_deref()),
+                render.and_then(|r| r.resolution),
             ],
         )?;
         Ok(())
     }
 
-    pub async fn delete_printer(&self, id: &str) -> Result<bool, StoreError> {
+    /// Replace every stored field of printer `id`. Returns `false` if there is no such printer.
+    pub async fn replace_printer(
+        &self,
+        id: &str,
+        name: &str,
+        connection: &PrinterConnection,
+    ) -> Result<bool, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let affected = conn.execute("DELETE FROM printers WHERE id = ?1", [id])?;
-        Ok(affected > 0)
+        let render = connection.render.as_ref();
+        let n = conn.execute(
+            "UPDATE printers SET name = ?2, uri = ?3, username = ?4, password = ?5, ca_cert = ?6,
+                 insecure = ?7, color_mode = ?8, resolution = ?9
+             WHERE id = ?1",
+            rusqlite::params![
+                id,
+                name,
+                connection.uri,
+                connection.username,
+                connection.password,
+                connection.ca_cert,
+                connection.insecure,
+                render.and_then(|r| r.color_mode.as_deref()),
+                render.and_then(|r| r.resolution),
+            ],
+        )?;
+        Ok(n > 0)
     }
 
-    /// Set `id` as the sole default printer, atomically. Returns `false` (making no change) if `id`
-    /// is unknown — the existence check runs before any write, so no default is cleared.
-    pub async fn set_default_printer(&self, id: &str) -> Result<bool, StoreError> {
+    /// Delete a printer and, in the same transaction, the `default_printer_id` setting when it named
+    /// that printer; see `delete_connection_and_default` for why there is no plain delete.
+    pub async fn delete_printer_and_default(&self, id: &str) -> Result<bool, StoreError> {
         let mut conn = self.conn.lock().expect("store lock");
         let tx = conn.transaction()?;
-        let exists: bool = tx
-            .query_row("SELECT 1 FROM printers WHERE id = ?1", [id], |_| Ok(()))
-            .optional()?
-            .is_some();
-        if !exists {
-            return Ok(false); // tx drops -> rolled back; nothing changed
+        let existed = tx.execute("DELETE FROM printers WHERE id = ?1", [id])? > 0;
+        if existed {
+            tx.execute(
+                "DELETE FROM app_settings WHERE key = ?1 AND value = ?2",
+                rusqlite::params![crate::settings::DEFAULT_PRINTER_ID, id],
+            )?;
         }
-        tx.execute("UPDATE printers SET is_default = 0", [])?;
-        tx.execute("UPDATE printers SET is_default = 1 WHERE id = ?1", [id])?;
         tx.commit()?;
-        Ok(true)
-    }
-
-    /// Clear the default flag on `id` (idempotent no-op if it wasn't default / doesn't exist).
-    pub async fn clear_default_printer(&self, id: &str) -> Result<(), StoreError> {
-        let conn = self.conn.lock().expect("store lock");
-        conn.execute("UPDATE printers SET is_default = 0 WHERE id = ?1", [id])?;
-        Ok(())
+        Ok(existed)
     }
 
     pub async fn get_variable(&self, key: &str) -> Result<Option<String>, StoreError> {
@@ -392,39 +453,19 @@ impl Store {
         Ok(removed)
     }
 
-    /// Most recently printed distinct templates for this user (deterministic: MAX(id) tiebreak).
-    pub async fn recent_templates(
-        &self,
-        user_id: &str,
-        limit: u32,
-    ) -> Result<Vec<String>, StoreError> {
+    /// The 6 most recently printed distinct templates for this user (deterministic: MAX(id) tiebreak).
+    pub async fn recent_templates(&self, user_id: &str) -> Result<Vec<String>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare(
             "SELECT template FROM jobs WHERE user_id = ?1
-             GROUP BY template ORDER BY MAX(ts) DESC, MAX(id) DESC LIMIT ?2",
+             GROUP BY template ORDER BY MAX(ts) DESC, MAX(id) DESC LIMIT 6",
         )?;
-        let rows = stmt.query_map(rusqlite::params![user_id, limit], |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map([user_id], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
         }
         Ok(out)
-    }
-
-    /// Delete job-log rows older than `retention_days`. `0` disables (no-op). Returns rows deleted.
-    /// `ts` is canonical `datetime('now')` UTC text, so the string compare against
-    /// `datetime('now', '-<n> days')` is chronological. The modifier is bound as a full parameter
-    /// (a `u32`, so it is always `-<digits> days`; no injection surface).
-    pub async fn prune_jobs(&self, retention_days: u32) -> Result<usize, StoreError> {
-        if retention_days == 0 {
-            return Ok(0);
-        }
-        let conn = self.conn.lock().expect("store lock");
-        let deleted = conn.execute(
-            "DELETE FROM jobs WHERE ts < datetime('now', ?1)",
-            rusqlite::params![format!("-{retention_days} days")],
-        )?;
-        Ok(deleted)
     }
 
     pub async fn count_users(&self) -> Result<i64, StoreError> {
@@ -576,12 +617,17 @@ impl Store {
     }
 
     // Tokens
-    pub async fn create_token(&self, name: &str, token_hash: &str) -> Result<ApiToken, StoreError> {
+    pub async fn create_token(
+        &self,
+        owner: &str,
+        name: &str,
+        token_hash: &str,
+    ) -> Result<ApiToken, StoreError> {
         let id = crate::auth::random_secret();
         let conn = self.conn.lock().expect("store lock");
         conn.execute(
-            "INSERT INTO api_tokens (id, name, token_hash) VALUES (?1, ?2, ?3)",
-            rusqlite::params![id, name, token_hash],
+            "INSERT INTO api_tokens (id, owner, name, token_hash) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, owner, name, token_hash],
         )?;
         conn.query_row(
             "SELECT id, name, last_used_at, created_at FROM api_tokens WHERE id = ?1",
@@ -598,32 +644,45 @@ impl Store {
         .map_err(Into::into)
     }
 
-    /// Look up a token by its hash; on hit, throttled-update last_used_at. Returns the token id.
-    pub async fn lookup_token(&self, token_hash: &str) -> Result<Option<String>, StoreError> {
+    /// Look up a token by its hash and return its owner; on hit, throttled-update last_used_at.
+    pub async fn lookup_token(&self, token_hash: &str) -> Result<Option<User>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        let id: Option<String> = conn
+        let found = conn
             .query_row(
-                "SELECT id FROM api_tokens WHERE token_hash = ?1",
+                "SELECT t.id, u.id, u.username, u.password_hash
+                 FROM api_tokens t JOIN users u ON u.id = t.owner
+                 WHERE t.token_hash = ?1",
                 [token_hash],
-                |r| r.get(0),
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        User {
+                            id: r.get(1)?,
+                            username: r.get(2)?,
+                            password_hash: r.get(3)?,
+                        },
+                    ))
+                },
             )
             .optional()?;
-        if let Some(ref tid) = id {
-            conn.execute(
-                "UPDATE api_tokens SET last_used_at = datetime('now')
-                 WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < datetime('now', '-1 hour'))",
-                [tid],
-            )?;
-        }
-        Ok(id)
+        let Some((token_id, owner)) = found else {
+            return Ok(None);
+        };
+        conn.execute(
+            "UPDATE api_tokens SET last_used_at = datetime('now')
+             WHERE id = ?1 AND (last_used_at IS NULL OR last_used_at < datetime('now', '-1 hour'))",
+            [token_id],
+        )?;
+        Ok(Some(owner))
     }
 
-    pub async fn list_tokens(&self) -> Result<Vec<ApiToken>, StoreError> {
+    pub async fn list_tokens(&self, owner: &str) -> Result<Vec<ApiToken>, StoreError> {
         let conn = self.conn.lock().expect("store lock");
         let mut stmt = conn.prepare(
-            "SELECT id, name, last_used_at, created_at FROM api_tokens ORDER BY created_at",
+            "SELECT id, name, last_used_at, created_at FROM api_tokens WHERE owner = ?1
+             ORDER BY created_at",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([owner], |r| {
             Ok(ApiToken {
                 id: r.get(0)?,
                 name: r.get(1)?,
@@ -634,9 +693,12 @@ impl Store {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    pub async fn delete_token(&self, id: &str) -> Result<bool, StoreError> {
+    pub async fn delete_token(&self, owner: &str, id: &str) -> Result<bool, StoreError> {
         let conn = self.conn.lock().expect("store lock");
-        Ok(conn.execute("DELETE FROM api_tokens WHERE id = ?1", [id])? > 0)
+        Ok(conn.execute(
+            "DELETE FROM api_tokens WHERE id = ?1 AND owner = ?2",
+            rusqlite::params![id, owner],
+        )? > 0)
     }
 
     // Connections
@@ -729,63 +791,85 @@ fn row_to_connection(r: &rusqlite::Row<'_>) -> rusqlite::Result<Connection> {
     })
 }
 
-type PrinterParts = (String, String, String, String, i64);
+const SELECT_PRINTER: &str =
+    "SELECT id, name, uri, username, password, ca_cert, insecure, color_mode, resolution FROM printers";
 
-fn row_to_printer_parts(row: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterParts> {
+/// A printer row: id, name and its connection, password included.
+type PrinterRecord = (String, String, PrinterConnection);
+
+fn row_to_printer(r: &rusqlite::Row<'_>) -> rusqlite::Result<PrinterRecord> {
+    let color_mode: Option<String> = r.get(7)?;
+    let resolution: Option<u32> = r.get(8)?;
+    let render = (color_mode.is_some() || resolution.is_some()).then_some(RenderProfile {
+        color_mode,
+        resolution,
+    });
     Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
+        r.get(0)?,
+        r.get(1)?,
+        PrinterConnection {
+            uri: r.get(2)?,
+            username: r.get(3)?,
+            password: r.get(4)?,
+            ca_cert: r.get(5)?,
+            insecure: r.get(6)?,
+            render,
+        },
     ))
-}
-
-fn printer_from_parts(parts: PrinterParts) -> Result<Printer, StoreError> {
-    let (id, name, kind, config, is_default) = parts;
-    Ok(Printer {
-        id,
-        name,
-        kind,
-        config: serde_json::from_str(&config)?,
-        is_default: is_default != 0,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    fn connection(uri: &str, password: Option<&str>) -> PrinterConnection {
+        PrinterConnection {
+            uri: uri.to_string(),
+            username: Some("u".to_string()),
+            password: password.map(str::to_string),
+            ca_cert: None,
+            insecure: true,
+            render: Some(RenderProfile {
+                color_mode: None,
+                resolution: Some(300),
+            }),
+        }
+    }
 
     #[tokio::test]
     async fn printer_crud_roundtrip() {
         let store = Store::open_in_memory().unwrap();
         assert!(store.list_printers().await.unwrap().is_empty());
 
-        let printer = Printer {
-            id: "p1".to_string(),
-            name: "P1".to_string(),
-            kind: "cups".to_string(),
-            config: json!({ "uri": "ipp://x" }),
-            is_default: false,
-        };
-        store.upsert_printer(&printer).await.unwrap();
+        store
+            .insert_printer("p1", "P1", &connection("ipp://x", Some("s")))
+            .await
+            .unwrap();
 
         let got = store.get_printer("p1").await.unwrap().unwrap();
-        assert_eq!(got.name, "P1");
-        assert_eq!(got.config, json!({ "uri": "ipp://x" }));
+        assert_eq!((got.name.as_str(), got.uri.as_str()), ("P1", "ipp://x"));
+        assert_eq!(got.username.as_deref(), Some("u"));
+        assert!(got.insecure);
+        assert_eq!(got.render.and_then(|r| r.resolution), Some(300));
+        let stored = store.get_printer_connection("p1").await.unwrap().unwrap();
+        assert_eq!(stored.password.as_deref(), Some("s"));
         assert_eq!(store.list_printers().await.unwrap().len(), 1);
 
-        let updated = Printer {
-            name: "P1b".to_string(),
-            ..printer.clone()
-        };
-        store.upsert_printer(&updated).await.unwrap();
+        assert!(store
+            .replace_printer("p1", "P1b", &connection("ipp://y", None))
+            .await
+            .unwrap());
+        let got = store.get_printer_connection("p1").await.unwrap().unwrap();
+        assert_eq!((got.uri.as_str(), got.password), ("ipp://y", None));
         assert_eq!(store.get_printer("p1").await.unwrap().unwrap().name, "P1b");
+        assert!(!store
+            .replace_printer("ghost", "G", &connection("ipp://y", None))
+            .await
+            .unwrap());
 
-        assert!(store.delete_printer("p1").await.unwrap());
+        assert!(store.delete_printer_and_default("p1").await.unwrap());
         assert!(store.get_printer("p1").await.unwrap().is_none());
-        assert!(!store.delete_printer("p1").await.unwrap());
+        assert!(!store.delete_printer_and_default("p1").await.unwrap());
     }
 
     #[tokio::test]
@@ -863,128 +947,45 @@ mod tests {
         store.record_job("a", None, "ok", None, "u1").await.unwrap();
         store.record_job("b", None, "ok", None, "u1").await.unwrap();
         store.record_job("c", None, "ok", None, "u2").await.unwrap();
-        let recents = store.recent_templates("u1", 6).await.unwrap();
+        let recents = store.recent_templates("u1").await.unwrap();
         assert_eq!(recents, vec!["b".to_string(), "a".to_string()]);
-        assert_eq!(store.recent_templates("u1", 1).await.unwrap(), vec!["b"]);
         assert_eq!(
-            store.recent_templates("u2", 6).await.unwrap(),
+            store.recent_templates("u2").await.unwrap(),
             vec!["c".to_string()]
         );
-        assert!(store
-            .recent_templates("nobody", 6)
-            .await
-            .unwrap()
-            .is_empty());
-    }
-
-    #[tokio::test]
-    async fn prune_jobs_deletes_old_keeps_recent() {
-        let store = Store::open_in_memory().unwrap();
-        {
-            let conn = store.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO jobs (ts, template, status) VALUES (datetime('now','-200 days'), 'tpl', 'ok')",
-                [],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO jobs (ts, template, status) VALUES (datetime('now'), 'tpl', 'ok')",
-                [],
-            )
-            .unwrap();
-        }
-        let deleted = store.prune_jobs(90).await.unwrap();
-        assert_eq!(deleted, 1);
-        let remaining: i64 = {
-            let conn = store.conn.lock().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
-                .unwrap()
-        };
-        assert_eq!(remaining, 1);
-    }
-
-    #[tokio::test]
-    async fn prune_jobs_zero_is_noop() {
-        let store = Store::open_in_memory().unwrap();
-        store
-            .record_job("tpl", None, "ok", None, "u1")
-            .await
-            .unwrap();
-        assert_eq!(store.prune_jobs(0).await.unwrap(), 0);
-        let remaining: i64 = {
-            let conn = store.conn.lock().unwrap();
-            conn.query_row("SELECT COUNT(*) FROM jobs", [], |r| r.get(0))
-                .unwrap()
-        };
-        assert_eq!(remaining, 1);
-    }
-
-    #[tokio::test]
-    async fn prune_job_log_once_reads_live_override() {
-        use crate::settings::{prune_job_log_once, JOB_LOG_RETENTION_DAYS};
-        let store = Store::open_in_memory().unwrap();
-        // one row aged 200 days
-        {
-            let conn = store.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO jobs (ts, template, status) VALUES (datetime('now','-200 days'), 'tpl', 'ok')",
-                [],
-            )
-            .unwrap();
-        }
-        // override retention to 0 (disabled): the old row survives
-        store
-            .set_setting(JOB_LOG_RETENTION_DAYS, "0")
-            .await
-            .unwrap();
-        assert_eq!(prune_job_log_once(&store).await.unwrap(), 0);
-        // remove the override: default 90 now prunes the 200-day-old row
-        store.delete_setting(JOB_LOG_RETENTION_DAYS).await.unwrap();
-        assert_eq!(prune_job_log_once(&store).await.unwrap(), 1);
+        assert!(store.recent_templates("nobody").await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn app_settings_roundtrip() {
         let store = Store::open_in_memory().unwrap();
         // absent key reads as None
-        assert_eq!(
-            store.get_setting("job_log_retention_days").await.unwrap(),
-            None
-        );
+        assert_eq!(store.get_setting("datetime_formats").await.unwrap(), None);
         // set then get
-        store
-            .set_setting("job_log_retention_days", "30")
-            .await
-            .unwrap();
+        store.set_setting("datetime_formats", "{}").await.unwrap();
         assert_eq!(
-            store.get_setting("job_log_retention_days").await.unwrap(),
-            Some("30".to_string())
+            store.get_setting("datetime_formats").await.unwrap(),
+            Some("{}".to_string())
         );
         // upsert overwrites
         store
-            .set_setting("job_log_retention_days", "45")
+            .set_setting("datetime_formats", "{\"d\":\"%d\"}")
             .await
             .unwrap();
         assert_eq!(
-            store.get_setting("job_log_retention_days").await.unwrap(),
-            Some("45".to_string())
+            store.get_setting("datetime_formats").await.unwrap(),
+            Some("{\"d\":\"%d\"}".to_string())
         );
         // all_settings lists the override row
         let all = store.all_settings().await.unwrap();
-        assert_eq!(all.get("job_log_retention_days"), Some(&"45".to_string()));
-        // delete returns true when a row existed, false when it did not
-        assert!(store
-            .delete_setting("job_log_retention_days")
-            .await
-            .unwrap());
-        assert!(!store
-            .delete_setting("job_log_retention_days")
-            .await
-            .unwrap());
         assert_eq!(
-            store.get_setting("job_log_retention_days").await.unwrap(),
-            None
+            all.get("datetime_formats"),
+            Some(&"{\"d\":\"%d\"}".to_string())
         );
+        // delete returns true when a row existed, false when it did not
+        assert!(store.delete_setting("datetime_formats").await.unwrap());
+        assert!(!store.delete_setting("datetime_formats").await.unwrap());
+        assert_eq!(store.get_setting("datetime_formats").await.unwrap(), None);
     }
 }
 
@@ -1116,6 +1117,114 @@ mod migration_tests {
                 "expected a no-such-column error, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn migration_flattens_printers_and_moves_the_default() {
+        let mut conn = SqlConnection::open_in_memory().expect("open");
+        let migrations = migrations();
+        // Version 13 still stores printers as kind + JSON config + is_default.
+        migrations
+            .to_version(&mut conn, 13)
+            .expect("migrate to version before the flat printer record");
+        conn.execute(
+            "INSERT INTO printers (id, name, kind, config, is_default) VALUES
+             ('full', 'Full', 'cups', '{\"uri\":\"ipps://h/q\",\"username\":\"u\",\"password\":\"p\",\"ca_cert\":\"-----BEGIN CERTIFICATE-----\",\"insecure\":true,\"render\":{\"color_mode\":\"bilevel\",\"resolution\":203}}', 1),
+             ('bare', 'Bare', 'cups', '{\"uri\":\"ipp://h/b\"}', 0)",
+            [],
+        )
+        .expect("seed printers");
+
+        migrations.to_latest(&mut conn).expect("migrate to latest");
+
+        type Row = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<i64>,
+        );
+        let read = |id: &str| -> Row {
+            conn.query_row(
+                "SELECT name, uri, username, password, ca_cert, insecure, color_mode, resolution
+                 FROM printers WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
+            )
+            .expect("printer survives with flat columns")
+        };
+        assert_eq!(
+            read("full"),
+            (
+                "Full".to_string(),
+                "ipps://h/q".to_string(),
+                Some("u".to_string()),
+                Some("p".to_string()),
+                Some("-----BEGIN CERTIFICATE-----".to_string()),
+                1,
+                Some("bilevel".to_string()),
+                Some(203),
+            )
+        );
+        assert_eq!(
+            read("bare"),
+            (
+                "Bare".to_string(),
+                "ipp://h/b".to_string(),
+                None,
+                None,
+                None,
+                0,
+                None,
+                None,
+            )
+        );
+        let default: String = conn
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = 'default_printer_id'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("default moved into app_settings");
+        assert_eq!(default, "full");
+    }
+
+    #[test]
+    fn migration_gives_api_tokens_an_owner() {
+        let mut conn = SqlConnection::open_in_memory().expect("open");
+        let migrations = migrations();
+        // Version 14 still has unowned tokens.
+        migrations
+            .to_version(&mut conn, 14)
+            .expect("migrate to version before token owners");
+        conn.execute(
+            "INSERT INTO api_tokens (id, name, token_hash) VALUES ('t1', 'ci', 'h1')",
+            [],
+        )
+        .expect("seed an unowned token");
+
+        migrations.to_latest(&mut conn).expect("migrate to latest");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_tokens", [], |r| r.get(0))
+            .expect("count tokens");
+        assert_eq!(count, 0, "unowned tokens cannot survive");
+        conn.prepare("SELECT owner FROM api_tokens")
+            .expect("api_tokens has an owner column");
     }
 }
 
@@ -1295,17 +1404,23 @@ mod auth_tests {
     #[tokio::test]
     async fn token_create_lookup_revoke() {
         let s = store();
+        let owner = s.create_user("dora", "h").await.unwrap();
         let t = s
-            .create_token("ci", &crate::auth::sha256_hex("secretval"))
+            .create_token(&owner.id, "ci", &crate::auth::sha256_hex("secretval"))
             .await
             .unwrap();
         assert_eq!(t.name, "ci");
-        assert!(s
-            .lookup_token(&crate::auth::sha256_hex("secretval"))
-            .await
-            .unwrap()
-            .is_some());
-        s.delete_token(&t.id).await.unwrap();
+        assert_eq!(
+            s.lookup_token(&crate::auth::sha256_hex("secretval"))
+                .await
+                .unwrap()
+                .map(|u| u.id),
+            Some(owner.id.clone())
+        );
+        assert_eq!(s.list_tokens(&owner.id).await.unwrap().len(), 1);
+        assert!(s.list_tokens("someone-else").await.unwrap().is_empty());
+        assert!(!s.delete_token("someone-else", &t.id).await.unwrap());
+        assert!(s.delete_token(&owner.id, &t.id).await.unwrap());
         assert!(s
             .lookup_token(&crate::auth::sha256_hex("secretval"))
             .await

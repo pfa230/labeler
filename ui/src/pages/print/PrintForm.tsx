@@ -4,7 +4,7 @@ import { useLivePreview } from "../../lib/livePreview";
 import { useMediaQuery } from "../../lib/useMediaQuery";
 import { useLabelInputs, pruneDataForSubmit, getOwnKey, hasOwnKey, setOwnKey, seedDefaultValue } from "../../lib/labelInputs";
 import { ApiError, fetchBlob, printLabel, saveBlob, submitBatch } from "../../api/client";
-import { usePrinters } from "../../api/queries";
+import { usePrinters, useSettings } from "../../api/queries";
 import { useToast } from "../../app/toast-context";
 import type { BatchSummary, InputSpec, ParamValue, TemplateDetail } from "../../api/types";
 import { PreviewPane } from "../../components/PreviewPane";
@@ -108,10 +108,12 @@ export function PrintForm({ detail, stale }: { detail: TemplateDetail; stale?: b
   // `value.printer` stores only EXPLICIT user choices ("" = explicit None, an id = explicit pick,
   // undefined = untouched -> use the preselect), so a printers refetch never clobbers a choice.
   const { data: printers } = usePrinters();
+  const { data: settings } = useSettings();
+  const defaultPrinterId = settings?.default_printer_id?.value;
   const preselect = useMemo(() => {
     const all = printers ?? [];
-    return all.find((p) => p.is_default)?.id ?? (all.length === 1 ? all[0].id : undefined);
-  }, [printers]);
+    return all.find((p) => p.id === defaultPrinterId)?.id ?? (all.length === 1 ? all[0].id : undefined);
+  }, [printers, defaultPrinterId]);
   const effectivePrinter = form.printer === undefined ? preselect : form.printer || undefined;
 
   const showSummary = (summary: BatchSummary) => {

@@ -3,7 +3,6 @@ import { VariablesSection } from "./settings/VariablesSection";
 import { PrintersSection } from "./settings/PrintersSection";
 import { UsersSection } from "./settings/UsersSection";
 import { TokensSection } from "./settings/TokensSection";
-import { SettingsSection } from "./settings/SettingsSection";
 import { DatetimeFormatsSection } from "./settings/DatetimeFormatsSection";
 
 export function Settings() {
@@ -12,7 +11,6 @@ export function Settings() {
     <div className="flex max-w-3xl flex-col gap-8">
       <h1 className="text-2xl font-semibold">Settings</h1>
       <VariablesSection />
-      <SettingsSection />
       <DatetimeFormatsSection />
       <PrintersSection />
       {!auth?.noAuth && (

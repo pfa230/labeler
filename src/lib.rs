@@ -123,8 +123,12 @@ mod http_tests {
                     .build()
                     .expect("seed runtime");
                 rt.block_on(async {
+                    let owner = store
+                        .create_user("test", "unused-hash")
+                        .await
+                        .expect("seed token owner");
                     store
-                        .create_token("test", &super::auth::sha256_hex(TEST_TOKEN))
+                        .create_token(&owner.id, "test", &super::auth::sha256_hex(TEST_TOKEN))
                         .await
                         .expect("seed token");
                 });
@@ -2153,8 +2157,8 @@ layout:
         let body = json!({
             "id": "bl",
             "name": "bl",
-            "kind": "fake",
-            "config": { "fail": false, "render": { "color_mode": "bilevel", "resolution": 203 } }
+            "uri": "ipp://fake.test/",
+            "render": { "color_mode": "bilevel", "resolution": 203 }
         })
         .to_string();
         let c = app
@@ -6253,13 +6257,7 @@ layout:
     }
 
     fn printer_json(id: &str) -> String {
-        json!({
-            "id": id,
-            "name": id,
-            "kind": "cups",
-            "config": { "uri": format!("ipp://host/printers/{id}") }
-        })
-        .to_string()
+        json!({ "id": id, "name": id, "uri": format!("ipp://host/printers/{id}") }).to_string()
     }
 
     async fn get_json(app: &axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -6288,13 +6286,9 @@ layout:
 
         let (status, detail) = get_json(&app, "/api/printers/office").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(detail["kind"], "cups");
+        assert_eq!(detail["uri"], "ipp://host/printers/office");
 
-        let replace = json!({
-            "id": "office", "name": "Front Desk", "kind": "cups",
-            "config": { "uri": "ipp://h/p" }
-        })
-        .to_string();
+        let replace = json!({ "name": "Front Desk", "uri": "ipp://h/p" }).to_string();
         let resp = app
             .clone()
             .oneshot(json_req("PUT", "/api/printers/office", replace))
@@ -6357,32 +6351,19 @@ layout:
     }
 
     #[tokio::test]
-    async fn printer_create_invalid_kind_returns_400() {
-        let app = build_app();
-        let body = json!({ "id": "p", "name": "P", "kind": "zebra", "config": {} }).to_string();
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/api/printers", body))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let body = json_response(resp).await;
-        assert_eq!(body["error"]["code"], "InvalidRequest");
-        assert_eq!(body["error"]["details"]["reason"], "printer_invalid");
-    }
-
-    #[tokio::test]
     async fn printer_create_unsafe_id_returns_400() {
         let app = build_app();
-        let body =
-            json!({ "id": "../evil", "name": "P", "kind": "cups", "config": { "uri": "x" } })
-                .to_string();
+        let body = json!({ "id": "../evil", "name": "P", "uri": "ipp://h/q" }).to_string();
         let resp = app
             .clone()
             .oneshot(json_req("POST", "/api/printers", body))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(resp).await["error"]["details"]["reason"],
+            "printer_id_invalid"
+        );
     }
 
     #[tokio::test]
@@ -6393,24 +6374,13 @@ layout:
         assert_eq!(body["error"]["code"], "NotFound");
     }
 
-    #[tokio::test]
-    async fn printer_replace_id_mismatch_returns_400() {
-        let app = build_app();
-        app.clone()
-            .oneshot(json_req("POST", "/api/printers", printer_json("a")))
-            .await
-            .expect("request");
-        let resp = app
-            .clone()
-            .oneshot(json_req("PUT", "/api/printers/a", printer_json("b")))
-            .await
-            .expect("request");
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    }
-
     async fn create_fake_printer(app: &axum::Router, id: &str, fail: bool) {
-        let body =
-            json!({ "id": id, "name": id, "kind": "fake", "config": { "fail": fail } }).to_string();
+        let uri = if fail {
+            "ipp://fake.test/?fail=1"
+        } else {
+            "ipp://fake.test/"
+        };
+        let body = json!({ "id": id, "name": id, "uri": uri }).to_string();
         let resp = app
             .clone()
             .oneshot(json_req("POST", "/api/printers", body))
@@ -6423,11 +6393,7 @@ layout:
     async fn probe_ok_returns_capabilities() {
         let app = build_app();
         let body = json!({
-            "kind": "fake",
-            "config": { "capabilities": {
-                "bilevel": true, "color_known": true, "accepts_png": true,
-                "resolution": 180, "model": "Brother PT-2730"
-            } }
+            "uri": "ipp://fake.test/?bilevel=1&png=1&dpi=180&model=Brother%20PT-2730"
         })
         .to_string();
         let resp = app
@@ -6445,9 +6411,7 @@ layout:
     #[tokio::test]
     async fn probe_reports_unknown_color_when_printer_is_silent() {
         let app = build_app();
-        let body =
-            json!({ "kind": "fake", "config": { "capabilities": { "bilevel": false, "color_known": false } } })
-                .to_string();
+        let body = json!({ "uri": "ipp://fake.test/?bilevel=0" }).to_string();
         let resp = app
             .oneshot(json_req("POST", "/api/printers/probe", body))
             .await
@@ -6461,7 +6425,7 @@ layout:
     #[tokio::test]
     async fn probe_unreachable_returns_status() {
         let app = build_app();
-        let body = json!({ "kind": "fake", "config": { "probe": "unreachable" } }).to_string();
+        let body = json!({ "uri": "ipp://fake.test/?probe=unreachable" }).to_string();
         let resp = app
             .oneshot(json_req("POST", "/api/printers/probe", body))
             .await
@@ -6475,7 +6439,7 @@ layout:
     #[tokio::test]
     async fn probe_missing_uri_is_400() {
         let app = build_app();
-        let body = json!({ "kind": "cups", "config": {} }).to_string();
+        let body = json!({}).to_string();
         let resp = app
             .oneshot(json_req("POST", "/api/printers/probe", body))
             .await
@@ -6486,7 +6450,7 @@ layout:
     #[tokio::test]
     async fn probe_malformed_uri_is_400() {
         let app = build_app();
-        let body = json!({ "kind": "cups", "config": { "uri": "ipp://" } }).to_string();
+        let body = json!({ "uri": "ipp://" }).to_string();
         let resp = app
             .oneshot(json_req("POST", "/api/printers/probe", body))
             .await
@@ -6502,12 +6466,524 @@ layout:
             .oneshot(json_req(
                 "PUT",
                 "/api/printers/ghost",
-                printer_json("ghost"),
+                json!({ "name": "ghost", "uri": "ipp://h/q" }).to_string(),
             ))
             .await
             .expect("request");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         assert_eq!(json_response(resp).await["error"]["code"], "NotFound");
+    }
+
+    async fn print_succeeded(app: &axum::Router, printer: &str) -> u64 {
+        let payload = json!({
+            "template": "brother_24mm_qr",
+            "printer": printer,
+            "data": { "message": "x", "code": "y" },
+            "copies": 1
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/print", payload.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK, "print to {printer}");
+        json_response(resp).await["succeeded"]
+            .as_u64()
+            .expect("succeeded count")
+    }
+
+    #[tokio::test]
+    async fn printer_record_is_flat_and_never_returns_password() {
+        let app = build_app();
+        let create = json!({
+            "id": "flat", "name": "Flat", "uri": "ipps://h/q",
+            "username": "u", "password": "s3cret", "insecure": true
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", create.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let created = json_response(resp).await;
+        let (_, detail) = get_json(&app, "/api/printers/flat").await;
+        let (_, list) = get_json(&app, "/api/printers").await;
+        for printer in [&created, &detail, &list[0]] {
+            for gone in ["kind", "config", "is_default", "password"] {
+                assert!(printer.get(gone).is_none(), "{gone} present in {printer}");
+            }
+            assert_eq!(printer["uri"], "ipps://h/q");
+            assert_eq!(printer["username"], "u");
+            assert_eq!(printer["insecure"], true);
+        }
+        let replace = json!({ "name": "Flat", "uri": "ipps://h/q", "username": "u" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/flat", replace.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(json_response(resp).await.get("password").is_none());
+    }
+
+    /// The response omits unset optional fields rather than writing `null`: the UI echoes a loaded
+    /// printer back into `PUT`, and the bodies refuse `null`.
+    #[tokio::test]
+    async fn printer_record_omits_unset_optional_fields() {
+        let app = build_app();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", printer_json("bare")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let expected = json!({
+            "id": "bare", "name": "bare", "uri": "ipp://host/printers/bare", "insecure": false
+        });
+        assert_eq!(json_response(resp).await, expected);
+        let (_, detail) = get_json(&app, "/api/printers/bare").await;
+        assert_eq!(detail, expected);
+
+        let with_resolution = json!({
+            "name": "bare", "uri": "ipp://host/printers/bare", "render": { "resolution": 300 }
+        });
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/printers/bare",
+                with_resolution.to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (_, detail) = get_json(&app, "/api/printers/bare").await;
+        assert_eq!(detail["render"], json!({ "resolution": 300 }));
+    }
+
+    #[tokio::test]
+    async fn printer_nested_body_is_refused_and_flat_body_accepted() {
+        let app = build_app();
+        let nested =
+            json!({ "id": "n", "name": "N", "kind": "cups", "config": { "uri": "ipp://h/q" } });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", nested.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(resp).await["error"]["details"]["reason"],
+            "json_malformed"
+        );
+        let flat = json!({ "id": "n", "name": "N", "uri": "ipp://h/q" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", flat.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    /// printing spec, "Replacing a printer".
+    #[tokio::test]
+    async fn printer_replace_without_insecure_stores_false() {
+        let app = build_app();
+        let create = json!({ "id": "i", "name": "I", "uri": "ipps://h/q", "insecure": true });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", create.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let replace = json!({ "name": "I", "uri": "ipps://h/q" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/i", replace.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let (_, detail) = get_json(&app, "/api/printers/i").await;
+        assert_eq!(detail["insecure"], false);
+    }
+
+    #[tokio::test]
+    async fn printer_replace_refuses_an_id_in_the_body() {
+        let app = build_app();
+        let create = json!({ "id": "r", "name": "R", "uri": "ipp://h/q" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", create.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let with_id = json!({ "id": "r", "name": "R2", "uri": "ipp://h/q" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/r", with_id.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(resp).await["error"]["details"]["reason"],
+            "json_malformed"
+        );
+        let without_id = json!({ "name": "R2", "uri": "ipp://h/q" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/r", without_id.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_response(resp).await["name"], "R2");
+    }
+
+    /// printing spec, "Password survives an edit", plus the `""` clear and replace rules. The fake
+    /// driver's `send` fails unless the stored password equals the URI's `password` knob, so each
+    /// print observes the secret that reached dispatch.
+    #[tokio::test]
+    async fn printer_password_keep_replace_and_clear_reach_dispatch() {
+        let app = build_app();
+        let create = json!({ "id": "pw", "name": "pw", "uri": "ipp://fake.test/?password=s1", "password": "s1" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", create.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        assert_eq!(print_succeeded(&app, "pw").await, 1, "created");
+
+        async fn replace(app: &axum::Router, body: Value) {
+            let resp = app
+                .clone()
+                .oneshot(json_req("PUT", "/api/printers/pw", body.to_string()))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::OK, "replace with {body}");
+        }
+
+        replace(
+            &app,
+            json!({ "name": "pw", "uri": "ipp://fake.test/?password=other" }),
+        )
+        .await;
+        assert_eq!(
+            print_succeeded(&app, "pw").await,
+            0,
+            "a wrong password fails"
+        );
+        replace(
+            &app,
+            json!({ "name": "pw", "uri": "ipp://fake.test/?password=s1" }),
+        )
+        .await;
+        assert_eq!(
+            print_succeeded(&app, "pw").await,
+            1,
+            "omitted password kept"
+        );
+        replace(
+            &app,
+            json!({ "name": "pw", "uri": "ipp://fake.test/?password=s2", "password": "s2" }),
+        )
+        .await;
+        assert_eq!(print_succeeded(&app, "pw").await, 1, "password replaced");
+        replace(
+            &app,
+            json!({ "name": "pw", "uri": "ipp://fake.test/", "password": "" }),
+        )
+        .await;
+        assert_eq!(print_succeeded(&app, "pw").await, 1, "empty string clears");
+    }
+
+    /// errors spec: a key written as `null` is `json_malformed`; an absent key is accepted.
+    #[tokio::test]
+    async fn printer_body_refuses_null_keys_and_accepts_absent_ones() {
+        let app = build_app();
+        for key in ["password", "ca_cert"] {
+            let mut body = json!({ "id": "nn", "name": "NN", "uri": "ipp://h/q" });
+            body[key] = Value::Null;
+            let resp = app
+                .clone()
+                .oneshot(json_req("POST", "/api/printers", body.to_string()))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{key}: null");
+            assert_eq!(
+                json_response(resp).await["error"]["details"]["reason"],
+                "json_malformed",
+                "{key}: null"
+            );
+        }
+        let absent = json!({ "id": "nn", "name": "NN", "uri": "ipp://h/q" });
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", absent.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let null_on_put = json!({ "name": "NN", "uri": "ipp://h/q", "password": null });
+        let resp = app
+            .clone()
+            .oneshot(json_req("PUT", "/api/printers/nn", null_on_put.to_string()))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(resp).await["error"]["details"]["reason"],
+            "json_malformed"
+        );
+    }
+
+    async fn put_default_printer(app: &axum::Router, value: Value) -> axum::response::Response {
+        app.clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/settings/default_printer_id",
+                json!({ "value": value }).to_string(),
+            ))
+            .await
+            .expect("request")
+    }
+
+    /// printing spec, "Deleting the default printer".
+    #[tokio::test]
+    async fn deleting_the_default_printer_clears_the_setting() {
+        let app = build_app();
+        for id in ["p1", "p2"] {
+            let resp = app
+                .clone()
+                .oneshot(json_req("POST", "/api/printers", printer_json(id)))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+        assert_eq!(
+            put_default_printer(&app, json!("p1")).await.status(),
+            StatusCode::OK
+        );
+        for (id, expected) in [("p2", json!("p1")), ("p1", Value::Null)] {
+            let resp = app
+                .clone()
+                .oneshot(json_req(
+                    "DELETE",
+                    &format!("/api/printers/{id}"),
+                    String::new(),
+                ))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+            let (_, settings) = get_json(&app, "/api/settings").await;
+            assert_eq!(
+                settings["default_printer_id"]["value"], expected,
+                "after deleting {id}"
+            );
+            assert_eq!(
+                settings["default_printer_id"]["is_default"],
+                expected.is_null(),
+                "after deleting {id}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn default_printer_id_setting_trims_validates_and_resets() {
+        let app = build_app();
+        let resp = app
+            .clone()
+            .oneshot(json_req("POST", "/api/printers", printer_json("p1")))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let resp = put_default_printer(&app, json!("  p1 ")).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            json_response(resp).await,
+            json!({ "value": "p1", "is_default": false })
+        );
+        let (_, settings) = get_json(&app, "/api/settings").await;
+        assert_eq!(
+            settings["default_printer_id"],
+            json!({ "value": "p1", "is_default": false })
+        );
+
+        for bad in [
+            json!(""),
+            json!("   "),
+            json!(123),
+            json!(null),
+            json!({}),
+            json!("ghost"),
+        ] {
+            let resp = put_default_printer(&app, bad.clone()).await;
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "value {bad}");
+            assert_eq!(
+                json_response(resp).await["error"]["details"]["reason"],
+                "setting_value_invalid",
+                "value {bad}"
+            );
+        }
+
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "DELETE",
+                "/api/settings/default_printer_id",
+                String::new(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let (_, settings) = get_json(&app, "/api/settings").await;
+        assert_eq!(
+            settings["default_printer_id"],
+            json!({ "value": null, "is_default": true })
+        );
+    }
+
+    #[tokio::test]
+    async fn printer_default_endpoints_are_gone() {
+        let app = build_app();
+        for method in ["POST", "DELETE"] {
+            let resp = app
+                .clone()
+                .oneshot(json_req(method, "/api/printers/p1/default", String::new()))
+                .await
+                .expect("request");
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method}");
+            assert_eq!(
+                json_response(resp).await["error"]["details"]["kind"],
+                "route",
+                "{method}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_takes_flat_connection_fields_only() {
+        let app = build_app();
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/printers/probe",
+                json!({ "uri": "ipp://fake.test/?probe=unreachable" }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(json_response(resp).await["status"], "unreachable");
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "POST",
+                "/api/printers/probe",
+                json!({ "name": "x", "uri": "ipp://fake.test/?probe=unreachable" }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(resp).await["error"]["details"]["reason"],
+            "json_malformed"
+        );
+    }
+
+    /// settings spec, "Override and reset". Regression guard: passes before #417 too.
+    #[tokio::test]
+    async fn datetime_formats_override_and_reset_scenario() {
+        let app = build_app();
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/settings/datetime_formats",
+                json!({ "value": { "day": "%d" } }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            json_response(resp).await,
+            json!({ "value": { "day": "%d" }, "is_default": false })
+        );
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "DELETE",
+                "/api/settings/datetime_formats",
+                String::new(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let (_, settings) = get_json(&app, "/api/settings").await;
+        // A second DELETE of a setting already at its default is still 204.
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "DELETE",
+                "/api/settings/datetime_formats",
+                String::new(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            settings["datetime_formats"],
+            json!({
+                "value": {
+                    "iso_date": "%Y-%m-%d",
+                    "iso_date_time": "%Y-%m-%d %H:%M",
+                    "short_date": "%m/%d/%Y",
+                    "long_date": "%B %-d, %Y",
+                    "time": "%H:%M"
+                },
+                "is_default": true
+            })
+        );
+    }
+
+    /// settings spec, "Wrong type". Regression guard: passes before #417 too.
+    #[tokio::test]
+    async fn datetime_formats_wrong_type_scenario() {
+        let app = build_app();
+        let resp = app
+            .clone()
+            .oneshot(json_req(
+                "PUT",
+                "/api/settings/datetime_formats",
+                json!({ "value": "%d" }).to_string(),
+            ))
+            .await
+            .expect("request");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_response(resp).await["error"]["details"]["reason"],
+            "setting_value_invalid"
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_lists_exactly_the_known_keys() {
+        let app = build_app();
+        let (status, settings) = get_json(&app, "/api/settings").await;
+        assert_eq!(status, StatusCode::OK);
+        let keys: Vec<&str> = settings
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "datetime_formats",
+                "default_connection_id",
+                "default_printer_id"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -7295,10 +7771,7 @@ layout:
             .local_addr()
             .unwrap()
             .port();
-        let body = json!({
-            "kind": "cups",
-            "config": { "uri": format!("ipp://127.0.0.1:{port}/ipp/print") }
-        });
+        let body = json!({ "uri": format!("ipp://127.0.0.1:{port}/ipp/print") });
         let res = build_app()
             .oneshot(json_req("POST", "/api/printers/probe", body.to_string()))
             .await
@@ -7748,6 +8221,25 @@ layout:
         );
     }
 
+    /// The printer bodies refuse `null` (errors spec, request body rejection), so the published
+    /// schemas must not offer it, and the response omits unset fields rather than writing `null`.
+    #[test]
+    fn openapi_printer_schemas_are_not_nullable() {
+        use utoipa::OpenApi;
+        let doc = crate::openapi::ApiDoc::openapi();
+        let schemas = doc.components.as_ref().unwrap().schemas.clone();
+        for name in [
+            "Printer",
+            "NewPrinter",
+            "PrinterUpdate",
+            "PrinterConnection",
+            "RenderProfile",
+        ] {
+            let schema = serde_json::to_string(&schemas[name]).unwrap();
+            assert!(!schema.contains("\"null\""), "{name} offers null: {schema}");
+        }
+    }
+
     #[test]
     fn openapi_render_label_request_is_strict() {
         use utoipa::OpenApi;
@@ -7807,77 +8299,15 @@ layout:
         );
     }
 
-    #[tokio::test]
-    async fn printer_password_is_redacted_in_responses() {
-        let app = build_app();
-        let create = json!({
-            "id": "sec", "name": "Sec", "kind": "cups",
-            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" }
-        });
-        let resp = app
-            .clone()
-            .oneshot(json_req("POST", "/api/printers", create.to_string()))
-            .await
-            .expect("req");
-        assert_eq!(resp.status(), StatusCode::CREATED);
-        let body = json_response(resp).await;
-        assert!(
-            body["config"].get("password").is_none(),
-            "create response must omit password"
-        );
-        assert_eq!(body["config"]["username"], "u");
-
-        let g = app
-            .clone()
-            .oneshot(json_req("GET", "/api/printers/sec", String::new()))
-            .await
-            .expect("req");
-        let gb = json_response(g).await;
-        assert!(
-            gb["config"].get("password").is_none(),
-            "GET must omit password"
-        );
-        assert_eq!(gb["config"]["username"], "u");
-
-        // list must redact too
-        let l = app
-            .clone()
-            .oneshot(json_req("GET", "/api/printers", String::new()))
-            .await
-            .expect("req");
-        let lb = json_response(l).await;
-        let entry = lb
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == "sec")
-            .expect("listed");
-        assert!(
-            entry["config"].get("password").is_none(),
-            "list must omit password"
-        );
-
-        // PUT omitting password must succeed (keep); response still omits password.
-        let upd = json!({ "id": "sec", "name": "Sec2", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" } });
-        let p = app
-            .clone()
-            .oneshot(json_req("PUT", "/api/printers/sec", upd.to_string()))
-            .await
-            .expect("req");
-        assert_eq!(p.status(), StatusCode::OK);
-        assert!(json_response(p).await["config"].get("password").is_none());
-    }
-
     // End-to-end guard on the security-critical merge->upsert wiring: the API never echoes the
     // password, so a regression (redact-before-upsert, or merging the wrong object) would silently
     // wipe the STORED secret without any response-body test noticing. Read the store directly.
     #[tokio::test]
-    async fn printer_password_persists_across_update_and_clears_on_null() {
+    async fn printer_password_persists_across_update_and_clears_on_empty() {
         let (app, state) = build_app_with_state();
 
         let create = json!({
-            "id": "persist", "name": "Persist", "kind": "cups",
-            "config": { "uri": "ipps://h/q", "username": "u", "password": "s3cret" }
+            "id": "persist", "name": "Persist", "uri": "ipps://h/q", "username": "u", "password": "s3cret"
         });
         let resp = app
             .clone()
@@ -7887,7 +8317,7 @@ layout:
         assert_eq!(resp.status(), StatusCode::CREATED);
 
         // PUT omitting password (change only the name): the stored secret must be KEPT.
-        let upd = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u" } });
+        let upd = json!({ "name": "Renamed", "uri": "ipps://h/q", "username": "u" });
         let p = app
             .clone()
             .oneshot(json_req("PUT", "/api/printers/persist", upd.to_string()))
@@ -7897,18 +8327,19 @@ layout:
 
         let stored = state
             .store()
-            .get_printer("persist")
+            .get_printer_connection("persist")
             .await
             .expect("store read")
             .expect("printer exists");
-        assert_eq!(stored.name, "Renamed");
         assert_eq!(
-            stored.config["password"], "s3cret",
+            stored.password.as_deref(),
+            Some("s3cret"),
             "password must persist across a password-omitting update"
         );
 
-        // PUT with password: null: the stored secret must be CLEARED.
-        let clr = json!({ "id": "persist", "name": "Renamed", "kind": "cups", "config": { "uri": "ipps://h/q", "username": "u", "password": null } });
+        // PUT with password "": the stored secret must be CLEARED.
+        let clr =
+            json!({ "name": "Renamed", "uri": "ipps://h/q", "username": "u", "password": "" });
         let c = app
             .clone()
             .oneshot(json_req("PUT", "/api/printers/persist", clr.to_string()))
@@ -7918,13 +8349,13 @@ layout:
 
         let stored = state
             .store()
-            .get_printer("persist")
+            .get_printer_connection("persist")
             .await
             .expect("store read")
             .expect("printer exists");
-        assert!(
-            stored.config.get("password").is_none(),
-            "explicit null must clear the stored password"
+        assert_eq!(
+            stored.password, None,
+            "an empty password must clear the stored one"
         );
     }
 
@@ -8018,8 +8449,11 @@ layout:
     #[tokio::test]
     async fn print_render_profile_precedence() {
         let app = build_app();
-        async fn print_ok(app: &axum::Router, id: &str, cfg: serde_json::Value) {
-            let body = json!({ "id": id, "name": id, "kind": "fake", "config": cfg }).to_string();
+        async fn print_ok(app: &axum::Router, id: &str, fields: serde_json::Value) {
+            let mut body = fields;
+            body["id"] = json!(id);
+            body["name"] = json!(id);
+            let body = body.to_string();
             let c = app
                 .clone()
                 .oneshot(json_req("POST", "/api/printers", body))
@@ -8040,27 +8474,27 @@ layout:
             assert_eq!(resp.status(), StatusCode::OK, "print {id}");
             assert_eq!(json_response(resp).await["succeeded"], 1, "succeeded {id}");
         }
-        // 1. no config.render + caps bilevel+png -> negotiated bilevel -> PNG
+        // 1. no render + caps bilevel+png -> negotiated bilevel -> PNG
         print_ok(
             &app,
             "neg",
-            json!({ "fail": false, "capabilities": { "bilevel": true, "accepts_png": true, "resolution": 203 } }),
+            json!({ "uri": "ipp://fake.test/?bilevel=1&png=1&dpi=203" }),
         )
         .await;
-        // 2. config color + caps bilevel -> configured wins -> PDF (color/pdf)
+        // 2. render color + caps bilevel -> configured wins -> PDF (color/pdf)
         print_ok(
             &app,
             "sup",
-            json!({ "fail": false, "render": { "color_mode": "color" }, "capabilities": { "bilevel": true, "accepts_png": true } }),
+            json!({ "uri": "ipp://fake.test/?bilevel=1&png=1", "render": { "color_mode": "color" } }),
         )
         .await;
-        // 3. no config + no caps -> default Color -> PDF
-        print_ok(&app, "def", json!({ "fail": false })).await;
-        // 4. config bilevel + no caps -> configured bilevel -> PNG
+        // 3. no render + no caps -> default Color -> PDF
+        print_ok(&app, "def", json!({ "uri": "ipp://fake.test/" })).await;
+        // 4. render bilevel + no caps -> configured bilevel -> PNG
         print_ok(
             &app,
             "cfg",
-            json!({ "fail": false, "render": { "color_mode": "bilevel" } }),
+            json!({ "uri": "ipp://fake.test/", "render": { "color_mode": "bilevel" } }),
         )
         .await;
     }
@@ -8069,12 +8503,10 @@ layout:
     async fn print_media_gate() {
         let app = build_app();
 
-        async fn mk(app: &axum::Router, id: &str, caps: serde_json::Value) {
-            let body = json!({
-                "id": id, "name": id, "kind": "fake",
-                "config": { "fail": false, "capabilities": caps }
-            })
-            .to_string();
+        /// `knobs` is the fake.test query; `media=<mm>` reports the loaded media width.
+        async fn mk(app: &axum::Router, id: &str, knobs: &str) {
+            let body = json!({ "id": id, "name": id, "uri": format!("ipp://fake.test/?{knobs}") })
+                .to_string();
             let c = app
                 .clone()
                 .oneshot(json_req("POST", "/api/printers", body))
@@ -8107,20 +8539,20 @@ layout:
         }
 
         // 1. brother_24mm (media_width 24) + loaded 12mm -> mismatch -> 409 Conflict
-        mk(&app, "wrong", json!({ "loaded_media_width": 12 })).await;
+        mk(&app, "wrong", "media=12").await;
         let r = print_resp(&app, "brother_24mm", "wrong").await;
         assert_eq!(r.status(), StatusCode::CONFLICT);
         assert_eq!(json_response(r).await["error"]["code"], "Conflict");
 
         // 2. brother_24mm + loaded 24mm -> match -> 200
-        mk(&app, "match", json!({ "loaded_media_width": 24 })).await;
+        mk(&app, "match", "media=24").await;
         assert_eq!(
             print_resp(&app, "brother_24mm", "match").await.status(),
             StatusCode::OK
         );
 
         // 3. loaded width unknown -> gate inert -> 200
-        mk(&app, "unknown", json!({})).await;
+        mk(&app, "unknown", "").await;
         assert_eq!(
             print_resp(&app, "brother_24mm", "unknown").await.status(),
             StatusCode::OK
@@ -8138,7 +8570,7 @@ layout:
             .await
             .expect("seed var");
         assert_eq!(seed.status(), StatusCode::OK);
-        mk(&app, "nomw", json!({ "loaded_media_width": 12 })).await;
+        mk(&app, "nomw", "media=12").await;
         assert_eq!(
             print_resp(&app, "homebox-qr", "nomw").await.status(),
             StatusCode::OK
@@ -11967,148 +12399,6 @@ mod auth_http_tests {
             .unwrap()
     }
 
-    fn req_put_json(uri: &str, body: &str) -> Request<Body> {
-        Request::builder()
-            .method("PUT")
-            .uri(uri)
-            .header("content-type", "application/json")
-            .header("host", "localhost")
-            .header("origin", "http://localhost")
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    }
-
-    fn req_delete(uri: &str) -> Request<Body> {
-        Request::builder()
-            .method("DELETE")
-            .uri(uri)
-            .header("host", "localhost")
-            .header("origin", "http://localhost")
-            .body(Body::empty())
-            .unwrap()
-    }
-
-    /// A minimal valid `fake`-kind printer body (mirrors `create_fake_printer`).
-    fn default_test_printer_json(id: &str, is_default: bool) -> String {
-        serde_json::json!({
-            "id": id,
-            "name": id,
-            "kind": "fake",
-            "config": { "fail": false },
-            "is_default": is_default,
-        })
-        .to_string()
-    }
-
-    /// Fetch `/api/printers` and return the `is_default` flag for `id` (panics if absent).
-    async fn printer_is_default(app: &axum::Router, id: &str) -> bool {
-        let res = app.clone().oneshot(req_get("/api/printers")).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let list = body_json(res).await;
-        list.as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["id"] == id)
-            .unwrap_or_else(|| panic!("printer {id} not found in list"))["is_default"]
-            .as_bool()
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn setting_default_is_exclusive_and_guarded() {
-        let app = test_app_no_auth();
-        for id in ["p1", "p2"] {
-            let res = app
-                .clone()
-                .oneshot(req_post_json(
-                    "/api/printers",
-                    &default_test_printer_json(id, false),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(res.status(), StatusCode::CREATED);
-        }
-
-        // Set p1 default.
-        let res = app
-            .clone()
-            .oneshot(req_post_json("/api/printers/p1/default", ""))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
-        assert!(printer_is_default(&app, "p1").await);
-        assert!(!printer_is_default(&app, "p2").await);
-
-        // Set p2 default -> exclusive (p1 cleared).
-        let res = app
-            .clone()
-            .oneshot(req_post_json("/api/printers/p2/default", ""))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
-        assert!(printer_is_default(&app, "p2").await);
-        assert!(!printer_is_default(&app, "p1").await);
-
-        // Unknown id -> 404 AND p2 still default (rollback, not clear-then-fail).
-        let res = app
-            .clone()
-            .oneshot(req_post_json("/api/printers/nope/default", ""))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert!(printer_is_default(&app, "p2").await);
-
-        // Clear p2 -> zero defaults.
-        let res = app
-            .clone()
-            .oneshot(req_delete("/api/printers/p2/default"))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
-        assert!(!printer_is_default(&app, "p1").await);
-        assert!(!printer_is_default(&app, "p2").await);
-    }
-
-    #[tokio::test]
-    async fn create_and_replace_never_set_default() {
-        let app = test_app_no_auth();
-
-        // Create ignores incoming is_default:true (response AND stored value are false).
-        let res = app
-            .clone()
-            .oneshot(req_post_json(
-                "/api/printers",
-                &default_test_printer_json("p1", true),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::CREATED);
-        assert_eq!(body_json(res).await["is_default"], false);
-        assert!(!printer_is_default(&app, "p1").await);
-
-        // Make it the default via the endpoint.
-        let res = app
-            .clone()
-            .oneshot(req_post_json("/api/printers/p1/default", ""))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
-        assert!(printer_is_default(&app, "p1").await);
-
-        // Replace with is_default:false in the body -> stored value preserved (still true).
-        let res = app
-            .clone()
-            .oneshot(req_put_json(
-                "/api/printers/p1",
-                &default_test_printer_json("p1", false),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        assert_eq!(body_json(res).await["is_default"], true);
-        assert!(printer_is_default(&app, "p1").await);
-    }
-
     #[tokio::test]
     async fn protected_route_requires_auth() {
         let app = test_app();
@@ -12473,134 +12763,56 @@ mod auth_http_tests {
     }
 
     #[tokio::test]
-    async fn settings_resolve_override_and_reset() {
-        let app = test_app();
-        let cookie = setup_login_cookie(&app).await;
-
-        // GET shows the in-code default, flagged is_default
-        let res = app
-            .clone()
-            .oneshot(req_get_cookie("/api/settings", &cookie))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = body_json(res).await;
-        assert_eq!(body["job_log_retention_days"]["value"], 90);
-        assert_eq!(body["job_log_retention_days"]["is_default"], true);
-        assert_eq!(body["max_label_dimension_mm"]["value"], 1000.0);
-        assert_eq!(body["max_label_dimension_mm"]["is_default"], true);
-
-        // PUT an override
-        let res = app
-            .clone()
-            .oneshot(req_put_json_cookie(
-                "/api/settings/job_log_retention_days",
-                r#"{"value":30}"#,
-                &cookie,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = body_json(res).await;
-        assert_eq!(body["value"], 30);
-        assert_eq!(body["is_default"], false);
-
-        let res = app
-            .clone()
-            .oneshot(req_put_json_cookie(
-                "/api/settings/max_label_dimension_mm",
-                r#"{"value":500.5}"#,
-                &cookie,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = body_json(res).await;
-        assert_eq!(body["value"], 500.5);
-        assert_eq!(body["is_default"], false);
-
-        // GET now reflects the override
-        let res = app
-            .clone()
-            .oneshot(req_get_cookie("/api/settings", &cookie))
-            .await
-            .unwrap();
-        let body = body_json(res).await;
-        assert_eq!(body["job_log_retention_days"]["value"], 30);
-        assert_eq!(body["job_log_retention_days"]["is_default"], false);
-        assert_eq!(body["max_label_dimension_mm"]["value"], 500.5);
-        assert_eq!(body["max_label_dimension_mm"]["is_default"], false);
-
-        // DELETE resets to default and is 204
-        let res = app
-            .clone()
-            .oneshot(req_delete_cookie(
-                "/api/settings/job_log_retention_days",
-                &cookie,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
-        let res = app
-            .clone()
-            .oneshot(req_get_cookie("/api/settings", &cookie))
-            .await
-            .unwrap();
-        let body = body_json(res).await;
-        assert_eq!(body["job_log_retention_days"]["is_default"], true);
-
-        // DELETE again is still 204 (idempotent, registry-keyed)
-        let res = app
-            .clone()
-            .oneshot(req_delete_cookie(
-                "/api/settings/job_log_retention_days",
-                &cookie,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NO_CONTENT);
-    }
-
-    #[tokio::test]
     async fn settings_reject_bad_value_and_unknown_key() {
         let app = test_app();
         let cookie = setup_login_cookie(&app).await;
 
-        // float, string, negative all 400
-        for bad in [r#"{"value":90.0}"#, r#"{"value":"90"}"#, r#"{"value":-1}"#] {
+        // not an object, a bad name, a bad pattern, a non-string pattern: all setting_value_invalid
+        for bad in [
+            r#"{"value":["%d"]}"#,
+            r#"{"value":{"bad name":"%d"}}"#,
+            r#"{"value":{"x":"%!"}}"#,
+            r#"{"value":{"x":5}}"#,
+        ] {
             let res = app
                 .clone()
                 .oneshot(req_put_json_cookie(
-                    "/api/settings/job_log_retention_days",
+                    "/api/settings/datetime_formats",
                     bad,
                     &cookie,
                 ))
                 .await
                 .unwrap();
             assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad value {bad}");
-            assert_eq!(body_json(res).await["error"]["code"], "InvalidRequest");
+            assert_eq!(
+                body_json(res).await["error"]["details"]["reason"],
+                "setting_value_invalid",
+                "bad value {bad}"
+            );
         }
 
-        // unknown key on PUT and DELETE is 404 NotFound
-        let res = app
-            .clone()
-            .oneshot(req_put_json_cookie(
-                "/api/settings/nope",
-                r#"{"value":1}"#,
-                &cookie,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert_eq!(body_json(res).await["error"]["code"], "NotFound");
+        // unknown key on PUT and DELETE is 404 NotFound, including the removed settings
+        for key in ["nope", "job_log_retention_days", "max_label_dimension_mm"] {
+            let res = app
+                .clone()
+                .oneshot(req_put_json_cookie(
+                    &format!("/api/settings/{key}"),
+                    r#"{"value":1}"#,
+                    &cookie,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "PUT {key}");
+            assert_eq!(body_json(res).await["error"]["code"], "NotFound");
 
-        let res = app
-            .clone()
-            .oneshot(req_delete_cookie("/api/settings/nope", &cookie))
-            .await
-            .unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        assert_eq!(body_json(res).await["error"]["code"], "NotFound");
+            let res = app
+                .clone()
+                .oneshot(req_delete_cookie(&format!("/api/settings/{key}"), &cookie))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::NOT_FOUND, "DELETE {key}");
+            assert_eq!(body_json(res).await["error"]["code"], "NotFound");
+        }
     }
 
     #[tokio::test]
@@ -12974,7 +13186,7 @@ mod auth_http_tests {
             .clone()
             .oneshot(req_post_json(
                 "/api/printers",
-                r#"{"id":"ok-printer","name":"ok-printer","kind":"fake","config":{"fail":false}}"#,
+                r#"{"id":"ok-printer","name":"ok-printer","uri":"ipp://fake.test/"}"#,
             ))
             .await
             .unwrap();
@@ -13006,13 +13218,289 @@ mod auth_http_tests {
             .await
             .unwrap();
         assert_eq!(body_json(res).await, serde_json::json!(["brother_24mm_qr"]));
-        // limit clamps to at least one result
+    }
+
+    /// settings spec, "Six most recent".
+    #[tokio::test]
+    async fn recent_templates_returns_the_six_most_recent() {
+        let (app, state) = test_app_with_custom_templates(vec![]);
         let res = app
             .clone()
-            .oneshot(req_get("/api/recent-templates?limit=0"))
+            .oneshot(req_get("/api/templates"))
+            .await
+            .unwrap();
+        let list = body_json(res).await;
+        let ids: Vec<String> = list["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .take(8)
+            .map(|t| t["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids.len(), 8);
+        for id in &ids {
+            state
+                .store()
+                .record_job(id, None, "ok", None, "local")
+                .await
+                .unwrap();
+        }
+        let newest_first: Vec<String> = ids.iter().rev().take(6).cloned().collect();
+        for uri in ["/api/recent-templates", "/api/recent-templates?limit=20"] {
+            let res = app.clone().oneshot(req_get(uri)).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "{uri}");
+            assert_eq!(
+                body_json(res).await,
+                serde_json::json!(newest_first),
+                "{uri}"
+            );
+        }
+    }
+
+    fn req_bearer(method: &str, uri: &str, body: &str, secret: &str) -> Request<Body> {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {secret}"))
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// Create an API token through `cookie`'s session, returning `(id, secret)`.
+    async fn create_token(app: &axum::Router, cookie: &str) -> (String, String) {
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/tokens",
+                r#"{"name":"t"}"#,
+                cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body = body_json(res).await;
+        (
+            body["id"].as_str().unwrap().to_string(),
+            body["secret"].as_str().unwrap().to_string(),
+        )
+    }
+
+    async fn my_id(app: &axum::Router, cookie: &str) -> String {
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/auth/me", cookie))
+            .await
+            .unwrap();
+        body_json(res).await["me"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// auth spec, "Tokens are personal".
+    #[tokio::test]
+    async fn tokens_are_personal() {
+        let app = test_app();
+        let cookie_a = setup_login_cookie(&app).await;
+        let cookie_b = login_second_user(&app, &cookie_a, "bob").await;
+        let (id, secret) = create_token(&app, &cookie_a).await;
+
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/tokens", &cookie_b))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await, serde_json::json!([]));
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(&format!("/api/tokens/{id}"), &cookie_b))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/tokens", &cookie_a))
+            .await
+            .unwrap();
+        assert_eq!(body_json(res).await[0]["id"], id);
+        let res = app
+            .clone()
+            .oneshot(req_bearer("GET", "/api/templates", "", &secret))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    /// auth spec, "Deleting a user deletes their tokens".
+    #[tokio::test]
+    async fn deleting_a_user_deletes_their_tokens() {
+        let app = test_app();
+        let cookie_a = setup_login_cookie(&app).await;
+        let cookie_b = login_second_user(&app, &cookie_a, "bob").await;
+        let (_, secret) = create_token(&app, &cookie_a).await;
+        let a_id = my_id(&app, &cookie_a).await;
+
+        let res = app
+            .clone()
+            .oneshot(req_delete_cookie(&format!("/api/users/{a_id}"), &cookie_b))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        let res = app
+            .clone()
+            .oneshot(req_bearer("GET", "/api/templates", "", &secret))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// auth spec, "A token reports its owner".
+    #[tokio::test]
+    async fn token_reports_its_owner_on_me() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        let (_, secret) = create_token(&app, &cookie).await;
+        let res = app
+            .clone()
+            .oneshot(req_bearer("GET", "/api/auth/me", "", &secret))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = body_json(res).await;
+        assert_eq!(body["authed"], true);
+        assert_eq!(
+            body["me"],
+            serde_json::json!({ "id": my_id(&app, &cookie).await, "username": "a" })
+        );
+    }
+
+    /// printing spec, "A token prints as its owner".
+    #[tokio::test]
+    async fn token_prints_as_its_owner() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        let (_, secret) = create_token(&app, &cookie).await;
+        let res = app
+            .clone()
+            .oneshot(req_post_json_cookie(
+                "/api/printers",
+                r#"{"id":"tp","name":"tp","uri":"ipp://fake.test/"}"#,
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let res = app
+            .clone()
+            .oneshot(req_bearer(
+                "POST",
+                "/api/print",
+                r#"{"template":"brother_24mm_qr","printer":"tp","data":{"message":"x","code":"y"},"copies":1}"#,
+                &secret,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_json(res).await["succeeded"], 1);
+        let res = app
+            .clone()
+            .oneshot(req_get_cookie("/api/recent-templates", &cookie))
             .await
             .unwrap();
         assert_eq!(body_json(res).await, serde_json::json!(["brother_24mm_qr"]));
+    }
+
+    #[tokio::test]
+    async fn token_cannot_delete_its_own_user() {
+        let app = test_app();
+        let cookie_a = setup_login_cookie(&app).await;
+        login_second_user(&app, &cookie_a, "bob").await;
+        let (_, secret) = create_token(&app, &cookie_a).await;
+        let a_id = my_id(&app, &cookie_a).await;
+        let res = app
+            .clone()
+            .oneshot(req_bearer(
+                "DELETE",
+                &format!("/api/users/{a_id}"),
+                "",
+                &secret,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+    }
+
+    /// auth spec, `/auth/password` refuses token callers. Regression guard: passes before #417 too.
+    #[tokio::test]
+    async fn token_cannot_change_password() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        let (_, secret) = create_token(&app, &cookie).await;
+        let res = app
+            .clone()
+            .oneshot(req_bearer(
+                "POST",
+                "/api/auth/password",
+                r#"{"current_password":"pw123456","new_password":"other"}"#,
+                &secret,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// auth spec, "An unknown bearer token beats a valid cookie". Regression guard: passes before
+    /// #417 too.
+    #[tokio::test]
+    async fn unknown_bearer_beats_a_valid_cookie() {
+        let app = test_app();
+        let cookie = setup_login_cookie(&app).await;
+        let req = Request::builder()
+            .uri("/api/templates")
+            .header("cookie", &cookie)
+            .header("authorization", "Bearer nope")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// auth spec, "No-auth mode": a present but unparseable Origin is refused.
+    #[tokio::test]
+    async fn no_auth_refuses_an_unreadable_origin() {
+        let app = test_app_no_auth();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/render/label")
+            .header("content-type", "application/json")
+            .header("host", "localhost")
+            .header(
+                "origin",
+                axum::http::HeaderValue::from_bytes(b"http://local\xffhost").unwrap(),
+            )
+            .body(Body::from(
+                r#"{"template":"brother_24mm_qr","data":{"message":"x","code":"y"}}"#,
+            ))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// auth spec, "No-auth mode": with no Host to compare against, a present Origin cannot match.
+    #[tokio::test]
+    async fn no_auth_refuses_an_origin_without_host() {
+        let app = test_app_no_auth();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/templates/reload")
+            .header("origin", "http://evil.example")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
