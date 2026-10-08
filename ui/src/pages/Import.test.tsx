@@ -509,7 +509,6 @@ describe("CSV Import screen: datetime parameters", () => {
         { name: "printed_on", control: "datetime" as const, description: "Print date" },
       ],
     },
-    layout: [{ type: "text", value: "{sku} {printed_on.short_date}" }],
   };
   const dtList = { templates: [{ ...list.templates[0], format: dtDetail.format }] };
 

@@ -123,12 +123,18 @@ A template's id SHALL be its filename stem: `templates/pallet.yaml` is the templ
 
 ### Requirement: Template detail and source
 
-`GET /api/templates/{id}` SHALL answer `200` with a TemplateDetail: `id`, `name`, `description`, `categories`, `unit`, `dpi`, `format`, `params`, and `variables` (the `{vars.<key>}` keys the template reads, without the prefix, ascending), or `404 NotFound`. `GET /api/templates/{id}/source` SHALL answer `200` with the stored file's bytes as `text/yaml; charset=utf-8`, `400` with reason `template_id_invalid` when the id does not match the id rule, and `404 NotFound` when the registry holds no such id or its file cannot be read. The source is the only way to read a template's layout.
+`GET /api/templates/{id}` SHALL answer `200` with a TemplateDetail: `id`, `name`, `description`, `categories`, `unit`, `dpi`, `format`, `params`, and `variables` (the `{vars.<key>}` keys the template reads, without the prefix, ascending), or `404 NotFound`. `GET /api/templates/{id}/source` SHALL answer `200` with the bytes of `templates/{id}.yaml` as `text/yaml; charset=utf-8`, whether the template is served or broken, `400` with reason `template_id_invalid` when the id does not match the id rule, and `404 NotFound` when that file does not exist or cannot be read. The source is the only way to read a template's layout.
 
 #### Scenario: Source returns the file as stored
 
 - **WHEN** `GET /api/templates/pallet/source` is called for a template whose file carries comments
 - **THEN** the body is the file's bytes, comments included
+
+#### Scenario: A broken template's source is readable
+
+- **WHEN** `templates/pallet.yaml` holds YAML that fails to parse
+- **THEN** `GET /api/templates/pallet/source` answers `200` with the file's bytes
+- **AND** `GET /api/templates/pallet` answers `404`
 
 #### Scenario: The detail carries no layout
 
@@ -209,13 +215,18 @@ A template's id SHALL be its filename stem: `templates/pallet.yaml` is the templ
 
 ### Requirement: Catalog page
 
-The UI catalog page SHALL fetch `index.json` and each template's YAML from the repository's raw-content URL in the browser; the server SHALL make no outbound request for the catalog. Entries SHALL be grouped under `category · vendor` (or `category`), headings sorted, each card showing name, description, format, media width in mm when present, and fields (`none` when empty), marked `installed` when the id is served. **Install** SHALL send `POST /api/templates/{id}`. A `409` SHALL open a dialog showing the installed source beside the catalog YAML, offering **Replace** (a `PUT`) or **Cancel**; a `422` SHALL report that the template needs a newer version of labeler. When the catalog cannot be fetched, the page SHALL say so and link to pasting YAML at `/templates/new`.
+The UI catalog page SHALL fetch `index.json` and each template's YAML from the repository's raw-content URL in the browser; the server SHALL make no outbound request for the catalog. Entries SHALL be grouped under `category · vendor` (or `category`), headings sorted, each card showing name, description, format, media width in mm when present, and fields (`none` when empty), marked `installed` when the id is served. **Install** SHALL send `POST /api/templates/{id}`. A `409` SHALL open a dialog showing the installed source beside the catalog YAML, offering **Replace** (a `PUT`) or **Cancel**; when the installed source cannot be fetched, the page SHALL instead report that it could not be read and open no dialog. A `422` SHALL report that the template needs a newer version of labeler. When the catalog cannot be fetched, the page SHALL say so and link to pasting YAML at `/templates/new`.
 
 #### Scenario: Installing an already installed template offers a diff
 
 - **WHEN** the user installs an entry whose id is already served
 - **THEN** the `POST` answers `409`
 - **AND** the page shows both versions and replaces only when the user confirms
+
+#### Scenario: An unreadable installed file is reported
+
+- **WHEN** the `POST` answers `409` and `GET /api/templates/{id}/source` answers `404`
+- **THEN** the page reports that the installed template could not be read and sends no `PUT`
 
 #### Scenario: An unreachable catalog falls back to paste
 

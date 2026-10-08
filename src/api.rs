@@ -13,6 +13,7 @@ use axum::{
 };
 use axum_extra::extract::cookie::CookieJar;
 use sha2::Digest;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,9 +29,8 @@ use crate::{
     models::{
         BatchRequest, BatchRowError, BatchSummary, ErrorResponse, HealthResponse, NewPrinter,
         PrintRequest, Printer, PrinterConnection, PrinterUpdate, ReloadResponse,
-        RenameGroupRequest, RenameGroupResponse, RenderLabelRequest, TemplateDetail,
-        TemplateGroupUpdate, TemplateInputsRequest, TemplateInputsResponse, TemplateList,
-        VariableValue,
+        RenderLabelRequest, TemplateDetail, TemplateInputsRequest, TemplateInputsResponse,
+        TemplateList, VariableValue,
     },
     openapi::ApiDoc,
     parse::parse_template,
@@ -38,12 +38,11 @@ use crate::{
     render::{render_single_label_image, render_single_label_pdf, ColorMode, ImageRenderOptions},
     store::Store,
     templates::{
-        validate_group_name, validate_template_id_stem, TemplateContent, TemplateDefinition,
-        TemplateRegistry, TemplateRegistryError,
+        validate_template_id_stem, TemplateContent, TemplateDefinition, TemplateRegistry,
+        TemplateRegistryError,
     },
 };
 use rustix::fd::AsFd;
-use rustix::fs::{AtFlags, Mode, OFlags};
 
 const MAX_BATCH_LABELS: usize = 500;
 const MAX_PRINT_COPIES: u32 = 100;
@@ -73,14 +72,9 @@ pub struct AppState {
     no_auth: bool,
     egress: crate::egress::Egress,
     connectors: crate::connector::ConnectorRegistry,
-    /// Fires between a write and its reload, so a test can stage the mid-request directory change
-    /// the post-write confirmation exists to catch. Compiled out of the shipped binary: the service
-    /// cannot cause that interleaving itself, and without a seam the endpoints' collision handling
-    /// has no regression coverage at all.
-    #[cfg(test)]
-    mid_write_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
-    /// Fires after the create guard and before the file is published, for the other interleaving a
-    /// request cannot stage: a file arriving at the destination name once the guard has passed.
+    /// Fires in a create after validation and before the file is published, for the interleaving a
+    /// request cannot stage: a file arriving at the destination name. Compiled out of the shipped
+    /// binary; without it no test tells the exclusive publish from a stat-then-rename.
     #[cfg(test)]
     pre_publish_hook: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
@@ -98,8 +92,6 @@ impl AppState {
             trust_proxy: std::env::var("LABELER_TRUST_PROXY")
                 .map(|v| v == "true")
                 .unwrap_or(false),
-            #[cfg(test)]
-            mid_write_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             pre_publish_hook: std::sync::Mutex::new(None),
             no_auth: std::env::var("LABELER_NO_AUTH")
@@ -144,30 +136,13 @@ impl AppState {
         &self.connectors
     }
 
-    /// Install the between-write-and-reload hook. Test-only; see the field.
-    #[cfg(test)]
-    pub fn set_mid_write_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
-        *self.mid_write_hook.lock().expect("hook lock") = Some(Box::new(hook));
-    }
-
-    /// Install the guard-passed-but-not-yet-published hook. Test-only; see the field.
+    /// Install the validated-but-not-yet-published hook. Test-only; see the field.
     #[cfg(test)]
     pub fn set_pre_publish_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self.pre_publish_hook.lock().expect("hook lock") = Some(Box::new(hook));
     }
 
-    /// Called by each write endpoint after its write and before its reload.
-    fn after_write(&self) {
-        #[cfg(test)]
-        {
-            let hook = self.mid_write_hook.lock().expect("hook lock");
-            if let Some(hook) = hook.as_ref() {
-                hook();
-            }
-        }
-    }
-
-    /// Called by the create endpoint after its guard and before it publishes.
+    /// Called by the create endpoint after validation and before it publishes.
     fn before_publish(&self) {
         #[cfg(test)]
         {
@@ -179,10 +154,6 @@ impl AppState {
     }
 
     /// Read the templates directory without publishing the result.
-    ///
-    /// For a decision that may refuse the request: `reload` swaps the new reading in, so using it to
-    /// decide would change what the service serves even when the request is then refused, which a
-    /// refused delete must not do (#183).
     fn read_templates(&self) -> Result<TemplateRegistry, TemplateRegistryError> {
         TemplateRegistry::load_from_dir(&self.templates_dir)
     }
@@ -213,17 +184,14 @@ fn api_router() -> Router<Arc<AppState>> {
     let router = Router::new()
         .route("/health", get(health))
         .route("/templates", get(list_templates))
-        .route("/template-groups", get(list_groups))
-        .route(
-            "/template-groups/{*path}",
-            put(update_template_group_name).delete(delete_group),
-        )
         .route("/templates/reload", post(reload_templates))
         .route(
             "/templates/{id}",
-            get(get_template).put(put_template).delete(delete_template),
+            get(get_template)
+                .post(create_template)
+                .put(replace_template)
+                .delete(delete_template),
         )
-        .route("/templates/{id}/group", put(update_template_group))
         .route("/templates/{id}/source", get(template_source))
         .route("/templates/{id}/thumbnail", get(thumbnail))
         .route("/templates/{id}/inputs", post(template_inputs))
@@ -374,45 +342,16 @@ pub async fn health() -> impl IntoResponse {
     })
 }
 
-#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
-pub struct TemplateListQuery {
-    pub group: Option<String>,
-    #[serde(default)]
-    pub nested: bool,
-}
-
 #[utoipa::path(
     get,
     path = "/templates",
-    params(
-        ("group" = Option<String>, Query, description = "Filter templates by group. Omit for all templates; pass empty (?group=) for ungrouped templates."),
-        ("nested" = Option<bool>, Query, description = "Include templates in descendant subgroups. Defaults to false.")
-    ),
     responses(
         (status = 200, description = "List templates", body = TemplateList)
     )
 )]
-pub async fn list_templates(
-    State(state): State<Arc<AppState>>,
-    Query(query): Query<TemplateListQuery>,
-) -> impl IntoResponse {
+pub async fn list_templates(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let registry = state.templates.load_full();
-    let mut templates = registry.summaries();
-    if let Some(ref group) = query.group {
-        let stripped = group.trim();
-        if stripped.is_empty() {
-            templates.retain(|t| t.group.is_none());
-        } else if query.nested {
-            let prefix = format!("{stripped}/");
-            templates.retain(|t| {
-                t.group
-                    .as_deref()
-                    .is_some_and(|g| g == stripped || g.starts_with(&prefix))
-            });
-        } else {
-            templates.retain(|t| t.group.as_deref() == Some(stripped));
-        }
-    }
+    let templates = registry.summaries();
     let broken = registry
         .broken()
         .iter()
@@ -435,9 +374,8 @@ pub async fn list_templates(
 pub async fn reload_templates(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ReloadResponse>, AppError> {
-    // Under the same lock the write endpoints hold. Swapping the registry mid-write would let this
-    // reload land between a handler's confirmation and the detail it answers with, which is exactly
-    // the substitution the confirmation exists to prevent (#184).
+    // Under the same lock the write endpoints hold, so it cannot interleave with a write and the
+    // reload that follows it.
     let _guard = state.write_lock.lock().await;
     let (count, broken_count) = state.reload()?;
     Ok(Json(ReloadResponse {
@@ -446,216 +384,15 @@ pub async fn reload_templates(
     }))
 }
 
-#[utoipa::path(
-    get,
-    path = "/template-groups",
-    responses(
-        (status = 200, description = "List template group paths", body = Vec<String>),
-        (status = 500, description = "Failed to read the templates directory", body = ErrorResponse)
-    )
-)]
-pub async fn list_groups(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<String>>, AppError> {
-    let groups = crate::templates::list_template_groups(&state.templates_dir)
-        .map_err(|err| AppError::internal(err.to_string()))?;
-    Ok(Json(groups))
-}
-
-fn check_percent_encoding(raw: &str) -> Result<(), AppError> {
-    let bytes = raw.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if i + 2 >= bytes.len()
-                || !bytes[i + 1].is_ascii_hexdigit()
-                || !bytes[i + 2].is_ascii_hexdigit()
-            {
-                return Err(AppError::invalid_request(
-                    Reason::PathParamInvalid,
-                    format!("malformed percent-encoding in path: '{raw}'"),
-                ));
-            }
-            i += 3;
-        } else {
-            i += 1;
-        }
-    }
-    Ok(())
-}
-
-#[utoipa::path(
-    delete,
-    path = "/template-groups/{path}",
-    params(
-        ("path" = String, Path, description = "Group path")
-    ),
-    responses(
-        (status = 204, description = "Group directory deleted"),
-        (status = 400, description = "Malformed percent sequence, invalid group name, or symlink on path", body = ErrorResponse),
-        (status = 404, description = "Group not found or case mismatch", body = ErrorResponse),
-        (status = 409, description = "Group is not empty", body = ErrorResponse),
-        (status = 500, description = "Failed to delete group directory", body = ErrorResponse)
-    )
-)]
-pub async fn delete_group(
-    State(state): State<Arc<AppState>>,
-    uri: axum::http::Uri,
-) -> Result<Response, AppError> {
-    let raw_uri_path = uri.path();
-    let raw_group = if let Some(p) = raw_uri_path.strip_prefix("/template-groups/") {
-        p
-    } else if let Some(p) = raw_uri_path.strip_prefix("/api/template-groups/") {
-        p
+fn check_template_id(id: &str) -> Result<(), AppError> {
+    if validate_template_id_stem(id) {
+        Ok(())
     } else {
-        return Err(AppError::invalid_request(
-            Reason::PathParamInvalid,
-            "missing group path",
-        ));
-    };
-
-    check_percent_encoding(raw_group)?;
-
-    let decoded = urlencoding::decode(raw_group).map_err(|_| {
-        AppError::invalid_request(Reason::PathParamInvalid, "group path is not valid UTF-8")
-    })?;
-
-    let validated = validate_group_name(&decoded)
-        .map_err(|err| AppError::invalid_request(Reason::TemplateGroupInvalid, err))?;
-
-    let _guard = state.write_lock.lock().await;
-    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-    let (parent_fd, segment) = fs_safe::resolve_group_for_delete(root_fd.as_fd(), &validated)?;
-
-    match rustix::fs::unlinkat(parent_fd.as_fd(), &segment, AtFlags::REMOVEDIR) {
-        Ok(()) => {
-            state.reload()?;
-            Ok((axum::http::StatusCode::NO_CONTENT, ()).into_response())
-        }
-        Err(rustix::io::Errno::NOTEMPTY) | Err(rustix::io::Errno::EXIST) => Err(
-            AppError::conflict(format!("group '{validated}' is not empty")),
-        ),
-        Err(rustix::io::Errno::NOENT) => Err(AppError::not_found(NotFoundKind::Group, &validated)),
-        Err(err) => Err(AppError::internal(format!(
-            "failed to delete group '{validated}': {err}"
-        ))),
+        Err(AppError::invalid_request(
+            Reason::TemplateIdInvalid,
+            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
+        ))
     }
-}
-
-#[utoipa::path(
-    put,
-    path = "/template-groups/{path}",
-    params(
-        ("path" = String, Path, description = "Group path")
-    ),
-    request_body(content = RenameGroupRequest, description = "New group name"),
-    responses(
-        (status = 200, description = "Group directory renamed", body = RenameGroupResponse),
-        (status = 400, description = "Malformed percent sequence, invalid group path, or invalid request body", body = ErrorResponse),
-        (status = 404, description = "Group directory not found", body = ErrorResponse),
-        (status = 409, description = "Destination name already occupied", body = ErrorResponse),
-        (status = 422, description = "Invalid new name, whole-path limit exceeded, or unsafe path", body = ErrorResponse),
-        (status = 500, description = "Failed to rename group directory or confirmation failed", body = ErrorResponse)
-    )
-)]
-pub async fn update_template_group_name(
-    State(state): State<Arc<AppState>>,
-    uri: axum::http::Uri,
-    Json(body): Json<RenameGroupRequest>,
-) -> Result<Response, AppError> {
-    let raw_uri_path = uri.path();
-    let raw_group = if let Some(p) = raw_uri_path.strip_prefix("/template-groups/") {
-        p
-    } else if let Some(p) = raw_uri_path.strip_prefix("/api/template-groups/") {
-        p
-    } else {
-        return Err(AppError::invalid_request(
-            Reason::PathParamInvalid,
-            "missing group path",
-        ));
-    };
-
-    check_percent_encoding(raw_group)?;
-
-    let decoded = urlencoding::decode(raw_group).map_err(|_| {
-        AppError::invalid_request(Reason::PathParamInvalid, "group path is not valid UTF-8")
-    })?;
-
-    let validated_src = validate_group_name(&decoded)
-        .map_err(|err| AppError::invalid_request(Reason::TemplateGroupInvalid, err))?;
-
-    let new_segment = &body.name;
-    crate::templates::validate_group_segment(new_segment)
-        .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
-
-    // Compute new whole group path
-    let parent_rel_path = validated_src.rsplit_once('/').map(|(parent, _)| parent);
-
-    let new_group_path = match parent_rel_path {
-        Some(parent) => format!("{parent}/{new_segment}"),
-        None => new_segment.to_string(),
-    };
-
-    validate_group_name(&new_group_path)
-        .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
-
-    let _guard = state.write_lock.lock().await;
-    state.reload()?;
-
-    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-    let (parent_fd, old_name, src_dir_fd) =
-        fs_safe::resolve_group_for_rename(root_fd.as_fd(), &validated_src)?;
-
-    // Check whole-path limits on all discoverable descendants in source subtree using resolved fd
-    let mut descendant_rels = Vec::new();
-    fs_safe::collect_subgroup_rel_paths_fd(src_dir_fd.as_fd(), "", &mut descendant_rels)?;
-
-    for descendant_rel in &descendant_rels {
-        let post_rename_descendant = format!("{new_group_path}/{descendant_rel}");
-        validate_group_name(&post_rename_descendant)
-            .map_err(|err| AppError::template_invalid(Reason::TemplateGroupInvalid, err))?;
-    }
-
-    // Perform rename if byte-different
-    if old_name != *new_segment {
-        fs_safe::rename_group_dir(parent_fd.as_fd(), &old_name, new_segment)?;
-    }
-
-    // Post-mutation subtree audit: verify no raced descendant exceeds whole-path limits
-    // Open the renamed directory descriptor safely via parent_fd without restating the path string
-    let dest_dir_fd = fs_safe::open_exact_segment_dir(parent_fd.as_fd(), new_segment, true)?;
-    let mut post_descendant_rels = Vec::new();
-    fs_safe::collect_subgroup_rel_paths_fd(dest_dir_fd.as_fd(), "", &mut post_descendant_rels)?;
-    for descendant_rel in &post_descendant_rels {
-        let post_rename_descendant = format!("{new_group_path}/{descendant_rel}");
-        if validate_group_name(&post_rename_descendant).is_err() {
-            return Err(AppError::internal(format!(
-                "post-rename descendant '{post_rename_descendant}' exceeds whole-path limits"
-            )));
-        }
-    }
-
-    // Post-rename confirmation
-    state.reload()?;
-    let groups = crate::templates::list_template_groups(&state.templates_dir)
-        .map_err(|err| AppError::internal(err.to_string()))?;
-
-    if validated_src != new_group_path
-        && (groups.iter().any(|g| g == &validated_src)
-            || !groups.iter().any(|g| g == &new_group_path))
-    {
-        return Err(AppError::internal(
-            "group rename confirmation failed: new group not listed or old group still listed",
-        ));
-    }
-
-    Ok((
-        axum::http::StatusCode::OK,
-        Json(RenameGroupResponse {
-            group: new_group_path,
-        }),
-    )
-        .into_response())
 }
 
 fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
@@ -668,414 +405,123 @@ fn parse_and_validate(body: &str) -> Result<TemplateContent, AppError> {
     Ok(content)
 }
 
-fn file_label(templates_dir: &std::path::Path, path: &std::path::Path) -> String {
-    path.strip_prefix(templates_dir)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+/// The variables and datetime formats a write's response detail is resolved against. Read before
+/// the write, so a store failure answers `500` with nothing written.
+struct DetailContext {
+    variables: BTreeMap<String, String>,
+    dt_formats: BTreeMap<String, String>,
 }
 
-fn confirm_written_template(
-    registry: &TemplateRegistry,
-    id: &str,
-    path: &std::path::Path,
-    body: &str,
-) -> Result<(), AppError> {
-    use sha2::Sha256;
+async fn detail_context(state: &AppState) -> Result<DetailContext, AppError> {
+    Ok(DetailContext {
+        variables: state.store().all_variables().await?,
+        dt_formats: crate::settings::resolve_datetime_formats(state.store())
+            .await
+            .map_err(|e| AppError::internal(e.to_string()))?,
+    })
+}
 
-    let want = hex::encode(Sha256::digest(body.as_bytes()));
-    let served = registry.path(id);
-    if served == Some(path) && registry.content_hash(id) == Some(want.as_str()) {
-        return Ok(());
-    }
-
-    let missing = || {
-        AppError::internal(format!(
-            "template '{id}' is missing after the write to {}",
-            path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string())
-        ))
+/// Finish a template write: reload the registry and answer with the detail of exactly what was
+/// written, built from the validated body rather than looked up in the reloaded registry.
+fn reload_and_describe(
+    state: &AppState,
+    id: String,
+    content: TemplateContent,
+    context: &DetailContext,
+    status: axum::http::StatusCode,
+) -> Result<Response, AppError> {
+    state.reload()?;
+    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
+        formats: &context.dt_formats,
+        now: chrono::Local::now(),
     };
+    let detail = TemplateDefinition { id, content }.build_detail(&context.variables, &dt_resolver);
+    Ok((status, Json(detail)).into_response())
+}
 
-    let Some(winner) = served.filter(|served| *served != path) else {
-        return Err(missing());
-    };
+#[utoipa::path(
+    post,
+    path = "/templates/{id}",
+    params(("id" = String, Path, description = "Template ID")),
+    request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
+    responses(
+        (status = 201, description = "Template created", body = TemplateDetail),
+        (status = 400, description = "Invalid id", body = ErrorResponse),
+        (status = 409, description = "The template's file already exists", body = ErrorResponse),
+        (status = 422, description = "Invalid template", body = ErrorResponse),
+        (status = 500, description = "The write failed or the directory could not be re-read", body = ErrorResponse)
+    )
+)]
+pub async fn create_template(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: String,
+) -> Result<Response, AppError> {
+    check_template_id(&id)?;
+    let content = parse_and_validate(&body)?;
 
-    let refused = registry.duplicates(id);
-    if !refused
-        .iter()
-        .any(|refused_rel| path.ends_with(refused_rel))
-    {
-        return Err(missing());
-    }
-
-    match std::fs::read_to_string(path) {
-        Ok(on_disk) if on_disk == body => {
-            let this_file_display = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
-            let winner_display = winner
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| winner.display().to_string());
-            Err(AppError::conflict(format!(
-                    "template id '{id}' is declared by both {winner_display} and {this_file_display}; {winner_display} is served and the file just written is refused"
-                ),
-            ))
+    let _guard = state.write_lock.lock().await;
+    let context = detail_context(&state).await?;
+    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
+    state.before_publish();
+    // The exclusive publish decides existence from the disk, atomically, so a file copied in out of
+    // band or a broken one is never overwritten.
+    match fs_safe::stage_and_publish_new(root_fd.as_fd(), &format!("{id}.yaml"), &body)? {
+        PublishResult::Published => {}
+        PublishResult::AlreadyExists => {
+            return Err(AppError::conflict(format!(
+                "template '{id}' already exists"
+            )));
         }
-        _ => Err(missing()),
     }
-}
-
-#[derive(Debug, Default, serde::Deserialize, utoipa::IntoParams)]
-pub struct PutTemplateQuery {
-    pub group: Option<String>,
+    reload_and_describe(
+        &state,
+        id,
+        content,
+        &context,
+        axum::http::StatusCode::CREATED,
+    )
 }
 
 #[utoipa::path(
     put,
     path = "/templates/{id}",
-    params(
-        ("id" = String, Path, description = "Template ID"),
-        ("group" = Option<String>, Query, description = "Group path for create (optional)")
-    ),
+    params(("id" = String, Path, description = "Template ID")),
     request_body(content = String, description = "Template YAML", content_type = "text/yaml"),
     responses(
         (status = 200, description = "Template replaced", body = TemplateDetail),
-        (status = 201, description = "Template created", body = TemplateDetail),
-        (status = 400, description = "Invalid id, template group mismatch, or unsupported precondition", body = ErrorResponse),
-        (status = 409, description = "After the write, the id is served from a different file", body = ErrorResponse),
-        (status = 412, description = "Precondition failed (If-None-Match: * and template exists)", body = ErrorResponse),
-        (status = 422, description = "Invalid template or group", body = ErrorResponse),
-        (status = 500, description = "The write failed, the directory could not be re-read, or the written template is missing afterwards", body = ErrorResponse)
+        (status = 400, description = "Invalid id", body = ErrorResponse),
+        (status = 404, description = "The template's file does not exist", body = ErrorResponse),
+        (status = 422, description = "Invalid template", body = ErrorResponse),
+        (status = 500, description = "The write failed or the directory could not be re-read", body = ErrorResponse)
     )
 )]
-pub async fn put_template(
+pub async fn replace_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Query(query): Query<PutTemplateQuery>,
-    headers: axum::http::HeaderMap,
     body: String,
 ) -> Result<Response, AppError> {
-    let create_only = if let Some(if_none_match) = headers.get("if-none-match") {
-        let val = if_none_match.to_str().map_err(|_| {
-            AppError::unsupported_precondition("unsupported If-None-Match header value")
-        })?;
-        if val.trim() == "*" {
-            true
-        } else {
-            return Err(AppError::unsupported_precondition(
-                "unsupported If-None-Match header value; only '*' is supported",
-            ));
-        }
-    } else {
-        false
-    };
-
-    if !validate_template_id_stem(&id) {
-        return Err(AppError::invalid_request(
-            Reason::TemplateIdInvalid,
-            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
-        ));
-    }
-
-    let _content = parse_and_validate(&body)?;
+    check_template_id(&id)?;
+    let content = parse_and_validate(&body)?;
 
     let _guard = state.write_lock.lock().await;
-    state.reload()?;
-    let registry = state.templates.load_full();
-    let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-
-    let variables = state.store().all_variables().await?;
-    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    let now = chrono::Local::now();
-    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
-        formats: &dt_formats,
-        now,
-    };
-
-    if let Some(existing) = registry.get(&id) {
-        if create_only {
-            return Err(AppError::precondition_failed(format!(
-                "template with id '{id}' already exists"
+    let filename = format!("{id}.yaml");
+    // Decided from the disk, not the registry, so a broken file is replaceable.
+    match std::fs::symlink_metadata(state.templates_dir.join(&filename)) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppError::not_found(NotFoundKind::Template, id));
+        }
+        Err(err) => {
+            return Err(AppError::internal(format!(
+                "failed to check template file '{filename}': {err}"
             )));
         }
-
-        if let Some(ref req_grp) = query.group {
-            let stripped = req_grp.trim();
-            let req_group_opt = if stripped.is_empty() {
-                None
-            } else {
-                Some(stripped)
-            };
-            if req_group_opt != existing.group.as_deref() {
-                return Err(AppError::template_group_mismatch(format!(
-                    "template '{id}' already exists in group '{}'; use PUT /api/templates/{id}/group to move it",
-                    existing.group.as_deref().unwrap_or("ungrouped")
-                )));
-            }
-        }
-
-        let resolved =
-            fs_safe::resolve_or_create_group(root_fd.as_fd(), existing.group.as_deref(), false)?;
-        let target_filename = format!("{id}.yaml");
-
-        match rustix::fs::openat(
-            resolved.target_fd.as_fd(),
-            &target_filename,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        ) {
-            Ok(_) => {}
-            Err(rustix::io::Errno::LOOP) => {
-                return Err(AppError::internal(
-                    "destination template file is a symbolic link",
-                ));
-            }
-            Err(rustix::io::Errno::NOENT) => {}
-            Err(err) => {
-                return Err(AppError::internal(format!(
-                    "failed to check destination: {err}"
-                )));
-            }
-        }
-
-        state.before_publish();
-        fs_safe::stage_and_replace(resolved.target_fd.as_fd(), &target_filename, &body)?;
-        state.after_write();
-        state.reload()?;
-        let new_registry = state.templates.load_full();
-        let dest_path = state
-            .templates_dir
-            .join(&resolved.target_path)
-            .join(&target_filename);
-        confirm_written_template(&new_registry, &id, &dest_path, &body)?;
-        let detail = new_registry
-            .detail(&id, &variables, &dt_resolver)
-            .ok_or_else(|| AppError::internal("template missing after write"))?;
-        Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
-    } else {
-        let group_req = query
-            .group
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let resolved = fs_safe::resolve_or_create_group(root_fd.as_fd(), group_req, true)?;
-        let target_filename = format!("{id}.yaml");
-
-        state.before_publish();
-        let pub_res =
-            fs_safe::stage_and_publish_new(resolved.target_fd.as_fd(), &target_filename, &body);
-
-        match pub_res {
-            Ok(PublishResult::Published) => {
-                state.after_write();
-                state.reload()?;
-                let new_registry = state.templates.load_full();
-                let dest_path = state
-                    .templates_dir
-                    .join(&resolved.target_path)
-                    .join(&target_filename);
-                confirm_written_template(&new_registry, &id, &dest_path, &body)?;
-                let detail = new_registry
-                    .detail(&id, &variables, &dt_resolver)
-                    .ok_or_else(|| AppError::internal("template missing after write"))?;
-                Ok((axum::http::StatusCode::CREATED, Json(detail)).into_response())
-            }
-            Ok(PublishResult::AlreadyExists) => {
-                if create_only {
-                    fs_safe::cleanup_created_dirs(resolved.created_dirs);
-                    return Err(AppError::precondition_failed(format!(
-                        "a file for template '{id}' already exists"
-                    )));
-                }
-
-                match rustix::fs::openat(
-                    resolved.target_fd.as_fd(),
-                    &target_filename,
-                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                    Mode::empty(),
-                ) {
-                    Ok(_) => {}
-                    Err(rustix::io::Errno::LOOP) => {
-                        fs_safe::cleanup_created_dirs(resolved.created_dirs);
-                        return Err(AppError::internal(
-                            "destination template file is a symbolic link",
-                        ));
-                    }
-                    Err(err) => {
-                        fs_safe::cleanup_created_dirs(resolved.created_dirs);
-                        return Err(AppError::internal(format!(
-                            "failed to check destination: {err}"
-                        )));
-                    }
-                }
-
-                if let Err(err) =
-                    fs_safe::stage_and_replace(resolved.target_fd.as_fd(), &target_filename, &body)
-                {
-                    fs_safe::cleanup_created_dirs(resolved.created_dirs);
-                    return Err(err);
-                }
-
-                state.after_write();
-                state.reload()?;
-                let new_registry = state.templates.load_full();
-                let dest_path = state
-                    .templates_dir
-                    .join(&resolved.target_path)
-                    .join(&target_filename);
-                confirm_written_template(&new_registry, &id, &dest_path, &body)?;
-                let detail = new_registry
-                    .detail(&id, &variables, &dt_resolver)
-                    .ok_or_else(|| AppError::internal("template missing after write"))?;
-                Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
-            }
-            Err(err) => {
-                fs_safe::cleanup_created_dirs(resolved.created_dirs);
-                Err(err)
-            }
-        }
     }
-}
-
-#[utoipa::path(
-    put,
-    path = "/templates/{id}/group",
-    params(("id" = String, Path, description = "Template ID")),
-    request_body(content = TemplateGroupUpdate, description = "Group assignment"),
-    responses(
-        (status = 200, description = "Template moved to group", body = TemplateDetail),
-        (status = 400, description = "Invalid id or request body", body = ErrorResponse),
-        (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 409, description = "Destination already exists or id collision", body = ErrorResponse),
-        (status = 422, description = "Invalid group name or case clash", body = ErrorResponse),
-        (status = 500, description = "File move failed or template missing afterwards", body = ErrorResponse)
-    )
-)]
-pub async fn update_template_group(
-    State(state): State<Arc<AppState>>,
-    Path(id): Path<String>,
-    Json(update): Json<TemplateGroupUpdate>,
-) -> Result<Response, AppError> {
-    // Request syntax first, before the id and before any filesystem work: a body that does not carry
-    // the key is a bad request whatever the directory holds, and deciding it here keeps an unknown
-    // id or an unreadable directory from answering 404 or 500 in its place.
-    let group = update.group().ok_or_else(|| {
-        AppError::invalid_request(
-            Reason::RequestBodyInvalid,
-            "body must carry a 'group' key; use null to clear the group",
-        )
-    })?;
-
-    if !validate_template_id_stem(&id) {
-        return Err(AppError::invalid_request(
-            Reason::TemplateIdInvalid,
-            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
-        ));
-    }
-
-    let _guard = state.write_lock.lock().await;
-    state.reload()?;
-    let registry = state.templates.load_full();
-    let existing = registry
-        .get(&id)
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
-    let src_path = registry
-        .path(&id)
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
-    let src_filename = src_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string();
-
-    let variables = state.store().all_variables().await?;
-    let dt_formats = crate::settings::resolve_datetime_formats(state.store())
-        .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
-    let now = chrono::Local::now();
-    let dt_resolver = crate::datetime_fmt::DateTimeResolver {
-        formats: &dt_formats,
-        now,
-    };
-
-    let target_group: Option<&str> = match group {
-        None => None,
-        Some(s) => {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                return Err(AppError::template_group_invalid(
-                    "group path cannot be empty; use null to clear the group",
-                ));
-            }
-            crate::templates::validate_group_name(trimmed)
-                .map_err(|e| AppError::template_group_invalid(e.to_string()))?;
-            Some(trimmed)
-        }
-    };
-    if existing.group.as_deref() == target_group {
-        let detail = registry
-            .detail(&id, &variables, &dt_resolver)
-            .ok_or_else(|| AppError::internal("template detail invariant failed"))?;
-        return Ok((axum::http::StatusCode::OK, Json(detail)).into_response());
-    }
-
+    let context = detail_context(&state).await?;
     let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-    let src_resolved =
-        fs_safe::resolve_or_create_group(root_fd.as_fd(), existing.group.as_deref(), false)?;
-    let dest_resolved = fs_safe::resolve_or_create_group(root_fd.as_fd(), target_group, true)?;
-    let dest_filename = src_filename.clone();
-
-    let dest_exists = rustix::fs::openat(
-        dest_resolved.target_fd.as_fd(),
-        &dest_filename,
-        OFlags::RDONLY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .is_ok();
-
-    if dest_exists {
-        fs_safe::cleanup_created_dirs(dest_resolved.created_dirs);
-        let rel_dest = dest_resolved
-            .target_path
-            .join(&dest_filename)
-            .to_string_lossy()
-            .replace('\\', "/");
-        return Err(AppError::conflict(format!(
-            "destination '{rel_dest}' already exists"
-        )));
-    }
-
-    state.before_publish();
-    if let Err(err) = fs_safe::move_template_file(
-        src_resolved.target_fd.as_fd(),
-        &src_filename,
-        dest_resolved.target_fd.as_fd(),
-        &dest_filename,
-    ) {
-        fs_safe::cleanup_created_dirs(dest_resolved.created_dirs);
-        return Err(err);
-    }
-
-    state.after_write();
-    state.reload()?;
-    let new_registry = state.templates.load_full();
-    let dest_full_path = state
-        .templates_dir
-        .join(&dest_resolved.target_path)
-        .join(&dest_filename);
-    let content_str =
-        std::fs::read_to_string(&dest_full_path).map_err(|e| AppError::internal(e.to_string()))?;
-    confirm_written_template(&new_registry, &id, &dest_full_path, &content_str)?;
-    let detail = new_registry
-        .detail(&id, &variables, &dt_resolver)
-        .ok_or_else(|| AppError::internal("template missing after move"))?;
-    Ok((axum::http::StatusCode::OK, Json(detail)).into_response())
+    fs_safe::stage_and_replace(root_fd.as_fd(), &filename, &body)?;
+    reload_and_describe(&state, id, content, &context, axum::http::StatusCode::OK)
 }
 
 #[utoipa::path(
@@ -1085,8 +531,7 @@ pub async fn update_template_group(
     responses(
         (status = 204, description = "Template deleted"),
         (status = 400, description = "Invalid id", body = ErrorResponse),
-        (status = 404, description = "Template not found", body = ErrorResponse),
-        (status = 409, description = "More than one file on disk declares this id", body = ErrorResponse),
+        (status = 404, description = "The template's file does not exist", body = ErrorResponse),
         (status = 500, description = "File removal, the favorites prune, or the directory re-read failed", body = ErrorResponse)
     )
 )]
@@ -1094,51 +539,11 @@ pub async fn delete_template(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    if !validate_template_id_stem(&id) {
-        return Err(AppError::invalid_request(
-            Reason::TemplateIdInvalid,
-            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
-        ));
-    }
+    check_template_id(&id)?;
     let _guard = state.write_lock.lock().await;
-    let registry = state.read_templates()?;
-    let existing = match registry.get(&id) {
-        Some(t) => t,
-        None => {
-            state.publish(registry);
-            return Err(AppError::not_found(NotFoundKind::Template, id));
-        }
-    };
-    let path = registry
-        .path(&id)
-        .ok_or_else(|| AppError::internal("template path invariant failed"))?
-        .to_path_buf();
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| AppError::internal("template filename invariant failed"))?
-        .to_string();
-
-    let refused = registry.duplicates(&id);
-    if !refused.is_empty() {
-        let mut files = vec![file_label(&state.templates_dir, &path)];
-        files.extend(refused.iter().map(|p| file_label(&state.templates_dir, p)));
-        let named = files.join(", ");
-        return Err(AppError::conflict(format!(
-                "template id '{id}' is declared by more than one file ({named}); remove or re-id the extra file before deleting"
-            ),
-        ));
-    }
-
     let root_fd = fs_safe::open_dir_handle(&state.templates_dir)?;
-    let parent_resolved =
-        fs_safe::resolve_or_create_group(root_fd.as_fd(), existing.group.as_deref(), false)?;
-    drop(registry);
-
-    fs_safe::unlink_file(parent_resolved.target_fd.as_fd(), &filename)?;
-
+    fs_safe::unlink_file(root_fd.as_fd(), &id)?;
     state.store().remove_favorites_for_template(&id).await?;
-    state.after_write();
     state.reload()?;
     Ok(axum::http::StatusCode::NO_CONTENT.into_response())
 }
@@ -1180,26 +585,17 @@ pub async fn get_template(
     path = "/templates/{id}/source",
     params(("id" = String, Path, description = "Template ID")),
     responses(
-        (status = 200, description = "Raw template YAML", content_type = "text/yaml"),
+        (status = 200, description = "The template file's bytes, served or broken", content_type = "text/yaml"),
         (status = 400, description = "Invalid id", body = ErrorResponse),
-        (status = 404, description = "Template not found", body = ErrorResponse)
+        (status = 404, description = "The template's file does not exist or cannot be read", body = ErrorResponse)
     )
 )]
 pub async fn template_source(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    if !validate_template_id_stem(&id) {
-        return Err(AppError::invalid_request(
-            Reason::TemplateIdInvalid,
-            format!("template id '{id}' must be non-empty and match ^[a-zA-Z0-9_-]+$"),
-        ));
-    }
-    let registry = state.templates.load_full();
-    let path = registry
-        .path(&id)
-        .ok_or_else(|| AppError::not_found(NotFoundKind::Template, id.clone()))?;
-    let yaml = std::fs::read_to_string(path)
+    check_template_id(&id)?;
+    let yaml = std::fs::read(state.templates_dir.join(format!("{id}.yaml")))
         .map_err(|_| AppError::not_found(NotFoundKind::Template, id))?;
     Ok((
         axum::http::StatusCode::OK,
@@ -3209,156 +2605,6 @@ impl FromRequestParts<Arc<AppState>> for HttpsHint {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn confirm_dir(label: &str) -> PathBuf {
-        let mut dir = std::env::temp_dir();
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        dir.push(format!("labeler_confirm_{label}_{n}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn confirm_yaml(name: &str) -> String {
-        format!(
-            "name: {name}\ndescription: d\nunit: mm\ndpi: 300\nformat:\n  type: single\n  width: 20.0\n  height: 10.0\nlayout:\n  - type: text\n    value: hi\n    at: [0.0, 0.0]\n    size: [20.0, 5.0]\n    font_size: 3.0\n"
-        )
-    }
-
-    /// The confirmation is what stands between a write and a response describing somebody else's
-    /// file. Its three outcomes are the contract: pass, collision, or lost write (#183, #184).
-    ///
-    /// These are unit tests because the arms need the directory to change *between* a handler's
-    /// write and its reload, which no request can stage on its own: everything reachable from
-    /// outside stops earlier, at the pre-write re-read. The classification is decided here; the
-    /// handlers' wiring is held by the HTTP tests that drive a real post-write collision through the
-    /// `cfg(test)` mid-write hook, so a handler that stops confirming fails a test.
-    #[test]
-    fn confirm_written_template_passes_when_the_id_is_served_from_our_file() {
-        let dir = confirm_dir("pass");
-        let body = confirm_yaml("mine");
-        let path = dir.join("t.yaml");
-        std::fs::write(&path, &body).unwrap();
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
-
-        assert!(confirm_written_template(&registry, "t", &path, &body).is_ok());
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    async fn error_response(err: AppError) -> (axum::http::StatusCode, serde_json::Value) {
-        use axum::response::IntoResponse;
-        use http_body_util::BodyExt;
-        let response = err.into_response();
-        let status = response.status();
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .expect("collect body")
-            .to_bytes();
-        (status, serde_json::from_slice(&bytes).expect("json"))
-    }
-
-    #[tokio::test]
-    async fn confirm_written_template_reports_a_collision_naming_every_claimant() {
-        let dir = confirm_dir("collide");
-        let body = confirm_yaml("mine");
-        // Ours is written, but a file sorting earlier claims the id, so the load refuses ours. A
-        // third claimant is present too: an operator told about only two of three would fix one file
-        // and still not converge.
-        std::fs::create_dir_all(dir.join("a")).unwrap();
-        std::fs::create_dir_all(dir.join("m")).unwrap();
-        std::fs::create_dir_all(dir.join("z")).unwrap();
-        let ours = dir.join("z").join("t.yaml");
-        std::fs::write(&ours, &body).unwrap();
-        std::fs::write(dir.join("a").join("t.yaml"), confirm_yaml("theirs")).unwrap();
-        std::fs::write(dir.join("m").join("t.yaml"), confirm_yaml("third")).unwrap();
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
-
-        let err = confirm_written_template(&registry, "t", &ours, &body)
-            .expect_err("the id is served from another file");
-        let (status, value) = error_response(err).await;
-        assert_eq!(status, axum::http::StatusCode::CONFLICT);
-        assert_eq!(value["error"]["code"], "Conflict");
-        assert!(
-            value["error"].get("details").is_none(),
-            "a 409 carries no details, got {value}"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// A file the reading never refused is not a collider, however it looks by the time the error is
-    /// built. Without the `duplicates` check the live read below would see our own bytes at our own
-    /// path and report a `409` naming a file the snapshot never listed as claiming the id.
-    #[tokio::test]
-    async fn confirm_written_template_requires_the_snapshot_to_have_refused_our_file() {
-        let dir = confirm_dir("not_refused");
-        let body = confirm_yaml("mine");
-        std::fs::create_dir_all(dir.join("a")).unwrap();
-        std::fs::create_dir_all(dir.join("z")).unwrap();
-        // The reading happens while only the winner exists...
-        std::fs::write(dir.join("a").join("t.yaml"), confirm_yaml("theirs")).unwrap();
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
-        // ...and our file appears afterwards, so it is on disk with our bytes but was never refused.
-        let ours = dir.join("z").join("t.yaml");
-        std::fs::write(&ours, &body).unwrap();
-
-        let err = confirm_written_template(&registry, "t", &ours, &body)
-            .expect_err("the reading did not refuse our file");
-        assert_eq!(err.code(), "Internal");
-        let (status, _) = error_response(err).await;
-        assert_eq!(
-            status,
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "not a collision: the snapshot never listed our file as claiming the id"
-        );
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// An external rename leaves the id served by a path we did not write while our own path is
-    /// gone. There is no colliding file to name and no intact copy of the write, so this is the lost
-    /// write, not a collision (round-4 review).
-    #[tokio::test]
-    async fn confirm_written_template_reports_a_renamed_file_as_a_lost_write() {
-        let dir = confirm_dir("renamed");
-        let body = confirm_yaml("mine");
-        std::fs::create_dir_all(dir.join("a")).unwrap();
-        std::fs::create_dir_all(dir.join("z")).unwrap();
-        std::fs::write(dir.join("a").join("t.yaml"), &body).unwrap();
-        let ours = dir.join("z").join("t.yaml"); // the name we wrote, since renamed away
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
-
-        let err =
-            confirm_written_template(&registry, "t", &ours, &body).expect_err("our file is gone");
-        assert_eq!(err.code(), "Internal");
-        let (status, value) = error_response(err).await;
-        assert_eq!(
-            status,
-            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            "a vanished write is a 500, not a 409"
-        );
-        assert_eq!(value["error"]["code"], "Internal");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// Our filename survives but holds another writer's bytes: the path comparison alone would pass
-    /// and the handler would present their content as the caller's (round-4 review).
-    #[tokio::test]
-    async fn confirm_written_template_reports_replaced_content_as_a_lost_write() {
-        let dir = confirm_dir("replaced");
-        let path = dir.join("t.yaml");
-        std::fs::write(&path, confirm_yaml("theirs")).unwrap();
-        let registry = TemplateRegistry::load_from_dir(&dir).expect("load");
-
-        let err = confirm_written_template(&registry, "t", &path, &confirm_yaml("mine"))
-            .expect_err("the file no longer holds what we wrote");
-        assert_eq!(err.code(), "Internal");
-        let (status, _) = error_response(err).await;
-        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
-        std::fs::remove_dir_all(&dir).ok();
-    }
 
     #[test]
     fn validate_and_normalize_url_accepts_valid_urls() {

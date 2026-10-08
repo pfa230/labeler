@@ -794,12 +794,12 @@ impl TryFrom<TemplateDefinitionRaw> for TemplateContent {
         Ok(TemplateContent {
             name: raw.name,
             description: raw.description.unwrap_or_default(),
+            categories: raw.categories,
             unit: raw.unit,
             dpi: raw.dpi,
             format,
             params,
             layout: Layout::Items(items),
-            version: raw.version,
         })
     }
 }

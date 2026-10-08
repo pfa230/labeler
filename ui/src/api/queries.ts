@@ -2,50 +2,10 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import { ApiError, getJson, sendJson, del, putVoid } from "./client";
 import type { TemplateListResponse, TemplateDetail, Printer, PrinterConnection, PrinterUpdate, ProbeResult } from "./types";
 
-export function useTemplates(params?: { group?: string; nested?: boolean }) {
-  const queryParams = new URLSearchParams();
-  if (params?.group !== undefined) queryParams.set("group", params.group);
-  if (params?.nested) queryParams.set("nested", "true");
-  const qs = queryParams.toString();
-  const url = `/templates${qs ? `?${qs}` : ""}`;
+export function useTemplates() {
   return useQuery({
-    queryKey: ["templates", params],
-    queryFn: () => getJson<TemplateListResponse>(url),
-  });
-}
-
-export function useTemplateGroups() {
-  return useQuery({
-    queryKey: ["template-groups"],
-    queryFn: () => getJson<string[]>("/template-groups"),
-  });
-}
-
-export function useDeleteTemplateGroup() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (groupPath: string) => {
-      const encoded = groupPath.split("/").map(encodeURIComponent).join("/");
-      return del(`/template-groups/${encoded}`);
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["template-groups"] });
-      qc.invalidateQueries({ queryKey: ["templates"] });
-    },
-  });
-}
-
-export function useRenameTemplateGroup() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ groupPath, name }: { groupPath: string; name: string }) => {
-      const encoded = groupPath.split("/").map(encodeURIComponent).join("/");
-      return sendJson<{ group: string }>("PUT", `/template-groups/${encoded}`, { name });
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["template-groups"] });
-      qc.invalidateQueries({ queryKey: ["templates"] });
-    },
+    queryKey: ["templates"],
+    queryFn: () => getJson<TemplateListResponse>("/templates"),
   });
 }
 
@@ -89,51 +49,30 @@ export function useTemplateSource(id: string) {
 }
 // Raw-YAML writes cannot go through client.ts's JSON helpers, so they build their own request — but
 // they must still throw ApiError, not a bare Error.
-async function yamlWrite(
-  id: string,
-  yaml: string,
-  options?: { group?: string | null; createOnly?: boolean },
-): Promise<TemplateDetail> {
-  const queryParams = new URLSearchParams();
-  if (options?.group !== undefined && options.group !== null) {
-    queryParams.set("group", options.group);
-  }
-  const qs = queryParams.toString();
-  const url = `/api/templates/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`;
-  const headers: Record<string, string> = { "content-type": "text/yaml" };
-  if (options?.createOnly) {
-    headers["if-none-match"] = "*";
-  }
-  const res = await fetch(url, { method: "PUT", headers, body: yaml });
+async function yamlWrite(method: "POST" | "PUT", id: string, yaml: string): Promise<TemplateDetail> {
+  const res = await fetch(`/api/templates/${encodeURIComponent(id)}`, {
+    method,
+    headers: { "content-type": "text/yaml" },
+    body: yaml,
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
     throw new ApiError(
       res.status,
       body?.error?.code ?? "Unknown",
-      body?.error?.message ?? `PUT failed (${res.status})`,
+      body?.error?.message ?? `${method} failed (${res.status})`,
       body?.error?.details,
     );
   }
   return (await res.json()) as TemplateDetail;
 }
 
-export function useSaveTemplate() {
+function useYamlWrite(method: "POST" | "PUT") {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      id,
-      yaml,
-      group,
-      createOnly,
-    }: {
-      id: string;
-      yaml: string;
-      group?: string | null;
-      createOnly?: boolean;
-    }) => yamlWrite(id, yaml, { group, createOnly }),
+    mutationFn: ({ id, yaml }: { id: string; yaml: string }) => yamlWrite(method, id, yaml),
     onSuccess: async (_data, { id, yaml }) => {
       qc.invalidateQueries({ queryKey: ["templates"] });
-      qc.invalidateQueries({ queryKey: ["template-groups"] });
       qc.invalidateQueries({ queryKey: ["template", id] });
       await qc.cancelQueries({ queryKey: ["template-source", id] });
       qc.setQueryData(["template-source", id], yaml);
@@ -142,6 +81,14 @@ export function useSaveTemplate() {
       qc.removeQueries({ queryKey: ["template-source", id] });
     },
   });
+}
+
+export function useCreateTemplate() {
+  return useYamlWrite("POST");
+}
+
+export function useReplaceTemplate() {
+  return useYamlWrite("PUT");
 }
 
 export function useDeleteTemplate() {
@@ -150,41 +97,10 @@ export function useDeleteTemplate() {
     mutationFn: (id: string) => del(`/templates/${encodeURIComponent(id)}`),
     onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: ["templates"] });
-      qc.invalidateQueries({ queryKey: ["template-groups"] });
       qc.invalidateQueries({ queryKey: ["favorites"] });
       qc.invalidateQueries({ queryKey: ["recent-templates"] });
       qc.removeQueries({ queryKey: ["template", id] });
       qc.removeQueries({ queryKey: ["template-source", id] });
-    },
-  });
-}
-
-export function useReplaceTemplate() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, yaml }: { id: string; yaml: string }) =>
-      yamlWrite(id, yaml),
-    onSuccess: async (_data, { id, yaml }) => {
-      qc.invalidateQueries({ queryKey: ["templates"] });
-      qc.invalidateQueries({ queryKey: ["template-groups"] });
-      qc.invalidateQueries({ queryKey: ["template", id] });
-      await qc.cancelQueries({ queryKey: ["template-source", id] });
-      qc.setQueryData(["template-source", id], yaml);
-    },
-    onError: (_err, { id }) => {
-      qc.removeQueries({ queryKey: ["template-source", id] });
-    },
-  });
-}
-
-export function useMoveTemplateGroup() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, group }: { id: string; group: string | null }) =>
-      sendJson<TemplateDetail>("PUT", `/templates/${encodeURIComponent(id)}/group`, { group }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["templates"] });
-      qc.invalidateQueries({ queryKey: ["template-groups"] });
     },
   });
 }

@@ -21,11 +21,8 @@ function renderPage() {
   );
 }
 
-function typeAndCreate(id: string, yaml: string, group?: string) {
+function typeAndCreate(id: string, yaml: string) {
   fireEvent.change(screen.getByLabelText(/template id/i), { target: { value: id } });
-  if (group) {
-    fireEvent.change(screen.getByLabelText(/template group/i), { target: { value: group } });
-  }
   fireEvent.change(screen.getByLabelText(/template yaml/i), { target: { value: yaml } });
   fireEvent.click(screen.getByRole("button", { name: /create/i }));
 }
@@ -33,30 +30,35 @@ function typeAndCreate(id: string, yaml: string, group?: string) {
 describe("New template", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
-  it("navigates to the created template on success", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(
-        async () =>
-          new Response(JSON.stringify({ id: "new-tpl" }), {
-            status: 201,
-            headers: { "content-type": "application/json" },
-          }),
-      ),
+  it("creates with a POST of the raw YAML and navigates to the created template", async () => {
+    const fetchMock = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ id: "new-tpl" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
     );
+    vi.stubGlobal("fetch", fetchMock);
     renderPage();
     typeAndCreate("new-tpl", "name: New Template\n");
     expect(await screen.findByText(/detail for/i)).toBeInTheDocument();
+    const writes = fetchMock.mock.calls.filter(([, init]) => init?.method !== undefined);
+    expect(writes).toHaveLength(1);
+    const [url, init] = writes[0];
+    expect(url).toBe("/api/templates/new-tpl");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe("name: New Template\n");
+    expect(new Headers(init?.headers).has("if-none-match")).toBe(false);
   });
 
-  it("shows the error message inline on a 412 conflict", async () => {
+  it("shows the already-exists message inline on a 409", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
         async () =>
           new Response(
-            JSON.stringify({ error: { code: "PreconditionFailed", message: "already exists" } }),
-            { status: 412, headers: { "content-type": "application/json" } },
+            JSON.stringify({ error: { code: "Conflict", message: "conflict" } }),
+            { status: 409, headers: { "content-type": "application/json" } },
           ),
       ),
     );

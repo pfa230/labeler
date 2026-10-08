@@ -195,7 +195,6 @@ describe("Print screen", () => {
         ],
       },
       format: { type: "single" as const, height: 18, width: { min: 25, max: 80 } },
-      layout: [],
     };
 
     renderWithProviders(<Print />, { template: templateWithParams });

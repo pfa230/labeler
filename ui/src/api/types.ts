@@ -71,7 +71,7 @@ export interface TemplateSummary {
   id: string;
   name: string;
   description: string;
-  group?: string;
+  categories: string[];
   unit: string;
   dpi: number;
   format: TemplateFormat;
@@ -87,7 +87,7 @@ export interface TemplateDetail {
   id: string;
   name: string;
   description: string;
-  group?: string;
+  categories: string[];
   unit: string;
   dpi: number;
   format: TemplateFormat;
@@ -95,7 +95,6 @@ export interface TemplateDetail {
   param_defaults?: Record<string, ParamDefaultReport>;
   inputs: TemplateInputs;
   variables: string[];
-  version?: string;
 }
 
 export interface TemplateInputsRequest {

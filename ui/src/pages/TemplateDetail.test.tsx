@@ -23,10 +23,6 @@ const detail = {
       { name: "message", control: "text" },
     ],
   },
-  layout: [
-    { type: "qr", value: "{code}" },
-    { type: "text", value: "{message}" },
-  ],
 };
 
 const source = "id: brother_24mm_qr\nname: Brother 24mm Continuous Label\n";
@@ -158,7 +154,6 @@ const sheetDetail = {
     all: [{ name: "message", control: "text" }],
     default: [{ name: "message", control: "text" }],
   },
-  layout: [{ type: "text", value: "{message}" }],
 };
 
 function stubSheetFetch() {

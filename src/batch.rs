@@ -190,10 +190,10 @@ mod tests {
     fn single_tpl() -> TemplateDefinition {
         TemplateDefinition {
             id: "s".to_string(),
-            group: None,
             content: TemplateContent {
                 name: "S".to_string(),
                 description: String::new(),
+                categories: Vec::new(),
                 unit: "mm".to_string(),
                 dpi: 200,
                 format: TemplateFormat::Single {
@@ -226,7 +226,6 @@ mod tests {
                     overflow: Overflow::Ellipsis,
                     when: None,
                 }]),
-                version: None,
             },
         }
     }

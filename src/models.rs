@@ -34,17 +34,17 @@ pub struct ReloadResponse {
 
 #[derive(Serialize, ToSchema)]
 pub struct BrokenTemplateSummary {
-    /// Path of the YAML file relative to the templates directory (e.g. `foo.yaml` or `Shipping/pallet.yaml`).
+    /// The entry's name in the templates directory (e.g. `foo.yaml`).
     pub path: String,
-    /// Human-readable parse error, validation error, or duplicate-id refusal.
+    /// Human-readable refusal: not a template file, or a read, parse or validation error.
     pub error: String,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct TemplateList {
     pub templates: Vec<TemplateSummary>,
-    /// Files in the templates directory that failed to parse, failed validation, or were refused
-    /// because another file already holds their id.
+    /// Entries in the templates directory that were refused: not a template file, or a template
+    /// file that could not be read, parsed or validated.
     /// An empty list means all files loaded successfully.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub broken: Vec<BrokenTemplateSummary>,
@@ -55,8 +55,7 @@ pub struct TemplateSummary {
     pub id: String,
     pub name: String,
     pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
+    pub categories: Vec<String>,
     pub unit: String,
     pub dpi: u32,
     pub params: Vec<ParamEntry>,
@@ -93,15 +92,11 @@ pub struct TemplateDetail {
     pub id: String,
     pub name: String,
     pub description: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group: Option<String>,
+    pub categories: Vec<String>,
     pub unit: String,
     pub dpi: u32,
     pub format: TemplateFormat,
     pub params: Vec<ParamEntry>,
-    pub layout: Layout,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
     pub inputs: TemplateInputs,
     pub variables: Vec<String>,
     pub param_defaults: BTreeMap<String, ParamDefaultReport>,
@@ -156,37 +151,6 @@ pub struct TemplateInputsResponse {
     pub inputs: Vec<Vec<InputSpec>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RenameGroupRequest {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct RenameGroupResponse {
-    pub group: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TemplateGroupUpdate {
-    /// Nested on purpose: the outer `Option` is *presence of the key*, the inner one is its null.
-    /// `{"group": null}` clears the group deliberately, `{}` is a malformed body, and a plain
-    /// `Option<String>` cannot tell them apart, since serde reads a missing field of option type as
-    /// `None` whether or not it carries `#[serde(default)]`. That collapse let `{}` silently
-    /// ungroup a template (#164 review). Read it through [`TemplateGroupUpdate::group`].
-    #[serde(default, deserialize_with = "deserialize_present_group")]
-    #[schema(value_type = Option<String>)]
-    group: Option<Option<String>>,
-}
-
-fn deserialize_present_group<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer).map(Some)
-}
-
 /// For an optional key that may be omitted but not written as `null`: with `#[serde(default)]`,
 /// omission gives `None`, while `null` reaches `T`'s deserializer and fails, so the body is
 /// malformed (`errors` spec). A plain `Option<T>` reads `null` as omission.
@@ -196,13 +160,6 @@ where
     T: Deserialize<'de>,
 {
     T::deserialize(deserializer).map(Some)
-}
-
-impl TemplateGroupUpdate {
-    /// The requested group, or `None` when the body omitted the key entirely.
-    pub fn group(&self) -> Option<Option<&str>> {
-        self.group.as_ref().map(|inner| inner.as_deref())
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
@@ -405,7 +362,7 @@ where
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Point {
     pub x: f32,
     pub y: f32,
@@ -430,7 +387,7 @@ pub fn resolve_coord(v: f32, frame_extent: f32) -> f32 {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct Position(pub [f32; 2]);
 
@@ -462,22 +419,6 @@ pub enum SizeValue {
     Content,
     Fill,
     Dynamic(DynamicValue<f32>),
-}
-
-/// `content` and `fill` are keywords on the wire, so they are written and read as their own strings.
-/// A derived untagged enum cannot express that: serde renders an untagged unit variant as `null`,
-/// discarding the name, which would make the two indistinguishable in a serialized layout.
-impl Serialize for SizeValue {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            SizeValue::Content => serializer.serialize_str("content"),
-            SizeValue::Fill => serializer.serialize_str("fill"),
-            SizeValue::Dynamic(dynamic) => dynamic.serialize(serializer),
-        }
-    }
 }
 
 impl<'de> Deserialize<'de> for SizeValue {
@@ -537,26 +478,6 @@ impl<'de> Deserialize<'de> for SizeValue {
     }
 }
 
-impl utoipa::PartialSchema for SizeValue {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Type};
-        OneOfBuilder::new()
-            .item(
-                ObjectBuilder::new()
-                    .schema_type(Type::String)
-                    .enum_values(Some(["content", "fill"]))
-                    .description(Some(
-                        "`content` hugs the item's own size; `fill` stretches to the frame",
-                    ))
-                    .build(),
-            )
-            .item(<DynamicValue<f32> as utoipa::PartialSchema>::schema())
-            .into()
-    }
-}
-
-impl utoipa::ToSchema for SizeValue {}
-
 impl SizeValue {
     pub fn fixed(val: f32) -> Self {
         SizeValue::Dynamic(DynamicValue::Literal(val))
@@ -587,7 +508,7 @@ impl From<DynamicValue<f32>> for SizeValue {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(transparent)]
 pub struct Size(pub [SizeValue; 2]);
 
@@ -634,22 +555,19 @@ impl Rotation {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowDirection {
     Row,
     Column,
 }
 
-#[derive(Debug, Default, Serialize, ToSchema, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FlowOverflow {
     #[default]
     Fail,
     Trim,
-    /// Parsing sentinel. Conversion refuses it before a `Flow` enters the domain model, and it is
-    /// neither serializable nor part of the published schema.
-    #[serde(skip)]
+    /// Parsing sentinel. Conversion refuses it before a `Flow` enters the domain model.
     Invalid,
 }
 
@@ -670,22 +588,17 @@ impl<'de> Deserialize<'de> for FlowOverflow {
 #[cfg(test)]
 mod flow_overflow_tests {
     use super::FlowOverflow;
-    use utoipa::PartialSchema;
 
     #[test]
-    fn invalid_parse_sentinel_is_not_published() {
+    fn an_unknown_spelling_parses_to_the_invalid_sentinel() {
         assert_eq!(
             serde_yaml_ng::from_str::<FlowOverflow>("discard").unwrap(),
             FlowOverflow::Invalid
         );
-        let schema = serde_json::to_string(&FlowOverflow::schema()).unwrap();
-        assert!(schema.contains("fail"), "got {schema}");
-        assert!(schema.contains("trim"), "got {schema}");
-        assert!(!schema.contains("invalid"), "got {schema}");
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Flow {
     pub direction: FlowDirection,
@@ -701,24 +614,18 @@ pub struct Flow {
 
 /// How a box item's extent is expressed on the wire: `size:` (width and height) xor `to:` (the
 /// opposite corner). An enum rather than two `Option`s so "exactly one" is a type invariant.
-#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Extent {
     Size(Size),
     To(Position),
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Placement {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Position>,
-    #[serde(flatten)]
     pub extent: Extent,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_w: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_h: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotate: Option<f32>,
 }
 
@@ -789,31 +696,27 @@ impl From<Dimension> for DynamicDimension {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum Dimension {
     Fixed(f32),
     Dynamic { min: Option<f32>, max: Option<f32> },
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum FontSize {
     Fixed(f32),
     Range { min: f32, max: f32 },
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct QrParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error_correction: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub module_size: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub quiet_zone: Option<f32>,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HorizontalAlign {
     #[default]
@@ -822,7 +725,7 @@ pub enum HorizontalAlign {
     Right,
 }
 
-#[derive(Copy, Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
+#[derive(Copy, Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerticalAlign {
     #[default]
@@ -831,7 +734,7 @@ pub enum VerticalAlign {
     Bottom,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Alignment {
     #[serde(default)]
     pub horizontal: HorizontalAlign,
@@ -839,7 +742,7 @@ pub struct Alignment {
     pub vertical: VerticalAlign,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Copy, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Fit {
     #[default]
@@ -858,7 +761,7 @@ impl Fit {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Overflow {
     #[default]
@@ -866,19 +769,13 @@ pub enum Overflow {
     Fail,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shape {
     #[default]
     Rect,
     Ellipse,
     Circle,
-}
-
-impl Shape {
-    pub fn is_default(&self) -> bool {
-        *self == Shape::Rect
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1012,15 +909,6 @@ impl std::str::FromStr for Color {
     }
 }
 
-impl Serialize for Color {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.spelling)
-    }
-}
-
 impl<'de> Deserialize<'de> for Color {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1049,93 +937,49 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
-impl utoipa::PartialSchema for Color {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{ObjectBuilder, Type};
-        ObjectBuilder::new()
-            .schema_type(Type::String)
-            .description(Some(
-                "A CSS Level 1 named colour or '#'-prefixed hex colour string ('#rgb', '#rgba', '#rrggbb', '#rrggbbaa')",
-            ))
-            .into()
-    }
-}
-
-impl utoipa::ToSchema for Color {}
-
-#[derive(Debug, Serialize, ToSchema, Clone)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[derive(Debug, Clone)]
 pub enum LayoutItem {
     Text {
         value: String,
-        #[serde(flatten)]
         placement: Placement,
         font_size: FontSize,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         font_weight: Option<DynamicValue<u16>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         color: Option<DynamicValue<Color>>,
-        #[serde(default)]
         wrap: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         line_spacing: Option<DynamicValue<f32>>,
-        #[serde(default)]
         alignment: Alignment,
-        #[serde(default)]
         overflow: Overflow,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
     },
     Qr {
         value: String,
-        #[serde(flatten)]
         placement: Placement,
-        #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<QrParams>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
     },
     Image {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         src: Option<String>,
-        #[serde(flatten)]
         placement: Placement,
-        #[serde(default)]
         fit: Fit,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
     },
     Line {
-        #[serde(default)]
         at: Position,
         to: Position,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         stroke: Option<Stroke>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
     },
     Container {
-        #[serde(flatten)]
         placement: Placement,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         when: Option<BTreeMap<String, String>>,
-        #[serde(default, skip_serializing_if = "Shape::is_default")]
         shape: Shape,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         stroke: Option<Stroke>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         background: Option<DynamicValue<Color>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         rounded: Option<f32>,
-        #[serde(default)]
         padding: Padding,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         flow: Option<Flow>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         repeat: Option<String>,
-        #[schema(no_recursion)]
         items: Vec<LayoutItem>,
     },
 }
@@ -1165,7 +1009,7 @@ impl LayoutItem {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub struct Padding {
     pub top: f32,
     pub right: f32,
@@ -1188,14 +1032,13 @@ impl Default for Padding {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Stroke {
     pub thickness: f32,
     pub color: DynamicValue<Color>,
 }
 
-#[derive(Debug, Serialize, ToSchema, Clone)]
-#[serde(untagged)]
+#[derive(Debug, Clone)]
 pub enum Layout {
     Items(Vec<LayoutItem>),
 }
@@ -1467,71 +1310,29 @@ mod rotation_tests {
 
 #[cfg(test)]
 mod size_value_tests {
-    use super::{Size, SizeValue};
+    use super::SizeValue;
 
-    /// `content` and `fill` are the wire vocabulary, so they must survive a round trip through the
-    /// API representation. A derived untagged enum wrote both as `null` and read neither back.
+    /// `content` and `fill` are the wire vocabulary, so they must read as their own keywords.
     #[test]
-    fn size_value_round_trips_its_keywords() {
+    fn size_value_reads_its_keywords() {
         for (value, json) in [
             (SizeValue::Content, "\"content\""),
             (SizeValue::Fill, "\"fill\""),
             (SizeValue::fixed(10.0), "10.0"),
             (SizeValue::param_ref("w"), "\"{w}\""),
         ] {
-            assert_eq!(serde_json::to_string(&value).unwrap(), json);
             assert_eq!(
                 serde_json::from_str::<SizeValue>(json).unwrap(),
                 value,
-                "reading back {json}"
+                "reading {json}"
             );
         }
-
-        let size = Size([SizeValue::Content, SizeValue::Fill]);
-        assert_eq!(
-            serde_json::to_string(&size).unwrap(),
-            "[\"content\",\"fill\"]"
-        );
-    }
-
-    /// The published schema has to offer the same two keywords the parser accepts, not a null.
-    #[test]
-    fn size_value_schema_publishes_both_keywords() {
-        use utoipa::PartialSchema;
-        let schema = serde_json::to_string(&SizeValue::schema()).unwrap();
-        assert!(schema.contains("\"content\""), "got {schema}");
-        assert!(schema.contains("\"fill\""), "got {schema}");
-        assert!(!schema.contains("\"null\""), "got {schema}");
     }
 }
 
 #[cfg(test)]
 mod placement_tests {
-    use super::{resolve_coord, Placement, Position, Size, SizeValue};
-
-    /// GET /templates/{id} must hand back the shape the author wrote. `rename_all` is load-bearing:
-    /// without it the flattened key is `Size`/`To`.
-    #[test]
-    fn placement_serializes_back_to_the_authored_key() {
-        let sized = Placement::sized(
-            Position([0.0, 0.0]),
-            Size([SizeValue::from(10.0), SizeValue::from(5.0)]),
-        );
-        let json = serde_json::to_string(&sized).unwrap();
-        assert!(json.contains("\"size\""), "got {json}");
-        assert!(!json.contains("\"to\""), "got {json}");
-
-        let cornered = Placement {
-            at: Some(Position([0.0, 0.0])),
-            extent: super::Extent::To(Position([10.0, 5.0])),
-            max_w: None,
-            max_h: None,
-            rotate: None,
-        };
-        let json = serde_json::to_string(&cornered).unwrap();
-        assert!(json.contains("\"to\""), "got {json}");
-        assert!(!json.contains("\"size\""), "got {json}");
-    }
+    use super::{resolve_coord, Position};
 
     /// The edge sentinel is the sign bit, not `< 0.0`: `-0.0 < 0.0` is false, so a `< 0.0` test would
     /// silently read "the far edge" as "the origin". YAML `-0` and `-0.0` both arrive sign-negative.
@@ -1642,7 +1443,7 @@ mod color_tests {
     }
 
     #[test]
-    fn parsed_color_serializes_back_to_exact_authored_string() {
+    fn deserialized_color_keeps_the_exact_authored_string() {
         let spellings = [
             "red",
             "Red",
@@ -1654,10 +1455,7 @@ mod color_tests {
         ];
         for spelling in spellings {
             let color: Color = spelling.parse().unwrap();
-            let json = serde_json::to_string(&color).unwrap();
-            assert_eq!(json, format!("\"{spelling}\""));
-
-            let de: Color = serde_json::from_str(&json).unwrap();
+            let de: Color = serde_json::from_str(&format!("\"{spelling}\"")).unwrap();
             assert_eq!(de.spelling(), spelling);
             assert_eq!(de.rgba(), color.rgba());
         }

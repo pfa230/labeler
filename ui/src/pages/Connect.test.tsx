@@ -1432,7 +1432,6 @@ describe("Connect: datetime parameters", () => {
         { name: "printed_on", control: "datetime" as const, description: "Print date" },
       ],
     },
-    layout: [{ type: "text", value: "{name} {printed_on.short_date}" }],
   };
 
   // The datetime template, plus a connector that offers a `printed_on` field so the default mapping
